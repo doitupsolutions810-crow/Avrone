@@ -557,6 +557,49 @@ class TrinityCore:
             async with gate:
                 return await local()
 
+    def _netsquad_plan(self, run_id: str, n: int, dispatch: str | None = None
+                       ) -> "tuple[int, dict[int, str]] | None":
+        """netsquad: (governor limit, {subtask index: node id}) when squad dispatch is network or
+        hybrid, else None (local = unchanged). Privileged runs never leave the node."""
+        fleet = getattr(self, "fleet", None)
+        try:
+            if fleet is None or not getattr(fleet, "enabled", False) or fleet.squad_dispatch(dispatch) == "local":
+                return None
+        except Exception:
+            return None
+        if self._privileged_run() or n <= 0:
+            return None
+        limit = self._worker_limit(run_id, n)
+        try:
+            remote = dict(fleet.netsquad_plan(n, limit, int(getattr(self, "fleet_hops", 0) or 0),
+                                              self._netsquad_path(), dispatch, self._netsquad_budget()))
+        except Exception:
+            remote = {}
+        return limit, {int(i): str(v) for i, v in remote.items() if 0 <= int(i) < n}
+
+    def _netsquad_path(self) -> list[str]:
+        p = getattr(self, "netsquad_path", None)
+        return [str(x) for x in p] if isinstance(p, list) else []
+
+    def _netsquad_budget(self) -> int | None:
+        b = getattr(self, "netsquad_budget", None)
+        return b if isinstance(b, int) and not isinstance(b, bool) else None
+
+    async def _netsquad(self, run_id: str, i: int, node: str, s: dict[str, str], task: str, share: int,
+                        gate: asyncio.Semaphore, local: Any, placed: dict[int, dict[str, Any]]) -> str:
+        """Run subtask `s` as a sub-squad on `node`; on any remote failure run it here, behind the gate."""
+        try:
+            r = await self.fleet.netsquad_worker(run_id, node, str(s.get("role")), task, str(s["focus"]),
+                                                 int(getattr(self, "fleet_hops", 0) or 0),
+                                                 self._netsquad_path(), share)
+            placed[i] = {"node": r.get("node", node), "route": list(r.get("route") or [])}
+            return str(r["answer"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            async with gate:
+                return await local()
+
     async def _gather_agents(self, run_id: str, coros: list[Any], limit: int | None = None) -> list[str]:
         """Run agents in parallel; one that still blows up becomes a failure note, never a crash.
 
@@ -625,8 +668,11 @@ class TrinityCore:
         return subtasks
 
     async def squad(self, task: str, n: int | None = None, run_id: str | None = None,
-                    checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None) -> dict[str, Any]:
+                    checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None,
+                    dispatch: str | None = None) -> dict[str, Any]:
         """Plan, run the squad in parallel, merge with the lead.
+
+        `dispatch` (local|network|hybrid) overrides AVRONE_SQUAD_DISPATCH for this run (netsquad).
 
         With `checkpoint` (a path or Checkpoint), the plan, every finished worker result and
         the final result are recorded; calling again with the same task and file resumes:
@@ -654,10 +700,14 @@ class TrinityCore:
             if ck is not None:
                 ck.put("subtasks", subtasks)
 
-        plan = self._offload_plan(run_id, len(subtasks))
+        placed: dict[int, dict[str, Any]] = {}
+        nplan = self._netsquad_plan(run_id, len(subtasks), dispatch)
+        plan = nplan if nplan is not None else self._offload_plan(run_id, len(subtasks))
+        net = nplan is not None
         if plan and plan[1]:
             limit, remote = plan
             gate = asyncio.Semaphore(limit)
+            share = self.fleet.netsquad_share(len(remote), self._netsquad_budget()) if net else 0
 
             async def gated(local: Any) -> str:
                 async with gate:
@@ -665,7 +715,10 @@ class TrinityCore:
             coros = []
             for i, s in enumerate(subtasks):
                 local = (lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
-                if i in remote:
+                if i in remote and net:
+                    fac = (lambda i=i, s=s, node=remote[i], local=local:
+                           self._netsquad(run_id, i, node, s, task, share, gate, local, placed))
+                elif i in remote:
                     fac = (lambda s=s, node=remote[i], local=local: self._offloaded(run_id, node, s, task, gate, local))
                 else:
                     fac = (lambda local=local: gated(local))
@@ -676,8 +729,11 @@ class TrinityCore:
                 self._ck_step(ck, f"worker.{i}",
                               lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
                 for i, s in enumerate(subtasks)], limit=plan[0] if plan else None)
+        def via(i: int) -> str:
+            p = placed.get(i)
+            return f" [node {p['node']} via {'/'.join(p['route'])}]" if p else ""
         reports = "\n\n".join(
-            f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']})\n{r}"
+            f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']}){via(i)}\n{r}"
             for i, (s, r) in enumerate(zip(subtasks, results)))
         self.codex.emit(run_id, "lead.merge", "Lead", agents=len(results))
         try:
@@ -700,7 +756,8 @@ class TrinityCore:
             answer = f"Lead failed ({e}). Raw agent reports:\n\n{reports}"
         self.codex.emit(run_id, "run.done", "Trinity", answer=answer)
         out = {"run_id": run_id, "answer": answer,
-               "agents": [{"role": s.get("role"), "focus": s["focus"], "result": r} for s, r in zip(subtasks, results)]}
+               "agents": [{"role": s.get("role"), "focus": s["focus"], "result": r, **placed.get(i, {})}
+                          for i, (s, r) in enumerate(zip(subtasks, results))]}
         if ck is not None and not answer.startswith("Lead failed ("):
             ck.put("result", out)  # a failed merge is retried on resume
         return out

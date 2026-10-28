@@ -496,6 +496,182 @@ async def t_think(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "noted"
 
 
+# --------------------------------------------------------------------------- diff_files
+
+DIFF_MAX_FILE_BYTES = 1_000_000
+DIFF_MAX_TEXT_CHARS = 1_000_000
+DIFF_MAX_OUTPUT_CHARS = 12000
+
+
+def _read_text_for_diff(ctx: "AgentContext", raw: Any, label: str) -> tuple[str | None, str]:
+    """Return (text, display_name) or (None, error message)."""
+    rel = str(raw or "").strip()
+    if not rel:
+        return None, f"ERROR: {label} is required"
+    p = _safe_path(_ws(ctx), rel)
+    if not p.exists():
+        return None, f"ERROR: {rel} not found"
+    if not p.is_file():
+        return None, f"ERROR: {rel} is not a file"
+    if p.stat().st_size > DIFF_MAX_FILE_BYTES:
+        return None, f"ERROR: {rel} is larger than {DIFF_MAX_FILE_BYTES} bytes"
+    data = p.read_bytes()
+    if b"\0" in data[:8192]:
+        return None, f"ERROR: {rel} looks like a binary file"
+    return data.decode(errors="replace"), _rel(ctx, p)
+
+
+async def t_diff_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    import difflib
+
+    has_b, has_text = args.get("path_b") not in (None, ""), "text_b" in args and args.get("text_b") is not None
+    if has_b == has_text:
+        return "ERROR: give exactly one of path_b or text_b"
+    a_text, a_name = _read_text_for_diff(ctx, args.get("path_a"), "path_a")
+    if a_text is None:
+        return a_name
+    if has_b:
+        b_text, b_name = _read_text_for_diff(ctx, args.get("path_b"), "path_b")
+        if b_text is None:
+            return b_name
+    else:
+        if not isinstance(args.get("text_b"), str):
+            return "ERROR: text_b must be a string"
+        b_text, b_name = args["text_b"], "(text_b)"
+        if len(b_text) > DIFF_MAX_TEXT_CHARS:
+            return f"ERROR: text_b is longer than {DIFF_MAX_TEXT_CHARS} chars"
+    context = _int(args.get("context"), 3, 0, 20)
+    lines = list(difflib.unified_diff(a_text.splitlines(keepends=True), b_text.splitlines(keepends=True),
+                                      fromfile=a_name, tofile=b_name, n=context))
+    if not lines:
+        return f"No differences between {a_name} and {b_name}."
+    out = "".join(ln if ln.endswith("\n") else ln + "\n\\ No newline at end of file\n" for ln in lines)
+    added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+    summary = f"[{added} added, {removed} removed]"
+    if len(out) > DIFF_MAX_OUTPUT_CHARS:
+        out = out[:DIFF_MAX_OUTPUT_CHARS] + f"\n...[diff truncated, {len(out)} chars total]\n"
+    return out.rstrip("\n") + "\n" + summary
+
+
+# --------------------------------------------------------------------------- codex_search
+
+CODEX_MAX_RUN_FILES = 200
+CODEX_MAX_EVENTS_SCANNED = 50_000
+CODEX_MAX_OUTPUT_CHARS = 12000
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9_\-.]{1,128}")
+
+
+def _codex_match(ev: dict[str, Any], kind: str, agent: str, tool: str, query: str) -> bool:
+    if kind:
+        ek = str(ev.get("kind", ""))
+        if kind.endswith("*") or kind.endswith("."):
+            if not ek.startswith(kind.rstrip("*")):
+                return False
+        elif ek != kind:
+            return False
+    if agent and str(ev.get("agent", "")).lower() != agent:
+        return False
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    if tool and str(data.get("tool", "")) != tool:
+        return False
+    if query:
+        hay = (str(ev.get("kind", "")) + " " + str(ev.get("agent", "")) + " "
+               + json.dumps(data, default=str)).lower()
+        if query not in hay:
+            return False
+    return True
+
+
+def _codex_line(ev: dict[str, Any], run_id: str) -> str:
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(float(ev.get("ts", 0))))
+    except (TypeError, ValueError, OverflowError, OSError):
+        ts = "?"
+    tool = f" tool={data['tool']}" if data.get("tool") else ""
+    rest = {k: v for k, v in data.items() if k != "tool"}
+    snippet = re.sub(r"\s+", " ", json.dumps(rest, default=str))
+    if len(snippet) > 240:
+        snippet = snippet[:240] + "..."
+    return f"[{run_id}] {ts}Z {ev.get('kind', '?')} {ev.get('agent', '?')}{tool} {snippet}"
+
+
+async def t_codex_search(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    codex = getattr(ctx.core, "codex", None)
+    log_dir = getattr(codex, "log_dir", None)
+    if log_dir is None:
+        return "ERROR: the Eternal CodeX log is not available"
+    log_dir = Path(log_dir)
+    kind = str(args.get("kind") or "").strip()
+    agent = str(args.get("agent") or "").strip().lower()
+    tool = str(args.get("tool") or "").strip()
+    query = str(args.get("query") or "").strip().lower()
+    run_id = str(args.get("run_id") or "").strip()
+    if not (kind or agent or tool or query or run_id):
+        return "ERROR: give at least one filter: kind, agent, tool, query or run_id"
+    if len(query) > 500:
+        return "ERROR: query is longer than 500 chars"
+    limit = _int(args.get("limit"), 20, 1, 200)
+    max_runs = _int(args.get("runs"), 50, 1, CODEX_MAX_RUN_FILES)
+    if not log_dir.is_dir():
+        return "No CodeX runs logged yet."
+    if run_id:
+        if not _RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+            return "ERROR: invalid run_id"
+        f = log_dir / f"{run_id}.jsonl"
+        if not f.resolve().is_relative_to(log_dir.resolve()):
+            return "ERROR: invalid run_id"
+        if not f.is_file():
+            return f"ERROR: run {run_id} not found"
+        files = [f]
+    else:
+        files = sorted(log_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:max_runs]
+        if not files:
+            return "No CodeX runs logged yet."
+    hits: list[tuple[float, str]] = []
+    scanned, capped = 0, False
+    for f in files:
+        try:
+            fh = f.open(errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if scanned >= CODEX_MAX_EVENTS_SCANNED:
+                    capped = True
+                    break
+                scanned += 1
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(ev, dict) or not _codex_match(ev, kind, agent, tool, query):
+                    continue
+                try:
+                    ts = float(ev.get("ts", 0))
+                except (TypeError, ValueError):
+                    ts = 0.0
+                hits.append((ts, _codex_line(ev, f.stem)))
+        if capped:
+            break
+    if not hits:
+        return f"No CodeX events match (scanned {scanned} events in {len(files)} run(s))."
+    hits.sort(key=lambda h: h[0], reverse=True)
+    total = len(hits)
+    lines = [f"{total} matching event(s) in {len(files)} run(s), newest first; showing {min(total, limit)}:"]
+    size = len(lines[0])
+    for _, ln in hits[:limit]:
+        if size + len(ln) + 1 > CODEX_MAX_OUTPUT_CHARS:
+            lines.append("...[output capped]")
+            break
+        lines.append(ln)
+        size += len(ln) + 1
+    if capped:
+        lines.append(f"...[scan stopped at {CODEX_MAX_EVENTS_SCANNED} events; narrow with run_id or runs]")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- registration
 
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
@@ -523,6 +699,10 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"image": str, "cmd": str}', t_docker_run),
     ("think", "private scratchpad: record your reasoning/plan; no side effects.",
      '{"thought": str}', t_think),
+    ("diff_files", "unified diff between two workspace text files, or a file and given text (path-confined, output capped at 12000 chars).",
+     '{"path_a": str, "path_b"?: str, "text_b"?: str, "context"?: int}', t_diff_files),
+    ("codex_search", "read-only search of the Eternal CodeX run logs by event kind (exact, or prefix ending in '.'/'*'), agent, tool name, substring and/or run_id; newest first, bounded.",
+     '{"kind"?: str, "agent"?: str, "tool"?: str, "query"?: str, "run_id"?: str, "limit"?: int, "runs"?: int}', t_codex_search),
 ]
 
 

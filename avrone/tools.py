@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-import httpx
-
 from .network_policy import safe_http_request
 
 if TYPE_CHECKING:

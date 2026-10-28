@@ -21,6 +21,19 @@ goes through FleetManager.dispatch_gateway(), which enforces, in this order:
   5 sender in FLEET_ALLOW 6 hops within MAX_HOPS   7 per-request capability check
 and records every accept as a Codex `fleet.dispatch` event and every refusal as `fleet.refused`.
 Outbound spawns (dispatch / remote_spawn / queue_submit) run the matching local checks first.
+Privileged ("root-enabled") tier -- OFF by default, deny by default:
+  AVRONE_FLEET_PRIVILEGED      must be exactly "allow" (case-insensitive) to enable; anything else = deny
+  AVRONE_PRIVILEGED_NODES      comma list of SENDER node ids this node grants elevated capabilities to
+                               (default empty = nobody, even with the toggle on)
+  AVRONE_FLEET_PRIVILEGED_MAX_HOPS  privileged requests are accepted only within this many hops
+                               (default 1 = direct parent->child only; never above AVRONE_FLEET_MAX_HOPS)
+A request asks for an elevated capability (priv:shell / priv:admin) with "privileged": true AND that
+capability INSIDE the HMAC-signed JSON body, so neither can be added or flipped in transit; an
+x-avrone-privileged header is refused outright. The receiving node accepts it only when its toggle is
+on AND the sender is in its AVRONE_PRIVILEGED_NODES (and in FLEET_ALLOW, and within the hop bounds);
+otherwise it refuses with a `fleet.privileged.refused` audit event. Accepted privileged runs are
+audited as `fleet.privileged.accept` and run with core.fleet_privileged set to the granted capability
+(downstream tools gate on it); the originating node also needs its own toggle on to send one.
 The sender id is asserted inside the HMAC-signed body: it is tamper-proof in transit, but any
 holder of the shared token can claim any id, so the allowlist limits blast radius, not trust.
 Other env:
@@ -69,13 +82,16 @@ TRUTHY = {"1", "true", "yes", "on"}
 # capability a request may ask for, per endpoint kind
 CAPABILITIES: dict[str, set[str]] = {"run": {"spawn:squad", "spawn:chat", "spawn:deep"}, "message": {"message"}}
 SPAWN_MODES = ("squad", "chat", "deep")
+# elevated capabilities: only on the run endpoint, only through the privileged gate
+PRIVILEGED_CAPABILITIES = {"priv:shell", "priv:admin"}
+PRIVILEGED_HEADER = "x-avrone-privileged"
 
 
 class GatewayRefused(PermissionError):
     """A fleet request refused by the dispatch gateway. `code` is a stable machine-readable reason;
     `auth` is True for authentication failures (HTTP 401) and False for policy refusals (HTTP 403)."""
 
-    AUTH_CODES = {"no_token", "bad_timestamp", "bad_signature", "stale", "replay"}
+    AUTH_CODES = {"no_token", "bad_timestamp", "bad_signature", "stale", "replay", "privileged_unsigned"}
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -114,6 +130,13 @@ class FleetManager:
         self.max_hops = int(_env("AVRONE_FLEET_MAX_HOPS", "3") or 3)
         self.allow = {a.strip() for a in _env("AVRONE_FLEET_ALLOW").split(",") if a.strip()}
         self.require_allow = _env("AVRONE_FLEET_REQUIRE_ALLOW").lower() in TRUTHY
+        self.privileged = _env("AVRONE_FLEET_PRIVILEGED").lower() == "allow"  # deny unless exactly "allow"
+        self.privileged_nodes = {a.strip() for a in _env("AVRONE_PRIVILEGED_NODES").split(",") if a.strip()}
+        try:
+            ph = int(_env("AVRONE_FLEET_PRIVILEGED_MAX_HOPS", "1") or 1)
+        except ValueError:
+            ph = 1
+        self.privileged_max_hops = max(1, min(ph, self.max_hops))
         self.parent = _env("AVRONE_FLEET_PARENT").rstrip("/")
         self.public_url = _env("AVRONE_PUBLIC_URL").rstrip("/")
         self.heartbeat_s = float(_env("AVRONE_FLEET_HEARTBEAT", "15") or 15)
@@ -157,6 +180,7 @@ class FleetManager:
     def info(self) -> dict[str, Any]:
         return {"node_id": self.node_id, "enabled": self.enabled, "parent": self.parent or None,
                 "public_url": self.public_url or None, "max_hops": self.max_hops,
+                "privileged": self.privileged,
                 "children": len(self.nodes), "active_agents": sum(
                     1 for a in self.core.active.values() if a.get("status") == "working")}
 
@@ -219,10 +243,39 @@ class FleetManager:
         if hops > self.max_hops:  # sender may only emit hops <= max_hops (it refuses at hops >= max before +1)
             raise self._refuse("hops", f"max fleet hops exceeded ({hops} > {self.max_hops})", hops=hops, **ctx)
         cap = request_capability(kind, payload)
+        flag = payload.get("privileged", False)
+        if not isinstance(flag, bool):
+            raise self._refuse("capability", "privileged flag must be a JSON boolean", hops=hops, **ctx)
+        if flag or cap in PRIVILEGED_CAPABILITIES:
+            self._privileged_gate(kind, cap, flag, sender, hops)
+            return {**ctx, "hops": hops, "capability": cap, "privileged": True}
         if cap not in CAPABILITIES.get(kind, set()):
             raise self._refuse("capability", f"capability {cap!r} not permitted for {kind}", capability=cap,
                                hops=hops, **ctx)
         return {**ctx, "hops": hops, "capability": cap}
+
+    def _privileged_refuse(self, code: str, message: str, **kw: Any) -> GatewayRefused:
+        self._audit("fleet.privileged.refused", code=code, reason=message, **kw)
+        return self._refuse(code, message, privileged=True, **kw)
+
+    def _privileged_gate(self, kind: str, cap: str, flag: bool, sender: str, hops: int) -> None:
+        """Deny-by-default elevated tier. Every condition must hold; any miss is refused + audited."""
+        ctx = {"kind": kind, "sender": sender or None, "capability": cap, "hops": hops}
+        if kind != "run" or cap not in PRIVILEGED_CAPABILITIES:
+            raise self._privileged_refuse("privileged_capability",
+                                          f"privileged flag needs a privileged capability on run, got {cap!r}", **ctx)
+        if not flag:
+            raise self._privileged_refuse("privileged_capability",
+                                          f"capability {cap!r} requires the signed privileged flag", **ctx)
+        if not self.privileged:
+            raise self._privileged_refuse("privileged_disabled",
+                                          "privileged tier disabled on this node (AVRONE_FLEET_PRIVILEGED != allow)", **ctx)
+        if not sender or sender not in self.privileged_nodes:
+            raise self._privileged_refuse("privileged_not_listed",
+                                          f"sender {sender or '?'} not in AVRONE_PRIVILEGED_NODES", **ctx)
+        if hops > self.privileged_max_hops:
+            raise self._privileged_refuse("privileged_hops", f"privileged request beyond "
+                                          f"AVRONE_FLEET_PRIVILEGED_MAX_HOPS ({hops} > {self.privileged_max_hops})", **ctx)
 
     def dispatch_gateway(self, kind: str, method: str, path: str, body: bytes,
                          headers: dict[str, str]) -> dict[str, Any]:
@@ -234,6 +287,10 @@ class FleetManager:
         except GatewayRefused as e:
             self._audit("fleet.refused", code=e.code, reason=str(e), kind=kind, path=path)
             raise
+        if PRIVILEGED_HEADER in {k.lower() for k in headers}:
+            msg = "privileged flag must be inside the signed payload, not a header"
+            self._audit("fleet.privileged.refused", code="privileged_unsigned", reason=msg, kind=kind)
+            raise self._refuse("privileged_unsigned", msg, kind=kind, privileged=True)
         try:
             payload = json.loads(body or b"{}")
         except ValueError:
@@ -242,15 +299,34 @@ class FleetManager:
             raise self._refuse("bad_body", "body must be a JSON object", kind=kind)
         decision = self.check_policy(kind, payload)
         self._audit("fleet.dispatch", path=path, **decision)
+        if decision.get("privileged"):
+            self._audit("fleet.privileged.accept", path=path, **decision)
         return payload
 
-    def check_outbound(self, kind: str, capability: str, hops: int, first_hop: str = "") -> None:
+    def check_outbound(self, kind: str, capability: str, hops: int, first_hop: str = "",
+                       privileged: bool = False) -> None:
         """Local mirror of the gateway for requests this node originates or forwards."""
         ctx = {"kind": kind, "direction": "out", "target": first_hop or None}
         if not self.enabled:
             raise GatewayRefused("no_token", "fleet disabled: set AVRONE_FLEET_TOKEN")
         if hops >= self.max_hops:
             raise self._refuse("hops", f"max fleet hops ({self.max_hops}) reached", hops=hops, **ctx)
+        if privileged or capability in PRIVILEGED_CAPABILITIES:
+            pctx = {**ctx, "capability": capability, "hops": hops}
+            if kind != "run" or capability not in PRIVILEGED_CAPABILITIES or not privileged:
+                raise self._privileged_refuse("privileged_capability",
+                                              f"bad privileged request {capability!r} for {kind}", **pctx)
+            if not self.privileged:
+                raise self._privileged_refuse("privileged_disabled", "privileged tier disabled on this node "
+                                              "(AVRONE_FLEET_PRIVILEGED != allow)", **pctx)
+            if hops + 1 > self.privileged_max_hops:
+                raise self._privileged_refuse("privileged_hops", "privileged request would exceed "
+                                              f"AVRONE_FLEET_PRIVILEGED_MAX_HOPS ({self.privileged_max_hops})", **pctx)
+            if not first_hop or first_hop in ("auto", "local"):
+                raise self._privileged_refuse("privileged_target", "privileged requests need an explicit node", **pctx)
+            if not self.allowed(first_hop):
+                raise self._refuse("target_not_allowed", f"node {first_hop} not in AVRONE_FLEET_ALLOW", **ctx)
+            return
         if capability not in CAPABILITIES.get(kind, set()):
             raise self._refuse("capability", f"capability {capability!r} not permitted for {kind}",
                                capability=capability, **ctx)
@@ -352,15 +428,19 @@ class FleetManager:
         return n
 
     async def dispatch(self, route: list[str], mode: str, prompt: str, hops: int, n: int | None = None,
-                       origin_run: str = "") -> dict[str, Any]:
-        """Send a job down `route` (first element = one of my children)."""
+                       origin_run: str = "", privileged: str = "") -> dict[str, Any]:
+        """Send a job down `route` (first element = one of my children).
+        `privileged` = "priv:shell"/"priv:admin" requests the elevated tier (signed into the body)."""
         if hops >= self.max_hops:
             raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
         mode = mode if mode in SPAWN_MODES else "squad"  # the remote ran unknown modes as squad anyway
-        self.check_outbound("run", f"spawn:{mode}", hops, route[0] if route else "")
+        cap = privileged or f"spawn:{mode}"
+        self.check_outbound("run", cap, hops, route[0] if route else "", privileged=bool(privileged))
         node = self.pick(route[0] if route else "auto")
         payload = {"route": route[1:], "mode": mode, "prompt": prompt, "n": n, "hops": hops + 1,
                    "from": self.node_id, "origin_run": origin_run}
+        if privileged:  # inside the signed body: cannot be added, removed or changed in transit
+            payload.update(privileged=True, capability=privileged)
         node["load"] = node.get("load", 0) + 1
         try:
             return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
@@ -425,13 +505,23 @@ class FleetManager:
         mode, prompt = str(payload.get("mode", "squad")), str(payload.get("prompt", ""))
         if hops > self.max_hops:
             raise PermissionError("max fleet hops exceeded")
+        priv = ""
+        if payload.get("privileged", False) is not False or payload.get("capability") in PRIVILEGED_CAPABILITIES:
+            # defense in depth: re-run the gate even though the HTTP path already passed dispatch_gateway
+            cap = str(payload.get("capability", ""))
+            self._privileged_gate("run", cap, payload.get("privileged") is True, sender_node(payload.get("from")), hops)
+            priv = cap
         if route:
-            res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), payload.get("origin_run", ""))
+            res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), payload.get("origin_run", ""),
+                                      privileged=priv)
             return {**res, "path": [self.node_id] + res.get("path", [])}
         c = self.core
-        self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=payload.get("from"), hops=hops)
+        self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=payload.get("from"), hops=hops,
+                             **({"privileged": priv} if priv else {}))
         prev = getattr(c, "fleet_hops", 0)
+        prev_priv = getattr(c, "fleet_privileged", "")
         c.fleet_hops = hops  # remote agents see how deep they are
+        c.fleet_privileged = priv  # granted elevated capability ("" = none); tools gate on it
         try:
             if mode == "chat":
                 res = await c.chat(prompt)
@@ -441,6 +531,7 @@ class FleetManager:
                 res = await c.squad(prompt, payload.get("n"))
         finally:
             c.fleet_hops = prev
+            c.fleet_privileged = prev_priv
         answer = res.get("answer") or res.get("report") or ""
         return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer}
 
@@ -467,7 +558,16 @@ async def t_remote_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
     target = str(args.get("node", "auto"))
     route = [p for p in target.split("/") if p] if target != "auto" else []
     hops = getattr(ctx.core, "fleet_hops", 0)
-    res = await f.dispatch(route, str(args.get("mode", "squad")), str(args["task"]), hops, args.get("n"), ctx.run_id)
+    priv = str(args.get("privileged") or "")
+    if priv and not priv.startswith("priv:"):
+        priv = f"priv:{priv}"
+    try:
+        res = await f.dispatch(route, str(args.get("mode", "squad")), str(args["task"]), hops, args.get("n"),
+                               ctx.run_id, privileged=priv)
+    except GatewayRefused as e:
+        if not priv:
+            raise
+        return f"ERROR: privileged request refused: {e}"
     return f"[{' -> '.join([f.node_id] + res.get('path', []))}] run {res.get('run_id')}\n{res.get('answer', '')}"
 
 
@@ -551,7 +651,7 @@ FLEET_TOOLS = [
     ("queue_status", "status/result of a queued job, or queue counts if no job_id.", '{"job_id"?: str}', t_queue_status),
     ("fleet_nodes", "list linked AVRONE nodes/routers with status, load and their children.", "{}", t_fleet_nodes),
     ("remote_spawn", "spawn a squad/chat/deep run on a remote AVRONE node; node may be a route like \"router1/edge7\" or \"auto\" (least loaded). Returns its answer.",
-     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int}', t_remote_spawn),
+     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "privileged"?: "shell"|"admin"}', t_remote_spawn),
     ("remote_broadcast", "run the same task on several remote nodes in parallel (default: all online, max 8) and return every answer.",
      '{"task": str, "nodes"?: [str], "mode"?: str, "n"?: int}', t_remote_broadcast),
 ]

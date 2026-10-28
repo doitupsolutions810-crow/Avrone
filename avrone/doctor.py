@@ -218,6 +218,9 @@ def run_doctor(settings: Any = None, *, env: Mapping[str, str] | None = None,
         "host_shell": "on" if (settings.agents_can_shell and effective_local) else "off",
         "fleet_privileged": ("allow" if (env.get("AVRONE_FLEET_PRIVILEGED") or "").strip().lower() == "allow"
                              else "deny"),
+        "fleet_offload": ((env.get("AVRONE_FLEET_OFFLOAD") or "off").strip().lower()
+                          if (env.get("AVRONE_FLEET_OFFLOAD") or "off").strip().lower() in ("off", "spill", "spread")
+                          else "off"),
         "privileged_nodes": str(len([h for h in (env.get("AVRONE_PRIVILEGED_NODES") or "").split(",") if h.strip()])),
     }
     checks.append(Check("toggles", INFO, " ".join(f"{k}={v}" for k, v in toggles.items())))
@@ -287,6 +290,11 @@ def _insecure_combos(settings: Any, env: Mapping[str, str], toggles: dict[str, s
         else:
             out.append(Check("security.fleet_privileged", INFO, f"privileged tier on for "
                                                                f"{toggles['privileged_nodes']} listed node(s)"))
+    if toggles["fleet"] == "on" and toggles.get("fleet_offload", "off") != "off" and not fleet_allow:
+        out.append(Check("security.fleet_offload", WARN, f"AVRONE_FLEET_OFFLOAD={toggles['fleet_offload']} with an open "
+                                                         "AVRONE_FLEET_ALLOW: squad work (task text) may go to any node "
+                                                         "that registers with the token",
+                         "pin AVRONE_FLEET_ALLOW to the node ids you trust, or AVRONE_FLEET_OFFLOAD=off"))
     for name in ("AVRONE_FLEET_PARENT", "AVRONE_PUBLIC_URL"):
         if toggles["fleet"] == "on" and _cleartext_remote(env.get(name, "")):
             out.append(Check("security.fleet_transport", WARN, f"{name} is plain http:// to a remote host",

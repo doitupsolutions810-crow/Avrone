@@ -430,12 +430,55 @@ class TrinityCore:
                             reason=self.governor.last_reason)
         return limit
 
-    async def _gather_agents(self, run_id: str, coros: list[Any]) -> list[str]:
+    def _privileged_run(self) -> bool:
+        if getattr(self, "fleet_privileged", ""):
+            return True
+        try:
+            from .tools_extra import PRIV_GRANT
+            return bool(PRIV_GRANT.get())
+        except Exception:  # pragma: no cover
+            return True  # unsure = treat as privileged = never offload
+
+    def _offload_plan(self, run_id: str, n: int) -> "tuple[int, dict[int, str]] | None":
+        """edgeroute: (governor limit, {worker index: node id}) when fleet offload is on, else None.
+        The overflow (indices >= limit) goes to healthy edge nodes; privileged runs never offload."""
+        fleet = getattr(self, "fleet", None)
+        try:
+            if fleet is None or not getattr(fleet, "enabled", False) or fleet.offload_mode() not in ("spill", "spread"):
+                return None
+        except Exception:
+            return None
+        if self._privileged_run() or n <= 1:
+            return None
+        limit = self._worker_limit(run_id, n)
+        if limit >= n:
+            return limit, {}
+        try:
+            targets = list(fleet.offload_plan(n - limit, int(getattr(self, "fleet_hops", 0) or 0)))
+        except Exception:
+            targets = []
+        return limit, {limit + i: str(t) for i, t in enumerate(targets[:n - limit])}
+
+    async def _offloaded(self, run_id: str, node: str, s: dict[str, str], task: str,
+                         gate: asyncio.Semaphore, local: Any) -> str:
+        """Run worker `s` on `node`; on any remote failure run it here, behind the local gate."""
+        try:
+            return await self.fleet.offload_worker(run_id, node, str(s.get("role")), task, str(s["focus"]),
+                                                   int(getattr(self, "fleet_hops", 0) or 0))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            async with gate:
+                return await local()
+
+    async def _gather_agents(self, run_id: str, coros: list[Any], limit: int | None = None) -> list[str]:
         """Run agents in parallel; one that still blows up becomes a failure note, never a crash.
 
         The governor may cap how many run at once: the rest wait at a local gate (workers'
-        own sub-agents bypass it, so the gate can never deadlock)."""
-        limit = self._worker_limit(run_id, len(coros)) if coros else 0
+        own sub-agents bypass it, so the gate can never deadlock). A caller that already asked
+        the governor passes its `limit`."""
+        if limit is None:
+            limit = self._worker_limit(run_id, len(coros)) if coros else 0
         if 0 < limit < len(coros):
             gate = asyncio.Semaphore(limit)
 
@@ -525,10 +568,28 @@ class TrinityCore:
             if ck is not None:
                 ck.put("subtasks", subtasks)
 
-        results = await self._gather_agents(run_id, [
-            self._ck_step(ck, f"worker.{i}",
-                          lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
-            for i, s in enumerate(subtasks)])
+        plan = self._offload_plan(run_id, len(subtasks))
+        if plan and plan[1]:
+            limit, remote = plan
+            gate = asyncio.Semaphore(limit)
+
+            async def gated(local: Any) -> str:
+                async with gate:
+                    return await local()
+            coros = []
+            for i, s in enumerate(subtasks):
+                local = (lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
+                if i in remote:
+                    fac = (lambda s=s, node=remote[i], local=local: self._offloaded(run_id, node, s, task, gate, local))
+                else:
+                    fac = (lambda local=local: gated(local))
+                coros.append(self._ck_step(ck, f"worker.{i}", fac))
+            results = await self._gather_agents(run_id, coros, limit=len(coros))
+        else:
+            results = await self._gather_agents(run_id, [
+                self._ck_step(ck, f"worker.{i}",
+                              lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
+                for i, s in enumerate(subtasks)], limit=plan[0] if plan else None)
         reports = "\n\n".join(
             f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']})\n{r}"
             for i, (s, r) in enumerate(zip(subtasks, results)))

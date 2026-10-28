@@ -55,6 +55,12 @@ Governor-aware routing (edgeroute):
   "online" (same ageing as status). select_nodes(k, need) ranks online, allowlisted children by
   health_score() (cool/idle first, deterministic tiebreak) and drops hot/throttled ones;
   pick("auto") uses it.
+  AVRONE_FLEET_OFFLOAD  off|spill|spread (default off). When the local governor caps a squad below
+                       its size, the overflow workers are sent (signed dispatch, mode chat, the worker's
+                       focus) to the best healthy child (spill) or round-robin across the healthy children
+                       (spread). A remote failure/timeout (AVRONE_FLEET_OFFLOAD_TIMEOUT, default 300 s) runs
+                       that worker locally instead. Privileged runs are never offloaded; hops, allowlist and
+                       the outbound gateway checks all apply. Audited as fleet.offload / fleet.offload_fallback.
 Run nodes over HTTPS or a private mesh (Tailscale/WireGuard); the HMAC protects
 integrity and auth, not confidentiality.
 """
@@ -113,6 +119,22 @@ EXCLUDED_STATES = {"throttled", "hot"}
 HOT_HEADROOM = 0.25  # min governor factor at/below which a node counts as hot
 _HEALTH_NUM = {"load": (0.0, 1000.0), "mem_pct": (0.0, 100.0), "disk_free_pct": (0.0, 100.0),
                "temp_c": (-40.0, 150.0), "headroom": (0.0, 1.0)}
+
+
+OFFLOAD_MODES = ("off", "spill", "spread")
+
+
+def offload_mode() -> str:
+    v = _env("AVRONE_FLEET_OFFLOAD", "off").lower()
+    return v if v in OFFLOAD_MODES else "off"
+
+
+def offload_timeout() -> float:
+    try:
+        t = float(_env("AVRONE_FLEET_OFFLOAD_TIMEOUT", "300") or 300)
+    except ValueError:
+        t = 300.0
+    return max(5.0, min(t, 900.0))
 
 
 def local_health(core: Any) -> dict[str, Any] | None:
@@ -474,6 +496,42 @@ class FleetManager:
                                capability=capability, **ctx)
         if first_hop and first_hop not in ("auto", "local") and not self.allowed(first_hop):
             raise self._refuse("target_not_allowed", f"node {first_hop} not in AVRONE_FLEET_ALLOW", **ctx)
+
+    # ------------------------------------------------------------ offload (edgeroute)
+    def offload_mode(self) -> str:
+        return offload_mode() if self.enabled else "off"
+
+    def offload_plan(self, overflow: int, hops: int = 0) -> list[str]:
+        """Node id for each of `overflow` workers (may be shorter/empty: those stay local).
+        spill = all to the single healthiest child; spread = round-robin over the healthy children."""
+        mode = self.offload_mode()
+        if mode == "off" or overflow <= 0 or hops >= self.max_hops:
+            return []
+        nodes = self.select_nodes(1 if mode == "spill" else overflow, need="spawn:chat")
+        if not nodes:
+            return []
+        return [str(nodes[i % len(nodes)]["node_id"]) for i in range(overflow)]
+
+    async def offload_worker(self, run_id: str, node_id: str, role: str, task: str, focus: str,
+                             hops: int = 0) -> str:
+        """Run one squad worker on `node_id` (signed dispatch, mode chat). Raises on any failure,
+        timeout or empty answer after auditing fleet.offload_fallback; the caller runs it locally."""
+        prompt = (f"You are {role}, one worker of a squad on another AVRONE node.\nTASK: {task}\n"
+                  f"YOUR FOCUS: {focus}\nReport your findings for your focus only.")
+        self._audit("fleet.offload", squad_run=run_id, node=node_id, role=role, hops=hops)
+        try:
+            res = await asyncio.wait_for(self.dispatch([node_id], "chat", prompt, hops, origin_run=run_id),
+                                         offload_timeout())
+            answer = str((res or {}).get("answer") or "").strip()
+            if not answer:
+                raise RuntimeError("empty answer from remote worker")
+            return answer
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001  -- includes TimeoutError and gateway refusals
+            reason = f"{type(e).__name__}: {e}"[:300]
+            self._audit("fleet.offload_fallback", squad_run=run_id, node=node_id, role=role, reason=reason)
+            raise RuntimeError(f"offload to {node_id} failed: {reason}") from e
 
     # ------------------------------------------------------------ registry (server side)
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:

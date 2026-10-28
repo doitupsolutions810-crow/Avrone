@@ -180,3 +180,231 @@ def test_health_table_and_tool_and_telemetry(fm, core):
     from avrone.telemetry import fleet_health
     assert [r["node_id"] for r in fleet_health(core)] == ["cool", "gone", "hot"]
     assert fleet_health(SimpleNamespace()) == []
+
+
+# ================================================================ offload (AVRONE_FLEET_OFFLOAD)
+from avrone.codex import Codex  # noqa: E402
+from avrone.config import Settings  # noqa: E402
+from avrone.sovereign import LocalRunner  # noqa: E402
+from avrone.trinity import TrinityCore  # noqa: E402
+
+
+def sensors(temp):
+    return {"load": lambda: 0.2, "mem_pct": lambda: 30.0, "disk_free_pct": lambda: 60.0, "temp_c": lambda: temp}
+
+
+class TrackLLM:
+    def __init__(self, n):
+        self.n, self.live, self.peak, self.workers = n, 0, 0, 0
+
+    async def chat(self, messages, **kw):
+        sys = messages[0]["content"]
+        if "PLANNER" in sys:
+            return json.dumps({"subtasks": [{"role": f"W{i}", "focus": f"focus-{i}"} for i in range(self.n)]})
+        if kw.get("lead"):
+            return "LEAD " + "x" * 400
+        self.workers += 1
+        self.live += 1
+        self.peak = max(self.peak, self.live)
+        await asyncio.sleep(0.02)
+        self.live -= 1
+        return '{"final": "ok"}'
+
+
+@pytest.fixture
+def squad_core(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_TOKEN", "tok")
+    monkeypatch.setenv("AVRONE_NODE_ID", "root")
+    for k in ("AVRONE_FLEET_ALLOW", "AVRONE_FLEET_REQUIRE_ALLOW", "AVRONE_FLEET_OFFLOAD"):
+        monkeypatch.delenv(k, raising=False)
+
+    def make(n=4, temp=95.0):
+        s = Settings()
+        s.data_dir, s.workspace, s.max_parallel, s.governor = tmp_path / "d", tmp_path / "ws", 6, True
+        llm = TrackLLM(n)
+        c = TrinityCore(s, llm, LocalRunner(s), Codex(s.data_dir))
+        c.governor = Governor(6, min_parallel=1, thermal_max_c=85, readers=sensors(temp), ttl_s=0)
+        c.fleet = FleetManager(c, tmp_path / "fleet")
+        return c, llm
+    return make
+
+
+def remote(monkeypatch, handler):
+    calls = []
+
+    async def h(req):
+        calls.append(json.loads(req.content))
+        r = handler(req)
+        return await r if asyncio.iscoroutine(r) else r
+    monkeypatch.setattr(fleet_mod, "HTTP_TRANSPORT", httpx.MockTransport(h))
+    return calls
+
+
+def ok_handler(req):
+    return httpx.Response(200, json={"node": req.url.host, "path": [req.url.host], "answer": f"remote:{req.url.host}"})
+
+
+def fleet_events(core, kind):
+    path = core.codex.log_dir / "fleet.jsonl"
+    if not path.exists():
+        return []
+    return [e for e in map(json.loads, path.read_text().splitlines()) if e["kind"] == kind]
+
+
+def test_offload_off_is_unchanged(squad_core, monkeypatch):
+    core, llm = squad_core()
+    add(core.fleet, "edge", health=COOL)
+    calls = remote(monkeypatch, ok_handler)
+    out = run(core.squad("task", n=4, run_id="off"))
+    assert [a["result"] for a in out["agents"]] == ["ok"] * 4 and llm.peak == 1 and llm.workers == 4
+    assert calls == [] and fleet_events(core, "fleet.offload") == []
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "bogus")  # unknown value = off
+    run(core.squad("task", n=4, run_id="off2"))
+    assert calls == []
+
+
+def test_offload_spill_sends_overflow_to_best_node(squad_core, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spill")
+    core, llm = squad_core()
+    add(core.fleet, "warm", health=WARM)
+    add(core.fleet, "cool", health=COOL)
+    add(core.fleet, "hot", health=HOT)
+    calls = remote(monkeypatch, ok_handler)
+    out = run(core.squad("the task", n=4, run_id="spill"))
+    res = [a["result"] for a in out["agents"]]
+    assert res == ["ok", "remote:cool.test", "remote:cool.test", "remote:cool.test"]
+    assert llm.workers == 1 and len(calls) == 3
+    assert all(c["mode"] == "chat" and c["from"] == "root" and c["hops"] == 1 and c["origin_run"] == "spill"
+               and "privileged" not in c for c in calls)
+    assert sorted(c["prompt"].split("YOUR FOCUS: ")[1].split("\n")[0] for c in calls) == ["focus-1", "focus-2", "focus-3"]
+    assert all("TASK: the task" in c["prompt"] for c in calls)
+    ev = fleet_events(core, "fleet.offload")
+    assert len(ev) == 3 and {e["data"]["node"] for e in ev} == {"cool"} and ev[0]["data"]["squad_run"] == "spill"
+    assert fleet_events(core, "fleet.offload_fallback") == []
+
+
+def test_offload_spread_round_robins(squad_core, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spread")
+    core, llm = squad_core()
+    add(core.fleet, "a", health=COOL)
+    add(core.fleet, "b", health=COOL)
+    remote(monkeypatch, ok_handler)
+    out = run(core.squad("t", n=4, run_id="spread"))
+    assert [a["result"] for a in out["agents"]] == ["ok", "remote:a.test", "remote:b.test", "remote:a.test"]
+
+
+def test_offload_spill_falls_back_locally_on_remote_error(squad_core, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spill")
+    core, llm = squad_core()
+    add(core.fleet, "edge", health=COOL)
+    calls = remote(monkeypatch, lambda r: httpx.Response(502, text="down"))
+    out = run(core.squad("t", n=4, run_id="fb"))
+    assert [a["result"] for a in out["agents"]] == ["ok"] * 4
+    assert len(calls) == 3 and llm.workers == 4 and llm.peak == 1  # fallbacks still respect the governor gate
+    fb = fleet_events(core, "fleet.offload_fallback")
+    assert len(fb) == 3 and "502" in fb[0]["data"]["reason"]
+    assert core.fleet.nodes["edge"]["load"] == 0
+
+
+def test_offload_falls_back_on_timeout_and_empty_answer(squad_core, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spill")
+    monkeypatch.setattr(fleet_mod, "offload_timeout", lambda: 0.05)
+    core, llm = squad_core(n=2)
+    add(core.fleet, "slow", health=COOL)
+
+    async def slow(req):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json={"answer": "late"})
+    remote(monkeypatch, slow)
+    out = run(core.squad("t", n=2, run_id="to"))
+    assert [a["result"] for a in out["agents"]] == ["ok", "ok"]
+    assert "TimeoutError" in fleet_events(core, "fleet.offload_fallback")[0]["data"]["reason"]
+
+    remote(monkeypatch, lambda r: httpx.Response(200, json={"answer": "  "}))
+    out = run(core.squad("t", n=2, run_id="empty"))
+    assert [a["result"] for a in out["agents"]] == ["ok", "ok"]
+    assert "empty answer" in fleet_events(core, "fleet.offload_fallback")[-1]["data"]["reason"]
+
+
+def test_privileged_run_never_offloaded(squad_core, monkeypatch):
+    from avrone.tools_extra import priv_grant
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spread")
+    core, llm = squad_core()
+    add(core.fleet, "edge", health=COOL)
+    calls = remote(monkeypatch, ok_handler)
+    core.fleet_privileged = "priv:shell"
+    out = run(core.squad("t", n=4, run_id="priv1"))
+    assert [a["result"] for a in out["agents"]] == ["ok"] * 4 and calls == []
+    core.fleet_privileged = ""
+
+    async def granted():
+        with priv_grant("priv:admin"):
+            return await core.squad("t", n=4, run_id="priv2")
+    run(granted())
+    assert calls == [] and fleet_events(core, "fleet.offload") == []
+
+
+def test_offload_respects_health_hops_allowlist_and_cool_local(squad_core, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spill")
+    core, llm = squad_core()
+    add(core.fleet, "hot", health=HOT)
+    add(core.fleet, "stale", age=5 * core.fleet.heartbeat_s, health=COOL)
+    calls = remote(monkeypatch, ok_handler)
+    run(core.squad("t", n=3, run_id="nohealthy"))
+    assert calls == []
+
+    add(core.fleet, "edge", health=COOL)
+    core.fleet.allow = {"hot"}
+    run(core.squad("t", n=3, run_id="notallowed"))
+    assert calls == []
+    core.fleet.allow = set()
+
+    core.fleet_hops = core.fleet.max_hops
+    run(core.squad("t", n=3, run_id="hops"))
+    assert calls == []
+    core.fleet_hops = 0
+
+    cool_core, _ = squad_core(n=3, temp=40.0)  # governor not capping: nothing to offload
+    add(cool_core.fleet, "edge", health=COOL)
+    run(cool_core.squad("t", n=3, run_id="coolhere"))
+    assert calls == []
+    run(core.squad("t", n=3, run_id="works"))
+    assert len(calls) == 2
+
+
+def test_offload_plan_unit(fm, monkeypatch):
+    assert fm.offload_plan(3) == []  # off by default
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spread")
+    assert fm.offload_plan(3) == []  # no nodes
+    add(fm, "b", health=WARM)
+    add(fm, "a", health=COOL)
+    assert fm.offload_plan(3) == ["a", "b", "a"]
+    assert fm.offload_plan(0) == [] and fm.offload_plan(2, hops=fm.max_hops) == []
+    monkeypatch.setenv("AVRONE_FLEET_OFFLOAD", "spill")
+    assert fm.offload_plan(2) == ["a", "a"]
+    fm.token = ""
+    assert fm.offload_mode() == "off" and fm.offload_plan(2) == []
+
+
+def test_doctor_warns_offload_with_open_allowlist(tmp_path):
+    from types import SimpleNamespace as NS
+    from avrone import doctor as d
+    st = NS(provider="openclaw", llm_mode="mock", llm_base_url="http://127.0.0.1:18789/v1", llm_api_key="",
+            data_dir=tmp_path / "data", workspace=tmp_path / "ws", runner="docker", allow_network=False,
+            agents_can_shell=True)
+    sock = tmp_path / "docker.sock"
+    sock.write_text("")
+    env = {"AVRONE_RECON": "deny", "AVRONE_HOST": "127.0.0.1", "AVRONE_FLEET_TOKEN": "f" * 32,
+           "AVRONE_FLEET_OFFLOAD": "spill"}
+
+    def names(e):
+        rep = d.run_doctor(st, env=e, which=lambda _n: "/usr/bin/docker", sockets=(str(sock),))
+        return rep, {c["name"]: c for c in rep["checks"]}
+    rep, n = names(env)
+    assert n["security.fleet_offload"]["status"] == "warn" and rep["toggles"]["fleet_offload"] == "spill"
+    rep, n = names({**env, "AVRONE_FLEET_ALLOW": "edge1"})
+    assert "security.fleet_offload" not in n
+    rep, n = names({**env, "AVRONE_FLEET_OFFLOAD": "off"})
+    assert "security.fleet_offload" not in n and rep["toggles"]["fleet_offload"] == "off"
+    rep, n = names({**env, "AVRONE_FLEET_OFFLOAD": "weird"})
+    assert rep["toggles"]["fleet_offload"] == "off"

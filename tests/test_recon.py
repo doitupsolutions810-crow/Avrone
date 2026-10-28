@@ -34,9 +34,9 @@ def test_allowlist(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
     monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "mysite.com")
     assert "not in AVRONE_RECON_ALLOWLIST" in run(recon.t_tls_inspect(ctx(), {"host": "evil.com"}))
-    # subdomain of an allowed suffix passes the gate (then fails on the real connection, which is fine)
-    out = run(recon.t_dns_enum(ctx(), {"host": "api.mysite.com"}))
-    assert "not in AVRONE_RECON_ALLOWLIST" not in out
+    # subdomain of an allowed suffix passes the gate (checked offline, no real lookup)
+    h, err = recon._host_arg({"host": "api.mysite.com"})
+    assert h == "api.mysite.com" and err is None
 
 
 def test_missing_host(monkeypatch):

@@ -52,7 +52,8 @@ def _allowed_host(host: str) -> bool:
     if not allow:
         return True
     h = host.lower()
-    return any(h == a or h.endswith("." + a) or h.endswith(a) for a in allow)
+    # exact host or a true subdomain only: "evilmysite.com" must NOT match "mysite.com"
+    return any(h == a.lstrip(".") or h.endswith("." + a.lstrip(".")) for a in allow)
 
 
 def _host_arg(args: dict[str, Any]) -> tuple[str, str | None]:
@@ -144,9 +145,11 @@ async def t_port_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not isinstance(ports, list) or len(ports) > 32:
         return "ERROR: ports must be a list of at most 32 integers"
     try:
-        ports = [int(p) for p in ports]
+        ports = sorted({int(p) for p in ports})
     except (TypeError, ValueError):
         return "ERROR: ports must be integers"
+    if any(p < 1 or p > 65535 for p in ports):
+        return "ERROR: ports must be between 1 and 65535"
 
     async def probe(p: int) -> tuple[int, bool]:
         try:

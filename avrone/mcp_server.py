@@ -24,7 +24,9 @@ log = logging.getLogger("avrone.mcp_server")
 
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER_INFO = {"name": "avrone", "title": "AVRONE multi-agent squad", "version": "0.2.0"}
+from . import __version__ as _AVRONE_VERSION  # noqa: E402
+
+SERVER_INFO = {"name": "avrone", "title": "AVRONE multi-agent squad", "version": _AVRONE_VERSION}
 _CHILD_ENV = "AVRONE_MCP_SERVER_CHILD"  # stops an AVRONE MCP server from loading itself recursively
 
 DEEP_PROMPT = """Deep analysis requested. Work the task below thoroughly: research it, test claims
@@ -211,8 +213,7 @@ class AvroneMCPServer:
             if not task:
                 return _err("'task' is required")
             if name == "avrone_squad":
-                size = args.get("squad_size")
-                res = await core.squad(task, int(size) if size else None)
+                res = await core.squad(task, _clamp_size(args.get("squad_size")))
             elif name == "avrone_chat":
                 res = await core.chat(task)
             else:  # avrone_deep
@@ -231,6 +232,17 @@ class AvroneMCPServer:
             meta = {"run_id": res.get("run_id"), "agents": len(res.get("agents") or [])}
             return _ok(answer, meta)
         return _ok(str(res))
+
+
+def _clamp_size(size: Any) -> int | None:
+    """Honour the advertised schema (1..8); junk or missing means 'use the default'."""
+    if size is None or isinstance(size, bool):
+        return None
+    try:
+        n = int(size)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(8, n))
 
 
 class _RPCError(Exception):

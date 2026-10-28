@@ -124,6 +124,20 @@ def _fleet():
     return f
 
 
+async def _gateway(request: Request, kind: str) -> dict:
+    """Inbound remote spawn/message: the single vetted path (fleet.dispatch_gateway)."""
+    from .fleet import GatewayRefused
+    f = _fleet()
+    body = await request.body()
+    try:
+        return f.dispatch_gateway(kind, request.method, request.url.path, body,
+                                  {k.lower(): v for k, v in request.headers.items()})
+    except GatewayRefused as e:
+        if e.code == "bad_body":
+            raise HTTPException(400, str(e)) from None
+        raise HTTPException(401 if e.auth else 403, str(e)) from None
+
+
 async def _verified(request: Request) -> dict:
     f = _fleet()
     body = await request.body()
@@ -161,7 +175,7 @@ async def fleet_register(request: Request):
 
 @app.post("/api/fleet/message")
 async def fleet_message(request: Request):
-    payload = await _verified(request)
+    payload = await _gateway(request, "message")
     try:
         return await _fleet().handle_message(payload)
     except PermissionError as e:
@@ -213,7 +227,7 @@ async def fleet_jobs(job_id: str | None = None, x_admin_token: str | None = Head
 
 @app.post("/api/fleet/run")
 async def fleet_run(request: Request):
-    payload = await _verified(request)
+    payload = await _gateway(request, "run")
     f = _fleet()
     try:
         return await f.handle_run(payload)

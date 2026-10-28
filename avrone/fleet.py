@@ -12,6 +12,17 @@ Security (required, no token = fleet off):
                        are remembered so a captured request can't be replayed.
   AVRONE_FLEET_MAX_HOPS  loop/recursion guard across the fleet (default 3)
   AVRONE_FLEET_ALLOW     optional comma list of node ids this server will accept / spawn on
+  AVRONE_FLEET_REQUIRE_ALLOW  when truthy (1/true/yes/on), an EMPTY allowlist means refuse-all
+                       instead of allow-all (default off, for backward compatibility)
+
+Dispatch gateway: every inbound remote spawn (/api/fleet/run) and message (/api/fleet/message)
+goes through FleetManager.dispatch_gateway(), which enforces, in this order:
+  1 FLEET_TOKEN present   2 HMAC valid   3 timestamp in window   4 nonce not replayed
+  5 sender in FLEET_ALLOW 6 hops within MAX_HOPS   7 per-request capability check
+and records every accept as a Codex `fleet.dispatch` event and every refusal as `fleet.refused`.
+Outbound spawns (dispatch / remote_spawn / queue_submit) run the matching local checks first.
+The sender id is asserted inside the HMAC-signed body: it is tamper-proof in transit, but any
+holder of the shared token can claim any id, so the allowlist limits blast radius, not trust.
 Other env:
   AVRONE_NODE_ID        stable id for this server (default: hostname-derived, persisted)
   AVRONE_PUBLIC_URL     URL others use to reach this node (sent when registering)
@@ -54,6 +65,40 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+TRUTHY = {"1", "true", "yes", "on"}
+# capability a request may ask for, per endpoint kind
+CAPABILITIES: dict[str, set[str]] = {"run": {"spawn:squad", "spawn:chat", "spawn:deep"}, "message": {"message"}}
+SPAWN_MODES = ("squad", "chat", "deep")
+
+
+class GatewayRefused(PermissionError):
+    """A fleet request refused by the dispatch gateway. `code` is a stable machine-readable reason;
+    `auth` is True for authentication failures (HTTP 401) and False for policy refusals (HTTP 403)."""
+
+    AUTH_CODES = {"no_token", "bad_timestamp", "bad_signature", "stale", "replay"}
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+    @property
+    def auth(self) -> bool:
+        return self.code in self.AUTH_CODES
+
+
+def sender_node(frm: Any) -> str:
+    """Node id part of a `from` field ("node" or "node/agent")."""
+    return str(frm or "").split("/", 1)[0].strip()
+
+
+def request_capability(kind: str, payload: dict[str, Any]) -> str:
+    if payload.get("capability") not in (None, ""):
+        return str(payload["capability"])
+    if kind == "run":
+        return f"spawn:{payload.get('mode', 'squad')}"
+    return kind
+
+
 def sign(token: str, method: str, path: str, body: bytes, ts: str | None = None, nonce: str | None = None) -> dict[str, str]:
     ts = ts or str(int(time.time()))
     nonce = nonce or secrets.token_hex(12)
@@ -68,6 +113,7 @@ class FleetManager:
         self.token = _env("AVRONE_FLEET_TOKEN")
         self.max_hops = int(_env("AVRONE_FLEET_MAX_HOPS", "3") or 3)
         self.allow = {a.strip() for a in _env("AVRONE_FLEET_ALLOW").split(",") if a.strip()}
+        self.require_allow = _env("AVRONE_FLEET_REQUIRE_ALLOW").lower() in TRUTHY
         self.parent = _env("AVRONE_FLEET_PARENT").rstrip("/")
         self.public_url = _env("AVRONE_PUBLIC_URL").rstrip("/")
         self.heartbeat_s = float(_env("AVRONE_FLEET_HEARTBEAT", "15") or 15)
@@ -116,27 +162,100 @@ class FleetManager:
 
     # ------------------------------------------------------------ auth
     def verify(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> None:
+        """Authenticate a fleet request: token present, HMAC, timestamp window, nonce (in that order).
+        Raises GatewayRefused (a PermissionError) with a distinct code/message per failure."""
         if not self.enabled:
-            raise PermissionError("fleet disabled: set AVRONE_FLEET_TOKEN")
+            raise GatewayRefused("no_token", "fleet disabled: set AVRONE_FLEET_TOKEN")
         ts, nonce, sig = (headers.get("x-avrone-ts", ""), headers.get("x-avrone-nonce", ""),
                           headers.get("x-avrone-sig", ""))
         try:
-            skew = abs(time.time() - int(ts))
+            ts_i = int(ts)  # format check only; the window is enforced after the HMAC
         except ValueError:
-            raise PermissionError("bad timestamp") from None
-        if skew > WINDOW_S:
-            raise PermissionError("stale request")
+            raise GatewayRefused("bad_timestamp", "bad timestamp") from None
         expect = sign(self.token, method, path, body, ts, nonce)["x-avrone-sig"]
-        if not hmac.compare_digest(expect, sig):
-            raise PermissionError("bad signature")
+        if not (sig and nonce and hmac.compare_digest(expect, sig)):
+            raise GatewayRefused("bad_signature", "bad signature")
         now = time.time()
+        if abs(now - ts_i) > WINDOW_S:
+            raise GatewayRefused("stale", "stale request (timestamp outside window)")
         self._nonces = {k: v for k, v in self._nonces.items() if now - v < 2 * WINDOW_S}
         if nonce in self._nonces:
-            raise PermissionError("replayed request")
+            raise GatewayRefused("replay", "replayed request (nonce already seen)")
         self._nonces[nonce] = now
 
     def allowed(self, node_id: str) -> bool:
-        return not self.allow or node_id in self.allow
+        if not self.allow:
+            return not self.require_allow  # empty list: allow-all, or refuse-all when required
+        return node_id in self.allow
+
+    def _audit(self, event: str, **kw: Any) -> None:
+        try:
+            self.core.codex.emit("fleet", event, self.node_id, **kw)
+        except Exception as e:  # noqa: BLE001  -- auditing must never mask the decision
+            log.warning("fleet audit %s failed: %s", event, e)
+
+    def _refuse(self, code: str, message: str, **kw: Any) -> GatewayRefused:
+        self._audit("fleet.refused", code=code, reason=message, **kw)
+        return GatewayRefused(code, message)
+
+    def check_policy(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Gateway steps 5-7 on an already-authenticated payload: sender allowlist, hop bound,
+        per-request capability. Returns the decision record; raises GatewayRefused."""
+        frm = payload.get("from")
+        sender = sender_node(frm)
+        ctx = {"kind": kind, "sender": sender or None}
+        if self.allow or self.require_allow:
+            if not sender:
+                raise self._refuse("sender_missing", "unidentified sender: signed payload has no 'from'", **ctx)
+            if not self.allowed(sender):
+                why = "empty allowlist with AVRONE_FLEET_REQUIRE_ALLOW" if not self.allow else "AVRONE_FLEET_ALLOW"
+                raise self._refuse("sender_not_allowed", f"sender {sender} not in AVRONE_FLEET_ALLOW ({why})", **ctx)
+        try:
+            hops = int(payload.get("hops", 1))
+        except (TypeError, ValueError):
+            raise self._refuse("bad_hops", "bad hop count", **ctx) from None
+        if hops < 0:
+            raise self._refuse("bad_hops", "bad hop count (negative)", **ctx)
+        if hops > self.max_hops:  # sender may only emit hops <= max_hops (it refuses at hops >= max before +1)
+            raise self._refuse("hops", f"max fleet hops exceeded ({hops} > {self.max_hops})", hops=hops, **ctx)
+        cap = request_capability(kind, payload)
+        if cap not in CAPABILITIES.get(kind, set()):
+            raise self._refuse("capability", f"capability {cap!r} not permitted for {kind}", capability=cap,
+                               hops=hops, **ctx)
+        return {**ctx, "hops": hops, "capability": cap}
+
+    def dispatch_gateway(self, kind: str, method: str, path: str, body: bytes,
+                         headers: dict[str, str]) -> dict[str, Any]:
+        """The single vetted inbound path for remote spawns/messages. Enforces, in order:
+        token, HMAC, timestamp window, nonce, sender allowlist, hops, capability.
+        Returns the parsed payload; raises GatewayRefused (audited as `fleet.refused`)."""
+        try:
+            self.verify(method, path, body, headers)
+        except GatewayRefused as e:
+            self._audit("fleet.refused", code=e.code, reason=str(e), kind=kind, path=path)
+            raise
+        try:
+            payload = json.loads(body or b"{}")
+        except ValueError:
+            raise self._refuse("bad_body", "body must be JSON", kind=kind) from None
+        if not isinstance(payload, dict):
+            raise self._refuse("bad_body", "body must be a JSON object", kind=kind)
+        decision = self.check_policy(kind, payload)
+        self._audit("fleet.dispatch", path=path, **decision)
+        return payload
+
+    def check_outbound(self, kind: str, capability: str, hops: int, first_hop: str = "") -> None:
+        """Local mirror of the gateway for requests this node originates or forwards."""
+        ctx = {"kind": kind, "direction": "out", "target": first_hop or None}
+        if not self.enabled:
+            raise GatewayRefused("no_token", "fleet disabled: set AVRONE_FLEET_TOKEN")
+        if hops >= self.max_hops:
+            raise self._refuse("hops", f"max fleet hops ({self.max_hops}) reached", hops=hops, **ctx)
+        if capability not in CAPABILITIES.get(kind, set()):
+            raise self._refuse("capability", f"capability {capability!r} not permitted for {kind}",
+                               capability=capability, **ctx)
+        if first_hop and first_hop not in ("auto", "local") and not self.allowed(first_hop):
+            raise self._refuse("target_not_allowed", f"node {first_hop} not in AVRONE_FLEET_ALLOW", **ctx)
 
     # ------------------------------------------------------------ registry (server side)
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -237,6 +356,8 @@ class FleetManager:
         """Send a job down `route` (first element = one of my children)."""
         if hops >= self.max_hops:
             raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
+        mode = mode if mode in SPAWN_MODES else "squad"  # the remote ran unknown modes as squad anyway
+        self.check_outbound("run", f"spawn:{mode}", hops, route[0] if route else "")
         node = self.pick(route[0] if route else "auto")
         payload = {"route": route[1:], "mode": mode, "prompt": prompt, "n": n, "hops": hops + 1,
                    "from": self.node_id, "origin_run": origin_run}
@@ -252,6 +373,7 @@ class FleetManager:
         if route:
             if hops >= self.max_hops:
                 raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
+            self.check_outbound("message", "message", hops, route[0])
             node = self.pick(route[0])
             payload = {"route": route[1:], "agent": agent, "message": text, "from": sender, "hops": hops + 1, "wait": wait}
             res = await self._post(node["url"], "/api/fleet/message", payload, timeout=900 if wait else 30)
@@ -394,6 +516,12 @@ async def t_queue_submit(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return "ERROR: queue not running"
     payload = {"task": str(args["task"]), "node": str(args.get("node", "auto")), "mode": str(args.get("mode", "squad")),
                "n": args.get("n"), "from": f"{f.node_id}/{ctx.name}"}
+    first = payload["node"].split("/", 1)[0]
+    try:  # vet at submit time too, so a doomed job never enters the durable queue
+        mode = payload["mode"] if payload["mode"] in SPAWN_MODES else "squad"
+        f.check_outbound("run", f"spawn:{mode}", getattr(ctx.core, "fleet_hops", 0), first)
+    except PermissionError as e:
+        return f"ERROR: refused by fleet gateway: {e}"
     jid = await f.queue.enqueue("run", payload, int(args.get("priority", 0)), int(args.get("max_attempts", 3)))
     return f"queued job {jid} -> {payload['node']} (retries on failure; check with queue_status)"
 

@@ -532,3 +532,5 @@ def register_extra_tools(registry) -> None:
         registry.register(Tool(name, desc, args_doc, fn, source="builtin"))
     from .netdiag import register_net_tools
     register_net_tools(registry)
+    from .agentkit import register_kit_tools
+    register_kit_tools(registry)

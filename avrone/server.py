@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.8.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

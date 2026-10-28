@@ -76,8 +76,19 @@ def _safe_path(root: Path, rel: str) -> Path:
 async def t_shell(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not ctx.core.settings.agents_can_shell:
         return "ERROR: shell is disabled for agents (AVRONE_AGENTS_CAN_SHELL=false)."
-    res = await ctx.core.runner.run(str(args.get("cmd", "")))
+    cmd = str(args.get("cmd", ""))
+    res = await ctx.core.runner.run(cmd)
+    if _INSTALL_RE.search(cmd):  # self-change: record it in the resource ledger
+        try:
+            from .agentkit import record_change
+            record_change(ctx, "shell install", cmd[:200], res.exit_code == 0, (res.stdout or res.stderr)[-200:])
+        except Exception:  # noqa: BLE001
+            pass
     return res.text()
+
+
+_INSTALL_RE = __import__("re").compile(
+    r"\b(apt(-get)?\s+install|pip3?\s+install|python3?\s+-m\s+pip\s+install|npm\s+(i|install)|apk\s+add|yum\s+install|dnf\s+install|brew\s+install|cargo\s+install|go\s+install)\b")
 
 
 async def t_read(ctx: "AgentContext", args: dict[str, Any]) -> str:

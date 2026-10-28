@@ -50,7 +50,10 @@ or, when you are done, your final result:
 ```json
 {{"final": "<your complete findings, including any code, commands run and results>"}}
 ```
-Be concrete. Verify claims with tools when you can. You have at most {steps} turns."""
+Be concrete. Verify claims with tools when you can. You have at most {steps} turns.
+Working habits: if a skill fits your job, skill_load it first; for multi-part work, put
+subtasks on task_board and update them; if a tool or package is missing, install it with
+env_install (self-changes are allowed and logged) and carry on; never invent tool output."""
 
 LEAD_PROMPT = """You are the LEAD agent in AVRONE. Several agents worked the same task in
 parallel from different angles. Compare their work like a study group:

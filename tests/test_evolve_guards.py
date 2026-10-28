@@ -181,3 +181,17 @@ def test_transient_failure_retries_the_full_suite_not_only_last_failed(tmp_path,
     assert len(runner.tests) == 2
     assert runner.tests[0] == runner.tests[1]
     assert all("--lf" not in command for command in runner.tests)
+
+
+def test_evolution_state_directory_cannot_escape_data_root(tmp_path):
+    c = ctx(tmp_path)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    (outside / "victim.json").write_text('{"secret":"not for AVRONE"}')
+    (data_root / "evolve").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        evolve._data(c)
+    assert json.loads((outside / "victim.json").read_text()) == {"secret": "not for AVRONE"}
+    assert evolve.list_accepted(SimpleNamespace(data_dir=data_root)) == []

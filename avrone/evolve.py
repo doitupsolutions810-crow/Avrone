@@ -48,9 +48,17 @@ def _repo_root(ctx: "AgentContext") -> Path:
 
 
 def _data(ctx: "AgentContext") -> Path:
-    d = Path(ctx.core.settings.data_dir) / "evolve"
+    root = Path(ctx.core.settings.data_dir).resolve()
+    d = root / "evolve"
+    if d.is_symlink():
+        raise ValueError("evolution data directory must not be a symlink")
     d.mkdir(parents=True, exist_ok=True)
-    return d
+    resolved = d.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError("evolution data directory escapes the configured data root") from None
+    return resolved
 
 
 def _emit(ctx: "AgentContext", kind: str, **data: Any) -> None:
@@ -428,7 +436,10 @@ def register_evolve_tools(registry) -> None:
 
 def list_accepted(settings) -> list[dict[str, Any]]:
     """Accepted proposals, for /api/evolve and the CLI."""
-    d = Path(settings.data_dir) / "evolve"
+    root = Path(settings.data_dir).resolve()
+    d = root / "evolve"
+    if d.is_symlink():
+        return []
     out = []
     if d.exists():
         for f in sorted(d.glob("*.json")):

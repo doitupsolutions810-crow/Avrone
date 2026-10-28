@@ -40,7 +40,7 @@ async def test_gateway_checks_token_operation_and_service(monkeypatch):
     configure(monkeypatch)
     with pytest.raises(PermissionError, match="invalid"):
         await gateway.dispatch_root_operation("service_status", "avrone.service", "wrong")
-    with pytest.raises(PermissionError, match="not allowlisted"):
+    with pytest.raises(ValueError, match="operation must be"):
         await gateway.dispatch_root_operation("system_shell", "avrone.service", "g" * 48)
     with pytest.raises(PermissionError, match="not allowlisted"):
         await gateway.dispatch_root_operation("service_restart", "sshd.service", "g" * 48)

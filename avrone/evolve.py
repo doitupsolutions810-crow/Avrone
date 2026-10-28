@@ -123,6 +123,26 @@ def _daily_limits() -> tuple[int, int]:
     return max(1, min(seconds, HARD_MAX_DAILY_SECONDS)), max(1, min(proposals, HARD_MAX_DAILY_PROPOSALS))
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value} is not accepted")
+
+
+def _validate_budget_state(data: Any, day: str) -> dict[str, Any]:
+    if not isinstance(data, dict) or data.get("day") != day:
+        raise RuntimeError("daily evolution budget state is invalid; refusing new work")
+    for key in ("started", "accepted", "rejected"):
+        value = data.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError("daily evolution budget state has invalid counters")
+    for key in ("elapsed_s", "reserved_s"):
+        value = data.get(key, 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise RuntimeError("daily evolution budget state has invalid duration fields")
+    if data["accepted"] + data["rejected"] > data["started"]:
+        raise RuntimeError("daily evolution budget counters are inconsistent")
+    return data
+
+
 def _budget_day() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
@@ -135,16 +155,19 @@ def _budget_paths(ctx: "AgentContext", day: str) -> tuple[Path, Path]:
 def _mutate_budget(ctx: "AgentContext", day: str, change: Any) -> dict[str, Any]:
     """Atomically mutate the UTC-day budget across processes; corrupt state fails closed."""
     path, lock_path = _budget_paths(ctx, day)
+    if path.is_symlink() or lock_path.is_symlink():
+        raise RuntimeError("daily evolution budget files must not be symlinks")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            if path.is_symlink():
+                raise RuntimeError("daily evolution budget files must not be symlinks")
             if path.exists():
                 try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
+                    data = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
                 except (OSError, ValueError, TypeError, UnicodeDecodeError):
                     raise RuntimeError("daily evolution budget state is corrupt; refusing new work") from None
-                if not isinstance(data, dict) or data.get("day") != day:
-                    raise RuntimeError("daily evolution budget state is invalid; refusing new work")
+                data = _validate_budget_state(data, day)
             else:
                 data = {"day": day, "started": 0, "accepted": 0, "rejected": 0,
                         "elapsed_s": 0.0, "reserved_s": 0.0}
@@ -202,18 +225,20 @@ def _finish_daily_budget(ctx: "AgentContext", reservation: dict[str, Any], durat
 def _daily_budget_snapshot(ctx: "AgentContext", day: str | None = None) -> dict[str, Any]:
     day = day or _budget_day()
     path, lock_path = _budget_paths(ctx, day)
-    if not path.exists():
-        return {"day": day, "started": 0, "accepted": 0, "rejected": 0, "elapsed_s": 0.0, "reserved_s": 0.0}
+    if path.is_symlink() or lock_path.is_symlink():
+        raise RuntimeError("daily evolution budget files must not be symlinks")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            if path.is_symlink():
+                raise RuntimeError("daily evolution budget files must not be symlinks")
+            if not path.exists():
+                return {"day": day, "started": 0, "accepted": 0, "rejected": 0, "elapsed_s": 0.0, "reserved_s": 0.0}
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
             except (OSError, ValueError, TypeError, UnicodeDecodeError):
                 raise RuntimeError("daily evolution budget state is corrupt") from None
-            if not isinstance(data, dict) or data.get("day") != day:
-                raise RuntimeError("daily evolution budget state is invalid")
-            return dict(data)
+            return dict(_validate_budget_state(data, day))
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 

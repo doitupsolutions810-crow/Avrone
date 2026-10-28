@@ -1063,7 +1063,10 @@ async def t_remote_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
 async def t_remote_broadcast(ctx: "AgentContext", args: dict[str, Any]) -> str:
     f = _fleet(ctx)
     targets = args.get("nodes") or [n["node_id"] for n in f.list_nodes() if n["status"] == "online"]
-    targets = list(dict.fromkeys(str(t) for t in targets))[:8]
+    # Normalize each route ("good/", "/good", " good " are all "good") before de-duplicating, and
+    # drop empty ones: an empty route would silently become an "auto" pick of some other node.
+    routes = ("/".join(p.strip() for p in str(t).split("/") if p.strip()) for t in targets)
+    targets = list(dict.fromkeys(r for r in routes if r))[:8]
     if not targets:
         return "ERROR: no online nodes"
     hops = getattr(ctx.core, "fleet_hops", 0)

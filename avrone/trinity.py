@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import agentfs
+from . import agentfs, memstore
 from .checkpoint import Checkpoint
 from .codex import Codex
 from .config import Settings
@@ -244,6 +244,9 @@ class AgentContext:
     # the same agent_id. None when AVRONE_AGENT_FS=0 or the dir could not be made.
     agent_id: str | None = None
     agent_dir: Path | None = None
+    # Pinned memory namespace; None = derived from the name (memstore.agent_namespace). Set only
+    # when two live agents of one run would otherwise share a namespace (see _claim_identity).
+    memory_namespace: str | None = None
 
 
 def parse_action(text: str) -> dict[str, Any] | None:
@@ -338,6 +341,28 @@ class TrinityCore:
         self._counter += 1
         return f"{re.sub(r'[^A-Za-z0-9]', '', str(role or ''))[:16] or 'Agent'}-{self._counter}"
 
+    def _claim_identity(self, run_id: str, name: str, agent_id: Any) -> tuple[str, str | None]:
+        """(agent dir id, pinned memory namespace or None) for a new agent of `run_id`.
+
+        Roles that sanitize alike ("Builder!" / "Builder?") would make two LIVE agents of one run
+        share a home dir and memory namespace. The first keeps the plain id (so the same role
+        keeps its persistence across runs); later concurrent ones get a -2, -3... suffix on both.
+        An agent that has finished frees its id: a sequential re-spawn is the same agent."""
+        base = agentfs.sanitize_agent_id(agent_id)
+        ns_base = memstore.agent_namespace(name)
+        live = [a for a in self.active.values()
+                if a.get("run_id") == run_id and a.get("status") == "working"]
+        ids = {a.get("agent_id") for a in live}
+        spaces = {a.get("memory_ns") for a in live}
+        k = 1
+        aid, ns = base, ns_base
+        while aid in ids or ns in spaces:
+            k += 1
+            sfx = f"-{k}"
+            aid = base[:agentfs.MAX_ID_LEN - len(sfx)].rstrip("-_") + sfx
+            ns = ns_base[:63 - len(sfx)].rstrip("-_") + sfx
+        return aid, (ns if k > 1 else None)
+
     def _attach_agent_dir(self, ctx: AgentContext, agent_id: Any) -> None:
         """Give the agent its own persistent dir. Never fatal: on failure the agent runs as before."""
         if not agentfs.agent_fs_enabled():
@@ -362,9 +387,14 @@ class TrinityCore:
                         agent_id: str | None = None) -> str:
         name = self._name(role)
         ctx = AgentContext(self, run_id, name, depth)
-        self._attach_agent_dir(ctx, agent_id or role)
+        claimed, ctx.memory_namespace = self._claim_identity(run_id, name, agent_id or role)
+        self._attach_agent_dir(ctx, claimed)
+        # agent_id is recorded even when agent fs is off, so the claim (and fleet.idle_agents'
+        # busy check) sees it; no await between claim and registration, so no race.
         self.active[name] = {"role": role, "status": "working", "parent": parent, "run_id": run_id,
-                             "task": (focus or task)[:300], "depth": depth, "started": time.time()}
+                             "task": (focus or task)[:300], "depth": depth, "started": time.time(),
+                             "agent_id": claimed,
+                             "memory_ns": ctx.memory_namespace or memstore.agent_namespace(name)}
         self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth)
         messages = [
             {"role": "system", "content": (system or WORKER_PROMPT).format(
@@ -392,7 +422,10 @@ class TrinityCore:
             # "working" agent and message_agent stops accepting messages for it.
             if name in self.active:
                 self.active[name]["status"] = "done"
-            self.inbox.pop(name, None)
+            dropped = self.inbox.pop(name, None)
+            if dropped:  # arrived during the agent's last turn: it never read them; say so
+                self.codex.emit(run_id, "agent.message_dropped", name, count=len(dropped),
+                                messages=[m[:500] for m in dropped[:5]])
         self.codex.emit(run_id, "agent.done", name, result=result[:6000])
         return result
 
@@ -724,6 +757,13 @@ class TrinityCore:
         ck, run_id, done = self._ck_open(checkpoint, task, "deep", run_id, n=n, first_answer=given)
         if isinstance(done, dict):
             return done
+        if ck is not None and given is None:
+            # The first-wave squad is sized by settings.squad_size; if that changed since the
+            # checkpoint was written, the wave re-runs (its own meta no longer matches) and every
+            # cached review of the OLD first answer is stale too: start the deep scope fresh.
+            w1 = ck.get("wave1.meta")
+            if isinstance(w1, dict) and w1.get("n") != max(1, min(self.settings.squad_size, 8)):
+                ck.clear()
         run_id = run_id or uuid.uuid4().hex[:10]
         if ck is not None:
             ck.begin(task, "deep", run_id, n=n, first_answer=given)

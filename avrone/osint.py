@@ -10,6 +10,13 @@ Honesty and scope (unchanged from recon.py):
 
 Tools: osint_domain (aggregate a domain's public footprint), osint_metrics (recon/
 osint activity rolled up from the Codex action logs).
+
+AUDIT NOTE (v0.13 hardening): osint_domain is gated exactly like the recon tools and
+BEFORE any sub-probe runs: the AVRONE_RECON kill switch (fails closed on unknown values),
+recon._host_arg target syntax (no IP literals, CIDR, lists, wildcards), recon._reject_private
+(no localhost/loopback/private/link-local/metadata/internal targets) and the allowlist. Each
+sub-probe then re-applies its own gates and connect-time checks. Nothing here accepts a
+person, username, email or phone number as a target.
 """
 from __future__ import annotations
 
@@ -31,6 +38,8 @@ async def t_osint_domain(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return d
     host, err = recon._host_arg(args)
     if err:
+        return err
+    if (err := recon._reject_private(host)):  # belt and braces: never profile a private target
         return err
     report: dict[str, Any] = {"host": host}
     # Each section degrades independently: a failure in one does not sink the profile.

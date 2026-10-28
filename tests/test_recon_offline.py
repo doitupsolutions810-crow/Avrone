@@ -24,6 +24,8 @@ def run(c):
 def _allow(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
     monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    # connect-time resolution guard: answer with a public documentation-free address, no real DNS
+    monkeypatch.setattr(recon, "_resolve_ips", lambda host: ["93.184.216.34"])
 
 
 # ------------------------------------------------------------ allowlist edge cases

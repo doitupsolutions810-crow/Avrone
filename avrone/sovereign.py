@@ -36,6 +36,19 @@ def _agent_safe_environment(source: dict[str, str] | None = None) -> dict[str, s
     return env
 
 
+def _docker_image_policy_error(image: str) -> str | None:
+    allowlist = {
+        item.strip() for item in os.getenv("AVRONE_DOCKER_IMAGE_ALLOWLIST", "").split(",") if item.strip()
+    }
+    if allowlist and image not in allowlist:
+        return "Docker image is not in AVRONE_DOCKER_IMAGE_ALLOWLIST."
+    if os.getenv("AVRONE_DOCKER_REQUIRE_DIGEST", "").lower() in {"1", "true", "yes"} and not re.search(
+        r"@sha256:[0-9a-f]{64}$", image
+    ):
+        return "This node requires Docker images pinned by sha256 digest."
+    return None
+
+
 def _docker_sandbox_args(*, allow_network: bool) -> list[str]:
     """Return the shared least-privilege/resource policy for agent-owned containers."""
     def bounded_memory(raw: str) -> str:
@@ -158,6 +171,9 @@ class DockerRunner(Runner):
         self.container = f"avrone-env-{uuid.uuid4().hex[:8]}"
 
     async def start(self) -> None:
+        image_error = _docker_image_policy_error(self.s.docker_image)
+        if image_error:
+            raise RuntimeError(image_error)
         self.workspace.mkdir(parents=True, exist_ok=True)
         argv = ["docker", "run", "-d", "--rm", "--name", self.container,
                 *_docker_sandbox_args(allow_network=self.s.allow_network),

@@ -79,9 +79,15 @@ class Runner:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except OSError:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
             else:
-                proc.kill()
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
             await proc.wait()
             return CommandResult(cmd, -1, "", "command timed out; process group terminated", timed_out=True)
 

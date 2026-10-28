@@ -45,6 +45,9 @@ TOOLS: list[dict[str, Any]] = [
             "task": {"type": "string", "description": "What the squad should do or answer."},
             "squad_size": {"type": "integer", "minimum": 1, "maximum": 8,
                            "description": "Number of parallel agents (default from AVRONE_SQUAD_SIZE)."},
+            "checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                              "description": "Server-managed checkpoint; call again with the same id and "
+                                             "task to resume an interrupted run."},
         }, "required": ["task"]},
     },
     {
@@ -65,6 +68,9 @@ TOOLS: list[dict[str, Any]] = [
             "rounds": {"type": "integer", "minimum": 1, "maximum": 5,
                        "description": "Max deep waves (1-5, default AVRONE_DEEP_ROUNDS or 1); "
                                       "stops early once a wave finds nothing new."},
+            "checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                              "description": "Server-managed checkpoint; call again with the same id and "
+                                             "task to resume an interrupted run."},
         }, "required": ["task"]},
     },
     {
@@ -215,28 +221,49 @@ class AvroneMCPServer:
                 return _ok(json.dumps(core.tools.list(), indent=2), {"tools": core.tools.list()})
             if not task:
                 return _err("'task' is required")
-            if name == "avrone_squad":
-                res = await core.squad(task, _clamp_size(args.get("squad_size")))
-            elif name == "avrone_chat":
-                res = await core.chat(task)
-            else:  # avrone_deep
-                first = args.get("first_answer")
-                if hasattr(core, "deep"):
-                    rounds = _clamp_rounds(args.get("rounds"))
-                    kw = {"rounds": rounds} if rounds is not None else {}
-                    res = await core.deep(task, first, **kw)
-                else:
-                    prior = (f"A first answer was given; verify it, fix its mistakes and improve it:\n{first}\n"
-                             if first else "")
-                    res = await core.squad(DEEP_PROMPT.format(prior=prior, task=task))
+            ck, release = _checkpoint(core, name, task, args.get("checkpoint_id"))
+            try:
+                res = await self._run(core, name, task, args, ck)
+            finally:
+                if release:
+                    release()
         except Exception as e:
             log.exception("tool %s failed", name)
             return _err(f"{type(e).__name__}: {e}")
         if isinstance(res, dict):
             answer = str(res.get("answer", ""))
             meta = {"run_id": res.get("run_id"), "agents": len(res.get("agents") or [])}
+            if ck:
+                meta["checkpoint_id"] = str(args.get("checkpoint_id"))
             return _ok(answer, meta)
         return _ok(str(res))
+
+    async def _run(self, core: Any, name: str, task: str, args: dict, ck: dict) -> Any:
+        if name == "avrone_squad":
+            res = await core.squad(task, _clamp_size(args.get("squad_size")), **ck)
+        elif name == "avrone_chat":
+            res = await core.chat(task)
+        else:  # avrone_deep
+            first = args.get("first_answer")
+            if hasattr(core, "deep"):
+                rounds = _clamp_rounds(args.get("rounds"))
+                kw = {"rounds": rounds} if rounds is not None else {}
+                res = await core.deep(task, first, **kw, **ck)
+            else:
+                prior = (f"A first answer was given; verify it, fix its mistakes and improve it:\n{first}\n"
+                         if first else "")
+                res = await core.squad(DEEP_PROMPT.format(prior=prior, task=task))
+        return res
+
+
+def _checkpoint(core: Any, name: str, task: str, ck_id: Any) -> tuple[dict, Any]:
+    """({"checkpoint": path} or {}, release or None). Raises CheckpointError/CheckpointConflict."""
+    if ck_id in (None, "") or name not in ("avrone_squad", "avrone_deep"):
+        return {}, None
+    from .checkpoint import check_compatible, claim, managed_path, sanitize_client_id
+    path = managed_path(core.settings.data_dir, sanitize_client_id(ck_id))
+    check_compatible(path, task, "squad" if name == "avrone_squad" else "deep")
+    return {"checkpoint": path}, claim(path)
 
 
 def _clamp_size(size: Any) -> int | None:

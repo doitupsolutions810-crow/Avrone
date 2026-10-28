@@ -25,7 +25,8 @@ raises) is ignored; with nothing readable the target is max_parallel. The govern
 is advisory: it never raises and never returns less than 1.
 
 Env knobs: AVRONE_THERMAL_MAX_C (default 85), AVRONE_MIN_PARALLEL (default 1),
-AVRONE_GOVERNOR (on/off, default on).
+AVRONE_GOVERNOR (on/off, default on). ``is_hot()`` (temp over AVRONE_THERMAL_MAX_C) drives
+edgepack thermal migration of idle agent homes (FleetManager.thermal_migrate, AVRONE_AGENT_MIGRATE).
 """
 from __future__ import annotations
 
@@ -243,6 +244,16 @@ class Governor:
             self.throttle_count += 1
         self.last_target, self.last_reason = t, reason
         return t
+
+    def is_hot(self) -> bool:
+        """True when the hottest sensor is over AVRONE_THERMAL_MAX_C (edgepack thermal-migration
+        hook). Reads sensors even when throttling is off (AVRONE_GOVERNOR only gates parallelism;
+        migration has its own switch, AVRONE_AGENT_MIGRATE). Never raises; unreadable = not hot."""
+        try:
+            t = self.read().temp_c
+            return t is not None and t > self.thermal_max_c
+        except Exception:  # pragma: no cover - read() already swallows reader errors
+            return False
 
     def state(self) -> dict[str, Any]:
         """Governor + node health snapshot for telemetry. Never raises."""

@@ -26,6 +26,14 @@ through the same dispatch_gateway (kind "memory", capability "memory:sync", all 
 receiver files them under "fleet:<sender>/<ns>" where <sender> is the HMAC-signed `from` node id, so
 a push can never overwrite the receiver's own (local) namespaces. Accepts are audited as
 `fleet.memory.merge`. Caps: MEMORY_SYNC_MAX_ENTRIES per push plus the store's per-namespace caps.
+Agent migration (edgepack): POST /api/fleet/agentpack carries one agent's HOME (its dir + memory
+namespace, an avrone.agentpack bundle) to a peer. Same dispatch_gateway (kind "agentpack", capability
+"agent:migrate"), plus: the sender MUST be listed in a non-empty AVRONE_FLEET_ALLOW (an open allowlist
+refuses), the privileged flag is always refused, and the receiver must itself run AVRONE_AGENT_MIGRATE=on.
+The pack's origin must equal the signed sender; import verifies hashes/paths/quota and never overwrites
+another agent's home. FleetManager.migrate_agent() sends one; thermal_migrate() moves idle agents off a hot
+node (governor temp over AVRONE_THERMAL_MAX_C). Audited as agent.migrate / agent.migrate_refused /
+agent.migrate_failed; on any failure the agent stays put.
 Privileged ("root-enabled") tier -- OFF by default, deny by default:
   AVRONE_FLEET_PRIVILEGED      must be exactly "allow" (case-insensitive) to enable; anything else = deny
   AVRONE_PRIVILEGED_NODES      comma list of SENDER node ids this node grants elevated capabilities to
@@ -48,6 +56,19 @@ Other env:
   AVRONE_PUBLIC_URL     URL others use to reach this node (sent when registering)
   AVRONE_FLEET_PARENT   parent/router to join
   AVRONE_FLEET_HEARTBEAT seconds between heartbeats (default 15)
+Governor-aware routing (edgeroute):
+  Every registration/heartbeat carries a compact `health` block from the sender's governor
+  (load ratio, mem %, disk free %, cpu temp, headroom, throttle state, active agents). The
+  receiver sanitizes it and stores it on the node record; it is only trusted while the node is
+  "online" (same ageing as status). select_nodes(k, need) ranks online, allowlisted children by
+  health_score() (cool/idle first, deterministic tiebreak) and drops hot/throttled ones;
+  pick("auto") uses it.
+  AVRONE_FLEET_OFFLOAD  off|spill|spread (default off). When the local governor caps a squad below
+                       its size, the overflow workers are sent (signed dispatch, mode chat, the worker's
+                       focus) to the best healthy child (spill) or round-robin across the healthy children
+                       (spread). A remote failure/timeout (AVRONE_FLEET_OFFLOAD_TIMEOUT, default 300 s) runs
+                       that worker locally instead. Privileged runs are never offloaded; hops, allowlist and
+                       the outbound gateway checks all apply. Audited as fleet.offload / fleet.offload_fallback.
 Run nodes over HTTPS or a private mesh (Tailscale/WireGuard); the HMAC protects
 integrity and auth, not confidentiality.
 """
@@ -70,6 +91,9 @@ import httpx
 
 from .tools import Tool
 from .tools_extra import priv_grant
+from .checkpoint import CheckpointError, check_compatible, fleet_key, managed_path, stamp_owner
+from .checkpoint import claim as ckpt_claim
+from .checkpoint import sanitize_id as sanitize_ckpt_id
 from .trinity import clamp_deep_rounds
 
 if TYPE_CHECKING:
@@ -95,9 +119,118 @@ SPAWN_MODES = ("squad", "chat", "deep")
 PRIVILEGED_CAPABILITIES = {"priv:shell", "priv:admin"}
 PRIVILEGED_HEADER = "x-avrone-privileged"
 # non-spawn capabilities, kept apart from the (minimal) spawn/message table above
-SYNC_CAPABILITIES: dict[str, set[str]] = {"memory": {"memory:sync"}}
+SYNC_CAPABILITIES: dict[str, set[str]] = {"memory": {"memory:sync"}, "agentpack": {"agent:migrate"}}
 MEMORY_PATH = "/api/fleet/memory"
 MEMORY_SYNC_MAX_ENTRIES = 200
+AGENTPACK_PATH = "/api/fleet/agentpack"
+DEFAULT_MIGRATE_INTERVAL_S, MIN_MIGRATE_INTERVAL_S = 60.0, 10.0
+
+
+def migrate_enabled() -> bool:
+    """AVRONE_AGENT_MIGRATE=on (default off): send/accept agent homes between nodes."""
+    return _env("AVRONE_AGENT_MIGRATE").lower() in TRUTHY
+
+
+def migrate_interval() -> float:
+    try:
+        v = float(_env("AVRONE_AGENT_MIGRATE_INTERVAL") or DEFAULT_MIGRATE_INTERVAL_S)
+    except ValueError:
+        v = DEFAULT_MIGRATE_INTERVAL_S
+    return max(MIN_MIGRATE_INTERVAL_S, v if v == v else DEFAULT_MIGRATE_INTERVAL_S)
+
+
+# ------------------------------------------------------------ health (edgeroute)
+HEALTH_STATES = ("ok", "throttled", "hot")
+EXCLUDED_STATES = {"throttled", "hot"}
+HOT_HEADROOM = 0.25  # min governor factor at/below which a node counts as hot
+_HEALTH_NUM = {"load": (0.0, 1000.0), "mem_pct": (0.0, 100.0), "disk_free_pct": (0.0, 100.0),
+               "temp_c": (-40.0, 150.0), "headroom": (0.0, 1.0)}
+
+
+OFFLOAD_MODES = ("off", "spill", "spread")
+
+
+def offload_mode() -> str:
+    v = _env("AVRONE_FLEET_OFFLOAD", "off").lower()
+    return v if v in OFFLOAD_MODES else "off"
+
+
+def offload_timeout() -> float:
+    try:
+        t = float(_env("AVRONE_FLEET_OFFLOAD_TIMEOUT", "300") or 300)
+    except ValueError:
+        t = 300.0
+    return max(5.0, min(t, 900.0))
+
+
+def local_health(core: Any) -> dict[str, Any] | None:
+    """Compact health block from this node's governor, for heartbeats. Never raises; None if unknown."""
+    from .governor import Governor
+    gov = getattr(core, "governor", None)
+    if not isinstance(gov, Governor):
+        return None
+    try:
+        h = gov.read()
+        fs = gov.factors(h)
+        headroom = min(fs.values()) if fs else 1.0
+        hot = headroom <= HOT_HEADROOM or (h.temp_c is not None and h.temp_c >= gov.thermal_max_c)
+        state = "hot" if hot else ("throttled" if headroom < 1.0 else "ok")
+        active = sum(1 for a in dict(getattr(core, "active", {}) or {}).values()
+                     if isinstance(a, dict) and a.get("status") == "working")
+        out: dict[str, Any] = {"state": state, "headroom": round(headroom, 3), "active_agents": active}
+        for k in ("load", "mem_pct", "disk_free_pct", "temp_c"):
+            v = getattr(h, k)
+            if v is not None:
+                out[k] = round(float(v), 2)
+        return out
+    except Exception as e:  # noqa: BLE001  -- health is advisory
+        log.debug("local health unavailable: %s", e)
+        return None
+
+
+def sanitize_health(raw: Any) -> dict[str, Any] | None:
+    """Keep only well-typed, range-clamped fields of a peer's health block (it is peer-asserted)."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    for k, (lo, hi) in _HEALTH_NUM.items():
+        v = raw.get(k)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+            continue
+        out[k] = max(lo, min(hi, float(v)))
+    st = raw.get("state")
+    if st in HEALTH_STATES:
+        out["state"] = st
+    aa = raw.get("active_agents")
+    if isinstance(aa, int) and not isinstance(aa, bool):
+        out["active_agents"] = max(0, min(aa, 10_000))
+    return out or None
+
+
+def health_score(n: dict[str, Any]) -> float:
+    """0..100, higher = better target. Unknown health is neutral, never best.
+
+      60 * headroom (governor min factor; unknown 0.5)
+    + 20 * (1 - min(load ratio, 2) / 2)            (unknown load ratio = 1.0)
+    + 20 * (1 - min(busy, 10) / 10)  where busy = max(in-flight load, active agents)
+    """
+    h = n.get("health") if isinstance(n.get("health"), dict) else {}
+    headroom = float(h.get("headroom", 0.5))
+    ratio = float(h.get("load", 1.0))
+    try:
+        busy = max(float(n.get("load", 0) or 0), float(h.get("active_agents", 0) or 0))
+    except (TypeError, ValueError):
+        busy = 10.0
+    return round(60 * headroom + 20 * (1 - min(max(ratio, 0.0), 2.0) / 2) + 20 * (1 - min(max(busy, 0.0), 10.0) / 10), 3)
+
+
+def node_has(n: dict[str, Any], need: str | None) -> bool:
+    """Capability match: spawn:* (every node), a tool name, the runner kind or a truthy capability key."""
+    if not need or need.startswith("spawn:"):
+        return True
+    caps = n.get("capabilities") if isinstance(n.get("capabilities"), dict) else {}
+    tools = caps.get("tools") if isinstance(caps.get("tools"), list) else []
+    return need in tools or caps.get("runner") == need or bool(caps.get(need)) and need not in ("tools", "runner")
 
 
 def kind_capabilities(kind: str) -> set[str]:
@@ -171,6 +304,7 @@ class FleetManager:
         self.nodes: dict[str, dict[str, Any]] = saved.get("nodes", {})
         self._nonces: dict[str, float] = {}
         self._task: asyncio.Task | None = None
+        self._thermal_task: asyncio.Task | None = None
         self._bg: set[asyncio.Task] = set()
         self.queue = None  # JobQueue, attached by start_queue()
         self.worker = None
@@ -193,7 +327,46 @@ class FleetManager:
         return "offline"
 
     def list_nodes(self) -> list[dict[str, Any]]:
-        return [{**{k: v for k, v in n.items()}, "status": self.status_of(n)} for n in self.nodes.values()]
+        out = []
+        for n in self.nodes.values():
+            st = self.status_of(n)
+            row = {**{k: v for k, v in n.items()}, "status": st}
+            if st != "online" and row.get("health"):
+                row["health"] = {**row["health"], "stale": True}  # aged with the status
+            out.append(row)
+        return out
+
+    def node_state(self, n: dict[str, Any]) -> str:
+        """Health state of a node record: ok/throttled/hot, "unknown", or "stale" once not online."""
+        if self.status_of(n) != "online":
+            return "stale" if n.get("health") else "unknown"
+        h = n.get("health")
+        return str(h.get("state", "unknown")) if isinstance(h, dict) else "unknown"
+
+    def select_nodes(self, k: int = 1, need: str | None = None) -> list[dict[str, Any]]:
+        """Up to k online, allowlisted children that have `need`, best health first.
+        Hot/throttled nodes are excluded; ties break on in-flight load, then node id."""
+        cands = []
+        for n in self.nodes.values():
+            nid = str(n.get("node_id", ""))
+            if self.status_of(n) != "online" or not self.allowed(nid) or not node_has(n, need):
+                continue
+            if self.node_state(n) in EXCLUDED_STATES:
+                continue
+            cands.append(n)
+        cands.sort(key=lambda n: (-health_score(n), n.get("load", 0) or 0, str(n.get("node_id"))))
+        return cands[:max(0, int(k))]
+
+    def health_table(self) -> list[dict[str, Any]]:
+        """Per-child health for telemetry / tools: status, state, score, eligibility."""
+        rows = []
+        for n in sorted(self.nodes.values(), key=lambda n: str(n.get("node_id"))):
+            st, hs = self.status_of(n), self.node_state(n)
+            rows.append({"node_id": n.get("node_id"), "status": st, "state": hs,
+                         "score": health_score(n) if st == "online" else None,
+                         "eligible": st == "online" and hs not in EXCLUDED_STATES and self.allowed(str(n.get("node_id"))),
+                         "load": n.get("load", 0), "health": n.get("health")})
+        return rows
 
     def info(self) -> dict[str, Any]:
         return {"node_id": self.node_id, "enabled": self.enabled, "parent": self.parent or None,
@@ -252,6 +425,10 @@ class FleetManager:
             if not self.allowed(sender):
                 why = "empty allowlist with AVRONE_FLEET_REQUIRE_ALLOW" if not self.allow else "AVRONE_FLEET_ALLOW"
                 raise self._refuse("sender_not_allowed", f"sender {sender} not in AVRONE_FLEET_ALLOW ({why})", **ctx)
+        if kind == "agentpack" and (not self.allow or sender not in self.allow):
+            # moving a whole agent home is never open to "any token holder": explicit allowlist only
+            raise self._refuse("sender_not_allowed", f"agent migration from {sender or '?'} refused: sender must be "
+                               "listed in a non-empty AVRONE_FLEET_ALLOW", **ctx)
         try:
             hops = int(payload.get("hops", 1))
         except (TypeError, ValueError):
@@ -351,6 +528,42 @@ class FleetManager:
         if first_hop and first_hop not in ("auto", "local") and not self.allowed(first_hop):
             raise self._refuse("target_not_allowed", f"node {first_hop} not in AVRONE_FLEET_ALLOW", **ctx)
 
+    # ------------------------------------------------------------ offload (edgeroute)
+    def offload_mode(self) -> str:
+        return offload_mode() if self.enabled else "off"
+
+    def offload_plan(self, overflow: int, hops: int = 0) -> list[str]:
+        """Node id for each of `overflow` workers (may be shorter/empty: those stay local).
+        spill = all to the single healthiest child; spread = round-robin over the healthy children."""
+        mode = self.offload_mode()
+        if mode == "off" or overflow <= 0 or hops >= self.max_hops:
+            return []
+        nodes = self.select_nodes(1 if mode == "spill" else overflow, need="spawn:chat")
+        if not nodes:
+            return []
+        return [str(nodes[i % len(nodes)]["node_id"]) for i in range(overflow)]
+
+    async def offload_worker(self, run_id: str, node_id: str, role: str, task: str, focus: str,
+                             hops: int = 0) -> str:
+        """Run one squad worker on `node_id` (signed dispatch, mode chat). Raises on any failure,
+        timeout or empty answer after auditing fleet.offload_fallback; the caller runs it locally."""
+        prompt = (f"You are {role}, one worker of a squad on another AVRONE node.\nTASK: {task}\n"
+                  f"YOUR FOCUS: {focus}\nReport your findings for your focus only.")
+        self._audit("fleet.offload", squad_run=run_id, node=node_id, role=role, hops=hops)
+        try:
+            res = await asyncio.wait_for(self.dispatch([node_id], "chat", prompt, hops, origin_run=run_id),
+                                         offload_timeout())
+            answer = str((res or {}).get("answer") or "").strip()
+            if not answer:
+                raise RuntimeError("empty answer from remote worker")
+            return answer
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001  -- includes TimeoutError and gateway refusals
+            reason = f"{type(e).__name__}: {e}"[:300]
+            self._audit("fleet.offload_fallback", squad_run=run_id, node=node_id, role=role, reason=reason)
+            raise RuntimeError(f"offload to {node_id} failed: {reason}") from e
+
     # ------------------------------------------------------------ registry (server side)
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
         nid = str(payload.get("node_id", ""))
@@ -370,7 +583,8 @@ class FleetManager:
                            "capabilities": payload.get("capabilities", {}),
                            "children": payload.get("children", []),
                            "load": payload.get("load", 0),
-                           "presence": payload.get("presence")}
+                           "presence": payload.get("presence"),
+                           "health": sanitize_health(payload.get("health"))}
         self._save()
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)
         return {"ok": True, "parent": self.node_id}
@@ -438,11 +652,165 @@ class FleetManager:
         self._audit("fleet.memory.merge", sender=sender, namespaces=sorted(groups), **stats)
         return {"ok": True, "node": self.node_id, "namespaces": sorted(groups), **stats}
 
+    # ------------------------------------------------------------ agent migration (edgepack)
+    def _workspace(self) -> Path:
+        ws = getattr(getattr(self.core, "settings", None), "workspace", None)
+        if not isinstance(ws, (str, Path)):
+            raise RuntimeError("no workspace configured for agent homes")
+        return Path(ws)
+
+    def pick_migration_target(self, target: str = "auto") -> dict[str, Any]:
+        """A healthy peer for an agent home: an explicit online node, or (auto) the coolest /
+        least-loaded online allowed node by its governor readings, else any online node."""
+        if target not in ("", "auto"):
+            n = self.pick(target)
+            if self.status_of(n) != "online":
+                raise RuntimeError(f"node {target} is not online")
+            return n
+        thermal_max = getattr(getattr(self.core, "governor", None), "thermal_max_c", None)
+        live = [n for n in self.nodes.values() if self.status_of(n) == "online" and self.allowed(n["node_id"])
+                and n["node_id"] != self.node_id]
+        if not live:
+            raise RuntimeError("no online nodes to migrate to")
+
+        def h(n: dict[str, Any], k: str) -> float | None:
+            v = (n.get("health") or {}).get(k)
+            return float(v) if isinstance(v, (int, float)) else None
+        if isinstance(thermal_max, (int, float)):
+            cool = [n for n in live if h(n, "temp_c") is None or h(n, "temp_c") < thermal_max]
+            live = cool or live
+        measured = [n for n in live if h(n, "temp_c") is not None or h(n, "load") is not None]
+        if measured:
+            return min(measured, key=lambda n: (h(n, "temp_c") if h(n, "temp_c") is not None else 0.0,
+                                                h(n, "load") or 0.0, n.get("load", 0), n["node_id"]))
+        return min(live, key=lambda n: (n.get("load", 0), n["node_id"]))
+
+    async def migrate_agent(self, agent_id: str, target: str = "auto") -> dict[str, Any]:
+        """Send one agent's home (dir + memory) to a peer over the signed gateway. Raises on
+        refusal/failure (audited as agent.migrate_refused / agent.migrate_failed); the local home
+        is never touched, so a failed migration leaves the agent where it is."""
+        from . import agentfs, agentpack
+        aid = str(agent_id or "")
+        ctx = {"agent_id": aid, "target": target or "auto"}
+        try:
+            if agentfs.sanitize_agent_id(aid) != aid:
+                raise PermissionError(f"invalid agent id {aid!r}")
+            if not migrate_enabled():
+                raise PermissionError("agent migration disabled (AVRONE_AGENT_MIGRATE != on)")
+            first = target if target not in ("", "auto") else ""
+            self.check_outbound("agentpack", "agent:migrate", 0, first)
+            node = self.pick_migration_target(target)
+            bundle, man = agentpack.export_pack(self._workspace(), self.data_dir, aid, self.node_id,
+                                                home=agentpack.home_node(self.data_dir, aid, self.node_id))
+        except (PermissionError, agentpack.PackError) as e:
+            self._audit("agent.migrate_refused", reason=str(e)[:300], **ctx)
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._audit("agent.migrate_failed", reason=f"{type(e).__name__}: {e}"[:300], **ctx)
+            raise
+        import base64
+        payload = {"from": self.node_id, "hops": 1, "capability": "agent:migrate", "agent_id": aid,
+                   "bundle": base64.b64encode(bundle).decode()}
+        try:
+            res = await self._post(node["url"], AGENTPACK_PATH, payload, timeout=120)
+        except Exception as e:  # noqa: BLE001
+            refused = isinstance(e, RuntimeError) and re.search(r"-> (401|403|400):", str(e)) is not None
+            self._audit("agent.migrate_refused" if refused else "agent.migrate_failed",
+                        reason=f"{type(e).__name__}: {e}"[:300], **{**ctx, "target": node["node_id"]})
+            raise
+        agentpack.record(self.data_dir, aid, migrated_to=node["node_id"], migrated_stamp=man["created"],
+                         migrated_at=int(time.time()))
+        self._audit("agent.migrate", agent_id=aid, target=node["node_id"], files=len(man["files"]),
+                    bytes=man["total_bytes"], created=man["created"], home=man["home"])
+        return {"ok": True, "agent_id": aid, "target": node["node_id"], "files": len(man["files"]),
+                "bytes": man["total_bytes"], "remote": res}
+
+    def receive_agentpack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Server side of /api/fleet/agentpack. Call ONLY with a payload returned by dispatch_gateway."""
+        import base64
+        import binascii
+
+        from . import agentpack
+        if request_capability("agentpack", payload) != "agent:migrate" or payload.get("privileged"):
+            raise PermissionError("capability agent:migrate required (never privileged)")
+        sender = sender_node(payload.get("from"))
+        ctx = {"direction": "in", "sender": sender or None, "agent_id": str(payload.get("agent_id", ""))[:64]}
+        if not migrate_enabled():
+            self._audit("agent.migrate_refused", reason="AVRONE_AGENT_MIGRATE != on", **ctx)
+            raise PermissionError("agent migration disabled on this node (AVRONE_AGENT_MIGRATE != on)")
+        if not ID_RE.match(sender) or sender == self.node_id:
+            raise ValueError("invalid sender node id")
+        try:
+            bundle = base64.b64decode(str(payload.get("bundle", "")), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("bundle must be base64") from None
+        try:
+            res = agentpack.import_pack(self._workspace(), self.data_dir, bundle, self.node_id,
+                                        expect_agent=str(payload.get("agent_id", "")), expect_origin=sender)
+        except agentpack.PackError as e:
+            self._audit("agent.migrate_refused", reason=str(e)[:300], **ctx)
+            raise ValueError(str(e)) from None
+        self._audit("agent.migrate", **ctx, files=res["files"], bytes=res["bytes"], home=res["home"])
+        return {"ok": True, "node": self.node_id, **res}
+
+    def idle_agents(self, now: float | None = None) -> list[str]:
+        """Agent homes on this node that are not running and untouched for AVRONE_AGENT_IDLE_SECS."""
+        from . import agentcontainer, agentfs, agentpack, memstore
+        now = time.time() if now is None else now
+        root = agentfs.agents_root(self._workspace())
+        if not root.is_dir() or root.is_symlink():
+            return []
+        busy = {agentfs.sanitize_agent_id(a.get("agent_id") or a.get("role") or memstore.agent_namespace(n))
+                for n, a in list(self.core.active.items()) if isinstance(a, dict) and a.get("status") == "working"}
+        idx = agentpack.load_index(self.data_dir)
+        out = []
+        for d in sorted(root.iterdir()):
+            aid = d.name
+            if d.is_symlink() or not d.is_dir() or agentfs.sanitize_agent_id(aid) != aid or aid in busy:
+                continue
+            stamp = agentpack.content_stamp(self._workspace(), self.data_dir, aid)
+            if now - stamp < agentcontainer.idle_secs():
+                continue
+            if idx.get(aid, {}).get("migrated_stamp") == stamp:  # already moved, unchanged since
+                continue
+            out.append(aid)
+        return out
+
+    async def thermal_migrate(self, now: float | None = None) -> list[dict[str, Any]]:
+        """Governor hook: when this node is hot and AVRONE_AGENT_MIGRATE=on, move idle agents'
+        homes to a cooler peer. Never raises; a failed agent stays put."""
+        if not (self.enabled and migrate_enabled()):
+            return []
+        gov = getattr(self.core, "governor", None)
+        try:
+            if gov is None or not gov.is_hot():
+                return []
+            agents = self.idle_agents(now)
+        except Exception as e:  # noqa: BLE001
+            log.warning("thermal migrate check failed: %s", e)
+            return []
+        out: list[dict[str, Any]] = []
+        for aid in agents:
+            try:
+                res = await self.migrate_agent(aid, "auto")
+                out.append({"agent_id": aid, "ok": True, "target": res["target"]})
+            except Exception as e:  # noqa: BLE001 - audited in migrate_agent; agent stays put
+                out.append({"agent_id": aid, "ok": False, "error": str(e)[:200]})
+                if "no online nodes" in str(e):
+                    break
+        return out
+
+    async def thermal_loop(self) -> None:
+        while True:
+            await asyncio.sleep(migrate_interval())
+            await self.thermal_migrate()
+
     async def join_parent_once(self) -> dict[str, Any]:
         from .presence import snapshot
         payload = {"presence": await snapshot(self.core),"node_id": self.node_id, "url": self.public_url,
                    "capabilities": {"tools": self.core.tools.names(), "runner": self.core.runner.kind},
-                   "children": sorted(self.nodes), "load": self.info()["active_agents"]}
+                   "children": sorted(self.nodes), "load": self.info()["active_agents"],
+                   "health": local_health(self.core)}
         return await self._post(self.parent, "/api/fleet/register", payload, timeout=10)
 
     async def heartbeat_loop(self) -> None:
@@ -459,6 +827,8 @@ class FleetManager:
     def start(self) -> None:
         if self.enabled and self.parent and self.public_url and self._task is None:
             self._task = asyncio.create_task(self.heartbeat_loop())
+        if self.enabled and migrate_enabled() and self._thermal_task is None:
+            self._thermal_task = asyncio.create_task(self.thermal_loop())
 
     def start_queue(self, data_dir: Path) -> None:
         from .jobqueue import JobQueue, Worker
@@ -470,6 +840,9 @@ class FleetManager:
         if self._task:
             self._task.cancel()
             self._task = None
+        if self._thermal_task:
+            self._thermal_task.cancel()
+            self._thermal_task = None
         if self.worker:
             await self.worker.stop()
         if self.queue:
@@ -479,10 +852,12 @@ class FleetManager:
 
     def pick(self, target: str) -> dict[str, Any]:
         if target in ("", "auto"):
-            live = [n for n in self.nodes.values() if self.status_of(n) == "online" and self.allowed(n["node_id"])]
-            if not live:
-                raise RuntimeError("no online nodes")
-            return min(live, key=lambda n: n.get("load", 0))
+            best = self.select_nodes(1)
+            if best:
+                return best[0]
+            if any(self.status_of(n) == "online" and self.allowed(n["node_id"]) for n in self.nodes.values()):
+                raise RuntimeError("no healthy online nodes (all online nodes are hot or throttled)")
+            raise RuntimeError("no online nodes")
         n = self.nodes.get(target)
         if not n:
             raise RuntimeError(f"unknown node {target!r}; known: {sorted(self.nodes) or 'none'}")
@@ -493,10 +868,13 @@ class FleetManager:
         return n
 
     async def dispatch(self, route: list[str], mode: str, prompt: str, hops: int, n: int | None = None,
-                       origin_run: str = "", privileged: str = "", rounds: int | None = None) -> dict[str, Any]:
+                       origin_run: str = "", privileged: str = "", rounds: int | None = None,
+                       checkpoint_id: str | None = None) -> dict[str, Any]:
         """Send a job down `route` (first element = one of my children).
         `privileged` = "priv:shell"/"priv:admin" requests the elevated tier (signed into the body).
-        `rounds` (deep only) is clamped to 1..5 and only sent when given."""
+        `rounds` (deep only) is clamped to 1..5 and only sent when given.
+        `checkpoint_id` (squad/deep) rides in the signed body; the running node keys it per sender,
+        so re-sending the same job with the same id resumes it there."""
         if hops >= self.max_hops:
             raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
         mode = mode if mode in SPAWN_MODES else "squad"  # the remote ran unknown modes as squad anyway
@@ -510,6 +888,10 @@ class FleetManager:
         rounds = clamp_deep_rounds(rounds)
         if rounds is not None:
             payload["rounds"] = rounds
+        if checkpoint_id not in (None, ""):
+            if mode == "chat":
+                raise ValueError("checkpoint_id works with mode squad or deep")
+            payload["checkpoint_id"] = sanitize_ckpt_id(checkpoint_id)
         node["load"] = node.get("load", 0) + 1
         try:
             return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
@@ -580,14 +962,36 @@ class FleetManager:
             cap = str(payload.get("capability", ""))
             self._privileged_gate("run", cap, payload.get("privileged") is True, sender_node(payload.get("from")), hops)
             priv = cap
+        ck_id = payload.get("checkpoint_id")
+        if ck_id is not None:
+            if mode not in ("squad", "deep"):
+                raise CheckpointError("checkpoint_id works with mode squad or deep")
+            ck_id = sanitize_ckpt_id(ck_id)  # CheckpointError -> 400
         if route:
             kw = {"rounds": r} if (r := clamp_deep_rounds(payload.get("rounds"))) is not None else {}
+            if ck_id:
+                kw["checkpoint_id"] = ck_id
             res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), payload.get("origin_run", ""),
                                       privileged=priv, **kw)
             return {**res, "path": [self.node_id] + res.get("path", [])}
         c = self.core
         self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=payload.get("from"), hops=hops,
-                             **({"privileged": priv} if priv else {}))
+                             **({"privileged": priv} if priv else {}), **({"checkpoint_id": ck_id} if ck_id else {}))
+        ck: dict[str, Any] = {}
+        release = None
+        if ck_id:
+            # keyed by the (signed) immediate sender and stamped with it: senders can't collide or
+            # resume each other's checkpoints; a retried job from the same sender resumes
+            sender = sender_node(payload.get("from"))
+            ck_path = managed_path(self.data_dir, fleet_key(sender, ck_id))
+            check_compatible(ck_path, prompt, mode, owner=f"fleet:{sender}")  # CheckpointConflict -> 409
+            release = ckpt_claim(ck_path)
+            try:
+                stamp_owner(ck_path, f"fleet:{sender}")
+            except BaseException:
+                release()
+                raise
+            ck = {"checkpoint": ck_path}
         prev = getattr(c, "fleet_hops", 0)
         prev_priv = getattr(c, "fleet_privileged", "")
         c.fleet_hops = hops  # remote agents see how deep they are
@@ -600,14 +1004,18 @@ class FleetManager:
                     res = await c.chat(prompt)
                 elif mode == "deep":
                     r = clamp_deep_rounds(payload.get("rounds"))
-                    res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}))
+                    res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}),
+                                       **ck)
                 else:
-                    res = await c.squad(prompt, payload.get("n"))
+                    res = await c.squad(prompt, payload.get("n"), **ck)
         finally:
+            if release:
+                release()
             c.fleet_hops = prev
             c.fleet_privileged = prev_priv
         answer = res.get("answer") or res.get("report") or ""
-        return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer}
+        return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer,
+                **({"checkpoint_id": ck_id} if ck_id else {})}
 
 
 # ---------------------------------------------------------------- agent tools
@@ -622,8 +1030,12 @@ async def t_fleet_nodes(ctx: "AgentContext", args: dict[str, Any]) -> str:
     f = _fleet(ctx)
     rows = [f"this node: {f.node_id} (parent: {f.parent or 'none'})"]
     for n in f.list_nodes():
+        h = n.get("health") if isinstance(n.get("health"), dict) else {}
+        hs = f.node_state(n)
+        hp = "" if not h else (f" health={hs} score={health_score(n)}" if n["status"] == "online" else f" health={hs}")
+        temp = f" temp={h['temp_c']}C" if h.get("temp_c") is not None and n["status"] == "online" else ""
         rows.append(f"- {n['node_id']} [{n['status']}] load={n.get('load', 0)} children={n.get('children', [])} "
-                    f"runner={n.get('capabilities', {}).get('runner', '?')}")
+                    f"runner={n.get('capabilities', {}).get('runner', '?')}{hp}{temp}")
     return "\n".join(rows) if len(rows) > 1 else rows[0] + "\nno child nodes registered"
 
 
@@ -636,6 +1048,8 @@ async def t_remote_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if priv and not priv.startswith("priv:"):
         priv = f"priv:{priv}"
     kw = {"rounds": r} if (r := clamp_deep_rounds(args.get("rounds"))) is not None else {}
+    if args.get("checkpoint_id"):  # squad/deep: a retried spawn with the same id resumes on that node
+        kw["checkpoint_id"] = str(args["checkpoint_id"])
     try:
         res = await f.dispatch(route, str(args.get("mode", "squad")), str(args["task"]), hops, args.get("n"),
                                ctx.run_id, privileged=priv, **kw)
@@ -725,8 +1139,8 @@ FLEET_TOOLS = [
      '{"task": str, "node"?: str, "mode"?: str, "n"?: int, "priority"?: int, "max_attempts"?: int}', t_queue_submit),
     ("queue_status", "status/result of a queued job, or queue counts if no job_id.", '{"job_id"?: str}', t_queue_status),
     ("fleet_nodes", "list linked AVRONE nodes/routers with status, load and their children.", "{}", t_fleet_nodes),
-    ("remote_spawn", "spawn a squad/chat/deep run on a remote AVRONE node; node may be a route like \"router1/edge7\" or \"auto\" (least loaded). Returns its answer.",
-     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "rounds"?: 1-5 (deep), "privileged"?: "shell"|"admin"}', t_remote_spawn),
+    ("remote_spawn", "spawn a squad/chat/deep run on a remote AVRONE node; node may be a route like \"router1/edge7\" or \"auto\" (healthiest: cool/idle first, hot/throttled skipped). Returns its answer.",
+     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "rounds"?: 1-5 (deep), "privileged"?: "shell"|"admin", "checkpoint_id"?: str (squad/deep, resume on retry)}', t_remote_spawn),
     ("remote_broadcast", "run the same task on several remote nodes in parallel (default: all online, max 8) and return every answer.",
      '{"task": str, "nodes"?: [str], "mode"?: str, "n"?: int}', t_remote_broadcast),
 ]

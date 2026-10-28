@@ -58,6 +58,9 @@ class ChatIn(BaseModel):
     first_answer: str | None = None  # deep mode: the answer to stress-test (else a squad runs first)
     rounds: int | None = None  # deep mode: max waves, clamped to 1..5 (default settings/env, else 1)
     background: bool = False
+    # squad/deep: server-managed checkpoint (data_dir/checkpoints/<id>.json). Re-posting the same
+    # id and task resumes an interrupted (or background) run; a different task is refused (409).
+    checkpoint_id: str | None = None
 
 
 class TerminalIn(BaseModel):
@@ -87,27 +90,103 @@ async def status():
     }
 
 
+def _open_checkpoint(cid_raw: str, task: str, mode: str):
+    """(checkpoint id, file path, stored meta or None, release) for a client checkpoint_id."""
+    from .checkpoint import CheckpointConflict, CheckpointError, check_compatible, claim, managed_path, sanitize_client_id
+    if mode not in ("squad", "deep"):
+        raise HTTPException(400, "checkpoint_id works with mode squad or deep")
+    try:
+        cid = sanitize_client_id(cid_raw)
+        path = managed_path(settings.data_dir, cid)
+        meta = check_compatible(path, task, mode)
+        release = claim(path)
+    except CheckpointConflict as e:
+        raise HTTPException(409, str(e)) from None
+    except CheckpointError as e:
+        raise HTTPException(400, str(e)) from None
+    return cid, path, meta, release
+
+
 @app.post("/api/chat")
 async def chat(body: ChatIn):
     c = core()
-    run_id = uuid.uuid4().hex[:10]
-    if body.mode == "squad":
-        job = c.squad(body.message, body.squad_size, run_id)
-    elif body.mode == "chat":
-        job = c.chat(body.message, run_id)
-    elif body.mode == "deep":
-        rounds = clamp_deep_rounds(body.rounds)
-        # Only pass rounds when asked, so cores without the knob keep working.
-        kw = {"rounds": rounds} if rounds is not None else {}
-        job = c.deep(body.message, body.first_answer, body.squad_size, run_id, **kw)
-    else:
+    if body.mode not in ("squad", "chat", "deep"):
         raise HTTPException(400, f"Unknown mode {body.mode!r}. Use squad, chat or deep.")
+    run_id = uuid.uuid4().hex[:10]
+    ck: dict = {}
+    cid, release = None, None
+    if body.checkpoint_id is not None:
+        cid, path, meta, release = _open_checkpoint(body.checkpoint_id, body.message, body.mode)
+        ck = {"checkpoint": path}
+        if meta and isinstance(meta.get("run_id"), str):
+            run_id = meta["run_id"]  # a resume keeps logging under the original run
+    try:
+        if body.mode == "squad":
+            job = c.squad(body.message, body.squad_size, run_id, **ck)
+        elif body.mode == "chat":
+            job = c.chat(body.message, run_id)
+        else:  # deep
+            rounds = clamp_deep_rounds(body.rounds)
+            # Only pass rounds when asked, so cores without the knob keep working.
+            kw = {"rounds": rounds} if rounds is not None else {}
+            job = c.deep(body.message, body.first_answer, body.squad_size, run_id, **kw, **ck)
+    except BaseException:
+        if release:
+            release()
+        raise
+    extra = {"checkpoint_id": cid} if cid else {}
     if body.background:  # long-running artifact: return now, watch it on the HUD
         t = asyncio.create_task(job)
         state["tasks"].add(t)
         t.add_done_callback(state["tasks"].discard)
-        return {"run_id": run_id, "status": "running"}
-    return await job
+        if release:  # a background run that dies frees its checkpoint; re-post to resume
+            t.add_done_callback(lambda _t: release())
+        return {"run_id": run_id, "status": "running", **extra}
+    try:
+        res = await job
+    finally:
+        if release:
+            release()
+    return {**res, **extra} if isinstance(res, dict) and extra else res
+
+
+# ------------------------------------------------------------------ checkpoints (admin)
+def _ck_key(ck_id: str) -> str:
+    from .checkpoint import CheckpointError, managed_path
+    try:
+        managed_path(settings.data_dir, ck_id)
+    except CheckpointError:
+        raise HTTPException(400, "bad checkpoint id (1-64 chars of A-Z a-z 0-9 _ -)") from None
+    return ck_id
+
+
+@app.get("/api/checkpoints")
+async def checkpoints_list(x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    from .checkpoint import list_managed
+    return list_managed(settings.data_dir)
+
+
+@app.get("/api/checkpoints/{ck_id}")
+async def checkpoint_get(ck_id: str, x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    from .checkpoint import describe, managed_path
+    row = describe(managed_path(settings.data_dir, _ck_key(ck_id)), full=True)
+    if row is None:
+        raise HTTPException(404, f"no checkpoint {ck_id!r}")
+    return row
+
+
+@app.delete("/api/checkpoints/{ck_id}")
+async def checkpoint_delete(ck_id: str, x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    from .checkpoint import CheckpointConflict, delete_managed
+    try:
+        if not delete_managed(settings.data_dir, _ck_key(ck_id)):
+            raise HTTPException(404, f"no checkpoint {ck_id!r}")
+    except CheckpointConflict as e:
+        raise HTTPException(409, str(e)) from None
+    return {"deleted": ck_id}
 
 
 @app.get("/api/tools")
@@ -241,14 +320,31 @@ async def fleet_memory(request: Request):
         raise HTTPException(400, str(e)) from None
 
 
+@app.post("/api/fleet/agentpack")
+async def fleet_agentpack(request: Request):
+    """Inbound agent-home migration (edgepack): signed gateway, kind "agentpack", cap agent:migrate."""
+    payload = await _gateway(request, "agentpack")
+    try:
+        return _fleet().receive_agentpack(payload)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e)) from None
+
+
 @app.post("/api/fleet/run")
 async def fleet_run(request: Request):
     payload = await _gateway(request, "run")
     f = _fleet()
+    from .checkpoint import CheckpointConflict, CheckpointError
     try:
         return await f.handle_run(payload)
     except PermissionError as e:
         raise HTTPException(403, str(e)) from None
+    except CheckpointConflict as e:
+        raise HTTPException(409, str(e)) from None
+    except CheckpointError as e:
+        raise HTTPException(400, str(e)) from None
     except RuntimeError as e:
         raise HTTPException(502, str(e)) from None
 

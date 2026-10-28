@@ -30,8 +30,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import memstore
-from .tools import Tool, _safe_path
+from . import fsunify, memstore
+from .tools import Tool, _safe_path, runner_accepts_cwd
 
 if TYPE_CHECKING:
     from .trinity import AgentContext
@@ -190,6 +190,18 @@ async def t_python(ctx: "AgentContext", args: dict[str, Any]) -> str:
     code = str(args.get("code", ""))
     if not code.strip():
         return "ERROR: code is required"
+    runner = ctx.core.runner
+    root = fsunify.agent_root(ctx)
+    if root is not None and runner_accepts_cwd(runner):
+        # run with cwd = own agent dir; the snippet lives there too so it is reachable from
+        # the local runner, `docker exec -w /workspace/agents/<id>` and the isolated /agent mount
+        f = root / f".snippet_{uuid.uuid4().hex[:10]}.py"
+        f.write_text(code)
+        try:
+            res = await runner.run(f"python3 {shlex.quote(f.name)}", cwd=root)
+        finally:
+            f.unlink(missing_ok=True)
+        return res.text()
     tmp = _ws(ctx) / ".avrone" / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     f = tmp / f"snippet_{uuid.uuid4().hex[:10]}.py"
@@ -204,15 +216,16 @@ async def t_python(ctx: "AgentContext", args: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- list_files / search_files
 
 async def t_list_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    ws = _ws(ctx)
-    root = _safe_path(ws, str(args.get("path", "") or "."))
+    r = fsunify.resolve(ctx, str(args.get("path", "") or "."), "list_files")
+    root, skip = r.path, fsunify.skip_dirs(ctx, r)
     if not root.exists():
         return f"ERROR: {args.get('path')} not found"
     if root.is_file():
-        return f"{_rel(ctx, root)} ({root.stat().st_size} bytes)"
+        return f"{fsunify.display(ctx, root)} ({root.stat().st_size} bytes)"
     depth = _int(args.get("depth"), 3, 1, 10)
     cap = 400
-    lines = [_rel(ctx, root) + "/"]
+    head = fsunify.display(ctx, root)
+    lines = [head if head.endswith("/") else head + "/"]
     count = 0
     truncated = False
 
@@ -223,7 +236,7 @@ async def t_list_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
         except OSError:
             return
         for e in entries:
-            if e.name in SKIP_DIRS:
+            if e.name in SKIP_DIRS or e in skip:
                 continue
             if count >= cap:
                 truncated = True
@@ -254,12 +267,12 @@ async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
         rx = re.compile(pattern)
     except re.error as e:
         return f"ERROR: bad regex: {e}"
-    ws = _ws(ctx)
-    root = _safe_path(ws, str(args.get("path", "") or "."))
+    r = fsunify.resolve(ctx, str(args.get("path", "") or "."), "search_files")
+    root = r.path
     if not root.exists():
         return f"ERROR: {args.get('path')} not found"
     cap, hits, scanned = 200, [], 0
-    files = [root] if root.is_file() else _iter_files(root)
+    files = [root] if root.is_file() else _iter_files(root, fsunify.skip_dirs(ctx, r))
     for f in files:
         if scanned > 5000 or len(hits) >= cap:
             break
@@ -274,7 +287,7 @@ async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
             continue
         for no, line in enumerate(data.decode(errors="replace").splitlines(), 1):
             if rx.search(line):
-                hits.append(f"{_rel(ctx, f)}:{no}: {line.strip()[:300]}")
+                hits.append(f"{fsunify.display(ctx, f)}:{no}: {line.strip()[:300]}")
                 if len(hits) >= cap:
                     break
     if not hits:
@@ -285,9 +298,10 @@ async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return out
 
 
-def _iter_files(root: Path):
+def _iter_files(root: Path, skip: set[Path] | None = None):
+    skip = skip or set()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and Path(dirpath) / d not in skip)
         for fn in sorted(filenames):
             yield Path(dirpath) / fn
 
@@ -295,7 +309,8 @@ def _iter_files(root: Path):
 # --------------------------------------------------------------------------- edit_file
 
 async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    p = _safe_path(_ws(ctx), str(args.get("path", "")))
+    r = fsunify.resolve(ctx, str(args.get("path", "")), "edit_file")
+    p = r.path
     if not p.is_file():
         return f"ERROR: {args.get('path')} not found"
     old, new = str(args.get("old", "")), str(args.get("new", ""))
@@ -303,12 +318,17 @@ async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return "ERROR: 'old' must be a non-empty string"
     text = p.read_text(errors="replace")
     n = text.count(old)
+    name = fsunify.display(ctx, p)
     if n == 0:
-        return f"ERROR: 'old' text not found in {_rel(ctx, p)}"
+        return f"ERROR: 'old' text not found in {name}"
     if n > 1:
-        return f"ERROR: 'old' text matches {n} times in {_rel(ctx, p)}; include more context to make it unique"
-    p.write_text(text.replace(old, new, 1))
-    return f"edited {_rel(ctx, p)} (1 replacement)"
+        return f"ERROR: 'old' text matches {n} times in {name}; include more context to make it unique"
+    if r.in_agent:
+        from .agentfs_tools import quota_write
+        quota_write(ctx, r.root, p, text.replace(old, new, 1).encode("utf-8"), tool="edit_file")
+    else:
+        p.write_text(text.replace(old, new, 1))
+    return f"edited {name} (1 replacement)"
 
 
 # --------------------------------------------------------------------------- http_request
@@ -572,7 +592,7 @@ def _read_text_for_diff(ctx: "AgentContext", raw: Any, label: str) -> tuple[str 
     rel = str(raw or "").strip()
     if not rel:
         return None, f"ERROR: {label} is required"
-    p = _safe_path(_ws(ctx), rel)
+    p = fsunify.resolve(ctx, rel, "diff_files").path
     if not p.exists():
         return None, f"ERROR: {rel} not found"
     if not p.is_file():
@@ -582,7 +602,7 @@ def _read_text_for_diff(ctx: "AgentContext", raw: Any, label: str) -> tuple[str 
     data = p.read_bytes()
     if b"\0" in data[:8192]:
         return None, f"ERROR: {rel} looks like a binary file"
-    return data.decode(errors="replace"), _rel(ctx, p)
+    return data.decode(errors="replace"), fsunify.display(ctx, p)
 
 
 async def t_diff_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -1127,13 +1147,13 @@ async def t_priv_admin(ctx: "AgentContext", args: dict[str, Any]) -> str:
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
     ("web_search", "search the web (DuckDuckGo by default; Brave/Tavily if API keys set); returns numbered title/url/snippet results.",
      '{"query": str, "max_results"?: int}', t_web_search),
-    ("python", "run a Python 3 snippet in the workspace and return its stdout/stderr.",
+    ("python", "run a Python 3 snippet and return its stdout/stderr. Runs with cwd = your own agent dir when you have one (shared workspace via $AVRONE_SHARED_WORKSPACE), else in the workspace.",
      '{"code": str}', t_python),
-    ("list_files", "show a directory tree of the workspace (skips .git, node_modules, __pycache__).",
+    ("list_files", "show a directory tree (skips .git, node_modules, __pycache__). Defaults to your own agent dir when you have one; path `shared/` lists the shared team workspace.",
      '{"path"?: str, "depth"?: int}', t_list_files),
-    ("search_files", "regex search across workspace text files; returns file:line: match.",
+    ("search_files", "regex search across text files; returns file:line: match. Searches your own agent dir by default; path `shared/` searches the shared team workspace.",
      '{"pattern": str, "path"?: str}', t_search_files),
-    ("edit_file", "replace one exact, unique occurrence of `old` with `new` in a workspace file.",
+    ("edit_file", "replace one exact, unique occurrence of `old` with `new` in a file (own agent dir by default, `shared/...` for the shared workspace; quota applies in your dir).",
      '{"path": str, "old": str, "new": str}', t_edit_file),
     ("http_request", "make an HTTP request (any method) and return status, key headers and body.",
      '{"method": str, "url": str, "headers"?: dict, "body"?: str|dict}', t_http_request),
@@ -1153,7 +1173,7 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"image": str, "cmd": str}', t_docker_run),
     ("think", "private scratchpad: record your reasoning/plan; no side effects.",
      '{"thought": str}', t_think),
-    ("diff_files", "unified diff between two workspace text files, or a file and given text (path-confined, output capped at 12000 chars).",
+    ("diff_files", "unified diff between two text files, or a file and given text (own agent dir by default, `shared/...` for the shared workspace; path-confined, output capped at 12000 chars).",
      '{"path_a": str, "path_b"?: str, "text_b"?: str, "context"?: int}', t_diff_files),
     ("codex_search", "read-only search of the Eternal CodeX run logs by event kind (exact, or prefix ending in '.'/'*'), agent, tool name, substring and/or run_id; newest first, bounded.",
      '{"kind"?: str, "agent"?: str, "tool"?: str, "query"?: str, "run_id"?: str, "limit"?: int, "runs"?: int}', t_codex_search),
@@ -1184,3 +1204,5 @@ def register_extra_tools(registry) -> None:
     register_osint_tools(registry)
     from .agentfs_tools import register_agent_fs_tools
     register_agent_fs_tools(registry)
+    from .agentpack_tools import register_agentpack_tools
+    register_agentpack_tools(registry)

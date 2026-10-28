@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import agentfs
+from . import agentcontainer, agentfs
 from .config import Settings
 
 
@@ -95,6 +95,14 @@ class DockerRunner(Runner):
     def __init__(self, settings: Settings):
         super().__init__(settings)
         self.container = f"avrone-env-{uuid.uuid4().hex[:8]}"
+        self.agent_pool: agentcontainer.AgentContainerPool | None = None  # AVRONE_AGENT_CONTAINER=persistent
+
+    def _pool(self) -> agentcontainer.AgentContainerPool:
+        if self.agent_pool is None:
+            async def _run(argv: list[str], timeout: int) -> CommandResult:
+                return await self._exec(argv, " ".join(argv), timeout)
+            self.agent_pool = agentcontainer.AgentContainerPool(_run, self.s.docker_image, self.s.allow_network)
+        return self.agent_pool
 
     async def start(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -108,6 +116,8 @@ class DockerRunner(Runner):
             raise RuntimeError(f"Could not start environment container: {res.stderr}")
 
     async def stop(self) -> None:
+        if self.agent_pool is not None:
+            await self.agent_pool.close()
         await self._exec(["docker", "rm", "-f", self.container], "docker rm", 30)
 
     def exec_argv(self, cmd: str, agent_cwd: Path | None = None) -> list[str]:
@@ -122,8 +132,9 @@ class DockerRunner(Runner):
             mnt = agentfs.CONTAINER_AGENT_MOUNT
             argv = ["docker", "run", "--rm", *agentfs.agent_volume_args(agent_cwd), "-w", mnt,
                     "-e", f"AVRONE_AGENT_DIR={mnt}"]
-            if not self.s.allow_network:
-                argv += ["--network", "none"]
+            # same hardening as the persistent agent home (cap_drop ALL, no-new-privileges,
+            # mem/cpu/pids limits, --network none unless AVRONE_ALLOW_NETWORK)
+            argv += agentcontainer.hardening_args(self.s.allow_network)
             return argv + [self.s.docker_image, "bash", "-lc", cmd]
         inner = agentfs.container_agent_path(self.workspace, agent_cwd)
         argv = ["docker", "exec", "-w", inner]
@@ -132,8 +143,12 @@ class DockerRunner(Runner):
         return argv + [self.container, "bash", "-lc", cmd]
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
-        return await self._exec(self.exec_argv(cmd, self._agent_cwd(cwd)), cmd,
-                                timeout or self.s.command_timeout)
+        agent_cwd = self._agent_cwd(cwd)
+        if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
+            # long-lived per-agent home container (only the agent dir mounted at /agent), reused
+            name = await self._pool().ensure(agent_cwd)
+            return await self._exec(agentcontainer.exec_argv(name, cmd), cmd, timeout or self.s.command_timeout)
+        return await self._exec(self.exec_argv(cmd, agent_cwd), cmd, timeout or self.s.command_timeout)
 
 
 async def establish(settings: Settings) -> Runner:

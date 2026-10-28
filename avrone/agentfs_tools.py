@@ -113,27 +113,29 @@ def _rel(root: Path, p: Path) -> str:
     return str(p.relative_to(root)) or "."
 
 
-async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    root, p = _resolve(ctx, "fs_write", args.get("path", ""))
+def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: bool = False,
+                tool: str = "fs_write") -> tuple[int, int, int]:
+    """Write `data` to `p` inside agent dir `root`, enforcing the per-file cap and dir quota.
+
+    Shared by fs_write and the unified write_file/edit_file. Returns (file bytes, dir usage,
+    quota); raises AgentFSError (audited as agentfs.denied) on any refusal."""
     if p == root:
         raise AgentFSError("path must name a file")
-    data = str(args.get("content", "")).encode("utf-8")
-    append = bool(args.get("append", False))
     cap, quota = max_file_bytes(), quota_bytes()
     with _lock_for(root):
         if p.is_symlink() or (p.exists() and not p.is_file()):
-            _audit(ctx, "agentfs.denied", tool="fs_write", path=_rel(root, p), reason="not a regular file")
+            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="not a regular file")
             raise AgentFSError(f"{_rel(root, p)} is not a regular file")
         old = p.stat().st_size if p.exists() else 0
         new_size = (old + len(data)) if append else len(data)
         if new_size > cap:
-            _audit(ctx, "agentfs.denied", tool="fs_write", path=_rel(root, p), reason="file_cap",
+            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="file_cap",
                    bytes=new_size, cap=cap)
             raise AgentFSError(f"file would be {new_size} bytes; per-file cap is {cap} bytes")
         usage = dir_usage(root)
         projected = usage - old + new_size
         if projected > quota:
-            _audit(ctx, "agentfs.denied", tool="fs_write", path=_rel(root, p), reason="quota",
+            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="quota",
                    bytes=new_size, usage=usage, quota=quota)
             raise AgentFSError(f"agent dir quota exceeded: {projected} > {quota} bytes "
                                f"(using {usage}); delete files with fs_delete first")
@@ -149,7 +151,14 @@ async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
             tmp.write_bytes(data)
             os.replace(tmp, p)
     _audit(ctx, "agentfs.write", path=_rel(root, p), bytes=new_size, append=append,
-           usage=projected, quota=quota)
+           usage=projected, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
+    return new_size, projected, quota
+
+
+async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    root, p = _resolve(ctx, "fs_write", args.get("path", ""))
+    data = str(args.get("content", "")).encode("utf-8")
+    new_size, projected, quota = quota_write(ctx, root, p, data, bool(args.get("append", False)))
     return f"wrote {_rel(root, p)} ({new_size} bytes; dir {projected}/{quota} bytes)"
 
 

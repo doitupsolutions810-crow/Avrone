@@ -59,7 +59,7 @@ def test_clean_locked_down_node_is_ok(tmp_path):
     names = _by_name(rep)
     for n in ("python", "config", "data_dir", "workspace", "runner", "docker", "toggles", "tokens"):
         assert n in names
-    assert rep["toggles"]["network"] == "off" and rep["toggles"]["privileged"] == "off"
+    assert rep["toggles"]["network"] == "off" and rep["toggles"]["host_shell"] == "off"
     json.dumps(rep)  # JSON-serialisable
 
 
@@ -136,7 +136,7 @@ def test_bad_runner_fails(tmp_path):
     assert not rep["ok"]
     assert _by_name(rep)["runner"][0]["status"] == "fail"
     # unknown runner falls back to local: treated as unsandboxed
-    assert rep["toggles"]["privileged"] == "on"
+    assert rep["toggles"]["host_shell"] == "on"
 
 
 def test_docker_runner_without_cli_fails(tmp_path):
@@ -333,3 +333,18 @@ def test_cli_doctor_fail_and_strict_exit_codes(monkeypatch, tmp_path, capsys):
     assert cli_main(["doctor"]) == 0
     assert cli_main(["doctor", "--strict"]) == 1
     capsys.readouterr()
+
+
+def test_fleet_privileged_tier_reporting(tmp_path):
+    env = _safe_env(AVRONE_FLEET_TOKEN="f" * 32)
+    rep = d.run_doctor(_settings(tmp_path), env=env, which=_docker, sockets=_sock(tmp_path))
+    assert rep["toggles"]["fleet_privileged"] == "deny" and "security.fleet_privileged" not in _by_name(rep)
+    env["AVRONE_FLEET_PRIVILEGED"] = "allow"
+    rep = d.run_doctor(_settings(tmp_path), env=env, which=_docker, sockets=_sock(tmp_path))
+    assert _by_name(rep)["security.fleet_privileged"][0]["status"] == "info"  # no nodes listed: refuses all
+    env["AVRONE_PRIVILEGED_NODES"] = "router1"
+    rep = d.run_doctor(_settings(tmp_path), env=env, which=_docker, sockets=_sock(tmp_path))
+    assert _by_name(rep)["security.fleet_privileged"][0]["status"] == "warn"  # open fleet allowlist
+    env["AVRONE_FLEET_ALLOW"] = "router1"
+    rep = d.run_doctor(_settings(tmp_path), env=env, which=_docker, sockets=_sock(tmp_path))
+    assert _by_name(rep)["security.fleet_privileged"][0]["status"] == "info"

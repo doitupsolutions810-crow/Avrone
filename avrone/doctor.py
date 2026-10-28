@@ -215,7 +215,10 @@ def run_doctor(settings: Any = None, *, env: Mapping[str, str] | None = None,
         "abs_read": "on" if (env.get("AVRONE_ALLOW_ABS_READ") or "1") == "1" else "off",
         "fleet": "on" if fleet_tok != "unset" else "off",
         "fleet_allowlist": f"{len(fleet_allow)} node(s)" if fleet_allow else "(any node)",
-        "privileged": "on" if (settings.agents_can_shell and effective_local) else "off",
+        "host_shell": "on" if (settings.agents_can_shell and effective_local) else "off",
+        "fleet_privileged": ("allow" if (env.get("AVRONE_FLEET_PRIVILEGED") or "").strip().lower() == "allow"
+                             else "deny"),
+        "privileged_nodes": str(len([h for h in (env.get("AVRONE_PRIVILEGED_NODES") or "").split(",") if h.strip()])),
     }
     checks.append(Check("toggles", INFO, " ".join(f"{k}={v}" for k, v in toggles.items())))
 
@@ -268,17 +271,27 @@ def _insecure_combos(settings: Any, env: Mapping[str, str], toggles: dict[str, s
         out.append(Check("security.exposed_shell", WARN, f"API bound to {host} and agents can run shell; "
                                                          "/api/chat is unauthenticated",
                          "bind 127.0.0.1, front with an authenticating proxy, or AVRONE_AGENTS_CAN_SHELL=false"))
-    if toggles["fleet"] == "on" and not fleet_allow and toggles["privileged"] == "on":
+    if toggles["fleet"] == "on" and not fleet_allow and toggles["host_shell"] == "on":
         out.append(Check("security.fleet", WARN, "privileged fleet (shell on the host runner) with an open "
                                                  "AVRONE_FLEET_ALLOW: any node holding the token can drive this host",
                          "set AVRONE_FLEET_ALLOW to the node ids you trust, or use the docker runner"))
     elif toggles["fleet"] == "on" and not fleet_allow:
         out.append(Check("security.fleet", INFO, "fleet on with open AVRONE_FLEET_ALLOW (any token holder)"))
+    if toggles["fleet_privileged"] == "allow":
+        if toggles["privileged_nodes"] == "0":
+            out.append(Check("security.fleet_privileged", INFO, "AVRONE_FLEET_PRIVILEGED=allow but no "
+                                                               "AVRONE_PRIVILEGED_NODES: every privileged request is refused"))
+        elif not fleet_allow:
+            out.append(Check("security.fleet_privileged", WARN, "privileged tier on with an open AVRONE_FLEET_ALLOW",
+                             "pin AVRONE_FLEET_ALLOW to the node ids you trust"))
+        else:
+            out.append(Check("security.fleet_privileged", INFO, f"privileged tier on for "
+                                                               f"{toggles['privileged_nodes']} listed node(s)"))
     for name in ("AVRONE_FLEET_PARENT", "AVRONE_PUBLIC_URL"):
         if toggles["fleet"] == "on" and _cleartext_remote(env.get(name, "")):
             out.append(Check("security.fleet_transport", WARN, f"{name} is plain http:// to a remote host",
                              "HMAC gives integrity, not confidentiality: use https or a private mesh"))
-    if toggles["privileged"] == "on":
+    if toggles["host_shell"] == "on":
         out.append(Check("security.sandbox", WARN, "agents run shell directly on this host (local runner, no sandbox)",
                          "use AVRONE_RUNNER=docker, or AVRONE_AGENTS_CAN_SHELL=false"))
     elif settings.allow_network and not effective_local:

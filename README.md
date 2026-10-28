@@ -249,9 +249,20 @@ curl -s localhost:8710/api/terminal -H "X-Admin-Token: $AVRONE_ADMIN_TOKEN" \
 ## Safety
 
 Agents run real commands. Prefer the Docker runner, keep `AVRONE_HOST=127.0.0.1`
-unless you put auth in front of it, set `AVRONE_ALLOW_NETWORK=false` or
-`AVRONE_AGENTS_CAN_SHELL=false` to tighten things, and leave `AVRONE_ADMIN_TOKEN`
-empty to turn the admin terminal off.
+unless you configure API authentication and network controls, set `AVRONE_ALLOW_NETWORK=false`
+or `AVRONE_AGENTS_CAN_SHELL=false` to tighten things, and leave `AVRONE_ADMIN_TOKEN`
+empty to turn the admin terminal off. Remote browser access can establish an eight-hour
+HttpOnly/SameSite API session using the visible API-token form; use a strong token and HTTPS.
+The local runner refuses host-root execution by default and refuses to claim network isolation
+it cannot enforce. Docker agent containers drop Linux capabilities, disable privilege escalation,
+and apply PID/memory/CPU limits. Set `AVRONE_DOCKER_IMAGE_ALLOWLIST` and
+`AVRONE_DOCKER_REQUIRE_DIGEST=true` for production image pinning.
+
+### Hosting and privilege boundary
+
+The supplied `docker-compose.yml` mounts `/var/run/docker.sock` into the coordinator so it can launch sibling agent containers. Access to that socket is effectively host-level Docker administration. Keep the coordinator restricted to trusted operators, do not expose the socket to agent containers, and do not expose the dashboard publicly without an authentication proxy, API token, TLS, and host firewall rules.
+
+The new operator host gateway is deliberately limited to `systemctl is-active` and `systemctl restart` for exact allowlisted units. The stock AVRONE container does not run the host's systemd manager, so the host-service gateway should remain disabled in that compose deployment; do not solve this by running the application privileged or mounting the host systemd socket. Use a separate host-side least-privilege broker or run AVRONE natively under a restricted service account with an audited sudoers rule.
 
 ## Tests
 

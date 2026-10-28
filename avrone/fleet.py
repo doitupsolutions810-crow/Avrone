@@ -93,7 +93,7 @@ class FleetManager:
             raise ValueError("fleet registry file must not be a symlink")
         try:
             saved = json.loads(self.path.read_text(encoding="utf-8"), parse_constant=_reject_nonfinite_json) if self.path.exists() else {}
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (OSError, ValueError, UnicodeDecodeError):
             saved = {}
         if not isinstance(saved, dict):
             saved = {}

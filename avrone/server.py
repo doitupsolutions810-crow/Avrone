@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.7.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -214,6 +214,11 @@ async def fleet_run(request: Request):
         raise HTTPException(403, str(e)) from None
     except RuntimeError as e:
         raise HTTPException(502, str(e)) from None
+
+
+@app.get("/api/gateway")
+async def gateway_status():
+    return core().llm.status()
 
 
 @app.get("/api/telemetry")

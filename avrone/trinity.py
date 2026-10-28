@@ -259,7 +259,7 @@ class TrinityCore:
             answer = await self._chat([
                 {"role": "system", "content": LEAD_PROMPT},
                 {"role": "user", "content": f"TASK:\n{task}\n\nAGENT REPORTS:\n{reports}"},
-            ], model=self.settings.lead_model or None, temperature=0.3, session=f"avrone:{run_id}:lead")
+            ], lead=True, temperature=0.3, session=f"avrone:{run_id}:lead")
         except LLMError as e:
             answer = f"Lead failed ({e}). Raw agent reports:\n\n{reports}"
         self.codex.emit(run_id, "run.done", "Trinity", answer=answer)
@@ -297,7 +297,7 @@ class TrinityCore:
             report = await self._chat([
                 {"role": "system", "content": DEEP_LEAD_PROMPT},
                 {"role": "user", "content": f"{brief}\n\nSECOND-WAVE REVIEWS:\n{reviews}"},
-            ], model=self.settings.lead_model or None, temperature=0.3, session=f"avrone:{run_id}:deeplead")
+            ], lead=True, temperature=0.3, session=f"avrone:{run_id}:deeplead")
         except LLMError as e:
             report = f"Deep lead failed ({e}). Raw reviews:\n\n{reviews}"
             self.codex.emit(run_id, "error", "DeepLead", message=str(e))

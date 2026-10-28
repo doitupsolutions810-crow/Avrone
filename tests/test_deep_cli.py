@@ -179,7 +179,7 @@ def test_llm_retries_429_then_succeeds(monkeypatch):
 def test_llm_gives_up_after_3_tries_and_no_retry_on_400(monkeypatch):
     calls = []
     _patch_transport(monkeypatch, lambda req: (calls.append(1), httpx.Response(500, text="boom"))[1])
-    with pytest.raises(LLMError, match="after 3 tries"):
+    with pytest.raises(LLMError, match="All upstreams failed"):
         asyncio.run(LLM(_live_settings()).chat([{"role": "user", "content": "hi"}]))
     assert len(calls) == 3
     calls.clear()

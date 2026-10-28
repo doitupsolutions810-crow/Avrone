@@ -91,6 +91,10 @@ class Settings:
     llm_timeout: float = field(default_factory=_float("AVRONE_LLM_TIMEOUT", 180))
     llm_retries: int = field(default_factory=_int("AVRONE_LLM_RETRIES", 3))  # total tries on 429/5xx
     llm_backoff: float = field(default_factory=_float("AVRONE_LLM_BACKOFF", 1.0))  # seconds, doubles per try
+    # --- Gateway: extra providers tried in order when the primary fails ---
+    llm_fallbacks: str = field(default_factory=_env("AVRONE_LLM_FALLBACKS"))  # e.g. "openrouter:x-ai/grok-4,ollama:llama3.1"
+    breaker_threshold: int = field(default_factory=_int("AVRONE_BREAKER_THRESHOLD", 3))
+    breaker_cooldown: float = field(default_factory=_float("AVRONE_BREAKER_COOLDOWN", 30))
 
     # --- Orchestration (Grok Heavy style squad) ---
     squad_size: int = field(default_factory=_int("AVRONE_SQUAD_SIZE", 4))

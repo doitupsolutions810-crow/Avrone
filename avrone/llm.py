@@ -20,17 +20,25 @@ from .config import Settings
 
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
-
-class LLMError(RuntimeError):
-    pass
+from .gateway import Gateway, LLMError  # noqa: E402,F401  (re-exported)
 
 
 class LLM:
+    """Thin wrapper over the multi-provider Gateway (keeps the old call sites working)."""
+
     def __init__(self, settings: Settings):
         self.s = settings
+        self.gateway = Gateway(settings)
+
+    def status(self) -> dict[str, Any]:
+        return self.gateway.status()
 
     async def chat(self, messages: list[dict[str, str]], model: str | None = None,
-                   temperature: float = 0.7, session: str | None = None) -> str:
+                   temperature: float = 0.7, session: str | None = None, lead: bool = False) -> str:
+        return await self.gateway.chat(messages, model, temperature, session, lead)
+
+    async def _legacy_chat(self, messages: list[dict[str, str]], model: str | None = None,
+                           temperature: float = 0.7, session: str | None = None) -> str:
         if self.s.llm_mode == "mock":
             return _mock_reply(messages)
         headers = {"Content-Type": "application/json"}

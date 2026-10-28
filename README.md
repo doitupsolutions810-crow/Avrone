@@ -81,6 +81,16 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.7: Gateway and model fallback
+
+AVRONE routes model calls across several providers so agents keep working when one throttles or fails.
+
+- Set `AVRONE_LLM_FALLBACKS=openrouter:x-ai/grok-4,ollama:llama3.1` (each entry is `provider[:model][|lead_model]`). Each provider's key comes from its usual env var.
+- On a 429, 5xx or network error the gateway retries the primary, then moves to the next healthy provider; results note the route taken.
+- A circuit breaker opens a provider after repeated failures (`AVRONE_BREAKER_THRESHOLD`, default 3) for a cooldown (`AVRONE_BREAKER_COOLDOWN`, default 30s), so a throttled provider is skipped instead of hammered.
+- Lead and worker models are chosen per provider.
+- `GET /api/gateway` shows each upstream's state, calls, errors and the last route.
+
 ## v0.6: Fleet directory, agent messaging, durable queue
 
 - **Where every agent is:** each node reports its device (hostname, OS, arch), runner and container, network interfaces and addresses, and services (URL, tools, MCP servers, model), plus every agent with its role, status and task. Routers fold in their children, so Main AVRONE sees the whole tree. `GET /api/fleet/directory` (admin), the Map tab, and the `fleet_agents` tool.

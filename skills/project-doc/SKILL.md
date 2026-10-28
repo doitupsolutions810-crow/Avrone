@@ -24,7 +24,7 @@ After each meaningful version change:
 - Bounded authorized infrastructure recon and public-domain OSINT aggregation: `avrone/recon.py`, `avrone/osint.py`.
 - HMAC-signed fleet, durable jobs, presence, telemetry and event logs: `avrone/fleet.py`, `avrone/jobqueue.py`, `avrone/presence.py`, `avrone/telemetry.py`, `avrone/codex.py`.
 
-## Current release: v0.12.0
+## Historical v0.12.0 hardening baseline
 
 The main v0.12.0 hardening commit fixes DNS-label allowlist matching, validates and de-duplicates scan ports, clamps MCP squad size to the published schema, and adds offline tests for CLI, MCP, legacy LLM and recon. The follow-on edge round makes OSINT log aggregation tolerant of malformed event lines, strengthens MCP input validation, adds fleet boundary/status tests, and configures the source ZIP artifact. Validation status must remain pending until a test gate completes successfully.
 
@@ -44,3 +44,12 @@ The main v0.12.0 hardening commit fixes DNS-label allowlist matching, validates 
 - Reject shell operators in the agent-supplied test command; only direct pytest invocations are accepted.
 - Apply one monotonic deadline to setup, edits, testing, retry and commit. Record elapsed seconds and the enforced ceiling in each proposal event and metadata record.
 - Never claim a change passed before both the test gate and proposal commit succeed. A timed-out or malformed proposal is rejected and its failure is recorded.
+
+## v0.14 secure dispatch and controlled hosting
+
+- The FleetManager request boundary is backed by avrone/dispatch.py: strict payload types, bounded route and prompt sizes, unique hops, explicit run modes, HTTPS-by-default peer URLs, and bounded node/replay state.
+- Remote dashboard, run-log, telemetry, tools, gateway, evolution and event-stream surfaces check X-API-Token or the WebSocket token/cookie. Set AVRONE_API_AUTH=always behind reverse proxies; auto mode trusts direct loopback clients only.
+- Runner subprocesses remove application/provider/cloud secrets from inherited environment. Keep local shell agents unprivileged; effective host root is denied unless the explicit break-glass override is enabled.
+- The operator-only host gateway exposes only allowlisted service_status/service_restart operations and requires admin and separate root-operation tokens, plus OS-level least-privilege policy. Never describe this as arbitrary agent root access.
+- Self-evolution reserves proposal duration and started-proposal counts in a cross-process UTC-day budget. Defaults: 900 seconds per proposal, 3600 seconds/day, 12 attempts/day. Hard ceilings: 1800 seconds/proposal, 14400 seconds/day and 100 attempts/day.
+- Keep test and release status pending until the exact head executes the full suite and release-artifact build successfully on an assigned CI runner.

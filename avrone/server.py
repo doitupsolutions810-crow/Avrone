@@ -66,6 +66,19 @@ def _is_loopback_client(request: Request | WebSocket) -> bool:
         return False
 
 
+def _same_websocket_origin(origin: str, host_header: str) -> bool:
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_host = urlsplit("//" + host_header)
+        if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname or not parsed_host.hostname:
+            return False
+        origin_port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
+        host_port = parsed_host.port or (443 if parsed_origin.scheme == "https" else 80)
+        return parsed_origin.hostname.lower().rstrip(".") == parsed_host.hostname.lower().rstrip(".") and origin_port == host_port
+    except ValueError:
+        return False
+
+
 def require_api_access(request: Request | WebSocket, token: str | None) -> None:
     """Allow loopback UX by default; require a token for remote clients in auto mode."""
     mode = os.getenv("AVRONE_API_AUTH", "auto").strip().lower()
@@ -386,16 +399,9 @@ async def root_dispatch(body: RootDispatchIn, x_admin_token: str | None = Header
 @app.websocket("/ws/events")
 async def events(ws: WebSocket):
     origin = ws.headers.get("origin")
-    if origin:
-        try:
-            parsed_origin = urlsplit(origin)
-            host = ws.headers.get("host", "").lower()
-            if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.netloc or parsed_origin.netloc.lower() != host:
-                await ws.close(code=4403, reason="Cross-origin event stream denied")
-                return
-        except ValueError:
-            await ws.close(code=4403, reason="Invalid event stream origin")
-            return
+    if origin and not _same_websocket_origin(origin, ws.headers.get("host", "")):
+        await ws.close(code=4403, reason="Cross-origin event stream denied")
+        return
     try:
         require_api_access(ws, ws.headers.get("x-api-token"))
     except HTTPException:

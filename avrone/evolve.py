@@ -15,6 +15,7 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow),
 from __future__ import annotations
 
 import fcntl
+import math
 import json
 import os
 import shlex

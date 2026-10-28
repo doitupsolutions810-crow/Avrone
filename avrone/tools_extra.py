@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
+from .network_policy import safe_http_request
 from .tools import Tool, _safe_path
 
 if TYPE_CHECKING:
@@ -334,8 +335,10 @@ async def t_http_request(ctx: "AgentContext", args: dict[str, Any]) -> str:
         kw["json"] = body
     elif body is not None:
         kw["content"] = str(body).encode()
-    async with _client() as c:
-        r = await c.request(method, url, **kw)
+    try:
+        r = await safe_http_request(method, url, timeout=30, transport=HTTP_TRANSPORT, **kw)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
     lines = [f"HTTP {r.status_code} {r.reason_phrase}"]
     for h in _KEY_HEADERS:
         if h in r.headers:

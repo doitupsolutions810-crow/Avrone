@@ -14,12 +14,15 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow),
 """
 from __future__ import annotations
 
+import fcntl
 import json
-import shlex
 import os
+import shlex
 import re
 import shutil
+import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +39,10 @@ MAX_PROPOSAL_SECONDS = 1800
 MAX_PROPOSAL_EDITS = 20
 MAX_EDIT_BYTES = 250_000
 MAX_TOTAL_EDIT_BYTES = 1_000_000
+DEFAULT_MAX_DAILY_SECONDS = 3600
+HARD_MAX_DAILY_SECONDS = 14400
+DEFAULT_MAX_DAILY_PROPOSALS = 12
+HARD_MAX_DAILY_PROPOSALS = 100
 SHELL_META = re.compile(r"[;&|\x60$><\n\r]")
 
 
@@ -99,6 +106,116 @@ def _remaining(deadline: float, cap: int) -> int:
     if seconds <= 0:
         raise TimeoutError("proposal duration budget exhausted")
     return max(1, min(cap, int(seconds + 0.999)))
+
+
+
+
+def _daily_limits() -> tuple[int, int]:
+    """Return operator daily budgets, with finite hard ceilings."""
+    try:
+        seconds = int(os.getenv("AVRONE_EVOLVE_MAX_DAILY_SECONDS", str(DEFAULT_MAX_DAILY_SECONDS)))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_MAX_DAILY_SECONDS
+    try:
+        proposals = int(os.getenv("AVRONE_EVOLVE_MAX_DAILY_PROPOSALS", str(DEFAULT_MAX_DAILY_PROPOSALS)))
+    except (TypeError, ValueError):
+        proposals = DEFAULT_MAX_DAILY_PROPOSALS
+    return max(1, min(seconds, HARD_MAX_DAILY_SECONDS)), max(1, min(proposals, HARD_MAX_DAILY_PROPOSALS))
+
+
+def _budget_day() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _budget_paths(ctx: "AgentContext", day: str) -> tuple[Path, Path]:
+    directory = _data(ctx)
+    return directory / f"budget-{day}.json", directory / "budget.lock"
+
+
+def _mutate_budget(ctx: "AgentContext", day: str, change: Any) -> dict[str, Any]:
+    """Atomically mutate the UTC-day budget across processes; corrupt state fails closed."""
+    path, lock_path = _budget_paths(ctx, day)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError, UnicodeDecodeError):
+                    raise RuntimeError("daily evolution budget state is corrupt; refusing new work") from None
+                if not isinstance(data, dict) or data.get("day") != day:
+                    raise RuntimeError("daily evolution budget state is invalid; refusing new work")
+            else:
+                data = {"day": day, "started": 0, "accepted": 0, "rejected": 0,
+                        "elapsed_s": 0.0, "reserved_s": 0.0}
+            change(data)
+            fd, tmp_name = tempfile.mkstemp(prefix=".budget-", suffix=".tmp", dir=str(path.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+                    json.dump(data, tmp, sort_keys=True)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.replace(tmp_name, path)
+            finally:
+                if os.path.exists(tmp_name):
+                    os.unlink(tmp_name)
+            return dict(data)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _reserve_daily_budget(ctx: "AgentContext", timeout_s: int) -> dict[str, Any]:
+    """Reserve the worst-case duration before execution so parallel proposals cannot oversubscribe."""
+    day = _budget_day()
+    max_seconds, max_proposals = _daily_limits()
+
+    def reserve(data: dict[str, Any]) -> None:
+        started = int(data.get("started", 0))
+        elapsed = float(data.get("elapsed_s", 0))
+        reserved = float(data.get("reserved_s", 0))
+        if started >= max_proposals:
+            raise ValueError(f"daily proposal limit reached ({max_proposals})")
+        if elapsed + reserved + timeout_s > max_seconds:
+            remaining = max(0, int(max_seconds - elapsed - reserved))
+            raise ValueError(f"daily evolution time budget exhausted ({remaining}s remaining; proposal needs {timeout_s}s)")
+        data["started"] = started + 1
+        data["reserved_s"] = reserved + timeout_s
+
+    _mutate_budget(ctx, day, reserve)
+    return {"day": day, "timeout_s": timeout_s}
+
+
+def _finish_daily_budget(ctx: "AgentContext", reservation: dict[str, Any], duration_s: float, passed: bool) -> dict[str, Any]:
+    day = str(reservation["day"])
+    reserved_s = int(reservation["timeout_s"])
+
+    def finish(data: dict[str, Any]) -> None:
+        data["reserved_s"] = max(0.0, float(data.get("reserved_s", 0)) - reserved_s)
+        data["elapsed_s"] = max(0.0, float(data.get("elapsed_s", 0))) + max(0.0, duration_s)
+        key = "accepted" if passed else "rejected"
+        data[key] = int(data.get(key, 0)) + 1
+        data["last_finished_utc"] = datetime.now(timezone.utc).isoformat()
+
+    return _mutate_budget(ctx, day, finish)
+
+
+def _daily_budget_snapshot(ctx: "AgentContext", day: str | None = None) -> dict[str, Any]:
+    day = day or _budget_day()
+    path, lock_path = _budget_paths(ctx, day)
+    if not path.exists():
+        return {"day": day, "started": 0, "accepted": 0, "rejected": 0, "elapsed_s": 0.0, "reserved_s": 0.0}
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, UnicodeDecodeError):
+                raise RuntimeError("daily evolution budget state is corrupt") from None
+            if not isinstance(data, dict) or data.get("day") != day:
+                raise RuntimeError("daily evolution budget state is invalid")
+            return dict(data)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _validate_edits(edits: Any) -> list[dict[str, str]]:
@@ -246,6 +363,11 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
     except ValueError as exc:
         return f"ERROR: {exc}"
 
+    try:
+        budget_reservation = _reserve_daily_budget(ctx, timeout_s)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return f"ERROR: self-evolution budget denied: {exc}"
+
     import uuid
     pid = SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
     started_wall = time.time()
@@ -315,10 +437,17 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
         tail = (tail + "\n" + failure).strip()
 
     duration_s = round(max(0.0, time.monotonic() - started_mono), 3)
+    try:
+        _finish_daily_budget(ctx, budget_reservation, duration_s, passed)
+    except Exception as exc:  # noqa: BLE001
+        passed = False
+        failure = f"daily budget accounting failed: {type(exc).__name__}: {exc}"
+        tail = (tail + "\n" + failure).strip()
     meta = {
         "pid": pid, "goal": goal, "branch": branch, "files": changed,
         "passed": passed, "by": ctx.name, "ts": started_wall,
         "duration_s": duration_s, "timeout_s": timeout_s,
+        "budget_day_utc": budget_reservation["day"],
         "test_cmd": test_cmd, "worktree": str(wt) if wt else "",
         "flaky_retry": flaky, "failure": failure, "test_tail": tail[-3000:],
     }
@@ -387,13 +516,24 @@ async def t_evolve_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
     total = sum(durations)
     average = total / len(durations) if durations else 0.0
     cap = _proposal_timeout({})
+    daily_seconds, daily_proposals = _daily_limits()
+    try:
+        today = _daily_budget_snapshot(ctx)
+        today_line = (f"UTC day: {today['day']}; started {today.get('started', 0)}/{daily_proposals}; "
+                      f"accepted {today.get('accepted', 0)}; rejected {today.get('rejected', 0)}; "
+                      f"elapsed {float(today.get('elapsed_s', 0)):.2f}s; "
+                      f"reserved {float(today.get('reserved_s', 0)):.2f}s / {daily_seconds}s")
+    except RuntimeError as exc:
+        today_line = f"UTC-day budget status unavailable: {exc}"
     return (
         "AVRONE self-evolution budget\n"
         f"proposals: {len(proposals)} total; {len(accepted)} accepted; {len(rejected)} rejected\n"
         f"recorded runtime: {total:.2f}s total; {average:.2f}s average per proposal\n"
         f"per-proposal duration ceiling: {cap}s (operator ceiling AVRONE_EVOLVE_MAX_SECONDS; hard max {MAX_PROPOSAL_SECONDS}s)\n"
+        f"daily ceiling: {daily_seconds}s and {daily_proposals} started proposals (hard maxima {HARD_MAX_DAILY_SECONDS}s and {HARD_MAX_DAILY_PROPOSALS} proposals)\n"
+        f"{today_line}\n"
         f"input limits: {MAX_PROPOSAL_EDITS} edits; {MAX_EDIT_BYTES} bytes/file; {MAX_TOTAL_EDIT_BYTES} bytes/proposal\n"
-        "loop status: proposals are individually gated; this tool does not start an autonomous infinite loop"
+        "loop status: every proposal needs validation and a test gate; no autonomous infinite loop is started"
     )
 
 

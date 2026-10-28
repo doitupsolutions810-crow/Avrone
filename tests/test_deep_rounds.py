@@ -8,7 +8,7 @@ from avrone.config import Settings
 from avrone.llm import LLMError, _mock_reply
 from avrone.sovereign import LocalRunner
 from avrone.trinity import (DEEP_ANGLES, MAX_DEEP_ROUNDS, TrinityCore, _corrections,
-                            resolve_deep_rounds)
+                            _reviewer_failed, deep_confidence, resolve_deep_rounds)
 
 
 def _report(corrections: str, bottom: str = "Corrected answer.") -> str:
@@ -21,7 +21,7 @@ class ScriptedLLM:
     """The mock model for planner/workers/reviewers; deep-lead replies come from a script.
 
     Once the script runs out the last reply repeats. `boom` maps a reviewer role to an
-    exception it raises instead of answering."""
+    exception it raises, "hang" (never answers) or a junk reply string."""
 
     def __init__(self, lead_replies, boom=None):
         self.lead_replies = list(lead_replies)
@@ -37,9 +37,13 @@ class ScriptedLLM:
             if isinstance(r, BaseException):
                 raise r
             return r
-        for role, exc in self.boom.items():
+        for role, what in self.boom.items():
             if f"the {role} reviewer" in system:
-                raise exc
+                if what == "hang":
+                    await asyncio.sleep(3600)
+                if isinstance(what, str):
+                    return what  # a junk reply
+                raise what
         return _mock_reply(messages)
 
 
@@ -181,3 +185,112 @@ def test_deep_without_first_answer_still_multi_round(tmp_path):
     r = asyncio.run(_core(tmp_path, llm).deep("build a todo app", n=2, rounds=3, run_id="nf"))
     assert r["first_answer"].startswith("FINAL ANSWER") and r["first_run_id"] == "nf-wave1"
     assert r["rounds_run"] == 2 and [a["role"] for a in r["agents"][:2]] == [a["role"] for a in DEEP_ANGLES[:2]]
+
+
+# ---------------------------------------------------------------- robustness + reporting
+def test_hung_reviewer_times_out_and_rest_merge(tmp_path):
+    llm = ScriptedLLM([_report("None")], boom={"Contrarian": "hang"})
+    core = _core(tmp_path, llm, agent_timeout=0.5)
+    r = asyncio.run(asyncio.wait_for(core.deep("q", "a", n=3, rounds=3, run_id="h"), 10))
+    res = [a["result"] for a in r["agents"]]
+    assert "timed out" in res[2] and not r["agents"][2]["ok"] and r["agents"][0]["ok"]
+    assert llm.lead_inputs[0].count("review: first answer checked") == 2
+    assert r["reviewers_ok"] == 2 and r["reviewers_failed"] == 1
+    assert "Reviewers: 2 of 3 returned usable reviews." in r["report"]
+    assert all(a["status"] == "done" for a in core.active.values())
+
+
+def test_crashing_reviewer_noted_in_report_and_confidence_discounted(tmp_path):
+    # 2 of 3 reviewers crash: the lead still merges, but confidence drops one level
+    llm = ScriptedLLM([_report("None")], boom={"Fact-Checker": RuntimeError("x"), "Gap-Finder": KeyError("y")})
+    r = _run(_core(tmp_path, llm), rounds=2)
+    assert len(llm.lead_inputs) == 1 and r["converged"]
+    assert r["confidence"] == "Med" and r["report"].rstrip().endswith("Confidence: Med")
+
+
+def test_junk_reviewer_json_is_nudged_then_accepted(tmp_path):
+    junk = '```json\n{"final": "unterminated, "tool": }\n```'
+    llm = ScriptedLLM([_report("None")], boom={"Gap-Finder": junk})
+    core = _core(tmp_path, llm)
+    r = _run(core, rounds=2)
+    kinds = [e["kind"] for e in core.codex.replay("dr")]
+    assert kinds.count("action.malformed") == 2  # bounded nudges, then the reply is kept as prose
+    gap = r["agents"][1]["result"]
+    assert "unterminated" in gap and r["agents"][1]["ok"]
+    assert r["rounds_run"] == 1 and r["reviewers_ok"] == 3 and kinds[-1] == "run.done"
+
+
+def test_junk_lead_without_sections_counts_as_converged(tmp_path):
+    llm = ScriptedLLM(["lol no markdown here {\"tool\": 1}"])
+    r = _run(_core(tmp_path, llm), rounds=3)
+    assert r["rounds_run"] == 1 and r["converged"] and r["confidence"] == "Med"
+
+
+def test_every_reviewer_failing_skips_lead_and_reports_unverified(tmp_path):
+    boom = {a["role"]: RuntimeError("down") for a in DEEP_ANGLES}
+    llm = ScriptedLLM([_report("- should never be used")], boom=boom)
+    r = _run(_core(tmp_path, llm), rounds=4)
+    assert llm.lead_inputs == []  # nothing to weigh, so no lead call
+    assert r["rounds_run"] == 1 and r["stop_reason"] == "no_reviews" and not r["converged"]
+    assert r["confidence"] == "Low" and "Unverified: every reviewer failed" in r["report"]
+    assert "X is true since 2020." in r["report"] and "## Reviewer errors" in r["report"]
+    assert "stopped: no usable reviews came back" in r["report"]
+
+
+def test_zero_reviewers_is_graceful(tmp_path):
+    llm = ScriptedLLM([_report("- unused")])
+    core = _core(tmp_path, llm)
+    r = _run(core, n=0, rounds=3)
+    assert r["agents"] == [] and llm.lead_inputs == []
+    assert r["stop_reason"] == "no_reviews" and r["confidence"] == "Low"
+    assert "Unverified: no reviewers were assigned" in r["report"]
+    for section in ("## Verdict", "## Corrections", "## Bottom line", "## Deep rounds"):
+        assert section in r["report"]
+    kinds = [e["kind"] for e in core.codex.replay("dr")]
+    assert "agent.spawn" not in kinds and kinds[-1] == "run.done"
+
+
+def test_lead_crashing_with_non_llm_error_keeps_reviews(tmp_path):
+    llm = ScriptedLLM([RuntimeError("lead exploded")])
+    r = _run(_core(tmp_path, llm), rounds=3)
+    assert r["stop_reason"] == "lead_failed" and r["confidence"] == "Low"
+    assert "lead exploded" in r["report"] and "### Reviewer 1: Fact-Checker" in r["report"]
+
+
+def test_empty_lead_reply_is_a_lead_failure(tmp_path):
+    llm = ScriptedLLM(["   "])
+    r = _run(_core(tmp_path, llm), rounds=3)
+    assert r["stop_reason"] == "lead_failed" and "empty reply" in r["report"]
+
+
+def test_report_footer_notes_rounds_and_confidence(tmp_path):
+    llm = ScriptedLLM([_report("- fix A"), _report("- fix B"), _report("None")])
+    core = _core(tmp_path, llm)
+    r = _run(core, rounds=5)
+    assert "## Deep rounds\nRounds run: 3 of 5 (converged: no new corrections in round 3)." in r["report"]
+    assert r["confidence"] == "High" and r["answer"] == r["report"]
+    assert r["report"].index("## Bottom line") < r["report"].index("## Deep rounds")
+    done = next(e["data"] for e in core.codex.replay("dr") if e["kind"] == "deep.done")
+    assert done["confidence"] == "High" and done["reviewers_ok"] == 9
+
+
+def test_cap_hit_still_correcting_lowers_confidence(tmp_path):
+    llm = ScriptedLLM([_report(f"- fix {i}") for i in range(5)])
+    r = _run(_core(tmp_path, llm), rounds=2)
+    assert r["stop_reason"] == "cap" and r["confidence"] == "Med"
+    assert "stopped at the round cap, still finding corrections" in r["report"]
+
+
+def test_confidence_and_failure_helpers():
+    hi = _report("None")
+    assert deep_confidence(hi, True, 3, 0, True, 1) == "High"
+    assert deep_confidence(hi, True, 1, 1, True, 1) == "Med"
+    assert deep_confidence(hi, True, 1, 2, False, 3) == "Low"
+    assert deep_confidence(hi, False, 3, 0, True, 1) == "Low"
+    assert deep_confidence(hi, True, 0, 0, True, 1) == "Low"
+    assert deep_confidence("## Verdict\nExtended. Confidence: **Medium**", True, 2, 0, True, 1) == "Med"
+    assert deep_confidence("no verdict", True, 2, 0, False, 1) == "Med"
+    assert _reviewer_failed("[Gap-Finder-3 failed: timed out after 1s]")
+    assert _reviewer_failed("[agent 2 failed: RuntimeError: x]") and _reviewer_failed("  ")
+    assert not _reviewer_failed("The claim [ref 1] failed: no, it holds.")
+    assert not _reviewer_failed("Mock Fact-Checker review: first answer checked.")

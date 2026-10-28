@@ -222,3 +222,29 @@ def test_cli_quiet_squad_tools_runs(tmp_path):
     assert p.returncode == 0 and "shell" in p.stdout and "[builtin]" in p.stdout
     p = _cli(tmp_path, "runs")
     assert p.returncode == 0 and len(p.stdout.strip().splitlines()) == 2
+
+
+def test_cli_deep_rounds_flag(tmp_path):
+    out = tmp_path / "r.json"
+    p = _cli(tmp_path, "deep", "q", "--first-answer", "a", "-n", "2", "--rounds", "3", "--quiet", "--json", str(out))
+    assert p.returncode == 0, p.stderr
+    data = json.loads(out.read_text())
+    # the stock mock lead reports no corrections, so the run converges after one wave
+    assert data["max_rounds"] == 3 and data["rounds_run"] == 1 and data["converged"]
+    assert "Rounds run: 1 of 3" in p.stdout and "Confidence: Med" in p.stdout
+
+
+def test_cli_deep_rounds_capped_and_env(tmp_path, monkeypatch):
+    out = tmp_path / "r.json"
+    p = _cli(tmp_path, "deep", "q", "--first-answer", "a", "-n", "1", "--rounds", "40", "-q", "--json", str(out))
+    assert p.returncode == 0, p.stderr
+    assert json.loads(out.read_text())["max_rounds"] == 5
+    monkeypatch.setenv("AVRONE_DEEP_ROUNDS", "2")
+    p = _cli(tmp_path, "deep", "q", "--first-answer", "a", "-n", "1", "-q", "--json", str(out))
+    assert p.returncode == 0, p.stderr
+    assert json.loads(out.read_text())["max_rounds"] == 2 and "Rounds run: 1 of 2" in p.stdout
+
+
+def test_cli_deep_help_lists_rounds(tmp_path):
+    p = _cli(tmp_path, "deep", "--help")
+    assert p.returncode == 0 and "--rounds" in p.stdout

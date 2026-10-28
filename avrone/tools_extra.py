@@ -1204,3 +1204,5 @@ def register_extra_tools(registry) -> None:
     register_osint_tools(registry)
     from .agentfs_tools import register_agent_fs_tools
     register_agent_fs_tools(registry)
+    from .agentpack_tools import register_agentpack_tools
+    register_agentpack_tools(registry)

@@ -8,14 +8,17 @@ Guardrails, by construction:
     branch in the worktree and is surfaced as a diff for a human to review/merge.
   * Edits are confined to the repo; paths escaping it are rejected.
 
-Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_status, evolve_diff,
-       evolve_list, evolve_accept (branch only), evolve_reset.
-Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow),
-     AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
-     AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s).
+Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_start / evolve_cancel (the same
+       loop as a background task), evolve_status, evolve_diff, evolve_list, evolve_accept (branch only),
+       evolve_reset.
+Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; also checked between
+     iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
+     AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
+     AVRONE_EVOLVE_MAX_BG (concurrent background loops per process; default 2, hard cap 4).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -225,16 +228,31 @@ def _clamp(v: Any, default: float, cap: float, lo: float = 1) -> float:
     return max(lo, min(cap, x))
 
 
+def _loop_path(ctx: "AgentContext", loop_id: str) -> Path:
+    return _loops_dir(ctx) / f"{SAFE_ID.sub('-', loop_id)}.json"
+
+
+def _cancel_path(ctx: "AgentContext", loop_id: str) -> Path:
+    # A file, not just an in-memory flag: a cancel survives a restart and works across processes.
+    return _loops_dir(ctx) / f"{SAFE_ID.sub('-', loop_id)}.cancel"
+
+
+def _cancel_requested(ctx: "AgentContext", loop_id: str) -> bool:
+    return _cancel_path(ctx, loop_id).exists()
+
+
 async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = None, edits_fn=None,
                       max_iters: int | None = None, time_budget_s: float | None = None,
-                      test_cmd: str | None = None) -> dict[str, Any]:
+                      test_cmd: str | None = None, loop_id: str | None = None,
+                      mode: str = "foreground") -> dict[str, Any]:
     """Run up to `max_iters` proposal->test iterations, each in its own throwaway clone.
 
     Edits for iteration i come from `candidates[i]` or `edits_fn(i, attempts_so_far)` (sync or
     async; returning None/[] ends the loop). Stops at the first accepted proposal, when the
     iteration cap is hit, when the time budget runs out, or when candidates are exhausted.
     Caps: max_iters <= MAX_ITERS_CAP, time_budget_s <= TIME_BUDGET_CAP_S. Each iteration's test
-    timeout is bounded by the remaining budget.
+    timeout is bounded by the remaining budget. Between iterations it also stops on a cancel
+    request (evolve_cancel -> status "cancelled") or if AVRONE_SELF_EVOLVE flips to deny.
     """
     if _denied():
         return {"error": DENIED_MSG, "attempts": [], "accepted": None, "stopped": "denied"}
@@ -243,21 +261,31 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
         return {"error": "ERROR: give a goal and candidates (list of edit lists) or edits_fn",
                 "attempts": [], "accepted": None, "stopped": "invalid"}
     n, budget = loop_limits(max_iters, time_budget_s)
-    loop_id = _new_pid(ctx)
+    loop_id = loop_id or _new_pid(ctx)
     start = _now()
     attempts: list[dict[str, Any]] = []
     stopped, accepted = "max_iters", None
     loop_meta = {"loop_id": loop_id, "goal": goal, "by": ctx.name, "ts": time.time(), "max_iters": n,
                  "time_budget_s": budget, "status": "running", "stopped": None, "accepted": None,
-                 "iterations": [], "duration_s": 0.0}
-    loop_path = _loops_dir(ctx) / f"{loop_id}.json"
+                 "iterations": [], "duration_s": 0.0, "mode": mode, "owner_pid": os.getpid()}
+    loop_path = _loop_path(ctx, loop_id)
 
     def save() -> None:
         loop_meta["iterations"] = [_attempt_row(a) for a in attempts]
         loop_meta["duration_s"] = round(_now() - start, 3)
         loop_path.write_text(json.dumps(loop_meta))
     save()
+    def halted() -> str | None:
+        if _cancel_requested(ctx, loop_id):
+            return "cancelled"
+        if _denied():
+            return "denied"
+        return None
     for i in range(n):
+        h = halted()
+        if h:
+            stopped = h
+            break
         remaining = budget - (_now() - start)
         if remaining <= 0:
             stopped = "time_budget"
@@ -268,6 +296,11 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
             edits = edits_fn(i, [dict(a) for a in attempts])
             if hasattr(edits, "__await__"):
                 edits = await edits
+        h = halted()  # generating the candidate may take a while: re-check before cloning/testing
+        if h:
+            stopped = h
+            break
+        remaining = budget - (_now() - start)
         if not edits or not isinstance(edits, list):
             stopped = "exhausted"
             break
@@ -284,13 +317,158 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
         if _now() - start >= budget:
             stopped = "time_budget"
             break
-    loop_meta.update(status="done", stopped=stopped, accepted=accepted)
+    loop_meta.update(status="cancelled" if stopped == "cancelled" else "done", stopped=stopped, accepted=accepted)
     save()
+    _cancel_path(ctx, loop_id).unlink(missing_ok=True)
     _emit(ctx, "evolve.loop", loop_id=loop_id, iterations=len(attempts), stopped=stopped,
           accepted=accepted and accepted["pid"], duration_s=loop_meta["duration_s"])
     return {"loop_id": loop_id, "goal": goal, "max_iters": n, "time_budget_s": budget,
             "attempts": attempts, "accepted": accepted, "stopped": stopped,
-            "duration_s": loop_meta["duration_s"]}
+            "duration_s": loop_meta["duration_s"], "status": loop_meta["status"]}
+
+
+# ---- background / resumable loops ------------------------------------------------------------
+MAX_BG_LOOPS_CAP = 4
+DEFAULT_MAX_BG_LOOPS = 2
+_BG: dict[str, "asyncio.Task"] = {}   # loop_id -> task (strong refs: asyncio only keeps weak ones)
+
+
+def max_bg_loops() -> int:
+    env = _env_num("AVRONE_EVOLVE_MAX_BG")
+    return int(max(1, min(MAX_BG_LOOPS_CAP, env if env else DEFAULT_MAX_BG_LOOPS)))
+
+
+def _bg_running() -> list[str]:
+    return [lid for lid, t in _BG.items() if not t.done()]
+
+
+async def evolve_start(ctx: "AgentContext", goal: str, candidates: list | None = None, edits_fn=None,
+                       max_iters: int | None = None, time_budget_s: float | None = None,
+                       test_cmd: str | None = None) -> dict[str, Any]:
+    """Launch evolve_loop as a background asyncio task and return its loop_id immediately.
+
+    Same guardrails and the SAME hard caps as evolve_loop (it IS evolve_loop). The loop json is
+    written (status "running") before this returns, so evolve_status sees it at once.
+    """
+    if _denied():
+        return {"error": DENIED_MSG, "loop_id": None}
+    goal = str(goal or "").strip()
+    if not goal or (candidates is None and edits_fn is None):
+        return {"error": "ERROR: give a goal and candidates (list of edit lists) or edits_fn", "loop_id": None}
+    cap = max_bg_loops()
+    if len(_bg_running()) >= cap:
+        return {"error": f"ERROR: {cap} background evolve loop(s) already running (AVRONE_EVOLVE_MAX_BG); "
+                         "evolve_cancel one or wait", "loop_id": None}
+    n, budget = loop_limits(max_iters, time_budget_s)
+    loop_id = _new_pid(ctx)
+    _loop_path(ctx, loop_id).write_text(json.dumps(
+        {"loop_id": loop_id, "goal": goal, "by": ctx.name, "ts": time.time(), "max_iters": n,
+         "time_budget_s": budget, "status": "running", "stopped": None, "accepted": None, "iterations": [],
+         "duration_s": 0.0, "mode": "background", "owner_pid": os.getpid()}))
+
+    async def body() -> dict[str, Any]:
+        try:
+            return await evolve_loop(ctx, goal, candidates=candidates, edits_fn=edits_fn, max_iters=n,
+                                     time_budget_s=budget, test_cmd=test_cmd, loop_id=loop_id, mode="background")
+        except asyncio.CancelledError:
+            _finish_abnormally(ctx, loop_id, "cancelled", "cancelled")
+            raise
+        except Exception as ex:  # noqa: BLE001 - a crashed loop must not stay "running" forever
+            _finish_abnormally(ctx, loop_id, "error", f"error: {ex}"[:300])
+            return {"loop_id": loop_id, "error": str(ex), "stopped": "error", "status": "error"}
+        finally:
+            _BG.pop(loop_id, None)
+
+    _BG[loop_id] = asyncio.get_running_loop().create_task(body(), name=f"evolve-{loop_id}")
+    _emit(ctx, "evolve.start", loop_id=loop_id, max_iters=n, time_budget_s=budget)
+    return {"loop_id": loop_id, "status": "running", "max_iters": n, "time_budget_s": budget}
+
+
+def _finish_abnormally(ctx: "AgentContext", loop_id: str, status: str, stopped: str) -> None:
+    p = _loop_path(ctx, loop_id)
+    try:
+        m = json.loads(p.read_text())
+    except (OSError, ValueError):
+        m = {"loop_id": loop_id, "iterations": []}
+    m.update(status=status, stopped=stopped)
+    p.write_text(json.dumps(m))
+    _cancel_path(ctx, loop_id).unlink(missing_ok=True)
+
+
+async def evolve_wait(loop_id: str, timeout: float | None = None) -> dict[str, Any] | None:
+    """Await a background loop started in this process (None if it is not running here)."""
+    t = _BG.get(loop_id)
+    if t is None:
+        return None
+    return await asyncio.wait_for(asyncio.shield(t), timeout)
+
+
+def _pid_alive(pid: Any) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _effective(lp: dict[str, Any]) -> dict[str, Any]:
+    """A "running" loop whose owning process is gone was interrupted by a restart: say so."""
+    if lp.get("status") == "running" and lp.get("owner_pid") not in (None, os.getpid()) \
+            and not _pid_alive(lp["owner_pid"]):
+        lp = dict(lp, status="interrupted")
+    return lp
+
+
+def evolve_status(ctx: "AgentContext", loop_id: str | None = None) -> dict[str, Any] | None:
+    """Structured progress of a loop (latest when loop_id is None); None if unknown."""
+    loops = list_loops(ctx.core.settings)
+    if loop_id:
+        loops = [lp for lp in loops if lp.get("loop_id") == loop_id]
+    if not loops:
+        return None
+    lp = loops[-1]
+    its = lp.get("iterations", [])
+    acc = sum(1 for i in its if i.get("outcome") == "accepted")
+    return {**lp, "iterations_done": len(its), "accepted_count": acc, "rejected_count": len(its) - acc,
+            "live": lp.get("loop_id") in _bg_running(),
+            "cancel_requested": _cancel_requested(ctx, lp["loop_id"])}
+
+
+def evolve_cancel(ctx: "AgentContext", loop_id: str) -> dict[str, Any]:
+    """Ask a loop to stop. Cooperative: the in-flight iteration (its clone + gate) finishes cleanly,
+    the next one never starts, and the loop ends with status "cancelled"."""
+    st = evolve_status(ctx, loop_id) if loop_id else None
+    if st is None:
+        return {"error": f"ERROR: no loop {loop_id}. evolve_list to see them."}
+    if st["status"] != "running":
+        return {"loop_id": loop_id, "status": st["status"], "note": "not running; nothing to cancel"}
+    _cancel_path(ctx, loop_id).write_text(str(time.time()))
+    _emit(ctx, "evolve.cancel", loop_id=loop_id)
+    return {"loop_id": loop_id, "status": "cancelling"}
+
+
+async def t_evolve_start(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    if _denied():
+        return DENIED_MSG
+    cands = args.get("candidates")
+    if not isinstance(cands, list) or not cands or not all(isinstance(c, list) and c for c in cands):
+        return ('ERROR: give {"goal": str, "candidates": [[{"path": str, "content": str}], ...], '
+                '"max_iters"?: int, "time_budget_s"?: number, "test_cmd"?: str}')
+    r = await evolve_start(ctx, args.get("goal", ""), candidates=cands, max_iters=args.get("max_iters"),
+                           time_budget_s=args.get("time_budget_s"), test_cmd=args.get("test_cmd"))
+    if r.get("error"):
+        return r["error"]
+    return (f"started background loop {r['loop_id']} (caps: {r['max_iters']} iters, {r['time_budget_s']:.0f}s). "
+            f"evolve_status {{\"loop_id\": \"{r['loop_id']}\"}} for progress; evolve_cancel to stop it.")
+
+
+async def t_evolve_cancel(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    r = evolve_cancel(ctx, str(args.get("loop_id") or ""))
+    if r.get("error"):
+        return r["error"]
+    if r["status"] == "cancelling":
+        return f"cancel requested for loop {r['loop_id']}: it stops before its next iteration"
+    return f"loop {r['loop_id']} is {r['status']}: nothing to cancel"
 
 
 async def t_evolve_loop(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -362,7 +540,7 @@ def list_loops(settings) -> list[dict[str, Any]]:
     if d.exists():
         for f in d.glob("*.json"):
             try:
-                out.append(json.loads(f.read_text()))
+                out.append(_effective(json.loads(f.read_text())))
             except ValueError:
                 continue
     return sorted(out, key=lambda m: m.get("ts", 0))
@@ -380,6 +558,8 @@ async def t_evolve_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return f"no evolve loops yet (limits: max_iters={n}, time_budget_s={b:.0f})"
     lp = loops[-1]
     lines = [_loop_line(lp)]
+    if lp.get("mode") == "background" and lp.get("status") == "running":
+        lines.append("background loop" + (" (cancel requested)" if _cancel_requested(ctx, lp["loop_id"]) else ""))
     if lp.get("accepted"):
         lines.append(f"accepted: {lp['accepted']['pid']} on branch {lp['accepted']['branch']}")
     for it in lp.get("iterations", []):
@@ -409,6 +589,12 @@ EVOLVE_TOOLS = [
      "runs out (hard caps: 10 iterations, 1800s). Returns every attempt's verdict and failing test output.",
      '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
      '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_loop),
+    ("evolve_start", "evolve_loop in the BACKGROUND: returns a loop_id at once and keeps iterating (same guardrails "
+     "and hard caps: 10 iterations, 1800s; at most 4 background loops). Poll with evolve_status, stop with "
+     "evolve_cancel.", '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
+     '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_start),
+    ("evolve_cancel", "stop an evolve loop cleanly: the running iteration finishes, the next never starts.",
+     '{"loop_id": str}', t_evolve_cancel),
     ("evolve_diff", "show the unified diff of an accepted proposal.", '{"pid": str}', t_evolve_diff),
     ("evolve_list", "list self-evolution proposals (pass/fail, duration, loop iteration) and loops.", "{}",
      t_evolve_list),

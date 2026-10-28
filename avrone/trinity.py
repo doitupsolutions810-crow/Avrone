@@ -24,7 +24,8 @@ import time
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from . import agentfs
 from .checkpoint import Checkpoint
 from .codex import Codex
 from .config import Settings
+from .ctxspawn import RECENT_CALLS
 from .governor import Governor
 from .llm import LLM, LLMError
 from .sovereign import Runner
@@ -244,6 +246,14 @@ class AgentContext:
     # the same agent_id. None when AVRONE_AGENT_FS=0 or the dir could not be made.
     agent_id: str | None = None
     agent_dir: Path | None = None
+    # ctxspawn: who started this agent and what a child of it inherits (see avrone.ctxspawn).
+    role: str | None = None
+    focus: str | None = None
+    run_task: str | None = None          # the run's original task, inherited down the tree
+    parent_name: str | None = None
+    lineage: list[str] = field(default_factory=list)  # root -> ... -> parent (names)
+    parent_dir: Path | None = None       # parent's agent dir, readable via parent/ (share_dir)
+    recent_calls: deque = field(default_factory=lambda: deque(maxlen=RECENT_CALLS))  # (tool, args, output)
 
 
 def parse_action(text: str) -> dict[str, Any] | None:
@@ -324,6 +334,8 @@ class TrinityCore:
         self.governor = Governor.from_settings(settings)
         self.active: dict[str, dict[str, Any]] = {}  # agent name -> status, for the HUD
         self.inbox: dict[str, list[str]] = {}  # agent name -> messages waiting for its next step
+        self.run_agents: dict[str, int] = {}  # run id -> agents started (AVRONE_MAX_AGENTS_PER_RUN)
+        self.squad_roles: dict[str, list[dict[str, str]]] = {}  # run id -> squad roles/focuses
 
     def message_agent(self, name: str, text: str, sender: str = "operator") -> bool:
         """Queue a message for a live agent; it reads it before its next step. False if not live."""
@@ -359,17 +371,31 @@ class TrinityCore:
     # ------------------------------------------------------------ one agent
     async def run_agent(self, run_id: str, role: str, task: str, focus: str | None = None,
                         parent: str | None = None, depth: int = 0, system: str | None = None,
-                        agent_id: str | None = None) -> str:
+                        agent_id: str | None = None, lineage: list[str] | None = None,
+                        run_task: str | None = None, context_pack: str = "",
+                        context_mode: str | None = None, parent_dir: Path | None = None) -> str:
         name = self._name(role)
-        ctx = AgentContext(self, run_id, name, depth)
+        ctx = AgentContext(self, run_id, name, depth, role=role, focus=focus, run_task=run_task or task,
+                           parent_name=parent, lineage=list(lineage or []))
+        self.run_agents[run_id] = self.run_agents.get(run_id, 0) + 1
         self._attach_agent_dir(ctx, agent_id or role)
+        if parent_dir is not None and ctx.agent_dir is not None:
+            ctx.parent_dir = Path(parent_dir)
         self.active[name] = {"role": role, "status": "working", "parent": parent, "run_id": run_id,
                              "task": (focus or task)[:300], "depth": depth, "started": time.time()}
-        self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth)
+        self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth,
+                        context_mode=context_mode, context_chars=len(context_pack or ""),
+                        lineage=ctx.lineage, share_dir=ctx.parent_dir is not None)
+        prompt = (system or WORKER_PROMPT).format(
+            name=name, role=role, task=task, focus=focus or task, tools=self.tools.docs(),
+            steps=self.settings.max_steps, max_calls=max_calls_per_turn())
+        if context_pack:
+            prompt += "\n\n" + context_pack
+        if ctx.parent_dir is not None:
+            prompt += ("\n\nYour parent's agent dir is readable (not writable) under the `parent/` "
+                       "prefix in read_file/list_files/search_files/diff_files.")
         messages = [
-            {"role": "system", "content": (system or WORKER_PROMPT).format(
-                name=name, role=role, task=task, focus=focus or task, tools=self.tools.docs(),
-                steps=self.settings.max_steps, max_calls=max_calls_per_turn())},
+            {"role": "system", "content": prompt},
             {"role": "user", "content": "Begin."},
         ]
         result = ""
@@ -501,6 +527,10 @@ class TrinityCore:
             except Exception as e:  # a crash in one call is that call's result, never the turn's
                 out = f"ERROR: {type(e).__name__}: {e}"
             out = out if isinstance(out, str) else str(out)
+        try:
+            ctx.recent_calls.append((tool, args, out[:2000]))  # ctxspawn ring buffer
+        except AttributeError:  # pragma: no cover - foreign ctx objects
+            pass
         self.codex.emit(run_id, "tool.result", name, tool=tool, output=out[:4000])
         return tool, out
 
@@ -654,6 +684,8 @@ class TrinityCore:
             if ck is not None:
                 ck.put("subtasks", subtasks)
 
+        self.squad_roles[run_id] = [{"role": str(s.get("role")), "focus": str(s.get("focus", ""))}
+                                    for s in subtasks if isinstance(s, dict)]
         plan = self._offload_plan(run_id, len(subtasks))
         if plan and plan[1]:
             limit, remote = plan
@@ -676,6 +708,7 @@ class TrinityCore:
                 self._ck_step(ck, f"worker.{i}",
                               lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
                 for i, s in enumerate(subtasks)], limit=plan[0] if plan else None)
+        self.squad_roles.pop(run_id, None)
         reports = "\n\n".join(
             f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']})\n{r}"
             for i, (s, r) in enumerate(zip(subtasks, results)))

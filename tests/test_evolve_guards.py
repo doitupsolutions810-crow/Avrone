@@ -72,7 +72,7 @@ def test_proposal_timeout_obeys_operator_ceiling_and_rejects_invalid_values(monk
     assert evolve._proposal_timeout({"duration_seconds": 90}) == 45
     assert evolve._proposal_timeout({"duration_seconds": 12}) == 12
     assert evolve._proposal_timeout({}) == 45
-    for value in (0, -1, True, "forever"):
+    for value in (0, -1, True, 1.5, "forever"):
         with pytest.raises(ValueError, match="positive integer"):
             evolve._proposal_timeout({"duration_seconds": value})
 
@@ -114,3 +114,18 @@ def test_reset_invalid_pid_cannot_delete_external_file(tmp_path):
     result = asyncio.run(evolve.t_evolve_reset(c, {"pid": "../outside"}))
     assert result.startswith("ERROR:")
     assert json.loads(sentinel.read_text()) == {"keep": True}
+
+
+def test_list_accepted_skips_malformed_and_non_object_metadata(tmp_path):
+    data = tmp_path / "data" / "evolve"
+    data.mkdir(parents=True)
+    (data / "broken.json").write_text("{not json")
+    (data / "scalar.json").write_text("null")
+    (data / "bad-shape.json").write_text(json.dumps({"passed": "yes", "pid": "not-a-boolean-pass"}))
+    (data / "accepted.json").write_text(json.dumps({
+        "passed": True, "pid": "p1", "goal": "ok", "branch": "evolve/p1",
+        "files": ["a.py"], "by": "Lead", "ts": 1.0, "duration_s": 2.0, "timeout_s": 30,
+    }))
+    result = evolve.list_accepted(SimpleNamespace(data_dir=tmp_path / "data"))
+    assert len(result) == 1 and result[0]["pid"] == "p1"
+    assert result[0]["duration_s"] == 2.0

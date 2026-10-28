@@ -75,6 +75,8 @@ def _proposal_timeout(args: dict[str, Any]) -> int:
     raw = args.get("duration_seconds", ceiling)
     if isinstance(raw, bool):
         raise ValueError("duration_seconds must be a positive integer")
+    if isinstance(raw, float) and not raw.is_integer():
+        raise ValueError("duration_seconds must be a positive integer")
     try:
         requested = int(raw)
     except (TypeError, ValueError):
@@ -109,8 +111,10 @@ def _validate_edits(edits: Any) -> list[dict[str, str]]:
         candidate = Path(rel)
         if candidate.is_absolute() or "\\" in rel or "\x00" in rel:
             raise ValueError(f"edit path must be a relative POSIX path: {rel!r}")
+        if not candidate.parts:
+            raise ValueError("edit path must name a file")
         if any(part in {"..", ".git"} for part in candidate.parts):
-            raise ValueError(f"edit path contains a forbidden component: {rel!r}")
+            raise ValueError(f"edit path escapes repo or contains a forbidden component: {rel!r}")
         if not isinstance(value, str):
             raise ValueError(f"edit {index + 1} content must be a string")
         key = candidate.as_posix()
@@ -428,8 +432,9 @@ def list_accepted(settings) -> list[dict[str, Any]]:
         for f in sorted(d.glob("*.json")):
             try:
                 m = json.loads(f.read_text())
-            except ValueError:
+            except (OSError, ValueError, TypeError):
                 continue
-            if m.get("passed"):
-                out.append({k: m[k] for k in ("pid", "goal", "branch", "files", "by", "ts", "duration_s", "timeout_s") if k in m})
+            if not isinstance(m, dict) or m.get("passed") is not True:
+                continue
+            out.append({k: m[k] for k in ("pid", "goal", "branch", "files", "by", "ts", "duration_s", "timeout_s") if k in m})
     return out

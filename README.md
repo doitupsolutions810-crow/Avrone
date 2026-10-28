@@ -81,6 +81,17 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.10: Advanced reconnaissance (bounded, authorized)
+
+Deeper recon on hosts/domains you name, one target per call, public data or a direct connection only:
+- `tls_inspect` — a host's TLS cert: issuer, validity, every SAN hostname.
+- `http_fingerprint` — HTTP response headers (server/tech hints) and which security headers are missing.
+- `cert_transparency` — a domain's subdomains from public certificate-transparency logs (crt.sh).
+- `dns_enum` — A/AAAA/MX/NS/TXT/CNAME/SOA via DNS-over-HTTPS.
+- `port_scan` — TCP-connect scan of a small port set on ONE host, and **only** with `authorized=true`; scanning third-party hosts is refused.
+
+Guardrails: one target per call, no sweeps or ranges, `AVRONE_RECON=allow|deny`, optional `AVRONE_RECON_ALLOWLIST`, every call logged to Codex. No access to private infrastructure, satellites, towers, or any capability AVRONE does not actually have.
+
 ## v0.9: Self-evolution (AVRONE edits its own code, safely)
 
 - Agents can propose changes to AVRONE's **own** codebase with `evolve_propose` ({goal, edits:[{path, content}]}).

@@ -536,3 +536,5 @@ def register_extra_tools(registry) -> None:
     register_kit_tools(registry)
     from .evolve import register_evolve_tools
     register_evolve_tools(registry)
+    from .recon import register_recon_tools
+    register_recon_tools(registry)

@@ -220,9 +220,50 @@ Ask a squad things like "trace the route to github.com and tell me who runs each
 
 ```bash
 pip install -e ".[dev]"
-cp .env.example .env          # set your OpenClaw token, or AVRONE_LLM_MODE=mock to demo
+cp .env.example .env          # Ollama + qwen2.5:3b by default, or set your own provider
 avrone                        # http://127.0.0.1:8710
 ```
+
+### Free open-source models (Ollama)
+
+AVRONE is provider-agnostic (OpenAI-compatible API), so the free route is one
+env change — no code changes:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh   # or brew install ollama
+ollama pull qwen2.5:3b
+cp .env.example .env                            # AVRONE_PROVIDER=ollama is already set
+avrone
+```
+
+**Why qwen2.5:3b is the default:** it was picked by a live, no-mock benchmark
+(`tools/model_bench.py`), not by guesswork. The bench scores each candidate on
+exactly what AVRONE needs, against a real Ollama server with the `shell` tool
+really executing:
+
+| Stage | Points | What it proves |
+| --- | --- | --- |
+| JSON actions | 30 | a valid tool/final action every turn (worker protocol) |
+| Tool use | 25 | really calls the tool instead of guessing (15) + correct computed value (10) |
+| Squad | 35 | planner JSON (10) + both workers finish (10) + Lead merge non-weak (15) |
+| Deep wave | 10 | recursive review: 2 reviewers + Deep Lead report with all sections |
+
+Results (2 vCPU, no GPU): **qwen2.5:3b scored 100/100** — every turn valid,
+correct tool calls, full squad with a merged answer. The bench survives server
+drops mid-run (health-wait + retries), isolates models so one failure never
+kills the run, and writes results incrementally.
+
+Run it yourself, or let CI run it — the `model-bench` workflow (weekly, or on
+demand from the Actions tab) installs Ollama on the runner, pulls the
+candidates, and uploads `bench_results.json`:
+
+```bash
+python3 tools/model_bench.py --base http://127.0.0.1:11434
+```
+
+On a GPU host, upgrade in one env line (`AVRONE_LLM_MODEL=qwen3.5:9b`): the
+Qwen family leads open-weight tool-calling benchmarks (BFCL v4 / TAU2-bench),
+so bigger Qwen models only get better at orchestration.
 
 ### Connect OpenClaw
 
@@ -281,3 +322,4 @@ pytest -q     # runs fully offline with the mock model and local runner
 - Self-hosted runners pool (multiple environments, one per run)
 - Model hosting environment (Ollama/vLLM container managed by Sovereign OS)
 - Persistent agent memory in Eternal CodeX
+

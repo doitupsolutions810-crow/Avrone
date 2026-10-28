@@ -92,6 +92,14 @@ async def _run(args: argparse.Namespace) -> int:
                 print(to_mermaid(data) if args.format == "mermaid" else json.dumps(data, indent=2))
             return 0
 
+        if args.cmd == "evolve":
+            from .evolve import list_accepted
+            rows = list_accepted(core.settings)
+            print(json.dumps(rows, indent=2, default=str) if args.json else
+                  ("\n".join(f"{r['pid']} {r['branch']}  {r['goal']}  ({', '.join(r['files'])})" for r in rows)
+                   or "no accepted proposals"))
+            return 0
+
         if not args.quiet:
             q = core.codex.subscribe()
             pump = asyncio.create_task(_pump(q))
@@ -152,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("map", parents=[common], help="system map of AVRONE's own nodes and traffic")
     m.add_argument("--hours", type=float, default=24)
     m.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
+    sub.add_parser("evolve", parents=[common], help="list accepted self-evolution proposals (code AVRONE wrote for itself)")
     return p
 
 

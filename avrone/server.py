@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.9.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -219,6 +219,12 @@ async def fleet_run(request: Request):
 @app.get("/api/gateway")
 async def gateway_status():
     return core().llm.status()
+
+
+@app.get("/api/evolve")
+async def api_evolve():
+    from .evolve import list_accepted
+    return {"accepted": list_accepted(core().settings)}
 
 
 @app.get("/api/telemetry")

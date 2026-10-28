@@ -534,3 +534,5 @@ def register_extra_tools(registry) -> None:
     register_net_tools(registry)
     from .agentkit import register_kit_tools
     register_kit_tools(registry)
+    from .evolve import register_evolve_tools
+    register_evolve_tools(registry)

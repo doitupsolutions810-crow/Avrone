@@ -254,11 +254,19 @@ or `AVRONE_AGENTS_CAN_SHELL=false` to tighten things, and leave `AVRONE_ADMIN_TO
 empty to turn the admin terminal off. Remote browser access can establish an eight-hour
 HttpOnly/SameSite API session using the visible API-token form; use a strong token and HTTPS.
 The local runner refuses host-root execution by default and refuses to claim network isolation
-it cannot enforce. Docker agent containers drop Linux capabilities, disable privilege escalation,
-and apply PID/memory/CPU limits. Set `AVRONE_DOCKER_IMAGE_ALLOWLIST` and
-`AVRONE_DOCKER_REQUIRE_DIGEST=true` for production image pinning.
+it cannot enforce. `AVRONE_RUNNER=auto` will not silently downgrade to a host-local shell when
+Docker is missing or fails; `AVRONE_ALLOW_UNSANDBOXED_LOCAL=true` is a deliberate opt-in for
+trusted local-only deployments. Docker agent containers drop Linux capabilities, run as the
+workspace owner, disable privilege escalation, and apply PID/memory/CPU limits. Set
+`AVRONE_DOCKER_IMAGE_ALLOWLIST` and `AVRONE_DOCKER_REQUIRE_DIGEST=true` for production image pinning.
 
 ### Hosting and privilege boundary
+
+The primary and one-off agent containers use configurable `AVRONE_DOCKER_MEMORY_LIMIT`,
+`AVRONE_DOCKER_CPU_LIMIT` and `AVRONE_DOCKER_PIDS_LIMIT` bounds. `AVRONE_ALLOW_NETWORK=false`
+uses Docker's `--network none` and the local runner refuses to pretend it can enforce the same
+restriction. Set `AVRONE_HTTP_PRIVATE_ALLOWLIST` only for exact approved internal host/IP values;
+never use broad wildcard/CIDR entries.
 
 The supplied `docker-compose.yml` mounts `/var/run/docker.sock` into the coordinator so it can launch sibling agent containers. Access to that socket is effectively host-level Docker administration. Keep the coordinator restricted to trusted operators, do not expose the socket to agent containers, and do not expose the dashboard publicly without an authentication proxy, API token, TLS, and host firewall rules.
 

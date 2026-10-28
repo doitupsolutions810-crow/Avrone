@@ -73,3 +73,36 @@ def test_corrupt_daily_budget_fails_closed(monkeypatch, tmp_path):
     budget_path.write_text("{broken", encoding="utf-8")
     with pytest.raises(RuntimeError, match="corrupt"):
         _reserve_daily_budget(ctx, 1)
+
+
+def test_daily_budget_rejects_nonfinite_and_inconsistent_state(monkeypatch, tmp_path):
+    ctx = _ctx(tmp_path)
+    from avrone.evolve import _budget_day, _budget_paths
+    day = _budget_day()
+    budget_path, _ = _budget_paths(ctx, day)
+    budget_path.write_text(
+        '{"day":"' + day + '","started":1,"accepted":0,"rejected":0,'
+        '"elapsed_s":NaN,"reserved_s":0}',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="corrupt"):
+        _reserve_daily_budget(ctx, 1)
+
+    budget_path.write_text(
+        '{"day":"' + day + '","started":-1,"accepted":0,"rejected":0,'
+        '"elapsed_s":0,"reserved_s":0}',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="invalid counters"):
+        _reserve_daily_budget(ctx, 1)
+
+
+def test_daily_budget_refuses_symlinked_state(tmp_path):
+    ctx = _ctx(tmp_path)
+    from avrone.evolve import _budget_day, _budget_paths
+    budget_path, _ = _budget_paths(ctx, _budget_day())
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    budget_path.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="must not be symlinks"):
+        _reserve_daily_budget(ctx, 1)

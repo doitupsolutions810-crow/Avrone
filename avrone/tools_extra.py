@@ -496,6 +496,64 @@ async def t_think(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "noted"
 
 
+# --------------------------------------------------------------------------- diff_files
+
+DIFF_MAX_FILE_BYTES = 1_000_000
+DIFF_MAX_TEXT_CHARS = 1_000_000
+DIFF_MAX_OUTPUT_CHARS = 12000
+
+
+def _read_text_for_diff(ctx: "AgentContext", raw: Any, label: str) -> tuple[str | None, str]:
+    """Return (text, display_name) or (None, error message)."""
+    rel = str(raw or "").strip()
+    if not rel:
+        return None, f"ERROR: {label} is required"
+    p = _safe_path(_ws(ctx), rel)
+    if not p.exists():
+        return None, f"ERROR: {rel} not found"
+    if not p.is_file():
+        return None, f"ERROR: {rel} is not a file"
+    if p.stat().st_size > DIFF_MAX_FILE_BYTES:
+        return None, f"ERROR: {rel} is larger than {DIFF_MAX_FILE_BYTES} bytes"
+    data = p.read_bytes()
+    if b"\0" in data[:8192]:
+        return None, f"ERROR: {rel} looks like a binary file"
+    return data.decode(errors="replace"), _rel(ctx, p)
+
+
+async def t_diff_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    import difflib
+
+    has_b, has_text = args.get("path_b") not in (None, ""), "text_b" in args and args.get("text_b") is not None
+    if has_b == has_text:
+        return "ERROR: give exactly one of path_b or text_b"
+    a_text, a_name = _read_text_for_diff(ctx, args.get("path_a"), "path_a")
+    if a_text is None:
+        return a_name
+    if has_b:
+        b_text, b_name = _read_text_for_diff(ctx, args.get("path_b"), "path_b")
+        if b_text is None:
+            return b_name
+    else:
+        if not isinstance(args.get("text_b"), str):
+            return "ERROR: text_b must be a string"
+        b_text, b_name = args["text_b"], "(text_b)"
+        if len(b_text) > DIFF_MAX_TEXT_CHARS:
+            return f"ERROR: text_b is longer than {DIFF_MAX_TEXT_CHARS} chars"
+    context = _int(args.get("context"), 3, 0, 20)
+    lines = list(difflib.unified_diff(a_text.splitlines(keepends=True), b_text.splitlines(keepends=True),
+                                      fromfile=a_name, tofile=b_name, n=context))
+    if not lines:
+        return f"No differences between {a_name} and {b_name}."
+    out = "".join(ln if ln.endswith("\n") else ln + "\n\\ No newline at end of file\n" for ln in lines)
+    added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+    summary = f"[{added} added, {removed} removed]"
+    if len(out) > DIFF_MAX_OUTPUT_CHARS:
+        out = out[:DIFF_MAX_OUTPUT_CHARS] + f"\n...[diff truncated, {len(out)} chars total]\n"
+    return out.rstrip("\n") + "\n" + summary
+
+
 # --------------------------------------------------------------------------- registration
 
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
@@ -523,6 +581,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"image": str, "cmd": str}', t_docker_run),
     ("think", "private scratchpad: record your reasoning/plan; no side effects.",
      '{"thought": str}', t_think),
+    ("diff_files", "unified diff between two workspace text files, or a file and given text (path-confined, output capped at 12000 chars).",
+     '{"path_a": str, "path_b"?: str, "text_b"?: str, "context"?: int}', t_diff_files),
 ]
 
 

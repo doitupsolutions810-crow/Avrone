@@ -121,7 +121,7 @@ def validate_node_url(value: object) -> str:
     except ValueError:
         raise ValueError("url is malformed") from None
     if parsed.scheme not in {"http", "https"} or not hostname:
-        raise ValueError("url must be an absolute http(s) URL")
+        raise ValueError("url must be http(s) and absolute")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("url must not contain embedded credentials")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:

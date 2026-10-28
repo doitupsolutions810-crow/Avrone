@@ -142,3 +142,42 @@ def test_ensure_worktree_refuses_preexisting_symlink(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="must not be a symlink"):
         asyncio.run(evolve._ensure_worktree(c, "prop-a", time.monotonic() + 30))
     assert list(outside.iterdir()) == []
+
+
+def test_transient_failure_retries_the_full_suite_not_only_last_failed(tmp_path, monkeypatch):
+    import subprocess
+
+    repo = tmp_path / "source-repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("source")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=test@example.invalid", "-c", "user.name=test", "commit", "-qm", "base"], cwd=repo, check=True)
+
+    class ScriptedRunner:
+        def __init__(self):
+            self.tests = []
+        async def run(self, command, timeout=None):
+            if "python -m pytest" in command:
+                self.tests.append(command)
+                exit_code = 1 if len(self.tests) == 1 else 0
+                return SimpleNamespace(exit_code=exit_code, stdout="simulated full-suite result", stderr="")
+            proc = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=timeout)
+            return SimpleNamespace(exit_code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+
+    runner = ScriptedRunner()
+    c = ctx(tmp_path)
+    c.core.runner = runner
+    monkeypatch.setenv("AVRONE_REPO_DIR", str(repo))
+    monkeypatch.delenv("AVRONE_SELF_EVOLVE", raising=False)
+    monkeypatch.delenv("AVRONE_EVOLVE_TEST_CMD", raising=False)
+    out = asyncio.run(evolve.t_evolve_propose(c, {
+        "goal": "prove full suite retry",
+        "edits": [{"path": "README.md", "content": "changed in isolated proposal"}],
+        "test_cmd": "python -m pytest -q",
+        "duration_seconds": 60,
+    }))
+    assert "ACCEPTED" in out
+    assert len(runner.tests) == 2
+    assert runner.tests[0] == runner.tests[1]
+    assert all("--lf" not in command for command in runner.tests)

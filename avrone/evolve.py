@@ -277,7 +277,7 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
                 retry_timeout = 0
             if retry_timeout:
                 again = await _sh(
-                    ctx, f"{test_env} {test_cmd} --lf 2>&1", wt,
+                    ctx, f"{test_env} {test_cmd} 2>&1", wt,
                     timeout=retry_timeout,
                 )
                 test_result = again

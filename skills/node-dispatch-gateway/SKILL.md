@@ -18,7 +18,8 @@ Use the fleet as a bounded execution and collaboration fabric, not as an implici
 
 ## Safe tooling and environment
 - Do not copy application/provider/fleet credentials into child-process environments, agent prompts, artifacts, or debug output.
-- Keep shell-capable agents inside Docker or another dedicated unprivileged sandbox. A workspace directory is a working directory, not a security boundary. Local command timeouts must terminate process groups; Docker commands need an in-container deadline as well as a host-side timeout.
+- Keep shell-capable agents inside Docker or another dedicated unprivileged sandbox. A workspace directory is a working directory, not a security boundary. Local command timeouts must terminate process groups; Docker commands need an in-container deadline as well as a host-side timeout. Drop Linux capabilities, disable privilege escalation, and bound PID/memory/CPU resources.
+- A mounted Docker socket is effectively host-level container administration. Never mount it into agent containers; the coordinator still needs to be treated as a trusted privileged control-plane component. The stock compose container does not control host systemd, so keep the root gateway disabled there unless a separate host-side broker is deployed.
 - Keep network access disabled unless the task needs it. Reconnaissance remains explicitly authorized, target-scoped, logged, and allowlisted where practical.
 - Plugins and MCP servers can expand effective capabilities; pin and review their sources and arguments, and report the source of every tool.
 - Agent-directed fetch/HTTP tools validate schemes, credentials, DNS answers and every redirect. Private RFC1918/IPv6-ULA nodes can be permitted by exact hostname/IP via `AVRONE_HTTP_PRIVATE_ALLOWLIST` when explicitly authorized; wildcards/CIDRs are ignored, and loopback/link-local/reserved/metadata remain blocked. Also strip auth headers on cross-origin redirects, reject redirects on write requests, cap bodies at 1 MB and responses at 4 MB, bound headers and total request time. DNS validation cannot eliminate rebinding; enforce egress with Docker/firewall policy.
@@ -39,3 +40,5 @@ Use the fleet as a bounded execution and collaboration fabric, not as an implici
 
 ## Recon reporting
 For every run, state whether the result came from source review, a recorded system log, or live execution. Do not describe source code as current runtime state. Do not scan targets unless the operator has explicitly authorized that target and the configured policy allows it.
+
+- Set `AVRONE_DOCKER_IMAGE_ALLOWLIST` to exact reviewed image references and `AVRONE_DOCKER_REQUIRE_DIGEST=true` for digest pinning. The same policy applies to the primary agent container and temporary docker_run workers.

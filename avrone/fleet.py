@@ -32,6 +32,7 @@ import os
 import re
 import secrets
 import socket
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -82,8 +83,10 @@ class FleetManager:
         except ValueError:
             heartbeat = 15.0
         self.heartbeat_s = heartbeat if 0.1 <= heartbeat <= 3600 else 15.0
-        self.path = Path(data_dir) / "fleet.json"
+        self.path = Path(data_dir).resolve() / "fleet.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.is_symlink():
+            raise ValueError("fleet registry file must not be a symlink")
         try:
             saved = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -106,7 +109,7 @@ class FleetManager:
                 try:
                     peer_url = validate_node_url(node.get("url"))
                     last_seen = float(node.get("last_seen", 0))
-                    if not math.isfinite(last_seen) or last_seen < 0:
+                    if not math.isfinite(last_seen) or last_seen < 0 or last_seen > time.time() + 60:
                         continue
                 except (ValueError, TypeError):
                     continue
@@ -124,7 +127,19 @@ class FleetManager:
         return bool(self.token)
 
     def _save(self) -> None:
-        self.path.write_text(json.dumps({"node_id": self.node_id, "nodes": self.nodes}, indent=2))
+        if self.path.is_symlink():
+            raise ValueError("fleet registry file must not be a symlink")
+        payload = json.dumps({"node_id": self.node_id, "nodes": self.nodes}, indent=2)
+        fd, tmp_name = tempfile.mkstemp(prefix=".fleet-", suffix=".tmp", dir=str(self.path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp_name, self.path)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
 
     def status_of(self, n: dict[str, Any]) -> str:
         age = time.time() - n.get("last_seen", 0)
@@ -195,6 +210,9 @@ class FleetManager:
         capabilities = payload.get("capabilities", {})
         if not isinstance(capabilities, dict) or len(json.dumps(capabilities, default=str)) > 8_000:
             raise ValueError("capabilities must be an object no larger than 8000 serialized characters")
+        presence = payload.get("presence")
+        if len(json.dumps(presence, default=str)) > 16_000:
+            raise ValueError("presence data must not exceed 16000 serialized characters")
         children = payload.get("children", [])
         if (not isinstance(children, list) or len(children) > MAX_NODES
                 or any(not isinstance(child, str) or not ID_RE.fullmatch(child) for child in children)):
@@ -207,7 +225,7 @@ class FleetManager:
             raise ValueError(f"node_id {nid} already online at another url")
         self.nodes[nid] = {"node_id": nid, "url": url, "last_seen": time.time(),
                            "capabilities": capabilities, "children": list(dict.fromkeys(children)),
-                           "load": float(load), "presence": payload.get("presence")}
+                           "load": float(load), "presence": presence}
         self._save()
 
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)

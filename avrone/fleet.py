@@ -38,7 +38,9 @@ x-avrone-privileged header is refused outright. The receiving node accepts it on
 on AND the sender is in its AVRONE_PRIVILEGED_NODES (and in FLEET_ALLOW, and within the hop bounds);
 otherwise it refuses with a `fleet.privileged.refused` audit event. Accepted privileged runs are
 audited as `fleet.privileged.accept` and run with core.fleet_privileged set to the granted capability
-(downstream tools gate on it); the originating node also needs its own toggle on to send one.
+AND the run-scoped tools_extra.PRIV_GRANT context set to it; the priv_shell / priv_admin tools require
+both to agree (so a concurrent unrelated run never inherits it). The originating node also needs its
+own toggle on to send one.
 The sender id is asserted inside the HMAC-signed body: it is tamper-proof in transit, but any
 holder of the shared token can claim any id, so the allowlist limits blast radius, not trust.
 Other env:
@@ -67,6 +69,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from .tools import Tool
+from .tools_extra import priv_grant
 from .trinity import clamp_deep_rounds
 
 if TYPE_CHECKING:
@@ -590,13 +593,16 @@ class FleetManager:
         c.fleet_hops = hops  # remote agents see how deep they are
         c.fleet_privileged = priv  # granted elevated capability ("" = none); tools gate on it
         try:
-            if mode == "chat":
-                res = await c.chat(prompt)
-            elif mode == "deep":
-                r = clamp_deep_rounds(payload.get("rounds"))
-                res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}))
-            else:
-                res = await c.squad(prompt, payload.get("n"))
+            # run-scoped half of the grant: tools spawned in THIS run's task tree see it, a run executing
+            # concurrently on the same core does not (priv tools require both halves to agree)
+            with priv_grant(priv):
+                if mode == "chat":
+                    res = await c.chat(prompt)
+                elif mode == "deep":
+                    r = clamp_deep_rounds(payload.get("rounds"))
+                    res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}))
+                else:
+                    res = await c.squad(prompt, payload.get("n"))
         finally:
             c.fleet_hops = prev
             c.fleet_privileged = prev_priv

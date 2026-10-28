@@ -163,6 +163,10 @@ def _fleet():
     return f
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value} is not accepted")
+
+
 async def _verified(request: Request) -> dict:
     f = _fleet()
     length = request.headers.get("content-length")
@@ -180,8 +184,8 @@ async def _verified(request: Request) -> dict:
     except PermissionError as e:
         raise HTTPException(401, str(e)) from None
     try:
-        payload = json.loads(body or b"{}")
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = json.loads(body or b"{}", parse_constant=_reject_json_constant)
+    except (ValueError, UnicodeDecodeError):
         raise HTTPException(400, "Malformed fleet JSON") from None
     if not isinstance(payload, dict):
         raise HTTPException(400, "Fleet request body must be a JSON object")

@@ -18,10 +18,10 @@ Use the fleet as a bounded execution and collaboration fabric, not as an implici
 
 ## Safe tooling and environment
 - Do not copy application/provider/fleet credentials into child-process environments, agent prompts, artifacts, or debug output.
-- Keep shell-capable agents inside Docker or another dedicated unprivileged sandbox. A workspace directory is a working directory, not a security boundary.
+- Keep shell-capable agents inside Docker or another dedicated unprivileged sandbox. A workspace directory is a working directory, not a security boundary. Local command timeouts must terminate process groups; Docker commands need an in-container deadline as well as a host-side timeout.
 - Keep network access disabled unless the task needs it. Reconnaissance remains explicitly authorized, target-scoped, logged, and allowlisted where practical.
 - Plugins and MCP servers can expand effective capabilities; pin and review their sources and arguments, and report the source of every tool.
-- Agent-directed fetch/HTTP tools must validate schemes, embedded credentials, public IP/DNS results and every redirect. Reject private/loopback/link-local/metadata targets and strip auth headers on cross-origin redirect. DNS validation alone cannot eliminate rebinding; enforce egress with Docker/firewall policy.
+- Agent-directed fetch/HTTP tools must validate schemes, embedded credentials, public IP/DNS results and every redirect. Reject private/loopback/link-local/metadata targets, strip auth headers on cross-origin redirect, reject redirects on write requests, cap request bodies at 1 MB and decoded responses at 4 MB, bound headers and total request time. DNS validation alone cannot eliminate rebinding; enforce egress with Docker/firewall policy.
 
 ## Host operations and privilege
 - Never solve a hosting need by giving every agent an unrestricted host-root shell.

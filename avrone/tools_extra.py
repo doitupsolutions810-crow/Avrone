@@ -12,6 +12,7 @@ New options (all optional, read via env / getattr so config.py needs no change):
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 from collections import Counter
 import html as _html
@@ -482,17 +483,47 @@ async def t_docker_run(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return "ERROR: docker is not available on this host (no `docker` binary found)."
     image = str(args.get("image", "")).strip()
     cmd = str(args.get("cmd", ""))
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.\-/:@]*", image):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.\\-/:@]*", image):
         return "ERROR: invalid image name"
     if not cmd.strip():
         return "ERROR: cmd is required"
     ws = _ws(ctx)
-    argv = ["docker", "run", "--rm", "-v", f"{ws}:/workspace", "-w", "/workspace"]
+    container_name = f"avrone-tool-{uuid.uuid4().hex[:16]}"
+    argv = ["docker", "run", "--rm", "--name", container_name, "--label", "io.avrone.agent-run=true",
+            "-v", f"{ws}:/workspace", "-w", "/workspace"]
     if not _setting(ctx, "allow_network", True):
         argv += ["--network", "none"]
     argv += [image, "sh", "-c", cmd]
-    timeout = int(_setting(ctx, "command_timeout", 120)) + 180  # allow for image pull
-    res = await ctx.core.runner._exec(argv, f"docker run --rm {image} {cmd}", timeout)
+    command_timeout = _int(_setting(ctx, "command_timeout", 120), 120, 1, 3600)
+    # Leave time for an image pull, but clean up the named container if the host-side client times out.
+    try:
+        res = await ctx.core.runner._exec(argv, f"docker run --rm {image} [command omitted]", command_timeout + 180)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(ctx.core.runner._exec(
+                ["docker", "rm", "-f", container_name], f"docker rm -f {container_name}", 15
+            ))
+        except BaseException:
+            pass
+        raise
+    except Exception as exc:
+        try:
+            await ctx.core.runner._exec(
+                ["docker", "rm", "-f", container_name], f"docker rm -f {container_name}", 15
+            )
+        except Exception:
+            pass
+        return f"ERROR: Docker tool execution failed ({type(exc).__name__})"
+
+    if res.timed_out:
+        try:
+            cleanup = await ctx.core.runner._exec(
+                ["docker", "rm", "-f", container_name], f"docker rm -f {container_name}", 15
+            )
+            if cleanup.exit_code != 0:
+                return res.text() + "\n[cleanup warning] docker rm -f did not confirm container removal"
+        except Exception:
+            return res.text() + "\n[cleanup warning] container cleanup attempt failed"
     return res.text()
 
 

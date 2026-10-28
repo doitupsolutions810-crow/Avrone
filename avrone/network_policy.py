@@ -31,6 +31,20 @@ _BLOCKED_HOSTS = {
 }
 
 
+def _json_size(value: object, limit: int) -> int:
+    """Estimate encoded JSON size and stop as soon as the request cap is exceeded."""
+    size = 0
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    try:
+        for chunk in encoder.iterencode(value):
+            size += len(chunk.encode("utf-8"))
+            if size > limit:
+                return size
+    except (TypeError, ValueError, OverflowError, UnicodeError):
+        raise ValueError("HTTP JSON body is not serializable") from None
+    return size
+
+
 def _parse_url(url: object) -> tuple[str, str, int]:
     if not isinstance(url, str) or not url or len(url) > MAX_URL_CHARS:
         raise ValueError("URL must be a non-empty string of at most 2048 characters")
@@ -111,19 +125,20 @@ async def safe_http_request(
     for key, value in current_headers.items():
         if not isinstance(key, str) or not isinstance(value, str):
             raise ValueError("HTTP header names and values must be strings")
+        if len(key) + len(value) + header_bytes > MAX_HEADER_BYTES:
+            raise ValueError(f"HTTP headers exceed {MAX_HEADER_BYTES} bytes")
         if any(ord(char) < 32 or ord(char) == 127 for char in key + value):
             raise ValueError("HTTP headers must not contain control characters")
-        header_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
-    if header_bytes > MAX_HEADER_BYTES:
-        raise ValueError(f"HTTP headers exceed {MAX_HEADER_BYTES} bytes")
+        try:
+            header_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+        except UnicodeError:
+            raise ValueError("HTTP headers must use valid Unicode text") from None
+        if header_bytes > MAX_HEADER_BYTES:
+            raise ValueError(f"HTTP headers exceed {MAX_HEADER_BYTES} bytes")
 
     current_kwargs = dict(kwargs)
     if "json" in current_kwargs:
-        try:
-            request_body_size = len(json.dumps(current_kwargs["json"], ensure_ascii=False,
-                                               separators=(",", ":")).encode("utf-8"))
-        except (TypeError, ValueError, OverflowError):
-            raise ValueError("HTTP JSON body is not serializable") from None
+        request_body_size = _json_size(current_kwargs["json"], MAX_REQUEST_BYTES)
     elif "content" in current_kwargs:
         request_body = current_kwargs["content"]
         if isinstance(request_body, str):
@@ -137,7 +152,7 @@ async def safe_http_request(
         if isinstance(request_body, (str, bytes, bytearray, memoryview)):
             request_body_size = len(request_body.encode("utf-8") if isinstance(request_body, str) else request_body)
         else:
-            request_body_size = len(json.dumps(request_body, ensure_ascii=False).encode("utf-8"))
+            request_body_size = _json_size(request_body, MAX_REQUEST_BYTES)
     else:
         request_body_size = 0
     if request_body_size > MAX_REQUEST_BYTES:

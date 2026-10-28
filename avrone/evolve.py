@@ -8,9 +8,11 @@ Guardrails, by construction:
     branch in the worktree and is surfaced as a diff for a human to review/merge.
   * Edits are confined to the repo; paths escaping it are rejected.
 
-Tools: evolve_propose, evolve_diff, evolve_list, evolve_accept (branch only), evolve_reset.
+Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_status, evolve_diff,
+       evolve_list, evolve_accept (branch only), evolve_reset.
 Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow),
-     AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q).
+     AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
+     AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s).
 """
 from __future__ import annotations
 
@@ -83,54 +85,237 @@ def _in_repo(wt: Path, rel: str) -> Path:
     return p
 
 
-async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    if os.getenv("AVRONE_SELF_EVOLVE", "allow").lower() == "deny":
-        return "ERROR: self-evolution is disabled on this node (AVRONE_SELF_EVOLVE=deny)"
-    goal = str(args.get("goal", "")).strip()
-    edits = args.get("edits")
-    if not goal or not isinstance(edits, list) or not edits:
-        return ('ERROR: give {"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}. '
-                "Each edit replaces that file's whole contents with content.")
+def _denied() -> bool:
+    return os.getenv("AVRONE_SELF_EVOLVE", "allow").lower() == "deny"
+
+
+DENIED_MSG = "ERROR: self-evolution is disabled on this node (AVRONE_SELF_EVOLVE=deny)"
+
+# Monotonic clock, module-level so tests can drive the loop's time budget deterministically.
+_now = time.monotonic
+
+
+def _new_pid(ctx: "AgentContext") -> str:
     import uuid
-    pid = SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
+    return SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
+
+
+async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: str | None = None,
+                        timeout: int = 900, extra_meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One proposal -> test cycle in its own throwaway clone. Returns a result dict.
+
+    Every guardrail lives here so single proposals and loop iterations share it: fresh clone
+    under data_dir, edits confined to the clone, accept only on a clean full-suite pass.
+    """
+    pid = _new_pid(ctx)
+    t0 = _now()
     wt, branch = await _ensure_worktree(ctx, pid)
     changed = []
     for e in edits:
         try:
             p = _in_repo(wt, str(e["path"]))
-        except (KeyError, ValueError) as ex:
-            return f"ERROR: {ex}"
+        except (KeyError, ValueError, TypeError) as ex:
+            shutil.rmtree(wt, ignore_errors=True)
+            return {"pid": pid, "error": str(ex), "passed": False, "branch": None, "files": changed,
+                    "duration_s": round(_now() - t0, 3)}
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(str(e.get("content", "")))
         changed.append(str(e["path"]))
     # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
     # under the parallel-clone load of a squad and would reject good unit-level proposals.
-    test_cmd = str(args.get("test_cmd") or os.getenv("AVRONE_EVOLVE_TEST_CMD")
+    test_cmd = str(test_cmd or os.getenv("AVRONE_EVOLVE_TEST_CMD")
                    or 'python -m pytest -q -m "not integration"')
+    timeout = max(1, int(timeout))
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.
-    res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=900)
+    res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=timeout)
     passed = res.exit_code == 0
     flaky = False
     if not passed and "pytest" in test_cmd:
         # Separate real failures from load flakes: re-run only what failed, once, alone.
-        again = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt, timeout=600)
+        again = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt,
+                          timeout=min(600, timeout))
         if again.exit_code == 0:
             passed, flaky = True, True
             res = again
-    tail = "\n".join((res.stdout or res.stderr).splitlines()[-25:])
+    tail = "\n".join((res.stdout or res.stderr or "").splitlines()[-25:])
     if passed:
         await _sh(ctx, f"git add -A && git -c user.email=a@a -c user.name=avrone commit -qm {json.dumps(goal)[:200]}", wt)
+    duration = round(_now() - t0, 3)
     meta = {"pid": pid, "goal": goal, "branch": branch, "files": changed, "passed": passed,
             "by": ctx.name, "ts": time.time(), "test_cmd": test_cmd, "worktree": str(wt),
-            "flaky_retry": flaky, "test_tail": tail[-3000:]}
+            "flaky_retry": flaky, "test_tail": tail[-3000:], "duration_s": duration, **(extra_meta or {})}
     _meta_path(ctx, pid).write_text(json.dumps(meta))
-    _emit(ctx, "evolve.propose", pid=pid, passed=passed, files=changed)
+    _emit(ctx, "evolve.propose", pid=pid, passed=passed, files=changed, duration_s=duration)
+    return {"pid": pid, "passed": passed, "branch": branch if passed else None, "files": changed,
+            "flaky_retry": flaky, "test_tail": tail, "worktree": str(wt), "duration_s": duration}
+
+
+async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    if _denied():
+        return DENIED_MSG
+    goal = str(args.get("goal", "")).strip()
+    edits = args.get("edits")
+    if not goal or not isinstance(edits, list) or not edits:
+        return ('ERROR: give {"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}. '
+                "Each edit replaces that file's whole contents with content.")
+    r = await _propose_once(ctx, goal, edits, args.get("test_cmd"))
+    if r.get("error"):
+        return f"ERROR: {r['error']}"
+    pid, passed, flaky, branch, tail = r["pid"], r["passed"], r["flaky_retry"], f"evolve/{r['pid']}", r["test_tail"]
     verdict = ("ACCEPTED (tests pass" + (" after re-running a flaky failure" if flaky else "")
                + ", committed to branch " + branch + ")") if passed else "REJECTED (tests fail; discard or retry)"
-    return (f"proposal {pid}: {verdict}\ngoal: {goal}\nfiles: {', '.join(changed)}\n"
+    return (f"proposal {pid}: {verdict}\ngoal: {goal}\nfiles: {', '.join(r['files'])}\n"
             f"--- test tail ---\n{tail}\n"
             f"{'Use evolve_diff ' + pid + ' to see the change.' if passed else 'Fix your edits and propose again.'}")
+
+
+# ---- bounded multi-iteration loop -------------------------------------------------------------
+# Hard ceilings: no argument or env setting can exceed these.
+MAX_ITERS_CAP = 10
+TIME_BUDGET_CAP_S = 1800
+DEFAULT_MAX_ITERS = 3
+DEFAULT_TIME_BUDGET_S = 600
+
+
+def _env_num(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        x = float(raw)
+    except ValueError:
+        return None
+    return x if x == x and x > 0 else None
+
+
+def loop_limits(max_iters: Any = None, time_budget_s: Any = None) -> tuple[int, float]:
+    """Effective (max_iters, time_budget_s) for a loop.
+
+    AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET set the node's default AND its ceiling
+    (an agent can ask for less, never more); the hard caps bound everything, env included.
+    """
+    env_iters, env_budget = _env_num("AVRONE_EVOLVE_MAX_ITERS"), _env_num("AVRONE_EVOLVE_TIME_BUDGET")
+    iter_cap = min(MAX_ITERS_CAP, env_iters) if env_iters else MAX_ITERS_CAP
+    budget_cap = min(TIME_BUDGET_CAP_S, env_budget) if env_budget else TIME_BUDGET_CAP_S
+    n = int(_clamp(max_iters, env_iters or DEFAULT_MAX_ITERS, iter_cap))
+    budget = _clamp(time_budget_s, env_budget or DEFAULT_TIME_BUDGET_S, budget_cap)
+    return max(1, n), budget
+
+
+def _loops_dir(ctx: "AgentContext") -> Path:
+    d = _data(ctx) / "loops"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _attempt_row(a: dict[str, Any]) -> dict[str, Any]:
+    outcome = "error" if a.get("error") else ("accepted" if a["passed"] else "rejected")
+    return {"iteration": a["iteration"], "pid": a["pid"], "outcome": outcome, "passed": a["passed"],
+            "duration_s": a.get("duration_s"), "branch": a.get("branch"), "error": a.get("error")}
+
+
+def _clamp(v: Any, default: float, cap: float, lo: float = 1) -> float:
+    try:
+        x = float(v) if v is not None else float(default)
+    except (TypeError, ValueError):
+        x = float(default)
+    if x != x:  # NaN
+        x = float(default)
+    return max(lo, min(cap, x))
+
+
+async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = None, edits_fn=None,
+                      max_iters: int | None = None, time_budget_s: float | None = None,
+                      test_cmd: str | None = None) -> dict[str, Any]:
+    """Run up to `max_iters` proposal->test iterations, each in its own throwaway clone.
+
+    Edits for iteration i come from `candidates[i]` or `edits_fn(i, attempts_so_far)` (sync or
+    async; returning None/[] ends the loop). Stops at the first accepted proposal, when the
+    iteration cap is hit, when the time budget runs out, or when candidates are exhausted.
+    Caps: max_iters <= MAX_ITERS_CAP, time_budget_s <= TIME_BUDGET_CAP_S. Each iteration's test
+    timeout is bounded by the remaining budget.
+    """
+    if _denied():
+        return {"error": DENIED_MSG, "attempts": [], "accepted": None, "stopped": "denied"}
+    goal = str(goal or "").strip()
+    if not goal or (candidates is None and edits_fn is None):
+        return {"error": "ERROR: give a goal and candidates (list of edit lists) or edits_fn",
+                "attempts": [], "accepted": None, "stopped": "invalid"}
+    n, budget = loop_limits(max_iters, time_budget_s)
+    loop_id = _new_pid(ctx)
+    start = _now()
+    attempts: list[dict[str, Any]] = []
+    stopped, accepted = "max_iters", None
+    loop_meta = {"loop_id": loop_id, "goal": goal, "by": ctx.name, "ts": time.time(), "max_iters": n,
+                 "time_budget_s": budget, "status": "running", "stopped": None, "accepted": None,
+                 "iterations": [], "duration_s": 0.0}
+    loop_path = _loops_dir(ctx) / f"{loop_id}.json"
+
+    def save() -> None:
+        loop_meta["iterations"] = [_attempt_row(a) for a in attempts]
+        loop_meta["duration_s"] = round(_now() - start, 3)
+        loop_path.write_text(json.dumps(loop_meta))
+    save()
+    for i in range(n):
+        remaining = budget - (_now() - start)
+        if remaining <= 0:
+            stopped = "time_budget"
+            break
+        if candidates is not None:
+            edits = candidates[i] if i < len(candidates) else None
+        else:
+            edits = edits_fn(i, [dict(a) for a in attempts])
+            if hasattr(edits, "__await__"):
+                edits = await edits
+        if not edits or not isinstance(edits, list):
+            stopped = "exhausted"
+            break
+        r = await _propose_once(ctx, goal, edits, test_cmd, timeout=int(max(1, min(900, remaining))),
+                                extra_meta={"loop_id": loop_id, "iteration": i})
+        r["iteration"] = i
+        attempts.append(r)
+        row = _attempt_row(r)
+        _emit(ctx, "evolve.iteration", loop_id=loop_id, **row)
+        save()
+        if r["passed"]:
+            stopped, accepted = "accepted", {"pid": r["pid"], "branch": r["branch"]}
+            break
+        if _now() - start >= budget:
+            stopped = "time_budget"
+            break
+    loop_meta.update(status="done", stopped=stopped, accepted=accepted)
+    save()
+    _emit(ctx, "evolve.loop", loop_id=loop_id, iterations=len(attempts), stopped=stopped,
+          accepted=accepted and accepted["pid"], duration_s=loop_meta["duration_s"])
+    return {"loop_id": loop_id, "goal": goal, "max_iters": n, "time_budget_s": budget,
+            "attempts": attempts, "accepted": accepted, "stopped": stopped,
+            "duration_s": loop_meta["duration_s"]}
+
+
+async def t_evolve_loop(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    if _denied():
+        return DENIED_MSG
+    cands = args.get("candidates")
+    if not isinstance(cands, list) or not cands or not all(isinstance(c, list) and c for c in cands):
+        return ('ERROR: give {"goal": str, "candidates": [[{"path": str, "content": str}], ...], '
+                '"max_iters"?: int, "time_budget_s"?: number, "test_cmd"?: str}')
+    r = await evolve_loop(ctx, args.get("goal", ""), candidates=cands, max_iters=args.get("max_iters"),
+                          time_budget_s=args.get("time_budget_s"), test_cmd=args.get("test_cmd"))
+    if r.get("error"):
+        return r["error"]
+    lines = [f"loop {r['loop_id']}: stopped={r['stopped']} after {len(r['attempts'])} iteration(s) "
+             f"in {r['duration_s']:.1f}s (caps: {r['max_iters']} iters, {r['time_budget_s']:.0f}s)"]
+    for a in r["attempts"]:
+        d = f" [{a.get('duration_s') or 0:.1f}s]"
+        if a.get("error"):
+            lines.append(f"  #{a['iteration']} {a['pid']}: ERROR {a['error']}{d}")
+        elif a["passed"]:
+            lines.append(f"  #{a['iteration']} {a['pid']}: ACCEPTED on branch {a['branch']}{d}")
+        else:
+            tail = "\n      ".join(a["test_tail"].splitlines()[-8:])
+            lines.append(f"  #{a['iteration']} {a['pid']}: REJECTED{d}\n      {tail}")
+    return "\n".join(lines)
 
 
 async def t_evolve_diff(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -150,9 +335,57 @@ async def t_evolve_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
             m = json.loads(f.read_text())
         except ValueError:
             continue
+        tag = f" loop={m['loop_id']}#{m.get('iteration')}" if m.get("loop_id") else ""
+        dur = f" {m['duration_s']:.1f}s" if isinstance(m.get("duration_s"), (int, float)) else ""
         rows.append(f"{m['pid']} [{'PASS' if m['passed'] else 'FAIL'}] {m['goal'][:70]} "
-                    f"({', '.join(m['files'])}) by {m['by']}")
+                    f"({', '.join(m['files'])}) by {m['by']}{dur}{tag}")
+    loops = list_loops(ctx.core.settings)
+    if loops:
+        rows.append("loops:")
+        rows += ["  " + _loop_line(lp) for lp in loops]
     return "\n".join(rows) or "no proposals yet"
+
+
+def _loop_line(lp: dict[str, Any]) -> str:
+    its = lp.get("iterations", [])
+    acc = sum(1 for i in its if i.get("outcome") == "accepted")
+    return (f"{lp['loop_id']} [{lp.get('status')}{'/' + lp['stopped'] if lp.get('stopped') else ''}] "
+            f"{lp.get('goal', '')[:60]} iters={len(its)}/{lp.get('max_iters')} accepted={acc} "
+            f"rejected={len(its) - acc} {float(lp.get('duration_s') or 0):.1f}s/"
+            f"{float(lp.get('time_budget_s') or 0):.0f}s")
+
+
+def list_loops(settings) -> list[dict[str, Any]]:
+    """Every evolve loop's meta (oldest first), for evolve_list / evolve_status."""
+    d = Path(settings.data_dir) / "evolve" / "loops"
+    out = []
+    if d.exists():
+        for f in d.glob("*.json"):
+            try:
+                out.append(json.loads(f.read_text()))
+            except ValueError:
+                continue
+    return sorted(out, key=lambda m: m.get("ts", 0))
+
+
+async def t_evolve_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    loops = list_loops(ctx.core.settings)
+    lid = str(args.get("loop_id") or "")
+    if lid:
+        loops = [lp for lp in loops if lp.get("loop_id") == lid]
+        if not loops:
+            return f"ERROR: no loop {lid}. evolve_list to see them."
+    if not loops:
+        n, b = loop_limits()
+        return f"no evolve loops yet (limits: max_iters={n}, time_budget_s={b:.0f})"
+    lp = loops[-1]
+    lines = [_loop_line(lp)]
+    if lp.get("accepted"):
+        lines.append(f"accepted: {lp['accepted']['pid']} on branch {lp['accepted']['branch']}")
+    for it in lp.get("iterations", []):
+        lines.append(f"  #{it['iteration']} {it['pid']} {it['outcome'].upper()} "
+                     f"{float(it.get('duration_s') or 0):.2f}s" + (f" ({it['error']})" if it.get("error") else ""))
+    return "\n".join(lines)
 
 
 async def t_evolve_reset(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -171,8 +404,16 @@ EVOLVE_TOOLS = [
     ("evolve_propose", "propose a change to AVRONE's OWN code: it is applied in a throwaway copy of the repo and the "
      "test suite is run; it is kept only if every test passes. Nothing touches the live tree or main.",
      '{"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}', t_evolve_propose),
+    ("evolve_loop", "bounded self-evolution loop: try candidate edit sets one by one (each in its own throwaway "
+     "copy, each needing a full test pass) and stop at the first that passes or when the iteration/time budget "
+     "runs out (hard caps: 10 iterations, 1800s). Returns every attempt's verdict and failing test output.",
+     '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
+     '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_loop),
     ("evolve_diff", "show the unified diff of an accepted proposal.", '{"pid": str}', t_evolve_diff),
-    ("evolve_list", "list self-evolution proposals and whether each passed tests.", "{}", t_evolve_list),
+    ("evolve_list", "list self-evolution proposals (pass/fail, duration, loop iteration) and loops.", "{}",
+     t_evolve_list),
+    ("evolve_status", "show an evolve loop (latest by default): each iteration's outcome and duration, "
+     "accept/reject counts, and the budget used.", '{"loop_id"?: str}', t_evolve_status),
     ("evolve_reset", "discard a proposal and its worktree.", '{"pid": str}', t_evolve_reset),
 ]
 

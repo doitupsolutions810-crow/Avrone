@@ -15,6 +15,7 @@ import httpx
 
 MAX_URL_CHARS = 2_048
 MAX_REDIRECTS = 4
+MAX_RESPONSE_BYTES = 4_000_000
 _BLOCKED_HOSTS = {
     "localhost",
     "metadata",
@@ -93,27 +94,42 @@ async def safe_http_request(
     max_redirects: int = MAX_REDIRECTS,
     **kwargs,
 ) -> httpx.Response:
-    """Request a validated public URL and revalidate every redirect before following."""
+    """Request a validated public URL, bounding response bytes and revalidating redirects."""
     current = await validate_public_http_url(url, mock_transport=transport is not None)
     method = method.upper()
     current_headers = dict(headers or {})
+    current_kwargs = dict(kwargs)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
                                  transport=transport) as client:
         for redirect_count in range(max_redirects + 1):
-            response = await client.request(method, current, headers=current_headers, **kwargs)
-            if response.status_code not in {301, 302, 303, 307, 308} or "location" not in response.headers:
-                return response
-            if method not in {"GET", "HEAD"}:
-                raise ValueError("redirects are disabled for write requests")
-            if redirect_count >= max_redirects:
-                raise ValueError(f"too many HTTP redirects (maximum {max_redirects})")
-            target = urljoin(current, response.headers["location"])
-            await validate_public_http_url(target, mock_transport=transport is not None)
-            old, new = urlsplit(current), urlsplit(target)
-            if (old.scheme, old.hostname, old.port) != (new.scheme, new.hostname, new.port):
-                current_headers = {
-                    key: value for key, value in current_headers.items()
-                    if key.lower() not in {"authorization", "cookie", "proxy-authorization", "host"}
-                }
-            current = target
+            async with client.stream(method, current, headers=current_headers, **current_kwargs) as response:
+                if response.status_code in {301, 302, 303, 307, 308} and "location" in response.headers:
+                    if method not in {"GET", "HEAD"}:
+                        raise ValueError("redirects are disabled for write requests")
+                    if redirect_count >= max_redirects:
+                        raise ValueError(f"too many HTTP redirects (maximum {max_redirects})")
+                    target = urljoin(current, response.headers["location"])
+                    await validate_public_http_url(target, mock_transport=transport is not None)
+                    old, new = urlsplit(current), urlsplit(target)
+                    if (old.scheme, old.hostname, old.port) != (new.scheme, new.hostname, new.port):
+                        current_headers = {
+                            key: value for key, value in current_headers.items()
+                            if key.lower() not in {"authorization", "cookie", "proxy-authorization", "host"}
+                        }
+                        for key in ("json", "data", "content"):
+                            current_kwargs.pop(key, None)
+                    current = target
+                    continue
+
+                chunks = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                        raise ValueError(f"HTTP response exceeds {MAX_RESPONSE_BYTES} decoded bytes")
+                    chunks.extend(chunk)
+                return httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=bytes(chunks),
+                    request=response.request,
+                )
     raise ValueError("HTTP redirect processing did not complete")

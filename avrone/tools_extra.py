@@ -12,6 +12,7 @@ New options (all optional, read via env / getattr so config.py needs no change):
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 from collections import Counter
 import html as _html
@@ -28,6 +29,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
+from .network_policy import safe_http_request
+from .sovereign import _docker_image_policy_error, _docker_sandbox_args, _docker_workspace_user_args
 from .tools import Tool, _safe_path
 
 if TYPE_CHECKING:
@@ -329,13 +332,17 @@ async def t_http_request(ctx: "AgentContext", args: dict[str, Any]) -> str:
     headers = {str(k): str(v) for k, v in headers.items()}
     headers.setdefault("User-Agent", "AVRONE/0.2")
     body = args.get("body")
-    kw: dict[str, Any] = {"headers": headers}
+    kw: dict[str, Any] = {}
     if isinstance(body, (dict, list)):
         kw["json"] = body
     elif body is not None:
         kw["content"] = str(body).encode()
-    async with _client() as c:
-        r = await c.request(method, url, **kw)
+    try:
+        r = await safe_http_request(method, url, headers=headers, timeout=30, transport=HTTP_TRANSPORT, **kw)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    except httpx.HTTPError as exc:
+        return f"ERROR: HTTP request failed ({type(exc).__name__})"
     lines = [f"HTTP {r.status_code} {r.reason_phrase}"]
     for h in _KEY_HEADERS:
         if h in r.headers:
@@ -482,12 +489,46 @@ async def t_docker_run(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not cmd.strip():
         return "ERROR: cmd is required"
     ws = _ws(ctx)
-    argv = ["docker", "run", "--rm", "-v", f"{ws}:/workspace", "-w", "/workspace"]
-    if not _setting(ctx, "allow_network", True):
-        argv += ["--network", "none"]
+    container_name = f"avrone-tool-{uuid.uuid4().hex[:16]}"
+    allow_network = bool(_setting(ctx, "allow_network", True))
+    image_error = _docker_image_policy_error(image)
+    if image_error:
+        return "ERROR: " + image_error
+    argv = ["docker", "run", "--rm", "--name", container_name, "--label", "io.avrone.agent-run=true",
+            *_docker_sandbox_args(allow_network=allow_network),
+            *_docker_workspace_user_args(ws),
+            "-v", f"{ws}:/workspace", "-w", "/workspace"]
     argv += [image, "sh", "-c", cmd]
-    timeout = int(_setting(ctx, "command_timeout", 120)) + 180  # allow for image pull
-    res = await ctx.core.runner._exec(argv, f"docker run --rm {image} {cmd}", timeout)
+    command_timeout = _int(_setting(ctx, "command_timeout", 120), 120, 1, 3600)
+    # Leave time for an image pull, but clean up the named container if the host-side client times out.
+    try:
+        res = await ctx.core.runner._exec(argv, f"docker run --rm {image} [command omitted]", command_timeout + 180)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(ctx.core.runner._exec(
+                ["docker", "rm", "-f", container_name], f"docker rm -f {container_name}", 15
+            ))
+        except BaseException:
+            pass
+        raise
+    except Exception as exc:
+        try:
+            await ctx.core.runner._exec(
+                ["docker", "rm", "-f", container_name], f"docker rm -f {container_name}", 15
+            )
+        except Exception:
+            pass
+        return f"ERROR: Docker tool execution failed ({type(exc).__name__})"
+
+    if res.timed_out:
+        try:
+            cleanup = await ctx.core.runner._exec(
+                ["docker", "rm", "-f", container_name], f"docker rm -f {container_name}", 15
+            )
+            if cleanup.exit_code != 0:
+                return res.text() + "\n[cleanup warning] docker rm -f did not confirm container removal"
+        except Exception:
+            return res.text() + "\n[cleanup warning] container cleanup attempt failed"
     return res.text()
 
 

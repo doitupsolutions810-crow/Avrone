@@ -81,6 +81,19 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.14.0: Secure node dispatch, operator controls, and daily evolution budgets
+
+- Fleet dispatch validates JSON shape, route IDs, unique nodes, completed and future hop counts, modes, squad sizes, prompt/message bounds, and source/run IDs before scheduling work.
+- Fleet peer URLs reject embedded credentials and unexpected paths, query strings, fragments, and invalid ports. HTTPS is required for non-loopback peers unless the operator deliberately opts into legacy plaintext HTTP. The persisted registry is validated and capped; replay-nonce memory and request bodies are bounded.
+- Agent fetch and generic HTTP tools validate URL schemes, reject embedded credentials/local/private/link-local/metadata destinations, check DNS answers, revalidate redirect targets, strip cross-origin credentials, reject write redirects, cap requests at 1 MB and responses at 4 MB decoded, bound headers, and apply a total request deadline. Operators may explicitly allow exact RFC1918/IPv6-ULA hostnames or IPs via `AVRONE_HTTP_PRIVATE_ALLOWLIST` for authorized private nodes; wildcard/CIDR entries, loopback, link-local and metadata targets remain blocked. Host egress policy is still required against DNS rebinding.
+- Remote HTTP APIs and the live event WebSocket now use API-token checks: loopback clients are allowed by default; use AVRONE_API_AUTH=always behind a reverse proxy or for any public bind. The explicit off mode disables this guard and is not recommended for exposed services.
+- Agent child processes receive a scrubbed environment with API, provider, fleet, cloud and source-control credentials removed. The local runner refuses effective host UID 0 by default, kills POSIX process groups on timeout, and applies a second in-container timeout to Docker commands.
+- Added an operator-only host service-operation endpoint. It requires both the admin token and a separate root-operation token, plus an explicit operation and service allowlist. Only service status/restart are supported; the host still needs a narrow sudoers rule. No arbitrary agent root shell is exposed.
+- Self-evolution now reserves worst-case proposal time in a cross-process UTC-day budget, with defaults of 900 seconds/proposal, 3600 seconds/day and 12 started proposals/day; hard ceilings are 1800 seconds/proposal, 14400 seconds/day and 100 proposals/day. Reservations prevent concurrent proposals from oversubscribing the budget.
+- New test modules cover dispatch payload boundaries, API auth modes, outbound HTTP safety, subprocess credential isolation and process timeouts, the scoped host gateway, fleet registry storage, and atomic daily evolution budgets.
+
+**Verification status:** tests are authored but not yet certified green. This environment has no local repository checkout, and previous GitHub Actions jobs were terminating without an assigned runner. Do not promote this candidate until CI runs the exact head commit on a functioning runner.
+
 ## v0.13.1: Self-evolution containment and duration budget
 
 - Proposal paths use resolved path containment rather than string-prefix checks; proposal IDs and metadata/worktree lookup are validated.
@@ -236,9 +249,28 @@ curl -s localhost:8710/api/terminal -H "X-Admin-Token: $AVRONE_ADMIN_TOKEN" \
 ## Safety
 
 Agents run real commands. Prefer the Docker runner, keep `AVRONE_HOST=127.0.0.1`
-unless you put auth in front of it, set `AVRONE_ALLOW_NETWORK=false` or
-`AVRONE_AGENTS_CAN_SHELL=false` to tighten things, and leave `AVRONE_ADMIN_TOKEN`
-empty to turn the admin terminal off.
+unless you configure API authentication and network controls, set `AVRONE_ALLOW_NETWORK=false`
+or `AVRONE_AGENTS_CAN_SHELL=false` to tighten things, and leave `AVRONE_ADMIN_TOKEN`
+empty to turn the admin terminal off. Remote browser access can establish an eight-hour
+HttpOnly/SameSite API session using the visible API-token form; use a strong token and HTTPS.
+The local runner refuses host-root execution by default and refuses to claim network isolation
+it cannot enforce. `AVRONE_RUNNER=auto` will not silently downgrade to a host-local shell when
+Docker is missing or fails; `AVRONE_ALLOW_UNSANDBOXED_LOCAL=true` is a deliberate opt-in for
+trusted local-only deployments. Docker agent containers drop Linux capabilities, run as the
+workspace owner, disable privilege escalation, and apply PID/memory/CPU limits. Set
+`AVRONE_DOCKER_IMAGE_ALLOWLIST` and `AVRONE_DOCKER_REQUIRE_DIGEST=true` for production image pinning.
+
+### Hosting and privilege boundary
+
+The primary and one-off agent containers use configurable `AVRONE_DOCKER_MEMORY_LIMIT`,
+`AVRONE_DOCKER_CPU_LIMIT` and `AVRONE_DOCKER_PIDS_LIMIT` bounds. `AVRONE_ALLOW_NETWORK=false`
+uses Docker's `--network none` and the local runner refuses to pretend it can enforce the same
+restriction. Set `AVRONE_HTTP_PRIVATE_ALLOWLIST` only for exact approved internal host/IP values;
+never use broad wildcard/CIDR entries.
+
+The supplied `docker-compose.yml` mounts `/var/run/docker.sock` into the coordinator so it can launch sibling agent containers. Access to that socket is effectively host-level Docker administration. Keep the coordinator restricted to trusted operators, do not expose the socket to agent containers, and do not expose the dashboard publicly without an authentication proxy, API token, TLS, and host firewall rules.
+
+The new operator host gateway is deliberately limited to `systemctl is-active` and `systemctl restart` for exact allowlisted units. The stock AVRONE container does not run the host's systemd manager, so the host-service gateway should remain disabled in that compose deployment; do not solve this by running the application privileged or mounting the host systemd socket. Use a separate host-side least-privilege broker or run AVRONE natively under a restricted service account with an audited sudoers rule.
 
 ## Tests
 

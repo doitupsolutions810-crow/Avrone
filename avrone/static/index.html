@@ -11,6 +11,10 @@
   header { display:flex; align-items:center; gap:14px; padding:10px 16px; border-bottom:1px solid var(--line); }
   header h1 { font-size:16px; letter-spacing:.2em; margin:0; color:var(--accent); }
   header .meta { color:var(--dim); font-size:12px; }
+  header #authform { margin-left:auto; padding:0; border:0; align-items:center; }
+  header #authform input { height:30px; width:150px; padding:4px 8px; }
+  header #authform button { height:30px; padding:0 10px; }
+  header #authmsg { font-size:11px; color:var(--dim); max-width:150px; }
   main { display:grid; grid-template-columns: 1fr 380px; min-height:0; }
   #chat { display:flex; flex-direction:column; min-height:0; border-right:1px solid var(--line); }
   #msgs { flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
@@ -46,7 +50,9 @@
 </style>
 </head>
 <body>
-<header><h1>AVRONE</h1><span class="meta" id="meta">connecting…</span></header>
+<header><h1>AVRONE</h1><span class="meta" id="meta">connecting…</span>
+  <form id="authform"><input id="apitok" type="password" autocomplete="current-password" placeholder="API token (remote)" aria-label="API token" /><button>Connect</button><button type="button" id="authlogout">Log out</button></form><span id="authmsg">Local access may not need a token.</span>
+</header>
 <main>
   <section id="chat">
     <div id="msgs"></div>
@@ -120,8 +126,12 @@ async function loadTools(){
   } catch(e){ $('#toollist').textContent = 'Could not load tools: '+e; }
 }
 async function status(){ try { const s = await (await fetch('/api/status')).json(); $('#meta').textContent = `runner: ${s.runner} · ${s.provider||''} model: ${s.model} @ ${s.backend} · squad: ${s.squad_size} · tools: ${s.tools??'?'}`; } catch(e){ $('#meta').textContent='offline'; } }
+let eventSocket = null;
 function ws(){
   const w = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/events');
+  eventSocket = w;
+  let wasOpen = false;
+  w.onopen = () => { wasOpen = true; };
   w.onmessage = m => { const e = JSON.parse(m.data);
     if(e.kind==='agent.spawn') agents[e.agent] = {status:'working', focus:e.data.focus, parent:e.data.parent};
     if(e.kind==='tool.call' && agents[e.agent]) agents[e.agent].last = '→ '+e.data.tool+' '+JSON.stringify(e.data.args).slice(0,80);
@@ -132,8 +142,32 @@ function ws(){
     d.innerHTML = `<b>${esc(e.kind)}</b> ${esc(e.agent)}\n${esc(String(body).slice(0,1200))}`;
     $('#logs').prepend(d);
   };
-  w.onclose = () => setTimeout(ws, 1500);
+  w.onclose = () => { if(wasOpen && eventSocket === w) setTimeout(ws, 1500); };
 }
+$('#authform').onsubmit = async ev => {
+  ev.preventDefault();
+  const token = $('#apitok').value;
+  if(!token){ $('#authmsg').textContent = 'Enter an API token.'; return; }
+  $('#authmsg').textContent = 'Connecting…';
+  try {
+    const r = await fetch('/api/auth/session', {method:'POST', headers:{'X-API-Token':token}});
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok){ $('#authmsg').textContent = 'Access denied: '+(j.detail||r.status); return; }
+    $('#apitok').value = '';
+    $('#authmsg').textContent = j.auth==='off' ? 'API authentication is disabled.' : 'Connected (8-hour session).';
+    status(); loadTools();
+    const old = eventSocket; eventSocket = null; if(old) old.close();
+    ws();
+    if($('#map').classList.contains('on')) { loadMap(); loadFleet(); }
+  } catch(e) { $('#authmsg').textContent = 'Connection failed: '+e; }
+};
+$('#authlogout').onclick = async () => {
+  try {
+    await fetch('/api/auth/session', {method:'DELETE'});
+    $('#authmsg').textContent = 'Logged out. Reconnect to continue.';
+    const old = eventSocket; eventSocket = null; if(old) old.close();
+  } catch(e) { $('#authmsg').textContent = 'Logout failed: '+e; }
+};
 $('#f').onsubmit = async ev => { ev.preventDefault(); const q=$('#q').value.trim(); if(!q) return; $('#q').value='';
   const mode=$('#mode').value; const payload={message:q, mode};
   if(mode==='deep' && $('#first').value.trim()){ payload.first_answer=$('#first').value.trim(); $('#first').value=''; }

@@ -10,6 +10,13 @@ Honesty and scope (unchanged from recon.py):
 
 Tools: osint_domain (aggregate a domain's public footprint), osint_metrics (recon/
 osint activity rolled up from the Codex action logs).
+
+AUDIT NOTE (v0.13 hardening): osint_domain is gated exactly like the recon tools and
+BEFORE any sub-probe runs: the AVRONE_RECON kill switch (fails closed on unknown values),
+recon._host_arg target syntax (no IP literals, CIDR, lists, wildcards), recon._reject_private
+(no localhost/loopback/private/link-local/metadata/internal targets) and the allowlist. Each
+sub-probe then re-applies its own gates and connect-time checks. Nothing here accepts a
+person, username, email or phone number as a target.
 """
 from __future__ import annotations
 
@@ -27,9 +34,8 @@ if TYPE_CHECKING:
 
 async def t_osint_domain(ctx: "AgentContext", args: dict[str, Any]) -> str:
     """One structured public-footprint profile of a domain: DNS, CT subdomains, TLS, HTTP."""
-    if (d := recon._denied()):
-        return d
-    host, err = recon._host_arg(args)
+    # kill switch, target syntax, _reject_private and allowlist; refusals are audited
+    host, err = recon._gate(ctx, "osint_domain", args)
     if err:
         return err
     report: dict[str, Any] = {"host": host}
@@ -61,6 +67,7 @@ async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
     log_dir = data_dir / "runs"
     kinds = Counter()
     hosts = Counter()
+    refused = Counter()
     runs = 0
     if log_dir.exists():
         for p in log_dir.glob("*.jsonl"):
@@ -71,18 +78,24 @@ async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
                 except ValueError:
                     continue
                 k = ev.get("kind", "")
+                if k == recon.REFUSED_KIND:  # refusals are audited, not probes
+                    refused[(ev.get("data") or {}).get("tool", "?")] += 1
+                    continue
                 if k.startswith(("recon.", "osint.")):
                     kinds[k] += 1
                     h = (ev.get("data") or {}).get("host")
                     if h:
                         hosts[h] += 1
-    if not kinds:
+    if not kinds and not refused:
         return "no recon/OSINT activity recorded yet"
     lines = [f"recon/OSINT metrics across {runs} run logs", "", "by tool:"]
     lines += [f"  {k}: {n}" for k, n in kinds.most_common()]
     lines += ["", "top targets:"]
     lines += [f"  {h}: {n}" for h, n in hosts.most_common(10)]
     lines += ["", f"total probes: {sum(kinds.values())}"]
+    if refused:
+        lines += [f"refused by guardrails: {sum(refused.values())} "
+                  f"({', '.join(f'{t}: {n}' for t, n in refused.most_common())})"]
     return "\n".join(lines)
 
 

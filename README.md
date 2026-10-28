@@ -81,6 +81,18 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.14.0: Secure node dispatch, operator controls, and daily evolution budgets
+
+- Fleet dispatch validates JSON shape, route IDs, unique nodes, completed and future hop counts, modes, squad sizes, prompt/message bounds, and source/run IDs before scheduling work.
+- Fleet peer URLs reject embedded credentials and unexpected paths, query strings, fragments, and invalid ports. HTTPS is required for non-loopback peers unless the operator deliberately opts into legacy plaintext HTTP. The persisted registry is validated and capped; replay-nonce memory and request bodies are bounded.
+- Remote HTTP APIs and the live event WebSocket now use API-token checks: loopback clients are allowed by default; use AVRONE_API_AUTH=always behind a reverse proxy or for any public bind. The explicit off mode disables this guard and is not recommended for exposed services.
+- Agent child processes receive a scrubbed environment with API, provider, fleet, cloud and source-control credentials removed. The local runner refuses effective host UID 0 by default.
+- Added an operator-only host service-operation endpoint. It requires both the admin token and a separate root-operation token, plus an explicit operation and service allowlist. Only service status/restart are supported; the host still needs a narrow sudoers rule. No arbitrary agent root shell is exposed.
+- Self-evolution now reserves worst-case proposal time in a cross-process UTC-day budget, with defaults of 900 seconds/proposal, 3600 seconds/day and 12 started proposals/day; hard ceilings are 1800 seconds/proposal, 14400 seconds/day and 100 proposals/day. Reservations prevent concurrent proposals from oversubscribing the budget.
+- New offline test modules cover dispatch payload boundaries, API auth modes, subprocess credential isolation, the scoped host gateway, and atomic daily evolution budgets.
+
+**Verification status:** tests are authored but not yet certified green. This environment has no local repository checkout, and previous GitHub Actions jobs were terminating without an assigned runner. Do not promote this candidate until CI runs the exact head commit on a functioning runner.
+
 ## v0.13.1: Self-evolution containment and duration budget
 
 - Proposal paths use resolved path containment rather than string-prefix checks; proposal IDs and metadata/worktree lookup are validated.

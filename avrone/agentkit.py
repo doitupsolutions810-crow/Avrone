@@ -114,20 +114,94 @@ async def t_image_decode(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------- skills
+SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
+SKILL_MAX_BYTES = 256_000
+SKILL_LOAD_CHARS = 12000
+
+
 def _skills_dir(ctx: "AgentContext") -> Path:
     return Path(os.getenv("AVRONE_SKILLS_DIR", str(Path(__file__).resolve().parent.parent / "skills")))
 
 
+def _valid_skill_name(name: str) -> bool:
+    return bool(SKILL_NAME_RE.match(name)) and ".." not in name
+
+
+def parse_skill(text: str) -> tuple[dict[str, str], str]:
+    """Split a skill file into (frontmatter, body).
+
+    Frontmatter is an optional leading block between two `---` lines holding simple
+    `key: value` pairs. A missing or unterminated block yields {} and the whole text as body.
+    """
+    text = text.lstrip("\ufeff")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            fm: dict[str, str] = {}
+            for line in lines[1:i]:
+                if ":" not in line or line.lstrip().startswith("#"):
+                    continue
+                k, v = line.split(":", 1)
+                k, v = k.strip().lower(), v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                    v = v[1:-1].strip()
+                if k and k not in fm:
+                    fm[k] = v
+            return fm, "\n".join(lines[i + 1:])
+    return {}, text  # unterminated frontmatter: treat as plain body
+
+
+def _skill_desc(fm: dict[str, str], body: str) -> str:
+    desc = fm.get("description", "").strip()
+    if not desc:
+        for line in body.splitlines():
+            line = line.strip().lstrip("#").strip()
+            if line and line != "---":
+                desc = line
+                break
+    desc = " ".join(desc.split())
+    return (desc[:200] if desc else "(no description)")
+
+
+def _read_skill(f: Path) -> str | None:
+    try:
+        if not f.is_file() or f.stat().st_size > SKILL_MAX_BYTES:
+            return None
+        return f.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _skills(ctx: "AgentContext") -> dict[str, tuple[str, Path]]:
-    out: dict[str, tuple[str, Path]] = {}
+    """name -> (description, path), sorted by name.
+
+    Directory skills (<name>/SKILL.md) win over flat <name>.md files with the same name; the
+    first one found wins and later duplicates are ignored. Files outside the skills dir (e.g.
+    via symlinks), oversized or unreadable files, and unsafe names are skipped.
+    """
     d = _skills_dir(ctx)
-    for f in sorted(d.glob("*/SKILL.md")) + sorted(d.glob("*.md")):
-        name = f.parent.name if f.name == "SKILL.md" else f.stem
-        text = f.read_text(errors="replace")
-        m = re.search(r"^description:\s*(.+)$", text, re.M)
-        desc = m.group(1).strip() if m else text.strip().splitlines()[0][:120]
-        out[name] = (desc, f)
-    return out
+    found: dict[str, tuple[str, Path]] = {}
+    if not d.is_dir():
+        return found
+    root = d.resolve()
+    candidates = [(f.parent.name, f) for f in sorted(d.glob("*/SKILL.md"))] + \
+                 [(f.stem, f) for f in sorted(d.glob("*.md"))]
+    for name, f in candidates:
+        if not _valid_skill_name(name) or name in found:
+            continue
+        try:
+            if not f.resolve().is_relative_to(root):
+                continue
+        except OSError:
+            continue
+        text = _read_skill(f)
+        if text is None:
+            continue
+        fm, body = parse_skill(text)
+        found[name] = (_skill_desc(fm, body), f)
+    return dict(sorted(found.items()))
 
 
 async def t_skill_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -136,12 +210,21 @@ async def t_skill_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_skill_load(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    name = str((args or {}).get("name", "")).strip()
+    if not name:
+        return 'ERROR: give {"name": str}; use skill_list to see available skills.'
+    if not _valid_skill_name(name):
+        return f"ERROR: invalid skill name {name!r} (letters, digits, '.', '_', '-' only; no paths)."
     sk = _skills(ctx)
-    name = str(args["name"])
     if name not in sk:
         return f"ERROR: no skill {name!r}. Available: {', '.join(sk) or 'none'}"
+    text = _read_skill(sk[name][1])
+    if text is None:
+        return f"ERROR: skill {name!r} could not be read."
+    if not text.strip():
+        return f"ERROR: skill {name!r} is empty."
     _emit(ctx, "skill.load", skill=name)
-    return sk[name][1].read_text(errors="replace")[:12000]
+    return text[:SKILL_LOAD_CHARS]
 
 
 # ---------------------------------------------------------------- resources

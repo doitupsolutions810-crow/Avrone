@@ -70,6 +70,9 @@ import httpx
 
 from .tools import Tool
 from .tools_extra import priv_grant
+from .checkpoint import CheckpointError, check_compatible, fleet_key, managed_path, stamp_owner
+from .checkpoint import claim as ckpt_claim
+from .checkpoint import sanitize_id as sanitize_ckpt_id
 from .trinity import clamp_deep_rounds
 
 if TYPE_CHECKING:
@@ -493,10 +496,13 @@ class FleetManager:
         return n
 
     async def dispatch(self, route: list[str], mode: str, prompt: str, hops: int, n: int | None = None,
-                       origin_run: str = "", privileged: str = "", rounds: int | None = None) -> dict[str, Any]:
+                       origin_run: str = "", privileged: str = "", rounds: int | None = None,
+                       checkpoint_id: str | None = None) -> dict[str, Any]:
         """Send a job down `route` (first element = one of my children).
         `privileged` = "priv:shell"/"priv:admin" requests the elevated tier (signed into the body).
-        `rounds` (deep only) is clamped to 1..5 and only sent when given."""
+        `rounds` (deep only) is clamped to 1..5 and only sent when given.
+        `checkpoint_id` (squad/deep) rides in the signed body; the running node keys it per sender,
+        so re-sending the same job with the same id resumes it there."""
         if hops >= self.max_hops:
             raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
         mode = mode if mode in SPAWN_MODES else "squad"  # the remote ran unknown modes as squad anyway
@@ -510,6 +516,10 @@ class FleetManager:
         rounds = clamp_deep_rounds(rounds)
         if rounds is not None:
             payload["rounds"] = rounds
+        if checkpoint_id not in (None, ""):
+            if mode == "chat":
+                raise ValueError("checkpoint_id works with mode squad or deep")
+            payload["checkpoint_id"] = sanitize_ckpt_id(checkpoint_id)
         node["load"] = node.get("load", 0) + 1
         try:
             return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
@@ -580,14 +590,36 @@ class FleetManager:
             cap = str(payload.get("capability", ""))
             self._privileged_gate("run", cap, payload.get("privileged") is True, sender_node(payload.get("from")), hops)
             priv = cap
+        ck_id = payload.get("checkpoint_id")
+        if ck_id is not None:
+            if mode not in ("squad", "deep"):
+                raise CheckpointError("checkpoint_id works with mode squad or deep")
+            ck_id = sanitize_ckpt_id(ck_id)  # CheckpointError -> 400
         if route:
             kw = {"rounds": r} if (r := clamp_deep_rounds(payload.get("rounds"))) is not None else {}
+            if ck_id:
+                kw["checkpoint_id"] = ck_id
             res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), payload.get("origin_run", ""),
                                       privileged=priv, **kw)
             return {**res, "path": [self.node_id] + res.get("path", [])}
         c = self.core
         self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=payload.get("from"), hops=hops,
-                             **({"privileged": priv} if priv else {}))
+                             **({"privileged": priv} if priv else {}), **({"checkpoint_id": ck_id} if ck_id else {}))
+        ck: dict[str, Any] = {}
+        release = None
+        if ck_id:
+            # keyed by the (signed) immediate sender and stamped with it: senders can't collide or
+            # resume each other's checkpoints; a retried job from the same sender resumes
+            sender = sender_node(payload.get("from"))
+            ck_path = managed_path(self.data_dir, fleet_key(sender, ck_id))
+            check_compatible(ck_path, prompt, mode, owner=f"fleet:{sender}")  # CheckpointConflict -> 409
+            release = ckpt_claim(ck_path)
+            try:
+                stamp_owner(ck_path, f"fleet:{sender}")
+            except BaseException:
+                release()
+                raise
+            ck = {"checkpoint": ck_path}
         prev = getattr(c, "fleet_hops", 0)
         prev_priv = getattr(c, "fleet_privileged", "")
         c.fleet_hops = hops  # remote agents see how deep they are
@@ -600,14 +632,18 @@ class FleetManager:
                     res = await c.chat(prompt)
                 elif mode == "deep":
                     r = clamp_deep_rounds(payload.get("rounds"))
-                    res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}))
+                    res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}),
+                                       **ck)
                 else:
-                    res = await c.squad(prompt, payload.get("n"))
+                    res = await c.squad(prompt, payload.get("n"), **ck)
         finally:
+            if release:
+                release()
             c.fleet_hops = prev
             c.fleet_privileged = prev_priv
         answer = res.get("answer") or res.get("report") or ""
-        return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer}
+        return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer,
+                **({"checkpoint_id": ck_id} if ck_id else {})}
 
 
 # ---------------------------------------------------------------- agent tools
@@ -636,6 +672,8 @@ async def t_remote_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if priv and not priv.startswith("priv:"):
         priv = f"priv:{priv}"
     kw = {"rounds": r} if (r := clamp_deep_rounds(args.get("rounds"))) is not None else {}
+    if args.get("checkpoint_id"):  # squad/deep: a retried spawn with the same id resumes on that node
+        kw["checkpoint_id"] = str(args["checkpoint_id"])
     try:
         res = await f.dispatch(route, str(args.get("mode", "squad")), str(args["task"]), hops, args.get("n"),
                                ctx.run_id, privileged=priv, **kw)
@@ -726,7 +764,7 @@ FLEET_TOOLS = [
     ("queue_status", "status/result of a queued job, or queue counts if no job_id.", '{"job_id"?: str}', t_queue_status),
     ("fleet_nodes", "list linked AVRONE nodes/routers with status, load and their children.", "{}", t_fleet_nodes),
     ("remote_spawn", "spawn a squad/chat/deep run on a remote AVRONE node; node may be a route like \"router1/edge7\" or \"auto\" (least loaded). Returns its answer.",
-     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "rounds"?: 1-5 (deep), "privileged"?: "shell"|"admin"}', t_remote_spawn),
+     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "rounds"?: 1-5 (deep), "privileged"?: "shell"|"admin", "checkpoint_id"?: str (squad/deep, resume on retry)}', t_remote_spawn),
     ("remote_broadcast", "run the same task on several remote nodes in parallel (default: all online, max 8) and return every answer.",
      '{"task": str, "nodes"?: [str], "mode"?: str, "n"?: int}', t_remote_broadcast),
 ]

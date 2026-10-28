@@ -289,3 +289,229 @@ def test_list_get_delete(client):
 def test_admin_bad_id_is_400(client, bad):
     assert client.get(f"/api/checkpoints/{bad}", headers=ADMIN).status_code == 400
     assert client.delete(f"/api/checkpoints/{bad}", headers=ADMIN).status_code == 400
+
+
+# ---------------------------------------------------------------- fleet
+from avrone.fleet import sign  # noqa: E402
+
+
+@pytest.fixture()
+def fclient(tmp_path, monkeypatch):
+    from avrone import server
+    monkeypatch.setenv("AVRONE_FLEET_TOKEN", "fleet-secret")
+    monkeypatch.setenv("AVRONE_NODE_ID", "hub")
+    for k in ("AVRONE_FLEET_PARENT", "AVRONE_FLEET_ALLOW", "AVRONE_PUBLIC_URL", "AVRONE_FLEET_MAX_HOPS",
+              "AVRONE_FLEET_REQUIRE_ALLOW"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(server.settings, "workspace", tmp_path / "ws")
+    monkeypatch.setattr(server.settings, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(server.settings, "max_steps", 2)
+    with TestClient(server.app) as c:
+        llm = CountingLLM()
+        server.state["core"].llm = llm
+        c.llm = llm
+        c.ckdir = tmp_path / "data" / "checkpoints"
+        yield c
+
+
+def _frun(c, **payload):
+    body = json.dumps({"mode": "squad", "prompt": "remote job", "n": 2, "hops": 1, "from": "edge1",
+                       **payload}).encode()
+    h = {"content-type": "application/json", **sign("fleet-secret", "POST", "/api/fleet/run", body)}
+    return c.post("/api/fleet/run", content=body, headers=h)
+
+
+def test_fleet_retried_job_resumes_under_sender_key(fclient):
+    r1 = _frun(fclient, checkpoint_id="job7")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["checkpoint_id"] == "job7"
+    f = fclient.ckdir / "fleet-edge1-job7.json"
+    assert f.exists() and json.loads(f.read_text())["owner"] == "fleet:edge1"
+    calls = dict(fclient.llm.calls)
+    r2 = _frun(fclient, checkpoint_id="job7")  # the sender retries the same job
+    assert r2.status_code == 200 and r2.json()["run_id"] == r1.json()["run_id"]
+    assert fclient.llm.calls == calls
+    # visible to the admin under its fleet key
+    row = fclient.get("/api/checkpoints/fleet-edge1-job7", headers=ADMIN).json()
+    assert row["owner"] == "fleet:edge1" and row["done"] is True
+
+
+def test_fleet_senders_cannot_collide_or_read_each_other(fclient):
+    assert _frun(fclient, checkpoint_id="same").status_code == 200
+    calls = dict(fclient.llm.calls)
+    r = _frun(fclient, checkpoint_id="same", **{"from": "edge2"})  # same id, other sender: own fresh run
+    assert r.status_code == 200
+    assert fclient.llm.calls["plan"] == calls["plan"] + 1
+    assert (fclient.ckdir / "fleet-edge2-same.json").exists()
+    # a client cannot reach a fleet checkpoint through /api/chat
+    r = fclient.post("/api/chat", json={"message": "remote job", "squad_size": 2,
+                                        "checkpoint_id": "fleet-edge1-same"})
+    assert r.status_code == 400
+
+
+def test_fleet_checkpoint_conflict_and_bad_id(fclient):
+    assert _frun(fclient, checkpoint_id="j").status_code == 200
+    r = _frun(fclient, checkpoint_id="j", prompt="another job")
+    assert r.status_code == 409 and "different squad task" in r.json()["detail"]
+    assert _frun(fclient, checkpoint_id="../x").status_code == 400
+    assert _frun(fclient, checkpoint_id="j", mode="chat").status_code == 400
+    assert _frun(fclient, checkpoint_id=5).status_code == 400
+
+
+def test_fleet_owner_mismatch_on_existing_file_is_409(fclient):
+    # a file at the key not stamped for this sender (e.g. planted) is never resumed
+    fclient.ckdir.mkdir(parents=True, exist_ok=True)
+    Checkpoint(fclient.ckdir / "fleet-edge1-p.json").begin("remote job", "squad", "x", n=2)
+    r = _frun(fclient, checkpoint_id="p")
+    assert r.status_code == 409 and "another owner" in r.json()["detail"]
+
+
+class _FakeCore:
+    def __init__(self):
+        self.calls = []
+        self.codex = type("C", (), {"emit": lambda *a, **k: None})()
+
+    async def squad(self, task, n=None, **kw):
+        self.calls.append(("squad", task, kw))
+        return {"answer": "a", "run_id": "r"}
+
+    async def deep(self, task, first=None, n=None, **kw):
+        self.calls.append(("deep", task, kw))
+        return {"report": "rep", "run_id": "r"}
+
+    async def chat(self, task):
+        return {"answer": "c"}
+
+
+@pytest.fixture()
+def fm(tmp_path, monkeypatch):
+    from avrone.fleet import FleetManager
+    for k in ("AVRONE_FLEET_PARENT", "AVRONE_FLEET_ALLOW", "AVRONE_PUBLIC_URL", "AVRONE_FLEET_REQUIRE_ALLOW"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("AVRONE_FLEET_TOKEN", "tok")
+    monkeypatch.setenv("AVRONE_NODE_ID", "hub")
+    f = FleetManager(_FakeCore(), tmp_path)
+    f.posted = []
+
+    async def fake_post(url, path, payload, timeout=30):
+        f.posted.append(payload)
+        return {"node": "edge", "path": ["edge"], "answer": "remote", "run_id": "rr"}
+    f._post = fake_post
+    f.pick = lambda target: {"node_id": "edge", "url": "http://edge.invalid", "load": 0}
+    return f
+
+
+def test_dispatch_signs_checkpoint_id_into_body(fm):
+    asyncio.run(fm.dispatch(["edge"], "deep", "p", 0, checkpoint_id="abc"))
+    assert fm.posted[-1]["checkpoint_id"] == "abc"
+    asyncio.run(fm.dispatch(["edge"], "squad", "p", 0))
+    assert "checkpoint_id" not in fm.posted[-1]
+    with pytest.raises(ValueError):
+        asyncio.run(fm.dispatch(["edge"], "squad", "p", 0, checkpoint_id="a/b"))
+    with pytest.raises(ValueError):
+        asyncio.run(fm.dispatch(["edge"], "chat", "p", 0, checkpoint_id="abc"))
+
+
+def test_handle_run_forwards_checkpoint_id_down_the_route(fm):
+    res = asyncio.run(fm.handle_run({"route": ["edge"], "mode": "squad", "prompt": "p", "hops": 1,
+                                     "from": "parent", "checkpoint_id": "k"}))
+    assert fm.posted[-1]["checkpoint_id"] == "k" and res["path"][0] == "hub"
+
+
+def test_handle_run_local_deep_uses_managed_path(fm, tmp_path):
+    res = asyncio.run(fm.handle_run({"mode": "deep", "prompt": "p", "hops": 1, "from": "kid",
+                                     "checkpoint_id": "d1"}))
+    kind, task, kw = fm.core.calls[-1]
+    assert kind == "deep" and kw["checkpoint"] == tmp_path / "checkpoints" / "fleet-kid-d1.json"
+    assert res["checkpoint_id"] == "d1" and res["answer"] == "rep"
+    assert not ckm.is_busy(kw["checkpoint"])  # released after the run
+    asyncio.run(fm.handle_run({"mode": "squad", "prompt": "p", "hops": 1, "from": "kid"}))
+    assert fm.core.calls[-1][2] == {}  # no id: no checkpoint kwarg (old cores keep working)
+
+
+def test_remote_spawn_tool_passes_checkpoint_id(fm):
+    from types import SimpleNamespace
+    from avrone.fleet import t_remote_spawn
+    ctx = SimpleNamespace(core=SimpleNamespace(fleet=fm, fleet_hops=0), run_id="r", name="A", depth=0)
+    asyncio.run(t_remote_spawn(ctx, {"task": "t", "node": "edge", "mode": "squad", "checkpoint_id": "z"}))
+    assert fm.posted[-1]["checkpoint_id"] == "z"
+
+
+# ---------------------------------------------------------------- MCP
+class _McpCore:
+    def __init__(self, tmp_path):
+        from types import SimpleNamespace
+        self.settings = SimpleNamespace(data_dir=tmp_path)
+        self.calls = []
+
+    async def squad(self, task, size=None, **kw):
+        self.calls.append(("squad", task, kw))
+        if kw.get("checkpoint"):
+            assert ckm.is_busy(kw["checkpoint"])
+            Checkpoint(kw["checkpoint"]).begin(task, "squad", "r1")
+        return {"answer": "ok", "run_id": "r1", "agents": []}
+
+    async def deep(self, task, first=None, **kw):
+        self.calls.append(("deep", task, kw))
+        return {"answer": "deep", "run_id": "r2"}
+
+    async def chat(self, task):
+        return "c"
+
+
+def test_mcp_squad_and_deep_accept_checkpoint_id(tmp_path):
+    from avrone import mcp_server as ms
+    core = _McpCore(tmp_path)
+
+    async def factory():
+        return core, {}
+    srv = ms.AvroneMCPServer(factory)
+    out = asyncio.run(srv.call_tool("avrone_squad", {"task": "t", "checkpoint_id": "m1"}))
+    assert out["isError"] is False and out["structuredContent"]["checkpoint_id"] == "m1"
+    path = tmp_path / "checkpoints" / "m1.json"
+    assert core.calls[-1][2] == {"checkpoint": path} and not ckm.is_busy(path)
+    out = asyncio.run(srv.call_tool("avrone_squad", {"task": "other", "checkpoint_id": "m1"}))
+    assert out["isError"] and "different squad task" in out["content"][0]["text"]
+    out = asyncio.run(srv.call_tool("avrone_squad", {"task": "t", "checkpoint_id": "../x"}))
+    assert out["isError"] and "checkpoint_id" in out["content"][0]["text"]
+    asyncio.run(srv.call_tool("avrone_deep", {"task": "q", "checkpoint_id": "m2"}))
+    assert core.calls[-1] == ("deep", "q", {"checkpoint": tmp_path / "checkpoints" / "m2.json"})
+    asyncio.run(srv.call_tool("avrone_squad", {"task": "t"}))
+    assert core.calls[-1][2] == {}
+    schemas = {t["name"]: t["inputSchema"]["properties"] for t in ms.TOOLS}
+    assert "checkpoint_id" in schemas["avrone_squad"] and "checkpoint_id" in schemas["avrone_deep"]
+    assert "checkpoint_id" not in schemas["avrone_chat"]
+
+
+# ---------------------------------------------------------------- CLI
+def _cli_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.setenv("AVRONE_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("AVRONE_PLUGINS_DIR", str(tmp_path / "np"))
+    monkeypatch.setenv("AVRONE_MCP_CONFIG", str(tmp_path / "none.json"))
+
+
+def test_cli_checkpoint_id(tmp_path, monkeypatch, capsys):
+    from avrone import cli
+    _cli_env(tmp_path, monkeypatch)
+    base = ["--quiet", "--no-extras", "-n", "2", "--checkpoint-id", "cli-1"]
+    assert cli.main(["squad", "hello", *base]) == 0
+    f = tmp_path / "d" / "checkpoints" / "cli-1.json"
+    assert Checkpoint(f).get("result") is not None
+    first = capsys.readouterr().out
+    assert cli.main(["squad", "hello", *base]) == 0
+    assert capsys.readouterr().out == first  # resumed: same stored answer
+    assert cli.main(["squad", "other task", *base]) == 1
+    assert "different squad task" in capsys.readouterr().err
+    assert cli.main(["squad", "hello", "--quiet", "--no-extras", "--checkpoint-id", "a/b"]) == 1
+    assert cli.main(["deep", "q?", "--first-answer", "a", "--quiet", "--no-extras", "-n", "1",
+                     "--checkpoint-id", "cli-d"]) == 0
+    assert (tmp_path / "d" / "checkpoints" / "cli-d.json").exists()
+
+
+def test_cli_checkpoint_flags_are_exclusive():
+    from avrone import cli
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["squad", "x", "--checkpoint", "p", "--checkpoint-id", "i"])
+    assert cli.build_parser().parse_args(["deep", "x", "--checkpoint-id", "i"]).checkpoint_id == "i"
+    assert cli.build_parser().parse_args(["squad", "x"]).checkpoint_id is None

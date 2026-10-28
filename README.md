@@ -81,6 +81,10 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.17
+
+- **ckpt** — server-managed checkpoint/resume over the API, MCP, CLI and fleet: `POST /api/chat` takes `checkpoint_id` (squad/deep, `[A-Za-z0-9_-]{1,64}`, stored only under `data_dir/checkpoints/<id>.json`); re-posting the same id + task resumes (also a background run that died), a different task is 409; admin `GET /api/checkpoints`, `GET`/`DELETE /api/checkpoints/{id}`; `avrone_squad`/`avrone_deep` and `avrone-cli --checkpoint-id` take the same id; remote squad/deep jobs carry it in the signed body and the running node keys it `fleet-<sender>-<id>` (owner-stamped), so a retried job resumes and senders never collide.
+
 ## v0.16: Squad round 3 — privileged execution, per-agent filesystem + memory, edge resilience — 1372 tests, coverage 95%
 
 - **priv_shell / priv_admin** — the v0.15 privileged tier now does something, and only when granted. Requires BOTH `core.fleet_privileged` and a run-scoped grant set by the signed `handle_run` (a concurrent unrelated run never inherits it). `priv_shell`: `AVRONE_PRIV_SHELL_ALLOW` bare-name allowlist (empty = refuse all), no metacharacters/pipelines/redirects, args re-quoted, `AVRONE_PRIV_SHELL_TIMEOUT` (30 s, max 300). `priv_admin`: fixed read-only actions (queue_stats, node_list, fleet_info, codex_runs, codex_tail). Audited as `priv.shell` / `priv.refused` / `admin.action` / `admin.refused`.

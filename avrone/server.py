@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.5.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -113,6 +113,55 @@ async def tools():
 @app.get("/api/extensions")
 async def extensions():
     return getattr(core(), "extensions", {})
+
+
+# ------------------------------------------------------------------ fleet
+def _fleet():
+    f = getattr(core(), "fleet", None)
+    if f is None or not f.enabled:
+        raise HTTPException(404, "fleet disabled (set AVRONE_FLEET_TOKEN)")
+    return f
+
+
+async def _verified(request: Request) -> dict:
+    f = _fleet()
+    body = await request.body()
+    try:
+        f.verify(request.method, request.url.path, body, {k.lower(): v for k, v in request.headers.items()})
+    except PermissionError as e:
+        raise HTTPException(401, str(e)) from None
+    import json as _json
+    return _json.loads(body or b"{}")
+
+
+@app.get("/api/fleet")
+async def fleet_info(x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    f = _fleet()
+    return {**f.info(), "nodes": f.list_nodes()}
+
+
+@app.post("/api/fleet/register")
+async def fleet_register(request: Request):
+    payload = await _verified(request)
+    try:
+        return _fleet().register(payload)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@app.post("/api/fleet/run")
+async def fleet_run(request: Request):
+    payload = await _verified(request)
+    f = _fleet()
+    try:
+        return await f.handle_run(payload)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)) from None
 
 
 @app.get("/api/telemetry")

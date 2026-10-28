@@ -81,6 +81,18 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.5: Fleet (remote routers and servers)
+
+Link AVRONE servers into a tree. Any server can be a node, a router (a node with
+children) or both, and agents on every node can spawn agents on the others.
+
+- **Join:** set `AVRONE_FLEET_TOKEN` (same on all nodes), `AVRONE_NODE_ID`, `AVRONE_PUBLIC_URL`, and `AVRONE_FLEET_PARENT` to the router or root it reports to. It registers and heartbeats; status shows online, degraded or offline.
+- **Agent tools:** `fleet_nodes`, `remote_spawn` (target a node, a route like `router1/edge7`, or `auto` for least loaded) and `remote_broadcast` (same task on up to 8 nodes in parallel). Remote agents get the same tools, so they spawn further down the tree.
+- **Routing:** jobs are forwarded hop by hop through routers; results return the full path.
+- **Security:** every fleet request is HMAC-SHA256 signed (method, path, timestamp, nonce, body hash), 60 s window, replayed nonces rejected, hop limit (`AVRONE_FLEET_MAX_HOPS`, default 3), optional node allowlist (`AVRONE_FLEET_ALLOW`), node-id collision checks. Use HTTPS or a private mesh for confidentiality.
+- **Visibility:** `GET /api/fleet` (admin) and the Map tab show the node tree.
+- Example: `examples/fleet-compose.yml` (root, router, edge).
+
 ## v0.4: Network diagnostics tools
 
 Real, bounded networking from AVRONE's own host (one host and port per call, no port sweeping):

@@ -115,6 +115,20 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
         edges[(group, f"tool:{t['name']}")] += 0
         edges[("core", group)] += 0
 
+    fleet = getattr(core, "fleet", None)
+    if fleet is not None and fleet.enabled:
+        node("fleet", "fleet", f"Fleet node: {fleet.node_id}")
+        edges[("core", "fleet")] += 0
+        if fleet.parent:
+            node("fleet:parent", "node", f"Parent: {fleet.parent}")
+            edges[("fleet", "fleet:parent")] += 1
+        for n in fleet.list_nodes():
+            node(f"node:{n['node_id']}", "node", f"{n['node_id']} ({n['status']})", url=n["url"])
+            edges[("fleet", f"node:{n['node_id']}")] += 1
+            for ch in n.get("children", []):
+                node(f"node:{ch}", "node", ch)
+                edges[(f"node:{n['node_id']}", f"node:{ch}")] += 1
+
     since = time.time() - window_s
     for ev in _iter_events(core.codex.log_dir, since):
         kind, agent, data = ev.get("kind"), ev.get("agent", ""), ev.get("data", {})

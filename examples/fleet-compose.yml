@@ -1,0 +1,17 @@
+# Three linked AVRONE nodes: root <- router <- edge.
+# Set AVRONE_FLEET_TOKEN in .env (long random secret). In production put nodes on
+# HTTPS or a private mesh (Tailscale/Headscale, WireGuard).
+services:
+  root:
+    build: ..
+    env_file: ../.env
+    environment: { AVRONE_NODE_ID: root, AVRONE_PUBLIC_URL: "http://root:8000" }
+    ports: ["8000:8000"]
+  router:
+    build: ..
+    env_file: ../.env
+    environment: { AVRONE_NODE_ID: router, AVRONE_PUBLIC_URL: "http://router:8000", AVRONE_FLEET_PARENT: "http://root:8000" }
+  edge:
+    build: ..
+    env_file: ../.env
+    environment: { AVRONE_NODE_ID: edge, AVRONE_PUBLIC_URL: "http://edge:8000", AVRONE_FLEET_PARENT: "http://router:8000" }

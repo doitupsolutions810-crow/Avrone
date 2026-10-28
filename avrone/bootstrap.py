@@ -184,6 +184,21 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
             ext["errors"].append(f"mcp: {type(e).__name__}: {e}")
             log.exception("MCPManager failed")
 
+    # 4. fleet: link to other AVRONE nodes (needs AVRONE_FLEET_TOKEN)
+    try:
+        from .fleet import FleetManager, register_fleet_tools
+        fleet = FleetManager(core, settings.data_dir)
+        core.fleet = fleet  # type: ignore[attr-defined]
+        if fleet.enabled:
+            register_fleet_tools(registry)
+            fleet.start()
+            cleanups.append(fleet.stop)
+        ext["fleet"] = fleet.info()
+    except Exception as e:
+        ext["fleet"] = {"error": f"{type(e).__name__}: {e}"}
+        ext["errors"].append(f"fleet: {type(e).__name__}: {e}")
+        log.exception("fleet failed")
+
     ext["tool_sources"] = _sources(registry)
     return core, cleanups
 

@@ -49,6 +49,12 @@ def _docker_image_policy_error(image: str) -> str | None:
     return None
 
 
+def _docker_workspace_user_args(workspace: Path) -> list[str]:
+    """Run workspace-bound agents as the owner of their shared worktree."""
+    owner = workspace.stat()
+    return ["--user", f"{owner.st_uid}:{owner.st_gid}", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]
+
+
 def _docker_sandbox_args(*, allow_network: bool) -> list[str]:
     """Return the shared least-privilege/resource policy for agent-owned containers."""
     def bounded_memory(raw: str) -> str:
@@ -78,7 +84,7 @@ def _docker_sandbox_args(*, allow_network: bool) -> list[str]:
         "--pids-limit", str(pids),
         "--memory", bounded_memory(os.getenv("AVRONE_DOCKER_MEMORY_LIMIT", "2g")),
         "--cpus", str(cpu),
-        "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+        "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
     ]
     if not allow_network:
         args += ["--network", "none"]
@@ -177,6 +183,7 @@ class DockerRunner(Runner):
         self.workspace.mkdir(parents=True, exist_ok=True)
         argv = ["docker", "run", "-d", "--rm", "--name", self.container,
                 *_docker_sandbox_args(allow_network=self.s.allow_network),
+                *_docker_workspace_user_args(self.workspace),
                 "-v", f"{self.workspace}:/workspace", "-w", "/workspace",
                 self.s.docker_image, "sleep", "infinity"]
         res = await self._exec(argv, " ".join(argv), 300)

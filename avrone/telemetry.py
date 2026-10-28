@@ -91,6 +91,7 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
         "errors": errors,
         "recent_runs": sorted(runs.values(), key=lambda r: r["start"], reverse=True)[:10],
         "node": node_health(core),
+        "fleet_nodes": fleet_health(core),
         "resilience": {"throttles": len(throttles), "checkpoint_resumes": resumes,
                        "recent_throttles": sorted(throttles, key=lambda t: t["ts"], reverse=True)[:5]},
     }
@@ -106,6 +107,18 @@ def node_health(core: "TrinityCore") -> dict[str, Any]:
         return gov.state()
     except Exception as e:
         return {"enabled": False, "error": f"{type(e).__name__}: {e}"[:200]}
+
+
+def fleet_health(core: "TrinityCore") -> list[dict[str, Any]]:
+    """Health of each fleet child (status, governor state, routing score, eligibility). Never raises."""
+    try:
+        fleet = getattr(core, "fleet", None)
+        if fleet is None or not getattr(fleet, "enabled", False):
+            return []
+        rows = fleet.health_table()
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
 
 
 def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
@@ -147,7 +160,10 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
         from .presence import flatten
 
         for n in fleet.list_nodes():
-            node(f"node:{n['node_id']}", "node", f"{n['node_id']} ({n['status']})", url=n["url"])
+            hs = fleet.node_state(n) if hasattr(fleet, "node_state") else "unknown"
+            hs = hs if isinstance(hs, str) else "unknown"
+            label = f"{n['node_id']} ({n['status']}" + (f", {hs})" if hs not in ("unknown",) else ")")
+            node(f"node:{n['node_id']}", "node", label, url=n["url"])
             edges[("fleet", f"node:{n['node_id']}")] += 1
             pres = n.get("presence") or {"node_id": n["node_id"], "children": {}, "agents": []}
             for row in flatten(pres):

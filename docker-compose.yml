@@ -1,15 +1,43 @@
 # AVRONE in a container. It reaches OpenClaw on the host and spawns its agent
 # environment as sibling containers through the host's Docker socket.
+#
+# Locked down by default; every knob below is opt-out via .env or the shell:
+#   AVRONE_PUBLISH_ADDR  host address the UI/API is published on (default 127.0.0.1;
+#                        0.0.0.0 exposes it to the LAN. /api/chat has no auth, so front it
+#                        with an authenticating proxy/VPN and set AVRONE_ADMIN_TOKEN)
+#   AVRONE_PUBLISH_PORT  host port (default 8710)
+#   AVRONE_UID/GID       user the server runs as (default 1000:1000, so the ./workspace and
+#                        ./data bind mounts stay owned by you; run `mkdir -p workspace data`
+#                        first, or Docker creates them root-owned). 0:0 restores the old root mode.
+#   DOCKER_GID           gid owning /var/run/docker.sock on the host
+#                        (`stat -c %g /var/run/docker.sock`), so the docker runner can reach it.
+#                        Without access, AVRONE_RUNNER=auto falls back to the local runner.
+#   AVRONE_ALLOW_NETWORK sandbox containers get --network none unless this is true
+#   AVRONE_READ_ONLY     read-only root filesystem (default true; /tmp is a tmpfs)
+# Check a node with: docker compose run --rm avrone avrone-cli doctor
 services:
   avrone:
     build: .
-    ports: ["8710:8710"]
+    init: true                       # reap the subprocesses agents spawn
+    user: "${AVRONE_UID:-1000}:${AVRONE_GID:-1000}"
+    group_add: ["${DOCKER_GID:-999}"]
+    ports: ["${AVRONE_PUBLISH_ADDR:-127.0.0.1}:${AVRONE_PUBLISH_PORT:-8710}:8710"]
     env_file: .env
     environment:
       AVRONE_LLM_BASE_URL: ${AVRONE_LLM_BASE_URL:-http://host.docker.internal:18789/v1}
       AVRONE_WORKSPACE: ${PWD}/workspace   # same path on host and in container, so bind mounts line up
+      AVRONE_DATA_DIR: /srv/data           # the ./data volume, whatever .env says
+      AVRONE_HOST: 0.0.0.0                 # bind inside the container; exposure is set by ports: above
+      AVRONE_PORT: "8710"
+      AVRONE_ALLOW_NETWORK: ${AVRONE_ALLOW_NETWORK:-false}
+      HOME: /tmp
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock   # docker runner; this grants control of host Docker
       - ./workspace:${PWD}/workspace
       - ./data:/srv/data
     extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: ${AVRONE_READ_ONLY:-true}
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]                  # nothing needs caps: port 8710 > 1024, non-root user
+    # cap_add: [NET_RAW]             # only if you want mtr/raw-socket traceroute in local-runner mode
+    security_opt: ["no-new-privileges:true"]

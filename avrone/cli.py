@@ -5,6 +5,7 @@
     avrone-cli deep  "is X true?" [--first-answer TEXT | --first-answer-file PATH] [-n 4] [--rounds 1..5]
     avrone-cli tools
     avrone-cli runs [--limit 20]
+    avrone-cli doctor [--strict]   (offline hosting preflight; starts nothing)
 
 The markdown answer (or deep report) goes to stdout; live event lines go to
 stderr unless --quiet; --json PATH writes the full result as JSON.
@@ -165,11 +166,25 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--hours", type=float, default=24)
     m.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
     sub.add_parser("evolve", parents=[common], help="list accepted self-evolution proposals (code AVRONE wrote for itself)")
+    doc = sub.add_parser("doctor", parents=[common],
+                         help="offline, read-only hosting preflight (python, paths, runner, docker, toggles, tokens)")
+    doc.add_argument("--strict", action="store_true", help="exit non-zero on warnings too")
     return p
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    """Runs without build_core: nothing is started, created or contacted."""
+    from .doctor import format_report, run_doctor
+    report = run_doctor(strict=args.strict)
+    _write_json(args.json, report)
+    print(format_report(report))
+    return 0 if report["ok"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cmd == "doctor":
+        return _doctor(args)
     try:
         return asyncio.run(_run(args))
     except KeyboardInterrupt:

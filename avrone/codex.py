@@ -53,17 +53,40 @@ class Codex:
     def runs(self, limit: int = 50) -> list[dict[str, Any]]:
         files = sorted(self.log_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         out = []
-        for p in files[:limit]:
-            first = p.open().readline()
+        for p in files[:max(0, limit)]:
+            try:
+                with p.open(encoding="utf-8", errors="replace") as f:
+                    first = f.readline()
+            except OSError:
+                continue
             try:
                 start = json.loads(first)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
                 continue
-            out.append({"run_id": p.stem, "started": start.get("ts"), "prompt": start.get("data", {}).get("prompt", "")})
+            if not isinstance(start, dict):
+                continue
+            data = start.get("data")
+            prompt = data.get("prompt", "") if isinstance(data, dict) else ""
+            out.append({"run_id": p.stem, "started": start.get("ts"),
+                        "prompt": str(prompt) if prompt is not None else ""})
         return out
 
     def replay(self, run_id: str) -> list[dict[str, Any]]:
         p = self.log_dir / f"{run_id}.jsonl"
         if not p.exists() or not p.resolve().is_relative_to(self.log_dir.resolve()):
             return []
-        return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        events = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        return events

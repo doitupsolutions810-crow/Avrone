@@ -6,6 +6,7 @@ Contract:
 """
 from __future__ import annotations
 
+import difflib
 import inspect
 import re
 from dataclasses import dataclass
@@ -27,6 +28,66 @@ class Tool:
     args_doc: str  # e.g. '{"cmd": str}'
     fn: ToolFn
     source: str = "builtin"  # builtin | plugin:<name> | mcp:<server>
+    # Optional arg schema, checked before the call so a bad call never runs:
+    #   {"required": {"path": "str"}, "optional": {"limit": "int"}}
+    # Types: str | int | float | bool | list | dict, or alternatives joined by "|"
+    # ("str|dict"). Unknown keys are allowed. None = no validation (plugins, MCP...).
+    schema: dict[str, dict[str, str]] | None = None
+
+
+_TYPES: dict[str, tuple[type, ...]] = {
+    "str": (str,), "int": (int,), "float": (int, float), "bool": (bool,),
+    "list": (list,), "dict": (dict,), "any": (object,),
+}
+
+# Schemas for the core tools. Attached at register() time to builtin tools that don't
+# declare their own, so the tool tables in tools_extra.py etc. stay untouched.
+CORE_SCHEMAS: dict[str, dict[str, dict[str, str]]] = {
+    "shell": {"required": {"cmd": "str"}},
+    "python": {"required": {"code": "str"}},
+    "read_file": {"required": {"path": "str"}},
+    "write_file": {"required": {"path": "str", "content": "str"}},
+    "edit_file": {"required": {"path": "str", "old": "str", "new": "str"}},
+    "fetch": {"required": {"url": "str"}},
+    "web_search": {"required": {"query": "str"}, "optional": {"max_results": "int"}},
+    "spawn": {"required": {"task": "str"}, "optional": {"role": "str"}},
+    "list_files": {"optional": {"path": "str", "depth": "int"}},
+    "search_files": {"required": {"pattern": "str"}, "optional": {"path": "str"}},
+    "http_request": {"required": {"method": "str", "url": "str"},
+                     "optional": {"headers": "dict", "body": "str|dict"}},
+    "git": {"required": {"args": "str"}},
+    "think": {"required": {"thought": "str"}},
+}
+
+
+def _type_ok(value: Any, spec: str) -> bool:
+    for name in str(spec).split("|"):
+        types = _TYPES.get(name.strip())
+        if types is None:
+            return True  # unknown type word in a schema: don't block the call on it
+        if isinstance(value, bool) and name.strip() in ("int", "float"):
+            continue  # True is an int in Python, never in a tool schema
+        if isinstance(value, types):
+            return True
+    return False
+
+
+def validate_args(schema: dict[str, dict[str, str]] | None, args: Any) -> list[str]:
+    """Problems with `args` against `schema` (empty list = fine)."""
+    if not schema:
+        return []
+    if not isinstance(args, dict):
+        return [f"args must be a JSON object, got {type(args).__name__}"]
+    problems: list[str] = []
+    for key, spec in (schema.get("required") or {}).items():
+        if key not in args or args[key] is None:
+            problems.append(f"missing '{key}'")
+        elif not _type_ok(args[key], spec):
+            problems.append(f"'{key}' must be {spec}, got {type(args[key]).__name__}")
+    for key, spec in (schema.get("optional") or {}).items():
+        if args.get(key) is not None and not _type_ok(args[key], spec):
+            problems.append(f"'{key}' must be {spec}, got {type(args[key]).__name__}")
+    return problems
 
 
 class ToolRegistry:
@@ -36,6 +97,8 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_\-.]+", tool.name):
             raise ValueError(f"bad tool name: {tool.name!r}")
+        if tool.schema is None and tool.source == "builtin" and tool.name in CORE_SCHEMAS:
+            tool.schema = CORE_SCHEMAS[tool.name]
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> None:
@@ -52,15 +115,40 @@ class ToolRegistry:
                 for t in sorted(self._tools.values(), key=lambda t: t.name)]
 
     def docs(self) -> str:
-        lines = ["Available tools (call exactly one per reply):"]
+        lines = ["Available tools (one call per reply, or a small batch of independent calls):"]
         for t in sorted(self._tools.values(), key=lambda t: t.name):
             lines.append(f"- {t.name} {t.args_doc}: {t.description}")
         return "\n".join(lines) + "\n"
 
+    def suggest(self, name: str, n: int = 3) -> list[str]:
+        """Registered tool names closest to `name` (for typos like 'shel' or 'readfile')."""
+        names = self.names()
+        lowered = {t.lower(): t for t in names}
+        hits = difflib.get_close_matches(str(name).lower(), list(lowered), n=n, cutoff=0.6)
+        return [lowered[h] for h in hits]
+
+    def unknown_message(self, name: str) -> str:
+        close = self.suggest(name)
+        hint = f" Did you mean: {', '.join(close)}?" if close else ""
+        return f"ERROR: unknown tool '{name}'.{hint} Known: {', '.join(self.names())}"
+
+    def check(self, name: str, args: Any) -> tuple[str, str] | None:
+        """Pre-call check: None if the call may run, else (reason, message for the model).
+
+        reason is "unknown_tool" or "bad_args"; the tool is NOT run in either case."""
+        tool = self.get(name)
+        if tool is None:
+            return "unknown_tool", self.unknown_message(name)
+        problems = validate_args(tool.schema, args)
+        if problems:
+            return "bad_args", (f"ARG ERROR ({name}): {'; '.join(problems)}; expected {tool.args_doc}. "
+                                "The tool did not run; resend the call with fixed args.")
+        return None
+
     async def call(self, ctx: "AgentContext", name: str, args: dict[str, Any]) -> str:
         tool = self.get(name)
         if tool is None:
-            return f"ERROR: unknown tool '{name}'. Known: {', '.join(self.names())}"
+            return self.unknown_message(name)
         try:
             return await tool.fn(ctx, args)
         except Exception as e:  # errors go back to the agent

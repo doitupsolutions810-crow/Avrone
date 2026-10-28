@@ -861,6 +861,99 @@ async def t_capabilities_report(ctx: "AgentContext", args: dict[str, Any]) -> st
 
 # --------------------------------------------------------------------------- registration
 
+# --------------------------------------------------------------------------- privileged tier (priv_shell)
+# Deny by default. A tool here runs ONLY when the run was granted the matching elevated capability
+# through the signed fleet gateway (fleet.handle_run sets ctx.core.fleet_privileged), and even then
+# only inside a hard allowlist. Every attempt is audited to the Eternal CodeX.
+#   AVRONE_PRIV_SHELL_ALLOW    comma list of allowed argv[0] names (bare names, e.g. "ls,cat,git");
+#                              default empty = refuse every command
+#   AVRONE_PRIV_SHELL_TIMEOUT  per-command timeout ceiling in seconds (default 30, clamped 1..300)
+PRIV_SHELL_CAP = "priv:shell"
+PRIV_SHELL_METACHARS = set(";|&`$><") | {"\n", "\r", "\x00"}
+PRIV_SHELL_MAX_CMD = 2000
+PRIV_SHELL_MAX_ARGS = 64
+PRIV_SHELL_TIMEOUT_DEFAULT = 30
+PRIV_SHELL_TIMEOUT_MAX = 300
+_PRIV_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+\-]*")
+
+
+def granted_capability(ctx: "AgentContext") -> str:
+    """The elevated capability the signed gateway granted this run ("" = none)."""
+    cap = getattr(ctx.core, "fleet_privileged", "")
+    return cap if isinstance(cap, str) else ""
+
+
+def priv_shell_allowlist() -> set[str]:
+    """Allowed argv[0] names. Entries that are not bare names (paths, globs, blanks) are ignored."""
+    raw = os.environ.get("AVRONE_PRIV_SHELL_ALLOW", "")
+    return {a.strip() for a in raw.split(",") if _PRIV_NAME_RE.fullmatch(a.strip())}
+
+
+def priv_shell_timeout(requested: Any = None) -> int:
+    try:
+        ceiling = int(os.environ.get("AVRONE_PRIV_SHELL_TIMEOUT", "") or PRIV_SHELL_TIMEOUT_DEFAULT)
+    except ValueError:
+        ceiling = PRIV_SHELL_TIMEOUT_DEFAULT
+    ceiling = max(1, min(PRIV_SHELL_TIMEOUT_MAX, ceiling))
+    return _int(requested, ceiling, 1, ceiling) if requested is not None else ceiling
+
+
+def check_priv_shell_command(cmd: str, allow: set[str]) -> tuple[list[str] | None, str, str]:
+    """Validate one bounded command. Returns (argv, "", "") or (None, code, reason)."""
+    if not cmd.strip():
+        return None, "empty", "cmd is required"
+    if len(cmd) > PRIV_SHELL_MAX_CMD:
+        return None, "too_long", f"cmd longer than {PRIV_SHELL_MAX_CMD} chars"
+    bad = sorted({ch for ch in cmd if ch in PRIV_SHELL_METACHARS})
+    if bad:
+        return None, "metachar", ("shell metacharacters / pipelines are not allowed (single bounded command only): "
+                                  + " ".join(repr(b) for b in bad))
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as e:
+        return None, "parse", f"cannot parse cmd: {e}"
+    if not argv:
+        return None, "empty", "cmd is required"
+    if len(argv) > PRIV_SHELL_MAX_ARGS:
+        return None, "too_many_args", f"more than {PRIV_SHELL_MAX_ARGS} arguments"
+    exe = argv[0]
+    if not _PRIV_NAME_RE.fullmatch(exe):  # bare name only: no paths ("/tmp/x/ls"), no VAR=x prefixes
+        return None, "not_allowlisted", f"{exe!r} is not a bare command name"
+    if not allow:
+        return None, "allowlist_empty", "no commands allowed (AVRONE_PRIV_SHELL_ALLOW is empty)"
+    if exe not in allow:
+        return None, "not_allowlisted", f"{exe!r} is not in AVRONE_PRIV_SHELL_ALLOW"
+    return argv, "", ""
+
+
+def _priv_refuse(ctx: "AgentContext", tool: str, code: str, reason: str, **data: Any) -> str:
+    _emit(ctx, "priv.refused", tool=tool, code=code, reason=reason,
+          capability=granted_capability(ctx), **data)
+    return f"ERROR: {reason}"
+
+
+async def t_priv_shell(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    cmd = str(args.get("cmd", ""))
+    shown = cmd[:300]
+    if granted_capability(ctx) != PRIV_SHELL_CAP:
+        return _priv_refuse(ctx, "priv_shell", "no_capability",
+                            "requires a granted priv:shell capability (signed fleet privileged run)", cmd=shown)
+    argv, code, reason = check_priv_shell_command(cmd, priv_shell_allowlist())
+    if argv is None:
+        return _priv_refuse(ctx, "priv_shell", code, reason, cmd=shown)
+    safe = shlex.join(argv)  # every token re-quoted: no globbing/expansion survives into bash -lc
+    timeout = priv_shell_timeout(args.get("timeout"))
+    try:
+        res = await ctx.core.runner.run(safe, timeout=timeout)
+    except Exception as e:  # noqa: BLE001 -- audited, then reported to the agent
+        _emit(ctx, "priv.shell", tool="priv_shell", cmd=safe, argv0=argv[0], timeout=timeout,
+              error=f"{type(e).__name__}: {e}"[:300])
+        return f"ERROR: {type(e).__name__}: {e}"
+    _emit(ctx, "priv.shell", tool="priv_shell", cmd=safe, argv0=argv[0], timeout=timeout,
+          exit_code=res.exit_code, timed_out=res.timed_out)
+    return res.text()
+
+
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
     ("web_search", "search the web (DuckDuckGo by default; Brave/Tavily if API keys set); returns numbered title/url/snippet results.",
      '{"query": str, "max_results"?: int}', t_web_search),
@@ -894,6 +987,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"format"?: "text"|"json"}', t_self_scan),
     ("capabilities_report", "read-only plain-English ledger of what YOU can and cannot do under current settings (shell, docker, network, recon+allowlist, self-evolve, self-changes, workspace write, admin); for squad reviews.",
      '{"format"?: "text"|"json"}', t_capabilities_report),
+    ("priv_shell", "PRIVILEGED: run ONE allowlisted command (AVRONE_PRIV_SHELL_ALLOW) on the host runner; only in a run granted priv:shell via the signed fleet gateway; no pipes/metacharacters; audited.",
+     '{"cmd": str, "timeout"?: int}', t_priv_shell),
 ]
 
 

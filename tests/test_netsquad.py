@@ -375,31 +375,42 @@ def test_bridge_caps_and_optional():
 
 
 def test_bridge_relay_both_ways(make, monkeypatch):
+    """Lead integration: the relay uses the run's real Bridge (avrone.bridge.for_core)."""
+    from avrone import bridge as bridgemod
     monkeypatch.setenv("AVRONE_SQUAD_DISPATCH", "network")
     core, _ = make(n=1)
-    core.bridge = FakeBridge([{"id": "p1", "ts": 1, "body": "hello"}])
     add(core.fleet, "edge")
+    bridgemod.for_core(core, "br").post("Root-1", "finding", "hello")
 
     def h(req):
         return httpx.Response(200, json={"node": "edge", "path": ["edge"], "answer": "done",
-                                         "bridge": [{"id": "r1", "body": "from edge"}]})
+                                         "bridge": [{"id": "r1", "run_id": "x", "agent": "E-1",
+                                                     "kind": "finding", "text": "from edge",
+                                                     "ts": 2.0, "origin_node": "edge"}]})
     calls = remote(monkeypatch, h)
     run(core.squad("t", n=1, run_id="br"))
-    assert calls[0]["bridge"] == [{"id": "p1", "ts": 1, "body": "hello"}]
-    assert core.bridge.merged == [("edge", [{"id": "r1", "body": "from edge"}])]
+    assert [p["text"] for p in calls[0]["bridge"]] == ["hello"]
+    texts = [p["text"] for p in bridgemod.for_core(core, "br").posts()]
+    assert "from edge" in texts
 
-    # receiver: merges inbound posts under the signed sender, returns posts made during the run
+    # receiver: merges inbound posts into net-<sender>-<origin_run>, the remote squad runs under
+    # that id (its agents can read them), and only posts written on this node go back
     edge, _ = make(n=1, node="edge")
-    edge.bridge = FakeBridge()
     orig = edge.squad
+    seen = {}
 
-    async def squad(prompt, n=None, **kw):
-        edge.bridge.posts.append({"id": "new", "ts": time.time() + 1})
-        return await orig(prompt, n, **kw)
+    async def squad(prompt, n=None, run_id=None, **kw):
+        seen["rid"] = run_id
+        bb = bridgemod.for_core(edge, run_id)
+        seen["inbound"] = [p["text"] for p in bb.posts()]
+        bb.post("W-1", "conclusion", "edge says yes")
+        return await orig(prompt, n, run_id=run_id, **kw)
     edge.squad = squad
-    res = run(edge.fleet.handle_run(netpayload(n=1, bridge=[{"id": "p1"}])))
-    assert edge.bridge.merged == [("root", [{"id": "p1"}])]
-    assert [p["id"] for p in res["bridge"]] == ["new"]
+    inbound = [{"id": "p1", "run_id": "r", "agent": "Root-1", "kind": "finding", "text": "hello",
+                "ts": 1.0, "origin_node": "root"}]
+    res = run(edge.fleet.handle_run(netpayload(n=1, bridge=inbound)))
+    assert seen["rid"] == "net-root-r" and seen["inbound"] == ["hello"]
+    assert [p["text"] for p in res["bridge"]] == ["edge says yes"]
     no = run(make(n=1, node="edge2")[0].fleet.handle_run(netpayload(n=1)))
     assert "bridge" not in no
 

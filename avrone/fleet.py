@@ -238,27 +238,38 @@ def cap_bridge_posts(posts: Any) -> list[dict[str, Any]]:
     return out
 
 
-def bridge_of(core: Any) -> Any:
-    """core.bridge when it offers export + merge_remote, else None (the bridge is optional)."""
+def bridge_of(core: Any, run_id: Any = None) -> Any:
+    """The run's Bridge (avrone.bridge.for_core) when run_id is given and the bridge module is
+    available, else core.bridge when it offers export + merge_remote, else None (optional)."""
+    if run_id:
+        try:
+            from . import bridge as bridgemod
+            return bridgemod.for_core(core, str(run_id))
+        except Exception as e:  # noqa: BLE001  -- the relay is best-effort
+            log.debug("run bridge unavailable: %s", e)
     b = getattr(core, "bridge", None)
     if b is None or not callable(getattr(b, "export", None)) or not callable(getattr(b, "merge_remote", None)):
         return None
     return b
 
 
-def bridge_export(core: Any, since: float = 0.0) -> list[dict[str, Any]]:
-    b = bridge_of(core)
+def bridge_export(core: Any, since: Any = None, run_id: Any = None,
+                  only_origin: str | None = None) -> list[dict[str, Any]]:
+    b = bridge_of(core, run_id)
     if b is None:
         return []
     try:
-        return cap_bridge_posts(b.export(since))
+        posts = b.export(since)
+        if only_origin is not None:  # send back only what this node's agents wrote
+            posts = [p for p in posts if isinstance(p, dict) and p.get("origin_node") == only_origin]
+        return cap_bridge_posts(posts)
     except Exception as e:  # noqa: BLE001  -- the relay is best-effort
         log.debug("bridge export failed: %s", e)
         return []
 
 
-def bridge_merge(core: Any, posts: Any, origin: str) -> int:
-    b = bridge_of(core)
+def bridge_merge(core: Any, posts: Any, origin: str, run_id: Any = None) -> int:
+    b = bridge_of(core, run_id)
     posts = cap_bridge_posts(posts)
     if b is None or not posts:
         return 0
@@ -513,6 +524,11 @@ class FleetManager:
         return node_id in self.allow
 
     def _audit(self, event: str, **kw: Any) -> None:
+        # Codex.emit(run_id, kind, agent, **data): a payload key with one of those names would
+        # collide (TypeError, so the audit was silently lost); prefix it with "req_" instead.
+        for k in ("run_id", "kind", "agent"):
+            if k in kw:
+                kw[f"req_{k}"] = kw.pop(k)
         try:
             self.core.codex.emit("fleet", event, self.node_id, **kw)
         except Exception as e:  # noqa: BLE001  -- auditing must never mask the decision
@@ -747,7 +763,7 @@ class FleetManager:
                 "hops": hops + 1, "from": self.node_id, "origin_run": run_id, "capability": NETSQUAD_CAP,
                 "netsquad": {"path": route, "role": str(role)[:60],
                              "budget": max(size, int(budget if budget is not None else size))}}
-            posts = bridge_export(self.core)
+            posts = bridge_export(self.core, run_id=run_id)
             if posts:
                 payload["bridge"] = posts
             node["load"] = node.get("load", 0) + 1
@@ -757,7 +773,7 @@ class FleetManager:
             answer = str((res or {}).get("answer") or "").strip()
             if not answer:
                 raise RuntimeError("empty answer from remote squad")
-            bridge_merge(self.core, res.get("bridge"), node_id)
+            bridge_merge(self.core, res.get("bridge"), node_id, run_id=run_id)
             sub = [str(x) for x in (res.get("path") or [node_id]) if isinstance(x, (str, int))][:16]
             return {"answer": answer, "node": node_id, "route": route + (sub or [node_id])}
         except asyncio.CancelledError:
@@ -807,17 +823,23 @@ class FleetManager:
         prompt = str(payload.get("prompt", ""))
         c = self.core
         self._audit("fleet.run", mode=mode, frm=payload.get("from"), hops=hops, netsquad=True, size=n, route=path)
-        bridge_merge(c, payload.get("bridge"), sender or path[-1])
-        since = time.time()
+        # One bridge per (sender, origin run): the sender's posts are merged in first, the remote
+        # squad runs under that id so its agents read them, and only posts written here go back.
+        origin_run = re.sub(r"[^A-Za-z0-9_-]", "", str(payload.get("origin_run") or ""))[:40]
+        rid = f"net-{sender or path[-1]}-{origin_run}" if origin_run else None
+        bridge_merge(c, payload.get("bridge"), sender or path[-1], run_id=rid)
         prev = (getattr(c, "fleet_hops", 0), getattr(c, "netsquad_path", None), getattr(c, "netsquad_budget", None))
         c.fleet_hops, c.netsquad_path, c.netsquad_budget = hops, list(path), budget
         try:
-            res = await (c.chat(prompt) if mode == "chat" else c.squad(prompt, n))
+            if rid:
+                res = await (c.chat(prompt, run_id=rid) if mode == "chat" else c.squad(prompt, n, run_id=rid))
+            else:
+                res = await (c.chat(prompt) if mode == "chat" else c.squad(prompt, n))
         finally:
             c.fleet_hops, c.netsquad_path, c.netsquad_budget = prev
         out = {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"),
                "answer": res.get("answer") or "", "netsquad": True}
-        posts = bridge_export(c, since)
+        posts = bridge_export(c, run_id=rid or res.get("run_id"), only_origin=self.node_id)
         if posts:
             out["bridge"] = posts
         return out

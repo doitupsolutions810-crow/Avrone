@@ -15,6 +15,14 @@ LEAD writes a verdict report. With rounds > 1 (arg, settings.deep_rounds or env
 AVRONE_DEEP_ROUNDS, capped at MAX_DEEP_ROUNDS) further waves stress-test the
 previous round's corrected answer, stopping early once a wave reports no new
 corrections (converged).
+
+Learning bridge (avrone.bridge): every agent of a run shares one blackboard. With
+AVRONE_BRIDGE_ROUNDS > 0 (default 1, max 3) a squad runs a cross-examination round between
+the workers and the Lead merge: each usable worker gets one revise turn with the others'
+results and the bridge, may post corrections/conclusions and revise its result; rounds stop
+early once one adds no correction, and the Lead sees the bridge digest. 0 = the classic squad.
+Conclusions are distilled into a "lessons" memory namespace at run end and matched back into
+later runs' worker prompts (AVRONE_LESSONS=off disables).
 """
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import agentfs, memstore
+from . import bridge as bridgemod
 from .checkpoint import Checkpoint
 from .codex import Codex
 from .config import Settings
@@ -765,6 +774,11 @@ class TrinityCore:
 
         self.squad_roles[run_id] = [{"role": str(s.get("role")), "focus": str(s.get("focus", ""))}
                                     for s in subtasks if isinstance(s, dict)]
+        lessons = self._lessons_block(run_id, task)
+        if lessons:
+            subtasks_run = [dict(s, focus=s["focus"] + lessons) for s in subtasks]
+        else:
+            subtasks_run = subtasks
         placed: dict[int, dict[str, Any]] = {}
         nplan = self._netsquad_plan(run_id, len(subtasks), dispatch)
         plan = nplan if nplan is not None else self._offload_plan(run_id, len(subtasks))
@@ -778,7 +792,7 @@ class TrinityCore:
                 async with gate:
                     return await local()
             coros = []
-            for i, s in enumerate(subtasks):
+            for i, s in enumerate(subtasks_run):
                 local = (lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
                 if i in remote and net:
                     fac = (lambda i=i, s=s, node=remote[i], local=local:
@@ -793,25 +807,34 @@ class TrinityCore:
             results = await self._gather_agents(run_id, [
                 self._ck_step(ck, f"worker.{i}",
                               lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
-                for i, s in enumerate(subtasks)], limit=plan[0] if plan else None)
+                for i, s in enumerate(subtasks_run)], limit=plan[0] if plan else None)
         self.squad_roles.pop(run_id, None)
+        xinfo: dict[str, Any] | None = None
+        rounds = bridgemod.bridge_rounds()
+        if rounds > 0:
+            results, xinfo = await self._cross_examine(run_id, task, subtasks, list(results), rounds)
+
         def via(i: int) -> str:
             p = placed.get(i)
             return f" [node {p['node']} via {'/'.join(p['route'])}]" if p else ""
         reports = "\n\n".join(
             f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']}){via(i)}\n{r}"
             for i, (s, r) in enumerate(zip(subtasks, results)))
+        lead_in = f"TASK:\n{task}\n\nAGENT REPORTS:\n{reports}"
+        if xinfo is not None and xinfo.get("digest"):
+            lead_in += ("\n\nBRIDGE DIGEST (the agents cross-examined each other; weigh what they "
+                        "concluded together and settle the unresolved points):\n" + xinfo["digest"])
         self.codex.emit(run_id, "lead.merge", "Lead", agents=len(results))
         try:
             answer = await self._chat([
                 {"role": "system", "content": LEAD_PROMPT},
-                {"role": "user", "content": f"TASK:\n{task}\n\nAGENT REPORTS:\n{reports}"},
+                {"role": "user", "content": lead_in},
             ], lead=True, temperature=0.3, session=f"avrone:{run_id}:lead")
             if _weak_lead(answer, reports):
                 self.codex.emit(run_id, "lead.retry", "Lead", reason="narration or too thin")
                 answer = await self._chat([
                     {"role": "system", "content": LEAD_PROMPT},
-                    {"role": "user", "content": f"TASK:\n{task}\n\nAGENT REPORTS:\n{reports}"},
+                    {"role": "user", "content": lead_in},
                     {"role": "assistant", "content": answer},
                     {"role": "user", "content": "That is a plan, not an answer. You cannot run anything. "
                      "Write the complete final answer now from the reports: exact findings, what was "
@@ -824,6 +847,11 @@ class TrinityCore:
         out = {"run_id": run_id, "answer": answer,
                "agents": [{"role": s.get("role"), "focus": s["focus"], "result": r, **placed.get(i, {})}
                           for i, (s, r) in enumerate(zip(subtasks, results))]}
+        if xinfo is not None:
+            out["bridge"] = {k: v for k, v in xinfo.items() if k != "digest"}
+        learned = self._distill(run_id, task)
+        if learned:
+            out["lessons_learned"] = learned
         if ck is not None and not answer.startswith("Lead failed ("):
             ck.put("result", out)  # a failed merge is retried on resume
         return out
@@ -871,7 +899,8 @@ class TrinityCore:
             self.codex.emit(run_id, "deep.first_wave_done", "Trinity", first_run_id=first_run_id,
                             answer=first_answer[:6000])
 
-        angles = DEEP_ANGLES[:n]
+        lessons = self._lessons_block(run_id, task)
+        angles = [dict(a, focus=a["focus"] + lessons) for a in DEEP_ANGLES[:n]] if lessons else DEEP_ANGLES[:n]
         current = first_answer
         seen: list[str] = []
         history: list[dict[str, Any]] = []
@@ -971,6 +1000,9 @@ class TrinityCore:
         }
         if first_run_id:
             out["first_run_id"] = first_run_id
+        learned = self._distill(run_id, task)
+        if learned:
+            out["lessons_learned"] = learned
         if ck is not None and lead_ok:
             ck.put("result", out)
         return out
@@ -1014,6 +1046,95 @@ class TrinityCore:
             self.codex.emit(run_id, "error", "DeepLead", message="empty deep lead reply")
             return f"Deep lead failed (empty reply). Raw reviews:\n\n{reviews}", results, False
         return report, results, True
+
+    # ------------------------------------------------------------ learning bridge
+    def _lessons_block(self, run_id: str, task: str) -> str:
+        """Relevant lessons from earlier runs for worker prompts ('' when off/none). Never raises."""
+        if not bridgemod.lessons_enabled():
+            return ""
+        try:
+            block = bridgemod.lessons_block(self.settings.data_dir, task)
+        except Exception:  # noqa: BLE001
+            return ""
+        if block:
+            self.codex.emit(run_id, "lessons.inject", "Bridge", count=block.count("\n- "), chars=len(block))
+        return block
+
+    def _distill(self, run_id: str, task: str) -> int:
+        """Distill the run bridge's conclusions into the lessons namespace. Never raises."""
+        if not bridgemod.lessons_enabled():
+            return 0
+        try:
+            saved = bridgemod.distill_lessons(self.settings.data_dir, bridgemod.for_core(self, run_id), task)
+        except Exception as e:  # noqa: BLE001 - learning must never sink a finished run
+            self.codex.emit(run_id, "error", "Bridge", message=f"lessons distill failed: {type(e).__name__}: {e}")
+            return 0
+        if saved:
+            self.codex.emit(run_id, "lessons.distill", "Bridge", saved=len(saved))
+        return len(saved)
+
+    async def _cross_examine(self, run_id: str, task: str, subtasks: list[dict[str, str]],
+                             results: list[str], max_rounds: int) -> tuple[list[str], dict[str, Any]]:
+        """Cross-examination: each usable worker gets one short revise turn per round with the
+        others' results and the bridge, and may post corrections/conclusions or revise its result.
+        Stops early when a round adds no correction. Crashed/empty workers are skipped."""
+        b = bridgemod.for_core(self, run_id)
+        labels = [f"Agent{i + 1}:{s.get('role')}" for i, s in enumerate(subtasks)]
+        for i, r in enumerate(results):
+            if not _reviewer_failed(r):
+                try:
+                    b.post(labels[i], "finding", r, role=str(subtasks[i].get("role") or ""))
+                except bridgemod.BridgeError:
+                    pass
+        info: dict[str, Any] = {"rounds_run": 0, "max_rounds": max_rounds, "stop_reason": "cap",
+                                "corrections": 0, "revised": 0}
+        for rnd in range(1, max_rounds + 1):
+            live = [i for i, r in enumerate(results) if not _reviewer_failed(r)]
+            if len(live) < 2:
+                info["stop_reason"] = "too_few_workers"
+                break
+            self.codex.emit(run_id, "bridge.round.start", "Bridge", round=rnd, workers=len(live))
+            board = bridgemod.compact(b.read(limit=60), width=400)
+            snapshot = list(results)
+
+            async def turn(i: int) -> str:
+                others = "\n\n".join(f"### {labels[j]}\n{snapshot[j][:3000]}" for j in live if j != i)
+                return await self._chat([
+                    {"role": "system", "content": bridgemod.REVISE_PROMPT.format(label=labels[i], rnd=rnd)},
+                    {"role": "user", "content": f"TASK:\n{task}\n\nYOUR RESULT:\n{snapshot[i][:4000]}\n\n"
+                     f"OTHER AGENTS' RESULTS:\n{others}\n\nBRIDGE POSTS:\n{board}"},
+                ], temperature=0.3, session=f"avrone:{run_id}:xexam{rnd}:{i}")
+            replies = await asyncio.gather(*(turn(i) for i in live), return_exceptions=True)
+            corrections = 0
+            for i, rep_ in zip(live, replies):
+                if isinstance(rep_, BaseException):
+                    if isinstance(rep_, asyncio.CancelledError):
+                        raise rep_
+                    self.codex.emit(run_id, "error", labels[i], message=f"cross-exam turn failed: {rep_!r}"[:500])
+                    continue
+                posts, revised = bridgemod.parse_revise(rep_)
+                for p in posts:
+                    refs = [r for r in p["refs"] if b.get(r) is not None]
+                    try:
+                        b.post(labels[i], p["kind"], p["text"], refs=refs,
+                               role=str(subtasks[i].get("role") or ""))
+                    except bridgemod.BridgeError:
+                        continue
+                    corrections += p["kind"] == "correction"
+                if revised and not _reviewer_failed(revised):
+                    results[i] = revised
+                    info["revised"] += 1
+            info["rounds_run"] = rnd
+            info["corrections"] += corrections
+            self.codex.emit(run_id, "bridge.round.done", "Bridge", round=rnd, corrections=corrections,
+                            posts=len(b))
+            if corrections == 0:
+                info["stop_reason"] = "converged"
+                break
+        info["posts"] = len(b)
+        info["unresolved"] = len(b.unresolved())
+        info["digest"] = b.digest()
+        return results, info
 
     async def chat(self, task: str, run_id: str | None = None) -> dict[str, Any]:
         run_id = run_id or uuid.uuid4().hex[:10]

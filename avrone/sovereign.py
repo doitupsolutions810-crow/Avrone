@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 import shutil
+import signal
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,14 +69,21 @@ class Runner:
     async def _exec(self, argv: list[str], cmd: str, timeout: int, cwd: Path | None = None) -> CommandResult:
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=str(cwd) if cwd else None, env=_agent_safe_environment(),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=(os.name == "posix"))
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return CommandResult(cmd, proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace"))
         except asyncio.TimeoutError:
-            proc.kill()
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    proc.kill()
+            else:
+                proc.kill()
             await proc.wait()
-            return CommandResult(cmd, -1, "", "command timed out", timed_out=True)
+            return CommandResult(cmd, -1, "", "command timed out; process group terminated", timed_out=True)
 
 
 class LocalRunner(Runner):
@@ -117,8 +125,17 @@ class DockerRunner(Runner):
         await self._exec(["docker", "rm", "-f", self.container], "docker rm", 30)
 
     async def run(self, cmd: str, timeout: int | None = None) -> CommandResult:
-        return await self._exec(["docker", "exec", self.container, "bash", "-lc", cmd], cmd,
-                                timeout or self.s.command_timeout)
+        limit = max(1, int(timeout or self.s.command_timeout))
+        # The container-side timeout kills the command even if the Docker client stays connected.
+        result = await self._exec(
+            ["docker", "exec", self.container, "timeout", "-s", "KILL", f"{limit}s",
+             "bash", "-lc", cmd],
+            cmd, limit + 5,
+        )
+        if result.exit_code in {124, 137} and not result.timed_out:
+            return CommandResult(cmd, result.exit_code, result.stdout,
+                                result.stderr or "command timed out inside container", timed_out=True)
+        return result
 
 
 async def establish(settings: Settings) -> Runner:

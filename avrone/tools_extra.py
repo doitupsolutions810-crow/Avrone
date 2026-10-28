@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import httpx
 
 from .network_policy import safe_http_request
-from .sovereign import _docker_sandbox_args
+from .sovereign import _docker_image_policy_error, _docker_sandbox_args
 from .tools import Tool, _safe_path
 
 if TYPE_CHECKING:
@@ -491,15 +491,9 @@ async def t_docker_run(ctx: "AgentContext", args: dict[str, Any]) -> str:
     ws = _ws(ctx)
     container_name = f"avrone-tool-{uuid.uuid4().hex[:16]}"
     allow_network = bool(_setting(ctx, "allow_network", True))
-    image_allowlist = {
-        item.strip() for item in os.getenv("AVRONE_DOCKER_IMAGE_ALLOWLIST", "").split(",") if item.strip()
-    }
-    if image_allowlist and image not in image_allowlist:
-        return "ERROR: Docker image is not in AVRONE_DOCKER_IMAGE_ALLOWLIST."
-    if os.getenv("AVRONE_DOCKER_REQUIRE_DIGEST", "").lower() in {"1", "true", "yes"} and not re.search(
-        r"@sha256:[0-9a-f]{64}$", image
-    ):
-        return "ERROR: this node requires Docker images pinned by sha256 digest."
+    image_error = _docker_image_policy_error(image)
+    if image_error:
+        return "ERROR: " + image_error
     argv = ["docker", "run", "--rm", "--name", container_name, "--label", "io.avrone.agent-run=true",
             *_docker_sandbox_args(allow_network=allow_network),
             "-v", f"{ws}:/workspace", "-w", "/workspace"]

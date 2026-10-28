@@ -64,10 +64,11 @@ async def validate_public_http_url(url: object, *, mock_transport: bool = False)
             raise ValueError("URL resolves to a non-public IP address")
     elif not mock_transport:
         try:
-            records = await asyncio.to_thread(
-                socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM
+            records = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM),
+                timeout=3.0,
             )
-        except (OSError, socket.gaierror):
+        except (OSError, socket.gaierror, asyncio.TimeoutError):
             raise ValueError("URL hostname could not be resolved safely") from None
         addresses = {record[4][0].split("%", 1)[0] for record in records}
         if not addresses:

@@ -1,3 +1,4 @@
+successfully downloaded text file (SHA: f5bb4103f2596ce0bbc4f0d7c6a78af47824eb45)
 successfully downloaded text file (SHA: 5cc5369b3ec196d24ce54a2d8d97bfde1c992b80)
 # AVRONE
 
@@ -338,6 +339,17 @@ empty to turn the admin terminal off.
 ```bash
 pytest -q     # runs fully offline with the mock model and local runner
 ```
+
+## System bridge (Grok Bot)
+
+AVRONE concludes into one system with its Node twin, [Grok Bot](https://github.com/doitupsolutions810-crow/grok-bot-):
+
+- **Inbound:** Grok Bot agents call this AVRONE's plain `/api/chat` through their `avrone.squad` tool (`AVRONE_URL`, e.g. `http://host.docker.internal:8710`), running full squad/deep modes here.
+- **Outbound:** AVRONE agents reach Grok Bot's terminal, browser and team via the built-in `http_request` tool — e.g. `http_request POST http://localhost:3000/api/chat {"message": "...", "mode": "squad"}`.
+- **MCP, both ways:** `avrone-mcp` serves this AVRONE to any MCP client (Grok Bot handshakes MCP servers at boot); `mcp.json` loads external tools into AVRONE.
+
+Grok Bot's `launch.sh` boots both systems in sequence and runs their live tests.
+
 
 ## Roadmap
 

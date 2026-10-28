@@ -1,3 +1,4 @@
+successfully downloaded text file (SHA: 5cc5369b3ec196d24ce54a2d8d97bfde1c992b80)
 # AVRONE
 
 A self-hosted chat + search system where agents don't just answer, they **work**:
@@ -80,6 +81,12 @@ probes outside networks.
 - `GET /api/map?format=json|mermaid`: node/edge graph, or a Mermaid flowchart you can paste into GitHub
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
+
+## v0.19: Full-enablement release — upgraded stack + `deploy/full.env` final-product profile
+
+- **Software stack upgraded to current:** FastAPI 0.162, uvicorn 0.54, httpx 0.28.1 (floors raised in `pyproject.toml`); vision extras now `zxing-cpp>=2.3`. Python >= 3.11 unchanged. The offline suite (1680 tests) still gates every push in CI on 3.11 + 3.12.
+- **`deploy/full.env` — the fully-enabled configuration:** every shipped feature on in one file: deep squad of 6, model fallback chain + circuit breaker, Docker-backed agent sandbox with network, admin terminal, plugins + MCP + search, fleet node (agents spawn across nodes), self-changes + skills, self-evolution gated by tests, authorized recon. `cp deploy/full.env .env`, fill the `TODO` placeholders, run `avrone-cli doctor`, and boot. `.env.example` stays lean; this is the maximal profile.
+- Model default remains **qwen2.5:3b** via Ollama (benchmarked 100/100 — see "Free open-source models"); on a GPU host set `AVRONE_LEAD_MODEL=qwen3.5:9b` for stronger merges.
 
 ## v0.18: Squad round 5 — full-context sub-agents, recursive learning bridge, network-dispatched squads, edge-case hardening — 1680 tests
 
@@ -264,6 +271,22 @@ python3 tools/model_bench.py --base http://127.0.0.1:11434
 On a GPU host, upgrade in one env line (`AVRONE_LLM_MODEL=qwen3.5:9b`): the
 Qwen family leads open-weight tool-calling benchmarks (BFCL v4 / TAU2-bench),
 so bigger Qwen models only get better at orchestration.
+
+### Full configuration (the final product profile)
+
+`deploy/full.env` turns on everything AVRONE ships — the maximal, most
+configured profile:
+
+```bash
+cp deploy/full.env .env    # then fill the TODO placeholders (admin/fleet tokens)
+avrone-cli doctor          # preflight: warns on insecure combos before you boot
+avrone                     # squad + deep waves + fleet + self-evolve + recon
+```
+
+On in the full profile: deep squad of 6, fallback chain with circuit breaker,
+Docker runner with network, admin terminal, plugins + MCP + search, fleet node,
+skills, self-changes, self-evolution (test-gated), authorized recon. Review
+`deploy/full.env` line by line — every switch is documented inline.
 
 ### Connect OpenClaw
 

@@ -82,6 +82,9 @@ class FleetManager:
         self.nodes: dict[str, dict[str, Any]] = saved.get("nodes", {})
         self._nonces: dict[str, float] = {}
         self._task: asyncio.Task | None = None
+        self._bg: set[asyncio.Task] = set()
+        self.queue = None  # JobQueue, attached by start_queue()
+        self.worker = None
         self._save()
 
     # ------------------------------------------------------------ state
@@ -151,7 +154,8 @@ class FleetManager:
         self.nodes[nid] = {"node_id": nid, "url": url, "last_seen": time.time(),
                            "capabilities": payload.get("capabilities", {}),
                            "children": payload.get("children", []),
-                           "load": payload.get("load", 0)}
+                           "load": payload.get("load", 0),
+                           "presence": payload.get("presence")}
         self._save()
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)
         return {"ok": True, "parent": self.node_id}
@@ -173,7 +177,8 @@ class FleetManager:
         return r.json()
 
     async def join_parent_once(self) -> dict[str, Any]:
-        payload = {"node_id": self.node_id, "url": self.public_url,
+        from .presence import snapshot
+        payload = {"presence": await snapshot(self.core),"node_id": self.node_id, "url": self.public_url,
                    "capabilities": {"tools": self.core.tools.names(), "runner": self.core.runner.kind},
                    "children": sorted(self.nodes), "load": self.info()["active_agents"]}
         return await self._post(self.parent, "/api/fleet/register", payload, timeout=10)
@@ -193,10 +198,22 @@ class FleetManager:
         if self.enabled and self.parent and self.public_url and self._task is None:
             self._task = asyncio.create_task(self.heartbeat_loop())
 
+    def start_queue(self, data_dir: Path) -> None:
+        from .jobqueue import JobQueue, Worker
+        self.queue = JobQueue(Path(data_dir) / "jobs.db")
+        self.worker = Worker(self.queue, self.run_job)
+        self.worker.start()
+
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
             self._task = None
+        if self.worker:
+            await self.worker.stop()
+        if self.queue:
+            await self.queue.close()
+        for t in list(self._bg):
+            t.cancel()
 
     def pick(self, target: str) -> dict[str, Any]:
         if target in ("", "auto"):
@@ -226,6 +243,56 @@ class FleetManager:
             return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
         finally:
             node["load"] = max(0, node.get("load", 1) - 1)
+
+    async def send_message(self, route: list[str], agent: str, text: str, sender: str, hops: int = 0,
+                           wait: bool = False) -> dict[str, Any]:
+        """Deliver `text` to `agent` on the node at `route` (empty route = this node)."""
+        if route:
+            if hops >= self.max_hops:
+                raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
+            node = self.pick(route[0])
+            payload = {"route": route[1:], "agent": agent, "message": text, "from": sender, "hops": hops + 1, "wait": wait}
+            res = await self._post(node["url"], "/api/fleet/message", payload, timeout=900 if wait else 30)
+            return {**res, "path": [self.node_id] + res.get("path", [])}
+        return await self.deliver_local(agent, text, sender, wait)
+
+    async def deliver_local(self, agent: str, text: str, sender: str, wait: bool) -> dict[str, Any]:
+        c = self.core
+        if c.message_agent(agent, text, sender):
+            return {"node": self.node_id, "path": [self.node_id], "agent": agent, "delivered": "live",
+                    "note": "queued in the live agent's inbox; it acts on it at its next step"}
+        # Agent finished or unknown here: start a fresh agent with that role in this node's environment.
+        role = agent.rsplit("-", 1)[0] or "Agent"
+        run_id = f"msg-{secrets.token_hex(4)}"
+        c.codex.emit(run_id, "run.start", "Trinity", prompt=text, mode="message", target=agent, sender=sender)
+        job = c.run_agent(run_id, role, f"Message from {sender} to {agent}: {text}")
+        if not wait:
+            t = asyncio.create_task(job)
+            self._bg.add(t)
+            t.add_done_callback(self._bg.discard)
+            return {"node": self.node_id, "path": [self.node_id], "agent": agent, "delivered": "respawned", "run_id": run_id}
+        answer = await job
+        c.codex.emit(run_id, "run.done", "Trinity")
+        return {"node": self.node_id, "path": [self.node_id], "agent": agent, "delivered": "respawned",
+                "run_id": run_id, "answer": answer}
+
+    async def handle_message(self, payload: dict[str, Any]) -> dict[str, Any]:
+        hops = int(payload.get("hops", 1))
+        if hops > self.max_hops:
+            raise PermissionError("max fleet hops exceeded")
+        return await self.send_message([str(x) for x in payload.get("route") or []], str(payload["agent"]),
+                                       str(payload["message"]), str(payload.get("from", "?")), hops,
+                                       bool(payload.get("wait")))
+
+    async def run_job(self, kind: str, p: dict[str, Any]) -> dict[str, Any]:
+        """Queue handler: retried by the JobQueue if the target node is down."""
+        route = [x for x in str(p.get("node", "local")).split("/") if x and x != "local"]
+        if kind == "message":
+            return await self.send_message(route, p["agent"], p["message"], p.get("from", self.node_id), 0, True)
+        if not route and p.get("node") in ("local", "", None):
+            res = await (self.core.chat(p["task"]) if p.get("mode") == "chat" else self.core.squad(p["task"], p.get("n")))
+            return {"node": self.node_id, "answer": res.get("answer", "")}
+        return await self.dispatch(route, p.get("mode", "squad"), p["task"], 0, p.get("n"))
 
     async def handle_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Server side of /api/fleet/run: forward if routed further, else run locally."""
@@ -298,7 +365,60 @@ async def t_remote_broadcast(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n\n".join(await asyncio.gather(*(one(t) for t in targets)))
 
 
+async def t_fleet_agents(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    from .presence import directory, render
+    f = _fleet(ctx)
+    rows = await directory(ctx.core)
+    q = str(args.get("filter", "")).lower()
+    if q:
+        rows = [{**r, "agents": [a for a in r["agents"] if q in json.dumps(a).lower()]} for r in rows
+                if q in json.dumps(r).lower()]
+    return f"directory from {f.node_id}:\n" + render(rows, bool(args.get("live_only")))
+
+
+async def t_agent_message(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    from .presence import directory, find_agent
+    f = _fleet(ctx)
+    route, name = find_agent(await directory(ctx.core), str(args["agent"]))
+    res = await f.send_message([p for p in route.split("/") if p], name, str(args["message"]),
+                               f"{f.node_id}/{ctx.name}", getattr(ctx.core, "fleet_hops", 0), bool(args.get("wait")))
+    head = f"[{' -> '.join(res.get('path', []))}] {name}: {res.get('delivered')}"
+    return head + (f"\n{res['answer']}" if res.get("answer") else f" ({res.get('note') or res.get('run_id')})")
+
+
+async def t_queue_submit(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    f = _fleet(ctx)
+    if f.queue is None:
+        return "ERROR: queue not running"
+    payload = {"task": str(args["task"]), "node": str(args.get("node", "auto")), "mode": str(args.get("mode", "squad")),
+               "n": args.get("n"), "from": f"{f.node_id}/{ctx.name}"}
+    jid = await f.queue.enqueue("run", payload, int(args.get("priority", 0)), int(args.get("max_attempts", 3)))
+    return f"queued job {jid} -> {payload['node']} (retries on failure; check with queue_status)"
+
+
+async def t_queue_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    f = _fleet(ctx)
+    if f.queue is None:
+        return "ERROR: queue not running"
+    if args.get("job_id"):
+        j = await f.queue.get(str(args["job_id"]))
+        if not j:
+            return "ERROR: no such job"
+        res = j.get("result") or {}
+        return (f"job {j['id']} {j['status']} attempts={j['attempts']}/{j['max_attempts']}"
+                + (f"\nerror: {j['error']}" if j.get("error") and j["status"] != "done" else "")
+                + (f"\n{res.get('answer', '')}" if isinstance(res, dict) else ""))
+    return json.dumps(await f.queue.stats())
+
+
 FLEET_TOOLS = [
+    ("fleet_agents", "directory of every agent across the fleet: its node route, device, container, networks, services and current task.",
+     '{"filter"?: str, "live_only"?: bool}', t_fleet_agents),
+    ("agent_message", "send instructions to a specific agent anywhere in the fleet (\"Builder-3\" or \"router/edge/Builder-3\"); a live agent acts on it inside its own environment, a finished one is respawned there.",
+     '{"agent": str, "message": str, "wait"?: bool}', t_agent_message),
+    ("queue_submit", "durably queue a squad/chat run for a node (route, \"auto\" or \"local\"); retried if the node is down.",
+     '{"task": str, "node"?: str, "mode"?: str, "n"?: int, "priority"?: int, "max_attempts"?: int}', t_queue_submit),
+    ("queue_status", "status/result of a queued job, or queue counts if no job_id.", '{"job_id"?: str}', t_queue_status),
     ("fleet_nodes", "list linked AVRONE nodes/routers with status, load and their children.", "{}", t_fleet_nodes),
     ("remote_spawn", "spawn a squad/chat/deep run on a remote AVRONE node; node may be a route like \"router1/edge7\" or \"auto\" (least loaded). Returns its answer.",
      '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int}', t_remote_spawn),

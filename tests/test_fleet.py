@@ -86,3 +86,24 @@ def test_fleet_security(fleet):
     assert signed_post(pb, "/api/fleet/run", {"mode": "chat", "prompt": "x", "hops": 9}).status_code == 403
     # unknown route
     assert signed_post(pr, "/api/fleet/run", {"route": ["nope"], "mode": "chat", "prompt": "x", "hops": 0}).status_code == 502
+
+
+def test_directory_and_tell(fleet):
+    pr, pa, pb = fleet
+    h = {"x-admin-token": "adm"}
+    r = wait(f"http://127.0.0.1:{pr}/api/fleet/directory",
+             lambda r: r.status_code == 200 and any(x["route"] == "router/edge" and x["env"] for x in r.json()), headers=h)
+    rows = {x["route"]: x for x in r.json()}
+    edge = rows["router/edge"]
+    assert edge["node_id"] == "edge" and edge["env"]["device"]["hostname"]
+    assert edge["env"]["runner"]["kind"] == "local" and edge["env"]["networks"]
+    assert edge["env"]["services"]["public_url"].endswith(str(pb))
+    # tell an agent on the furthest node to build, routed root -> router -> edge
+    res = httpx.post(f"http://127.0.0.1:{pr}/api/fleet/tell", headers=h, timeout=60,
+                     json={"agent": "router/edge/Builder-1", "message": "build hello.txt", "wait": True})
+    assert res.status_code == 200, res.text
+    j = res.json()
+    assert j["path"] == ["root", "router", "edge"] and j["delivered"] == "respawned" and "answer" in j
+    # ambiguous / unknown names are refused clearly
+    assert httpx.post(f"http://127.0.0.1:{pr}/api/fleet/tell", headers=h, timeout=10,
+                      json={"agent": "Ghost-99", "message": "x"}).status_code == 404

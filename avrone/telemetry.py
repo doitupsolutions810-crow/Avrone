@@ -122,12 +122,23 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
         if fleet.parent:
             node("fleet:parent", "node", f"Parent: {fleet.parent}")
             edges[("fleet", "fleet:parent")] += 1
+        from .presence import flatten
+
         for n in fleet.list_nodes():
             node(f"node:{n['node_id']}", "node", f"{n['node_id']} ({n['status']})", url=n["url"])
             edges[("fleet", f"node:{n['node_id']}")] += 1
-            for ch in n.get("children", []):
-                node(f"node:{ch}", "node", ch)
-                edges[(f"node:{n['node_id']}", f"node:{ch}")] += 1
+            pres = n.get("presence") or {"node_id": n["node_id"], "children": {}, "agents": []}
+            for row in flatten(pres):
+                nid = row["node_id"]
+                node(f"node:{nid}", "node", nid)
+                parent_route = row["route"].rsplit("/", 1)[0] if "/" in row["route"] else ""
+                if row["route"]:
+                    parent = parent_route.rsplit("/", 1)[-1] if parent_route else n["node_id"]
+                    edges[(f"node:{parent}", f"node:{nid}")] += 1
+                for a in row["agents"]:
+                    if a.get("status") == "working":
+                        node(f"ragent:{nid}/{a['name']}", "agent", f"{a['name']}@{nid}")
+                        edges[(f"node:{nid}", f"ragent:{nid}/{a['name']}")] += 1
 
     since = time.time() - window_s
     for ev in _iter_events(core.codex.log_dir, since):

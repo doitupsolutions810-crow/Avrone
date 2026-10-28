@@ -191,6 +191,7 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
         core.fleet = fleet  # type: ignore[attr-defined]
         if fleet.enabled:
             register_fleet_tools(registry)
+            fleet.start_queue(settings.data_dir)
             fleet.start()
             cleanups.append(fleet.stop)
         ext["fleet"] = fleet.info()

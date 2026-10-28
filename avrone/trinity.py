@@ -16,6 +16,7 @@ LEAD writes a verdict report.
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import re
 import uuid
@@ -154,6 +155,16 @@ class TrinityCore:
         # Bound concurrent model calls (squads, sub-agents and leads all share it).
         self._sem = asyncio.Semaphore(max(1, settings.max_parallel))
         self.active: dict[str, dict[str, Any]] = {}  # agent name -> status, for the HUD
+        self.inbox: dict[str, list[str]] = {}  # agent name -> messages waiting for its next step
+
+    def message_agent(self, name: str, text: str, sender: str = "operator") -> bool:
+        """Queue a message for a live agent; it reads it before its next step. False if not live."""
+        a = self.active.get(name)
+        if not a or a.get("status") != "working":
+            return False
+        self.inbox.setdefault(name, []).append(f"MESSAGE FROM {sender}: {text}")
+        self.codex.emit(a.get("run_id", "fleet"), "agent.message", name, sender=sender, text=text[:2000])
+        return True
 
     def _name(self, role: str) -> str:
         self._counter += 1
@@ -168,7 +179,8 @@ class TrinityCore:
                         parent: str | None = None, depth: int = 0, system: str | None = None) -> str:
         name = self._name(role)
         ctx = AgentContext(self, run_id, name, depth)
-        self.active[name] = {"role": role, "status": "working", "parent": parent, "run_id": run_id}
+        self.active[name] = {"role": role, "status": "working", "parent": parent, "run_id": run_id,
+                             "task": (focus or task)[:300], "depth": depth, "started": time.time()}
         self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth)
         messages = [
             {"role": "system", "content": (system or WORKER_PROMPT).format(
@@ -179,6 +191,8 @@ class TrinityCore:
         result = ""
         try:
             for step in range(self.settings.max_steps):
+                for note in self.inbox.pop(name, []):
+                    messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
                 reply = await self._chat(messages, session=f"avrone:{run_id}:{name}")
                 messages.append({"role": "assistant", "content": reply})
                 action = parse_action(reply)
@@ -201,6 +215,7 @@ class TrinityCore:
             result = f"[{name} failed: {e}]"
             self.codex.emit(run_id, "error", name, message=str(e))
         self.active[name]["status"] = "done"
+        self.inbox.pop(name, None)
         self.codex.emit(run_id, "agent.done", name, result=result[:6000])
         return result
 

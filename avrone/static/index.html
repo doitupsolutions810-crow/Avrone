@@ -64,7 +64,10 @@
     <div class="pane on" id="hud"></div>
     <div class="pane" id="logs"></div>
     <div class="pane" id="tools"><div id="extinfo"></div><div id="toollist">Loading…</div></div>
-    <div class="pane" id="map"><div id="telem">Loading…</div><svg id="mapsvg" width="100%" height="520"></svg></div>
+    <div class="pane" id="map"><div id="telem">Loading…</div><svg id="mapsvg" width="100%" height="520"></svg>
+      <h4>Fleet directory</h4>
+      <form id="tellform"><input id="tellagent" placeholder="agent (e.g. router/edge/Builder-3)" /><input id="tellmsg" placeholder="instruction" /><button>Tell</button></form>
+      <pre id="fleetdir" style="white-space:pre-wrap;font-size:11px">Needs the admin token (Terminal tab).</pre></div>
     <div class="pane" id="term">
       <form id="termform"><input id="tok" type="password" placeholder="admin token" style="max-width:110px" /><input id="cmd" placeholder="command" /></form>
       <div id="termout"></div>
@@ -165,7 +168,23 @@ async function loadMap(){
   nodes.forEach(n => { const p=pos[n.id]; if(!p) return; svg += `<circle cx="${p.x}" cy="${p.y}" r="6" fill="${color[n.kind]||'#fff'}"/><text x="${p.x+8}" y="${p.y+4}" fill="#cfd3de" font-size="10">${esc(n.label).slice(0,26)}</text>`; });
   $('#mapsvg').innerHTML = svg;
 }
-document.querySelector('[data-p=map]').addEventListener('click', loadMap);
+document.querySelector('[data-p=map]').addEventListener('click', () => { loadMap(); loadFleet(); });
+async function loadFleet(){
+  const tok = $('#tok').value; if(!tok) return;
+  const r = await fetch('/api/fleet/directory', {headers:{'x-admin-token':tok}});
+  if(!r.ok){ $('#fleetdir').textContent = 'Fleet: ' + (await r.text()); return; }
+  $('#fleetdir').textContent = (await r.json()).map(n => {
+    const e = n.env||{}, d = e.device||{}, ru = e.runner||{}, c = ru.container;
+    const nets = (e.networks||[]).map(i => i.name+' '+i.addrs.join(',')).join('; ');
+    const ag = (n.agents||[]).map(a => `   - ${a.name} (${a.role}) ${a.status}: ${(a.task||'').slice(0,70)}`).join('\n');
+    return `[${n.route||'(main)'}] ${n.node_id} ${n.status} | ${d.hostname} ${d.os} | ${ru.kind}${c?' '+c.name:''}\n   nets: ${nets}\n${ag}`;
+  }).join('\n\n');
+}
+$('#tellform').addEventListener('submit', async ev => { ev.preventDefault();
+  const r = await fetch('/api/fleet/tell', {method:'POST', headers:{'content-type':'application/json','x-admin-token':$('#tok').value},
+    body: JSON.stringify({agent:$('#tellagent').value, message:$('#tellmsg').value})});
+  const j = await r.json(); $('#fleetdir').textContent = JSON.stringify(j, null, 2); setTimeout(loadFleet, 3000);
+});
 
 renderHud(); status(); ws(); loadTools(); setInterval(status, 10000);
 </script>

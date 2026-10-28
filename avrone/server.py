@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.6.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -150,6 +150,58 @@ async def fleet_register(request: Request):
         raise HTTPException(403, str(e)) from None
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
+
+
+@app.post("/api/fleet/message")
+async def fleet_message(request: Request):
+    payload = await _verified(request)
+    try:
+        return await _fleet().handle_message(payload)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except (RuntimeError, KeyError) as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@app.get("/api/fleet/directory")
+async def fleet_directory(x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    from .presence import directory
+    return await directory(core())
+
+
+class AgentMsgIn(BaseModel):
+    agent: str
+    message: str
+    wait: bool = False
+
+
+@app.post("/api/fleet/tell")
+async def fleet_tell(body: AgentMsgIn, x_admin_token: str | None = Header(default=None)):
+    """Operator/chatbot -> any agent in the fleet, by name or route/name."""
+    require_admin(x_admin_token)
+    from .presence import directory, find_agent
+    f = _fleet()
+    try:
+        route, name = find_agent(await directory(core()), body.agent)
+        return await f.send_message([p for p in route.split("/") if p], name, body.message,
+                                    f"{f.node_id}/operator", 0, body.wait)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from None
+    except (RuntimeError, PermissionError) as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@app.get("/api/fleet/jobs")
+async def fleet_jobs(job_id: str | None = None, x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    f = _fleet()
+    if job_id:
+        j = await f.queue.get(job_id)
+        if not j:
+            raise HTTPException(404, "no such job")
+        return j
+    return await f.queue.stats()
 
 
 @app.post("/api/fleet/run")

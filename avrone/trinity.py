@@ -29,6 +29,7 @@ from typing import Any
 
 from .codex import Codex
 from .config import Settings
+from .governor import Governor
 from .llm import LLM, LLMError
 from .sovereign import Runner
 from .tools import ToolRegistry, builtin_registry
@@ -291,6 +292,9 @@ class TrinityCore:
         self._counter = 0
         # Bound concurrent model calls (squads, sub-agents and leads all share it).
         self._sem = asyncio.Semaphore(max(1, settings.max_parallel))
+        # Advisory health/thermal governor: consulted before a squad or deep wave spawns its
+        # workers, so a hot or loaded node runs fewer of them at once (never fewer than 1).
+        self.governor = Governor.from_settings(settings)
         self.active: dict[str, dict[str, Any]] = {}  # agent name -> status, for the HUD
         self.inbox: dict[str, list[str]] = {}  # agent name -> messages waiting for its next step
 
@@ -391,8 +395,34 @@ class TrinityCore:
             result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
         return result
 
+    def _worker_limit(self, run_id: str, n: int) -> int:
+        """Ask the governor how many of n workers may run at once; never raises, never < 1."""
+        try:
+            limit = int(self.governor.target(n))
+        except Exception:
+            return n
+        limit = max(1, min(n, limit))
+        if limit < n:
+            self.codex.emit(run_id, "governor.throttle", "Governor", workers=n, parallel=limit,
+                            reason=self.governor.last_reason)
+        return limit
+
     async def _gather_agents(self, run_id: str, coros: list[Any]) -> list[str]:
-        """Run agents in parallel; one that still blows up becomes a failure note, never a crash."""
+        """Run agents in parallel; one that still blows up becomes a failure note, never a crash.
+
+        The governor may cap how many run at once: the rest wait at a local gate (workers'
+        own sub-agents bypass it, so the gate can never deadlock)."""
+        limit = self._worker_limit(run_id, len(coros)) if coros else 0
+        if 0 < limit < len(coros):
+            gate = asyncio.Semaphore(limit)
+
+            async def gated(c: Any) -> Any:
+                try:
+                    async with gate:
+                        return await c
+                finally:
+                    c.close()  # no-op once awaited; avoids a never-awaited warning on cancel
+            coros = [gated(c) for c in coros]
         out = await asyncio.gather(*coros, return_exceptions=True)
         results: list[str] = []
         for i, r in enumerate(out):

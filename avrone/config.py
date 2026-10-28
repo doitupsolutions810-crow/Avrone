@@ -105,6 +105,11 @@ class Settings:
     # Wall-clock cap (seconds) on one agent's whole run; 0 = no cap. A worker that hits it is
     # reported as timed out and the squad merges the others instead of waiting forever.
     agent_timeout: float = field(default_factory=_float("AVRONE_AGENT_TIMEOUT", 0))
+    # --- Health / thermal governor (avrone/governor.py): fewer parallel workers on a hot,
+    # loaded or low-memory node. Advisory: never below min_parallel (>= 1).
+    governor: bool = field(default_factory=_bool("AVRONE_GOVERNOR", True))
+    min_parallel: int = field(default_factory=_int("AVRONE_MIN_PARALLEL", 1))
+    thermal_max_c: float = field(default_factory=_float("AVRONE_THERMAL_MAX_C", 85))
 
     # --- Environment (Sovereign OS layer) ---
     workspace: Path = field(default_factory=_path("AVRONE_WORKSPACE", "./workspace"))

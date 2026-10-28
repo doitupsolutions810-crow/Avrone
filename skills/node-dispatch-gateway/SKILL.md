@@ -41,4 +41,4 @@ Use the fleet as a bounded execution and collaboration fabric, not as an implici
 ## Recon reporting
 For every run, state whether the result came from source review, a recorded system log, or live execution. Do not describe source code as current runtime state. Do not scan targets unless the operator has explicitly authorized that target and the configured policy allows it.
 
-- Set `AVRONE_DOCKER_IMAGE_ALLOWLIST` to exact reviewed image references and `AVRONE_DOCKER_REQUIRE_DIGEST=true` for digest pinning. The same policy applies to the primary agent container and temporary docker_run workers.
+- Set `AVRONE_DOCKER_IMAGE_ALLOWLIST` to exact reviewed image references and `AVRONE_DOCKER_REQUIRE_DIGEST=true` for digest pinning. Apply resource ceilings (`AVRONE_DOCKER_MEMORY_LIMIT`, `AVRONE_DOCKER_CPU_LIMIT`, `AVRONE_DOCKER_PIDS_LIMIT`) and run worker containers as the workspace owner. The same policy applies to the primary agent container and temporary docker_run workers.

@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -133,3 +135,172 @@ class Checkpoint:
         keys = self.keys()
         return {"path": str(self.path), "steps": len(keys),
                 "done": self.get("result") is not None, "write_errors": self._store.write_errors}
+
+
+# ---------------------------------------------------------------- server-managed checkpoints
+# Over the API, MCP, CLI (--checkpoint-id) and fleet, a client names a checkpoint by id only.
+# The file always lives at <data_dir>/checkpoints/<key>.json; a client never supplies a path.
+# Fleet jobs are keyed "fleet-<sender>-<id>" and stamped with their owner, so one sender can
+# neither collide with nor resume (read) another sender's checkpoint.
+CKPT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
+FLEET_PREFIX = "fleet-"
+CKPT_MODES = ("squad", "deep")
+_active: set[str] = set()  # resolved paths of checkpoints a run in this process is using
+
+
+class CheckpointError(ValueError):
+    """A bad checkpoint id (-> HTTP 400)."""
+
+
+class CheckpointConflict(ValueError):
+    """The id holds a different task/mode/owner, or is in use by a running job (-> HTTP 409)."""
+
+
+def sanitize_id(raw: Any) -> str:
+    """A client checkpoint id: 1-64 chars of [A-Za-z0-9_-], else CheckpointError."""
+    if not isinstance(raw, str) or not CKPT_ID_RE.match(raw):
+        raise CheckpointError("checkpoint_id must be 1-64 characters of A-Z a-z 0-9 _ -")
+    return raw
+
+
+def sanitize_client_id(raw: Any) -> str:
+    """sanitize_id plus: the fleet- prefix is reserved for checkpoints of remote jobs."""
+    cid = sanitize_id(raw)
+    if cid.startswith(FLEET_PREFIX):
+        raise CheckpointError(f"checkpoint ids starting with {FLEET_PREFIX!r} are reserved for fleet jobs")
+    return cid
+
+
+def fleet_key(sender: str, ckpt_id: Any) -> str:
+    cid = sanitize_id(ckpt_id)
+    if not isinstance(sender, str) or not re.match(r"^[a-z0-9][a-z0-9_-]{0,62}$", sender):
+        raise CheckpointError("fleet checkpoint needs a valid sender node id")
+    return f"{FLEET_PREFIX}{sender}-{cid}"
+
+
+def managed_dir(data_dir: str | Path) -> Path:
+    return Path(data_dir) / "checkpoints"
+
+
+def managed_path(data_dir: str | Path, key: str) -> Path:
+    """The file for a (validated) key; never escapes <data_dir>/checkpoints."""
+    if not isinstance(key, str) or not _KEY_RE.match(key):
+        raise CheckpointError("bad checkpoint id")
+    return managed_dir(data_dir) / f"{key}.json"
+
+
+def _read(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) and isinstance(raw.get("steps"), dict) else None
+
+
+def check_compatible(path: str | Path, task: str, mode: str, owner: str | None = None) -> dict[str, Any] | None:
+    """Raise CheckpointConflict unless `path` is free, unreadable, or holds this same task/mode/owner.
+
+    Returns the stored top-level meta (a resume) or None (a fresh start)."""
+    path = Path(path)
+    key = path.stem
+    if is_busy(path):
+        raise CheckpointConflict(f"checkpoint {key!r} is in use by a running job; wait for it or use another id")
+    data = _read(path)
+    if data is None:
+        return None
+    if data.get("owner") != owner:
+        raise CheckpointConflict(f"checkpoint {key!r} belongs to another owner; use a different checkpoint_id")
+    meta = data["steps"].get("meta")
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("mode") != mode or meta.get("task") != task:
+        raise CheckpointConflict(
+            f"checkpoint {key!r} holds a different {meta.get('mode')} task "
+            f"({_preview(meta.get('task'))!r}); re-post the same task to resume, "
+            f"use a new checkpoint_id, or DELETE /api/checkpoints/{key}")
+    return meta
+
+
+def stamp_owner(path: str | Path, owner: str) -> None:
+    """Record who owns a fleet checkpoint before its run starts writing it."""
+    path = Path(path)
+    data = _read(path) or {"version": VERSION, "steps": {}}
+    if data.get("owner") == owner:
+        return
+    store = _Store(path)
+    store.data = {**data, "owner": owner}
+    store.save()
+
+
+def is_busy(path: str | Path) -> bool:
+    return str(Path(path).resolve()) in _active
+
+
+def claim(path: str | Path) -> Any:
+    """Mark the checkpoint in use; returns a release() callable. CheckpointConflict when taken."""
+    k = str(Path(path).resolve())
+    if k in _active:
+        raise CheckpointConflict(f"checkpoint {Path(path).stem!r} is in use by a running job")
+    _active.add(k)
+    return lambda: _active.discard(k)
+
+
+@contextmanager
+def claimed(path: str | Path):
+    release = claim(path)
+    try:
+        yield
+    finally:
+        release()
+
+
+def _preview(task: Any, n: int = 120) -> str:
+    t = " ".join(str(task or "").split())
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def describe(path: str | Path, full: bool = False) -> dict[str, Any] | None:
+    """Summary of one managed checkpoint file (None if missing/unreadable)."""
+    path = Path(path)
+    data = _read(path)
+    if data is None:
+        return None
+    steps = data["steps"]
+    meta = steps.get("meta") if isinstance(steps.get("meta"), dict) else {}
+    result = steps.get("result")
+    rounds = steps.get("rounds") if isinstance(steps.get("rounds"), dict) else {}
+    out: dict[str, Any] = {
+        "id": path.stem, "mode": meta.get("mode"), "task": _preview(meta.get("task")),
+        "done_steps": sum(1 for k in steps if not (k == "meta" or k.endswith(".meta"))),
+        "done": isinstance(result, dict), "updated": data.get("updated"), "busy": is_busy(path),
+    }
+    if full:
+        out.update(run_id=meta.get("run_id"), started=meta.get("started"), owner=data.get("owner"),
+                   squad_size=meta.get("n"), keys=sorted(steps),
+                   rounds_done=len(rounds.get("history") or []))
+        if isinstance(result, dict):
+            out["answer_preview"] = _preview(result.get("answer") or result.get("report"), 400)
+    return out
+
+
+def list_managed(data_dir: str | Path) -> list[dict[str, Any]]:
+    d = managed_dir(data_dir)
+    rows = []
+    for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+        if _KEY_RE.match(p.stem) and (row := describe(p)) is not None:
+            rows.append(row)
+    rows.sort(key=lambda r: r.get("updated") or 0, reverse=True)
+    return rows
+
+
+def delete_managed(data_dir: str | Path, key: str) -> bool:
+    """True if deleted, False if missing. CheckpointConflict while a run uses it."""
+    p = managed_path(data_dir, key)
+    if is_busy(p):
+        raise CheckpointConflict(f"checkpoint {key!r} is in use by a running job")
+    try:
+        p.unlink()
+        return True
+    except FileNotFoundError:
+        return False

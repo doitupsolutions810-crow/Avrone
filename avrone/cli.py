@@ -21,6 +21,7 @@ from typing import Any
 from .bootstrap import build_core, run_cleanups
 from .codex import Event
 from .config import Settings
+from .trinity import clamp_deep_rounds
 
 
 def _event_line(ev: Event) -> str:
@@ -114,7 +115,8 @@ async def _run(args: argparse.Namespace) -> int:
             if args.first_answer_file:
                 first = Path(args.first_answer_file).read_text()
             # Only pass rounds when asked, so cores without the knob keep working.
-            kw = {"rounds": args.rounds} if args.rounds is not None else {}
+            rounds = clamp_deep_rounds(args.rounds)
+            kw = {"rounds": rounds} if rounds is not None else {}
             result = await core.deep(args.prompt, first, args.n, **kw)
             text = result["report"]
         await asyncio.sleep(0)  # let the pump print the last events

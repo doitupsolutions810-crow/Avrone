@@ -212,6 +212,20 @@ def resolve_deep_rounds(requested: int | None, settings: Any = None) -> int:
     return max(1, min(r, MAX_DEEP_ROUNDS))
 
 
+def clamp_deep_rounds(value: Any) -> int | None:
+    """Clamp a caller-supplied rounds value to 1..MAX_DEEP_ROUNDS for the API/MCP/fleet surfaces.
+
+    None, booleans, empty strings and junk mean "not given" (None), so the core falls back to
+    settings.deep_rounds / AVRONE_DEEP_ROUNDS / 1 via resolve_deep_rounds."""
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        r = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(r, MAX_DEEP_ROUNDS))
+
+
 @dataclass
 class AgentContext:
     core: "TrinityCore"

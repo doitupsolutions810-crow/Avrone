@@ -62,6 +62,9 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {
             "task": {"type": "string", "description": "The question or task."},
             "first_answer": {"type": "string", "description": "Optional draft answer to verify and improve."},
+            "rounds": {"type": "integer", "minimum": 1, "maximum": 5,
+                       "description": "Max deep waves (1-5, default AVRONE_DEEP_ROUNDS or 1); "
+                                      "stops early once a wave finds nothing new."},
         }, "required": ["task"]},
     },
     {
@@ -219,7 +222,9 @@ class AvroneMCPServer:
             else:  # avrone_deep
                 first = args.get("first_answer")
                 if hasattr(core, "deep"):
-                    res = await core.deep(task, first)
+                    rounds = _clamp_rounds(args.get("rounds"))
+                    kw = {"rounds": rounds} if rounds is not None else {}
+                    res = await core.deep(task, first, **kw)
                 else:
                     prior = (f"A first answer was given; verify it, fix its mistakes and improve it:\n{first}\n"
                              if first else "")
@@ -243,6 +248,12 @@ def _clamp_size(size: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return max(1, min(8, n))
+
+
+def _clamp_rounds(rounds: Any) -> int | None:
+    """Honour the advertised schema (1..5); junk or missing means 'use the default'."""
+    from .trinity import clamp_deep_rounds
+    return clamp_deep_rounds(rounds)
 
 
 class _RPCError(Exception):

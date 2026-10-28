@@ -291,3 +291,95 @@ def test_registry_unchanged():
     register_extra_tools(reg)
     assert {"read_file", "write_file"}.isdisjoint(reg.names())
     assert {"read_file", "write_file"} <= set(builtin_registry().names())
+
+
+# ------------------------------------------------------------------ python cwd
+def test_python_runs_in_agent_dir(env):
+    call(env, "write_file", path="data.txt", content="agent data")
+    out = call(env, "python", code="import os; print(os.getcwd()); print(open('data.txt').read())")
+    assert str(env.dir) in out and "agent data" in out
+    assert not list(env.dir.glob(".snippet_*")), "snippet must be cleaned up"
+    assert not (env.ws / ".avrone" / "tmp").exists()
+
+
+def test_python_sees_shared_workspace_env(env):
+    out = call(env, "python", code="import os; print(os.environ['AVRONE_SHARED_WORKSPACE'])")
+    assert str(env.ws) in out
+
+
+@pytest.mark.parametrize("mode", ["env_off", "no_dir"])
+def test_python_disabled_mode_runs_in_workspace(env, monkeypatch, mode):
+    ctx = env.ctx
+    if mode == "env_off":
+        monkeypatch.setenv("AVRONE_AGENT_FS", "0")
+    else:
+        ctx = env.legacy
+    out = call(env, "python", ctx=ctx, code="import os; print(os.getcwd())")
+    assert out.strip().splitlines()[-1] == str(env.ws)
+    assert str(env.dir) not in out
+
+
+def test_python_runner_without_cwd_falls_back(env):
+    seen = []
+
+    class OldRunner:
+        workspace = env.ws
+
+        async def run(self, cmd, timeout=None):
+            seen.append(cmd)
+            return SimpleNamespace(text=lambda: "ok")
+
+    core = SimpleNamespace(settings=env.s, runner=OldRunner(), codex=env.codex)
+    ctx = SimpleNamespace(**{**vars(env.ctx), "core": core})
+    assert call(env, "python", ctx=ctx, code="print(1)") == "ok"
+    assert seen and ".avrone/tmp/snippet_" in seen[0]
+
+
+@pytest.mark.parametrize("isolate", ["0", "1"])
+def test_python_docker_paths(env, monkeypatch, isolate):
+    from avrone.sovereign import DockerRunner
+    monkeypatch.setenv("AVRONE_AGENT_DOCKER_ISOLATE", isolate)
+    r = DockerRunner(env.s)
+    calls = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env_=None, **kw):
+        calls.append((argv, [p.name for p in env_dir.glob(".snippet_*.py")]))
+        return SimpleNamespace(text=lambda: "docker ok")
+
+    env_dir = env.dir
+    monkeypatch.setattr(r, "_exec", fake_exec)
+    core = SimpleNamespace(settings=env.s, runner=r, codex=env.codex)
+    ctx = SimpleNamespace(**{**vars(env.ctx), "core": core})
+    assert call(env, "python", ctx=ctx, code="print(1)") == "docker ok"
+    argv, present = calls[0]
+    assert len(present) == 1 and argv[-1] == f"python3 {present[0]}"
+    if isolate == "1":
+        assert "-w" in argv and argv[argv.index("-w") + 1] == "/agent"
+        assert f"{env.dir}:/agent" in argv
+    else:
+        assert argv[:4] == ["docker", "exec", "-w", "/workspace/agents/alpha"]
+    assert not list(env.dir.glob(".snippet_*"))
+
+
+def test_runner_accepts_cwd():
+    from avrone.tools import runner_accepts_cwd
+
+    class R:
+        async def run(self, cmd, cwd=None):
+            return None
+
+    class Bad:
+        run = 42
+
+    assert runner_accepts_cwd(R()) is True
+    assert runner_accepts_cwd(Bad()) is False
+
+
+def test_tool_docs_mention_shared():
+    reg = builtin_registry()
+    register_extra_tools(reg)
+    docs = reg.docs()
+    for name in ("read_file", "write_file", "edit_file", "list_files", "search_files", "diff_files"):
+        line = next(ln for ln in docs.splitlines() if ln.startswith(f"- {name} "))
+        assert "shared/" in line, name
+    assert "agent dir" in next(ln for ln in docs.splitlines() if ln.startswith("- python "))

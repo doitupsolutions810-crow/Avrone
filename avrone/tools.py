@@ -80,14 +80,17 @@ async def run_for_agent(ctx: "AgentContext", cmd: str, timeout: int | None = Non
     Runners that predate per-agent cwd (no `cwd` parameter) keep their old behavior."""
     runner = ctx.core.runner
     agent_dir = getattr(ctx, "agent_dir", None)
-    if agent_dir is not None:
-        try:
-            accepts = "cwd" in inspect.signature(runner.run).parameters
-        except (TypeError, ValueError):
-            accepts = False
-        if accepts:
-            return await runner.run(cmd, timeout=timeout, cwd=agent_dir)
+    if agent_dir is not None and runner_accepts_cwd(runner):
+        return await runner.run(cmd, timeout=timeout, cwd=agent_dir)
     return await runner.run(cmd, timeout=timeout) if timeout else await runner.run(cmd)
+
+
+def runner_accepts_cwd(runner: Any) -> bool:
+    """True if `runner.run` takes a per-agent `cwd` (runners predating v0.16 do not)."""
+    try:
+        return "cwd" in inspect.signature(runner.run).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 async def t_shell(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -157,8 +160,8 @@ async def t_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
 def builtin_registry() -> ToolRegistry:
     r = ToolRegistry()
     r.register(Tool("shell", "run a real terminal command in the environment (install packages, run code, docker, git...). Runs in your own persistent agent dir ($AVRONE_AGENT_DIR) when you have one; the shared workspace is $AVRONE_SHARED_WORKSPACE.", '{"cmd": str}', t_shell))
-    r.register(Tool("read_file", "read a file from the workspace.", '{"path": str}', t_read))
-    r.register(Tool("write_file", "create or overwrite a file in the workspace.", '{"path": str, "content": str}', t_write))
+    r.register(Tool("read_file", "read a file. With your own agent dir, paths are relative to it; prefix `shared/` (e.g. shared/notes.md) to reach the shared team workspace. No absolute paths or '..'.", '{"path": str}', t_read))
+    r.register(Tool("write_file", "create or overwrite a file. Relative paths land in your own persistent agent dir (quota applies); prefix `shared/` to write to the shared team workspace.", '{"path": str, "content": str}', t_write))
     r.register(Tool("fetch", "HTTP GET a URL and return its text (first 8000 chars).", '{"url": str}', t_fetch))
     r.register(Tool("spawn", "spawn a sub-agent to handle a piece of your task; returns its result.", '{"role": str, "task": str}', t_spawn))
     return r

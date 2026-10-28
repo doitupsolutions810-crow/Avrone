@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import httpx
 
 from . import fsunify, memstore
-from .tools import Tool, _safe_path
+from .tools import Tool, _safe_path, runner_accepts_cwd
 
 if TYPE_CHECKING:
     from .trinity import AgentContext
@@ -190,6 +190,18 @@ async def t_python(ctx: "AgentContext", args: dict[str, Any]) -> str:
     code = str(args.get("code", ""))
     if not code.strip():
         return "ERROR: code is required"
+    runner = ctx.core.runner
+    root = fsunify.agent_root(ctx)
+    if root is not None and runner_accepts_cwd(runner):
+        # run with cwd = own agent dir; the snippet lives there too so it is reachable from
+        # the local runner, `docker exec -w /workspace/agents/<id>` and the isolated /agent mount
+        f = root / f".snippet_{uuid.uuid4().hex[:10]}.py"
+        f.write_text(code)
+        try:
+            res = await runner.run(f"python3 {shlex.quote(f.name)}", cwd=root)
+        finally:
+            f.unlink(missing_ok=True)
+        return res.text()
     tmp = _ws(ctx) / ".avrone" / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     f = tmp / f"snippet_{uuid.uuid4().hex[:10]}.py"
@@ -1135,13 +1147,13 @@ async def t_priv_admin(ctx: "AgentContext", args: dict[str, Any]) -> str:
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
     ("web_search", "search the web (DuckDuckGo by default; Brave/Tavily if API keys set); returns numbered title/url/snippet results.",
      '{"query": str, "max_results"?: int}', t_web_search),
-    ("python", "run a Python 3 snippet in the workspace and return its stdout/stderr.",
+    ("python", "run a Python 3 snippet and return its stdout/stderr. Runs with cwd = your own agent dir when you have one (shared workspace via $AVRONE_SHARED_WORKSPACE), else in the workspace.",
      '{"code": str}', t_python),
-    ("list_files", "show a directory tree of the workspace (skips .git, node_modules, __pycache__).",
+    ("list_files", "show a directory tree (skips .git, node_modules, __pycache__). Defaults to your own agent dir when you have one; path `shared/` lists the shared team workspace.",
      '{"path"?: str, "depth"?: int}', t_list_files),
-    ("search_files", "regex search across workspace text files; returns file:line: match.",
+    ("search_files", "regex search across text files; returns file:line: match. Searches your own agent dir by default; path `shared/` searches the shared team workspace.",
      '{"pattern": str, "path"?: str}', t_search_files),
-    ("edit_file", "replace one exact, unique occurrence of `old` with `new` in a workspace file.",
+    ("edit_file", "replace one exact, unique occurrence of `old` with `new` in a file (own agent dir by default, `shared/...` for the shared workspace; quota applies in your dir).",
      '{"path": str, "old": str, "new": str}', t_edit_file),
     ("http_request", "make an HTTP request (any method) and return status, key headers and body.",
      '{"method": str, "url": str, "headers"?: dict, "body"?: str|dict}', t_http_request),
@@ -1161,7 +1173,7 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"image": str, "cmd": str}', t_docker_run),
     ("think", "private scratchpad: record your reasoning/plan; no side effects.",
      '{"thought": str}', t_think),
-    ("diff_files", "unified diff between two workspace text files, or a file and given text (path-confined, output capped at 12000 chars).",
+    ("diff_files", "unified diff between two text files, or a file and given text (own agent dir by default, `shared/...` for the shared workspace; path-confined, output capped at 12000 chars).",
      '{"path_a": str, "path_b"?: str, "text_b"?: str, "context"?: int}', t_diff_files),
     ("codex_search", "read-only search of the Eternal CodeX run logs by event kind (exact, or prefix ending in '.'/'*'), agent, tool name, substring and/or run_id; newest first, bounded.",
      '{"kind"?: str, "agent"?: str, "tool"?: str, "query"?: str, "run_id"?: str, "limit"?: int, "runs"?: int}', t_codex_search),

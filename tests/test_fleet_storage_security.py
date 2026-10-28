@@ -60,3 +60,17 @@ def test_fleet_registry_skips_future_timestamp_peer(tmp_path, monkeypatch):
     )
     fm = FleetManager(_core(), tmp_path)
     assert "edge-1" not in fm.nodes
+
+
+def test_fleet_registry_skips_malformed_peer_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_NODE_ID", "dispatch-root")
+    (tmp_path / "fleet.json").write_text(
+        '{"node_id":"dispatch-root","nodes":{'
+        '"bad-load":{"url":"https://bad.example","last_seen":100,"load":"high"},'
+        '"bad-children":{"url":"https://bad2.example","last_seen":100,"load":0,"children":"edge"},'
+        '"good":{"url":"https://good.example","last_seen":100,"load":1,"children":["edge-1"]}}}',
+        encoding="utf-8",
+    )
+    fm = FleetManager(_core(), tmp_path)
+    assert set(fm.nodes) == {"good"}
+    assert fm.nodes["good"]["children"] == ["edge-1"]

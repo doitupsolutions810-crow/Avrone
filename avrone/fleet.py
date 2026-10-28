@@ -312,12 +312,20 @@ class FleetManager:
 
     async def send_message(self, route: list[str], agent: str, text: str, sender: str, hops: int = 0,
                            wait: bool = False) -> dict[str, Any]:
-        """Deliver `text` to `agent` on the node at `route` (empty route = this node)."""
+        """Deliver a bounded message to one agent locally or through validated fleet hops."""
+        normalized = validate_message_payload(
+            {"route": route, "agent": agent, "message": text, "from": sender, "hops": hops, "wait": wait},
+            max_hops=self.max_hops,
+        )
+        route, agent, text, sender, hops, wait = (normalized["route"], normalized["agent"],
+                                                   normalized["message"], normalized["from"],
+                                                   normalized["hops"], normalized["wait"])
         if route:
             if hops >= self.max_hops:
                 raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
             node = self.pick(route[0])
-            payload = {"route": route[1:], "agent": agent, "message": text, "from": sender, "hops": hops + 1, "wait": wait}
+            payload = {"route": route[1:], "agent": agent, "message": text, "from": sender,
+                       "hops": hops + 1, "wait": wait}
             res = await self._post(node["url"], "/api/fleet/message", payload, timeout=900 if wait else 30)
             return {**res, "path": [self.node_id] + res.get("path", [])}
         return await self.deliver_local(agent, text, sender, wait)

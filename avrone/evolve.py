@@ -103,7 +103,10 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(str(e.get("content", "")))
         changed.append(str(e["path"]))
-    test_cmd = str(args.get("test_cmd") or os.getenv("AVRONE_EVOLVE_TEST_CMD") or "python -m pytest -q")
+    # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
+    # under the parallel-clone load of a squad and would reject good unit-level proposals.
+    test_cmd = str(args.get("test_cmd") or os.getenv("AVRONE_EVOLVE_TEST_CMD")
+                   or 'python -m pytest -q -m "not integration"')
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.
     res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=900)

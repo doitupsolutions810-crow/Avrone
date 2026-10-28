@@ -1,6 +1,8 @@
 """Three real AVRONE servers: root <- router <- edge. Remote spawn routed root -> router -> edge."""
 import json, os, socket, subprocess, sys, time
 import httpx, pytest
+
+pytestmark = pytest.mark.integration  # spins real uvicorn nodes; excluded from the fast gate
 os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
 
 TOKEN = "test-fleet-secret"

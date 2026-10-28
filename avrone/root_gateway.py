@@ -70,7 +70,10 @@ async def dispatch_root_operation(operation: object, service: object, token: str
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
     except asyncio.TimeoutError:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
         await proc.wait()
         raise RuntimeError("root operation timed out after 15 seconds") from None
 

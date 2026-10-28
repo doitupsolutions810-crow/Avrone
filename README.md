@@ -81,6 +81,10 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.18
+
+- **netsquad** — squad mode dispatched into the node network: `AVRONE_SQUAD_DISPATCH=local|network|hybrid` (default local = unchanged) places each squad subtask on a healthy fleet node (round-robin by health score), where it runs as a sub-squad of `AVRONE_NET_SUBSQUAD` agents (default 2, max 4; `AVRONE_NET_WORKER_MODE=chat` for one) and may place further down the tree hop by hop (cycle refusal, `AVRONE_FLEET_MAX_HOPS`); capped by `AVRONE_NET_MAX_NODES` (8) and `AVRONE_NET_MAX_REMOTE_AGENTS` (32); remote failure runs the subtask locally; privileged runs never leave the node; receivers need capability `squad:net`; optional bridge-post relay; per-request `"dispatch"` on `/api/chat` and `avrone-cli squad --dispatch network`; doctor warns on network/hybrid with an open allowlist.
+
 ## v0.17: Squad round 4 + edgepack — unified agent fs, batched + schema-checked tool calls, health-routed edge offload, API/fleet checkpoints, container-hosted agent homes with thermal migration — 1586 tests
 
 Five lanes in parallel (git worktrees, two green commits each), Lead merge + fixes (collision-free fleet checkpoint keys; one shared node-health block for routing and migration). Everything new is off by default except fsunify and toolcall.

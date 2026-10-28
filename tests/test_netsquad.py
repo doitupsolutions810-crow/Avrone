@@ -402,3 +402,89 @@ def test_bridge_relay_both_ways(make, monkeypatch):
     assert [p["id"] for p in res["bridge"]] == ["new"]
     no = run(make(n=1, node="edge2")[0].fleet.handle_run(netpayload(n=1)))
     assert "bridge" not in no
+
+
+# ---------------------------------------------------------------- API / CLI / doctor / telemetry
+def test_api_dispatch_override_validated(monkeypatch):
+    from fastapi.testclient import TestClient
+    import avrone.server as server
+    seen = {}
+
+    class FakeCore:
+        async def squad(self, message, n, run_id, **kw):
+            seen.update(kw, message=message)
+            return {"run_id": run_id, "answer": "A", "agents": []}
+    monkeypatch.setattr(server, "core", lambda: FakeCore())
+    c = TestClient(server.app)
+    r = c.post("/api/chat", json={"message": "m", "mode": "squad", "dispatch": "network"})
+    assert r.status_code == 200 and seen["dispatch"] == "network"
+    seen.clear()
+    assert c.post("/api/chat", json={"message": "m"}).status_code == 200 and "dispatch" not in seen
+    assert c.post("/api/chat", json={"message": "m", "dispatch": "everywhere"}).status_code == 400
+    assert c.post("/api/chat", json={"message": "m", "mode": "chat", "dispatch": "network"}).status_code == 400
+
+
+def test_cli_dispatch_flag(monkeypatch, capsys):
+    from avrone import cli
+    a = cli.build_parser().parse_args(["squad", "go", "--dispatch", "hybrid"])
+    assert a.dispatch == "hybrid"
+    assert cli.build_parser().parse_args(["squad", "go"]).dispatch is None
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["squad", "go", "--dispatch", "mars"])
+    seen = {}
+
+    class Core:
+        codex = type("X", (), {"subscribe": lambda self: asyncio.Queue()})()
+
+        async def squad(self, prompt, n, **kw):
+            seen.update(kw)
+            return {"answer": "A"}
+
+    async def build_core(settings, extras=True):
+        return Core(), []
+    monkeypatch.setattr(cli, "build_core", build_core)
+    assert cli.main(["squad", "go", "-q", "--dispatch", "network"]) == 0 and seen == {"dispatch": "network"}
+    seen.clear()
+    assert cli.main(["squad", "go", "-q"]) == 0 and seen == {}
+
+
+def test_doctor_warns_net_dispatch_with_open_allowlist(tmp_path):
+    from types import SimpleNamespace as NS
+    from avrone import doctor as d
+    st = NS(provider="openclaw", llm_mode="mock", llm_base_url="http://127.0.0.1:18789/v1", llm_api_key="",
+            data_dir=tmp_path / "data", workspace=tmp_path / "ws", runner="docker", allow_network=False,
+            agents_can_shell=True)
+    sock = tmp_path / "docker.sock"
+    sock.write_text("")
+    env = {"AVRONE_RECON": "deny", "AVRONE_HOST": "127.0.0.1", "AVRONE_FLEET_TOKEN": "f" * 32,
+           "AVRONE_SQUAD_DISPATCH": "network"}
+
+    def names(e):
+        rep = d.run_doctor(st, env=e, which=lambda _n: "/usr/bin/docker", sockets=(str(sock),))
+        return rep, {c["name"]: c for c in rep["checks"]}
+    rep, n = names(env)
+    assert n["security.squad_dispatch"]["status"] == "warn" and rep["toggles"]["squad_dispatch"] == "network"
+    rep, n = names({**env, "AVRONE_SQUAD_DISPATCH": "hybrid"})
+    assert n["security.squad_dispatch"]["status"] == "warn"
+    rep, n = names({**env, "AVRONE_FLEET_ALLOW": "edge1"})
+    assert "security.squad_dispatch" not in n
+    rep, n = names({**env, "AVRONE_SQUAD_DISPATCH": "local"})
+    assert "security.squad_dispatch" not in n
+    rep, n = names({**env, "AVRONE_SQUAD_DISPATCH": "weird"})
+    assert rep["toggles"]["squad_dispatch"] == "local" and "security.squad_dispatch" not in n
+
+
+def test_telemetry_and_map_show_placements(make, monkeypatch):
+    from avrone.telemetry import system_map, telemetry
+    monkeypatch.setenv("AVRONE_SQUAD_DISPATCH", "network")
+    core, _ = make(n=3)
+    add(core.fleet, "a")
+    add(core.fleet, "b")
+    remote(monkeypatch, ok_handler)
+    run(core.squad("t", n=3, run_id="tm"))
+    t = telemetry(core, 3600)
+    assert t["netsquad"] == {"placements": 3, "by_node": {"a": 2, "b": 1}, "fallbacks": 0}
+    assert {r["node_id"]: r["netsquad"] for r in t["fleet_nodes"]} == {"a": 2, "b": 1}
+    g = system_map(core, 3600)
+    nodes = {n["id"]: n for n in g["nodes"]}
+    assert nodes["node:a"]["netsquad"] == 2 and nodes["node:b"]["netsquad"] == 1

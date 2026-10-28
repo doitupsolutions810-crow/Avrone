@@ -237,7 +237,8 @@ def test_sequential_same_role_in_one_run_shares_home(tmp_path):
     core = _core(tmp_path, FnLLM(fn), tools=_whoami_reg())
     run(core.chat("t"))
     ids = [a["agent_id"] for a in core.active.values() if a["role"] == "Helper"]
-    assert ids == ["helper", "helper"]
+    # ctxspawn (v0.18) names a child home <parent id>-<role>; still one persistent home
+    assert ids == ["assistant-helper", "assistant-helper"]
 
 
 def test_explicit_agent_id_busy_home_not_migrated(tmp_path, monkeypatch):

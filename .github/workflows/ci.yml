@@ -9,6 +9,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python }}" }
-      - run: pip install -e ".[dev]"
+      - name: Install avrone (dev)
+        run: |
+          set -o pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" 2>&1 | tee /tmp/pip.log || {
+            tail -n 8 /tmp/pip.log | while IFS= read -r l; do
+              l="${l//%/%25}"
+              echo "::error::${l:0:220}"
+            done
+            exit 1
+          }
       - run: pytest -q
         env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }

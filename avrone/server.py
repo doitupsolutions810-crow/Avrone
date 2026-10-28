@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import __version__
 from .bootstrap import build_core, run_cleanups
 from .config import settings
 from .trinity import TrinityCore
@@ -35,7 +36,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.11.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version=__version__, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

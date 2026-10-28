@@ -17,3 +17,11 @@
   - Robustness: squad/round2-robustness — malformed Codex log handling and JobQueue validation/unknown-job semantics.
 - Lead integration combines these changes on squad/full-squad-round2, bumps package metadata to 0.13.0, adds a coverage dependency/report, updates release notes, and records verification limits.
 - Tests were authored for each change, but full-suite execution is not yet verified. GitHub Actions runs repeatedly report runner_id=0 and empty step lists. Do not mark the lane changes green or merge until a real runner reports passing tests.
+
+## 2026-10-28 — Self-evolution guard round (v0.13.1 candidate)
+
+- Source review found weak string-prefix path containment, unvalidated proposal IDs in metadata operations, an agent-controlled shell test-command surface, and per-command rather than whole-proposal timeout accounting.
+- Candidate fixes validate canonical worktree containment, proposal IDs, edit sizes/counts/duplicates, direct pytest commands, shell quoting, one deadline across setup/test/retry/commit, and duration telemetry.
+- Added tests for sibling-prefix escape, symlink/absolute path escapes, metadata path traversal, edit bounds, shell-command rejection, duration caps, reset safety, and evolution status reporting.
+- Also corrected FastAPI's version string to track the package version.
+- Execution note: local GitHub access from this sandbox fails DNS resolution, and connected Actions jobs have no assigned runner or executed steps. Candidate must not be labeled green until tests run on a functioning runner.

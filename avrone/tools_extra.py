@@ -12,6 +12,8 @@ New options (all optional, read via env / getattr so config.py needs no change):
 """
 from __future__ import annotations
 
+import difflib
+from collections import Counter
 import html as _html
 import json
 import os
@@ -496,6 +498,102 @@ async def t_think(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "noted"
 
 
+
+# --------------------------------------------------------------------------- deterministic review helpers
+
+TEXT_TOOL_MAX_INPUT = 40000
+TEXT_TOOL_MAX_OUTPUT = 12000
+
+
+def _diff_label(value: Any, fallback: str) -> str:
+    label = str(value or fallback).replace("\r", "_").replace("\n", "_").strip()
+    return label[:120] or fallback
+
+
+async def t_text_diff(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Produce a bounded unified diff between two supplied text values."""
+    old, new = args.get("old", ""), args.get("new", "")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return "ERROR: old and new must be strings"
+    if len(old) + len(new) > TEXT_TOOL_MAX_INPUT:
+        return f"ERROR: combined input exceeds {TEXT_TOOL_MAX_INPUT} characters"
+    context = _int(args.get("context", 3), 3, 0, 10)
+    diff = "".join(difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=_diff_label(args.get("fromfile"), "before"),
+        tofile=_diff_label(args.get("tofile"), "after"),
+        n=context,
+    ))
+    if not diff:
+        return "no differences"
+    if len(diff) > TEXT_TOOL_MAX_OUTPUT:
+        return diff[:TEXT_TOOL_MAX_OUTPUT] + "\n... diff truncated ..."
+    return diff
+
+
+async def t_json_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Validate JSON and summarize its structure without echoing the entire payload."""
+    source = args.get("text", "")
+    if not isinstance(source, str):
+        return "ERROR: text must be a JSON string"
+    if len(source) > TEXT_TOOL_MAX_INPUT:
+        return f"ERROR: JSON input exceeds {TEXT_TOOL_MAX_INPUT} characters"
+
+    def reject_constant(value: str):
+        raise ValueError(f"non-standard constant {value}")
+
+    try:
+        value = json.loads(source, parse_constant=reject_constant)
+    except json.JSONDecodeError as exc:
+        return f"ERROR: invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+    except (ValueError, RecursionError) as exc:
+        return f"ERROR: invalid JSON: {exc}"
+
+    def kind(item: Any) -> str:
+        if item is None:
+            return "null"
+        if isinstance(item, bool):
+            return "boolean"
+        if isinstance(item, str):
+            return "string"
+        if isinstance(item, (int, float)):
+            return "number"
+        if isinstance(item, dict):
+            return "object"
+        if isinstance(item, list):
+            return "array"
+        return "unknown"
+
+    counts: Counter[str] = Counter()
+    stack = [value]
+    visited = 0
+    while stack and visited < 10000:
+        item = stack.pop()
+        visited += 1
+        item_kind = kind(item)
+        counts[item_kind] += 1
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    truncated = bool(stack)
+    parts = [
+        f"valid JSON: root={kind(value)}",
+        f"nodes inspected: {visited}" + (" (traversal capped at 10000)" if truncated else ""),
+        "types: " + ", ".join(f"{k}={counts[k]}" for k in ("object", "array", "string", "number", "boolean", "null") if counts[k]),
+    ]
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        preview = ", ".join(repr(str(key)[:100]) for key in keys[:40])
+        if len(keys) > 40:
+            preview += f", ... ({len(keys) - 40} more)"
+        parts.append(f"top-level keys ({len(keys)}): {preview or '(none)'}")
+    elif isinstance(value, list):
+        parts.append(f"top-level array items: {len(value)}")
+    return "\n".join(parts)
+
+
 # --------------------------------------------------------------------------- registration
 
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
@@ -523,6 +621,10 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"image": str, "cmd": str}', t_docker_run),
     ("think", "private scratchpad: record your reasoning/plan; no side effects.",
      '{"thought": str}', t_think),
+    ("text_diff", "compare two supplied text values as a bounded unified diff; no filesystem or network access.",
+     '{"old": str, "new": str, "fromfile"?: str, "tofile"?: str, "context"?: int}', t_text_diff),
+    ("json_inspect", "validate a JSON string and summarize its structure with bounded output; does not echo payload values.",
+     '{"text": str}', t_json_inspect),
 ]
 
 

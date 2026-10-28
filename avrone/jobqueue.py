@@ -40,6 +40,12 @@ class JobQueue:
             return await asyncio.to_thread(fn)
 
     async def enqueue(self, kind: str, payload: dict[str, Any], priority: int = 0, max_attempts: int = 3) -> str:
+        if not isinstance(kind, str) or not kind.strip():
+            raise ValueError("kind must be a non-empty string")
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a dictionary")
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
         jid = uuid.uuid4().hex[:12]
         now = time.time()
         await self._run(lambda: self._db.execute(
@@ -69,7 +75,9 @@ class JobQueue:
         def _fail() -> str:
             now = time.time()
             r = self._db.execute("SELECT attempts,max_attempts FROM jobs WHERE id=?", (jid,)).fetchone()
-            if r and r[0] >= r[1]:
+            if r is None:
+                return "missing"
+            if r[0] >= r[1]:
                 self._db.execute("UPDATE jobs SET status='dead', error=?, updated=? WHERE id=?", (error[:4000], now, jid))
                 return "dead"
             backoff = min(2 ** (r[0] if r else 1), 60)

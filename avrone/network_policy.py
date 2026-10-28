@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import os
 import socket
 import time
 from urllib.parse import urljoin, urlsplit
@@ -29,6 +30,37 @@ _BLOCKED_HOSTS = {
     "instance-data.ec2.internal",
     "metadata.tencentyun.com",
 }
+_PRIVATE_V4 = tuple(ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+_PRIVATE_V6 = ipaddress.ip_network("fc00::/7")
+
+
+def _private_allowlist() -> set[str]:
+    """Exact private host/IP allowlist; no wildcards or CIDRs."""
+    hosts = set()
+    for item in os.getenv("AVRONE_HTTP_PRIVATE_ALLOWLIST", "").split(","):
+        host = item.strip().lower().rstrip(".")
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if not host:
+            continue
+        try:
+            host = ipaddress.ip_address(host).compressed.lower()
+        except ValueError:
+            if any(char in host for char in "/\\\\?#@ "):
+                continue
+        hosts.add(host)
+    return hosts
+
+
+def _is_allowed_private_address(host: str, address: ipaddress._BaseAddress) -> bool:
+    if address.is_loopback or address.is_link_local or address.is_unspecified or address.is_multicast or address.is_reserved:
+        return False
+    if isinstance(address, ipaddress.IPv4Address):
+        private_range = any(address in network for network in _PRIVATE_V4)
+    else:
+        private_range = address in _PRIVATE_V6
+    allowlist = _private_allowlist()
+    return private_range and (host in allowlist or address.compressed.lower() in allowlist)
 
 
 def _json_size(value: object, limit: int) -> int:
@@ -67,7 +99,9 @@ def _parse_url(url: object) -> tuple[str, str, int]:
     host = host.rstrip(".").lower()
     if not host:
         raise ValueError("URL hostname is missing")
-    if (host in _BLOCKED_HOSTS or host.endswith((".localhost", ".local", ".internal", ".home.arpa"))
+    allowlisted_private_host = host in _private_allowlist()
+    if (host in _BLOCKED_HOSTS or host.endswith((".localhost", ".local", ".home.arpa"))
+            or (host.endswith(".internal") and not allowlisted_private_host)
             or host in {"0.0.0.0", "::"}):
         raise ValueError("URL targets a local or metadata hostname")
     return host, parsed.scheme, port or (443 if parsed.scheme == "https" else 80)
@@ -80,7 +114,7 @@ async def validate_public_http_url(url: object, *, mock_transport: bool = False)
     except ValueError:
         literal = None
     if literal is not None:
-        if not literal.is_global:
+        if not literal.is_global and not _is_allowed_private_address(host, literal):
             raise ValueError("URL resolves to a non-public IP address")
     elif not mock_transport:
         try:
@@ -98,7 +132,7 @@ async def validate_public_http_url(url: object, *, mock_transport: bool = False)
                 ip = ipaddress.ip_address(address)
             except ValueError:
                 raise ValueError("DNS returned an invalid IP address") from None
-            if not ip.is_global:
+            if not ip.is_global and not _is_allowed_private_address(host, ip):
                 raise ValueError("URL hostname resolves to a non-public IP address")
     return str(url)
 

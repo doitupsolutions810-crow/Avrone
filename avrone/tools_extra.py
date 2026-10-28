@@ -622,6 +622,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"thought": str}', t_think),
     ("text_diff", "compare two supplied text values as a bounded unified diff; no filesystem or network access.",
      '{"old": str, "new": str, "fromfile"?: str, "tofile"?: str, "context"?: int}', t_text_diff),
+    ("json_inspect", "validate a JSON string and summarize its structure with bounded output; does not echo payload values.",
+     '{"text": str}', t_json_inspect),
 ]
 
 

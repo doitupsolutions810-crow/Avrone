@@ -538,3 +538,5 @@ def register_extra_tools(registry) -> None:
     register_evolve_tools(registry)
     from .recon import register_recon_tools
     register_recon_tools(registry)
+    from .osint import register_osint_tools
+    register_osint_tools(registry)

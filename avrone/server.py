@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.10.2", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.11.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -225,6 +225,15 @@ async def gateway_status():
 async def api_evolve():
     from .evolve import list_accepted
     return {"accepted": list_accepted(core().settings)}
+
+
+@app.get("/api/osint/metrics")
+async def api_osint_metrics():
+    from types import SimpleNamespace
+    from .osint import t_osint_metrics
+    c = core()
+    ctx = SimpleNamespace(core=c, run_id="api", name="api", depth=0)
+    return {"metrics": await t_osint_metrics(ctx, {})}
 
 
 @app.get("/api/telemetry")

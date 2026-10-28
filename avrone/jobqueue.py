@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -34,10 +35,21 @@ class JobQueue:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
         self._lock = asyncio.Lock()
+        # A cancelled await releases the asyncio lock while its worker thread is still
+        # inside SQLite; the thread lock keeps close() (and every other call) from
+        # touching the connection until that thread is done. Without it, shutting a
+        # Worker down mid-claim could segfault the process.
+        self._tlock = threading.Lock()
+        self._closed = False
 
     async def _run(self, fn: Callable[[], Any]) -> Any:
+        def guarded() -> Any:
+            with self._tlock:
+                if self._closed:
+                    raise sqlite3.ProgrammingError("job queue is closed")
+                return fn()
         async with self._lock:
-            return await asyncio.to_thread(fn)
+            return await asyncio.to_thread(guarded)
 
     async def enqueue(self, kind: str, payload: dict[str, Any], priority: int = 0, max_attempts: int = 3) -> str:
         jid = uuid.uuid4().hex[:12]
@@ -96,7 +108,13 @@ class JobQueue:
         return await self._run(_s)
 
     async def close(self) -> None:
-        await self._run(self._db.close)
+        def _close() -> None:
+            with self._tlock:
+                if not self._closed:
+                    self._closed = True
+                    self._db.close()
+        async with self._lock:
+            await asyncio.to_thread(_close)
 
 
 class Worker:

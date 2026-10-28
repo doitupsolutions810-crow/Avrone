@@ -174,8 +174,10 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str, deadline: float) -> tu
     repo = _repo_root(ctx).resolve()
     wt = _worktree_path(ctx, pid)
     branch = f"evolve/{pid}"
+    if wt.is_symlink():
+        raise ValueError("proposal worktree path must not be a symlink")
     if wt.exists():
-        return wt, branch
+        raise FileExistsError("proposal worktree path already exists; reset it before retrying")
     r = await _sh(
         ctx, f"git clone -q --no-hardlinks . {shlex.quote(str(wt))} 2>&1",
         repo, timeout=_remaining(deadline, 600),

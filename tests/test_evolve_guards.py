@@ -1,6 +1,7 @@
 """Guards and bounded-duration behavior for the self-evolution tools."""
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -129,3 +130,15 @@ def test_list_accepted_skips_malformed_and_non_object_metadata(tmp_path):
     result = evolve.list_accepted(SimpleNamespace(data_dir=tmp_path / "data"))
     assert len(result) == 1 and result[0]["pid"] == "p1"
     assert result[0]["duration_s"] == 2.0
+
+
+def test_ensure_worktree_refuses_preexisting_symlink(tmp_path, monkeypatch):
+    c = ctx(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    wt = evolve._worktree_path(c, "prop-a")
+    wt.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("AVRONE_REPO_DIR", str(tmp_path / "missing-repo"))
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        asyncio.run(evolve._ensure_worktree(c, "prop-a", time.monotonic() + 30))
+    assert list(outside.iterdir()) == []

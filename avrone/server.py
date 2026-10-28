@@ -12,10 +12,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .codex import Codex
+from .bootstrap import build_core, run_cleanups
 from .config import settings
-from .llm import LLM
-from .sovereign import establish
 from .trinity import TrinityCore
 
 STATIC = Path(__file__).parent / "static"
@@ -24,17 +22,20 @@ state: dict = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Establish the environment FIRST, so agents never hit a missing sandbox mid-task.
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    runner = await establish(settings)
-    codex = Codex(settings.data_dir)
-    state["core"] = TrinityCore(settings, LLM(settings), runner, codex)
+    # build_core establishes the environment FIRST (so agents never hit a missing
+    # sandbox mid-task), then wires tools, plugins and MCP servers.
+    core_, cleanups = await build_core(settings)
+    state["core"] = core_
     state["tasks"] = set()
-    yield
-    await runner.stop()
+    try:
+        yield
+    finally:
+        for t in list(state["tasks"]):
+            t.cancel()
+        await run_cleanups(cleanups)
 
 
-app = FastAPI(title="AVRONE", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AVRONE", version="0.2.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -51,8 +52,9 @@ def require_admin(token: str | None) -> None:
 
 class ChatIn(BaseModel):
     message: str
-    mode: str = "squad"  # squad | chat
+    mode: str = "squad"  # squad | chat | deep
     squad_size: int | None = None
+    first_answer: str | None = None  # deep mode: the answer to stress-test (else a squad runs first)
     background: bool = False
 
 
@@ -71,9 +73,13 @@ async def status():
     return {
         "runner": c.runner.kind,
         "workspace": str(c.runner.workspace),
+        "provider": settings.provider,
         "model": settings.llm_model,
         "backend": settings.llm_base_url if settings.llm_mode != "mock" else "mock",
         "squad_size": settings.squad_size,
+        "deep_squad_size": settings.deep_squad_size,
+        "max_parallel": settings.max_parallel,
+        "tools": len(c.tools.names()),
         "admin_enabled": bool(settings.admin_token),
         "agents": c.active,
     }
@@ -83,13 +89,30 @@ async def status():
 async def chat(body: ChatIn):
     c = core()
     run_id = uuid.uuid4().hex[:10]
-    job = c.squad(body.message, body.squad_size, run_id) if body.mode == "squad" else c.chat(body.message, run_id)
+    if body.mode == "squad":
+        job = c.squad(body.message, body.squad_size, run_id)
+    elif body.mode == "chat":
+        job = c.chat(body.message, run_id)
+    elif body.mode == "deep":
+        job = c.deep(body.message, body.first_answer, body.squad_size, run_id)
+    else:
+        raise HTTPException(400, f"Unknown mode {body.mode!r}. Use squad, chat or deep.")
     if body.background:  # long-running artifact: return now, watch it on the HUD
         t = asyncio.create_task(job)
         state["tasks"].add(t)
         t.add_done_callback(state["tasks"].discard)
         return {"run_id": run_id, "status": "running"}
     return await job
+
+
+@app.get("/api/tools")
+async def tools():
+    return core().tools.list()
+
+
+@app.get("/api/extensions")
+async def extensions():
+    return getattr(core(), "extensions", {})
 
 
 @app.get("/api/runs")

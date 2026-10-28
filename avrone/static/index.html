@@ -33,6 +33,14 @@
   .ev { border-bottom:1px dashed var(--line); padding:4px 0; white-space:pre-wrap; word-break:break-word; }
   .ev b { color:var(--accent); } .ev.error b { color:var(--err); }
   #termout { white-space:pre-wrap; }
+  .msg.md { white-space:normal; } .msg.md h2,.msg.md h3 { font-size:14px; margin:10px 0 4px; color:var(--accent); } .msg.md h2:first-child { margin-top:0; }
+  .msg.md ul { margin:4px 0; padding-left:18px; } .msg.md p { margin:4px 0; } .msg.md a { color:var(--accent); }
+  .msg.md code { background:#0b0d12; padding:1px 4px; border-radius:4px; } .msg.md pre { background:#0b0d12; padding:8px; border-radius:6px; overflow:auto; white-space:pre-wrap; }
+  .msg details { margin-top:8px; color:var(--dim); font-size:12px; } .msg details div { white-space:pre-wrap; margin-top:4px; }
+  .badge { display:inline-block; font-size:11px; padding:1px 6px; border-radius:6px; background:#1d2a40; color:var(--accent); margin-bottom:6px; }
+  #fa { display:none; padding:0 12px 0; } #fa textarea { width:100%; height:60px; }
+  .tool { border-bottom:1px dashed var(--line); padding:5px 0; } .tool .src { float:right; color:var(--warn); }
+  .tool .d { color:var(--dim); white-space:normal; } #extinfo { color:var(--dim); margin-bottom:8px; white-space:pre-wrap; }
   #termform { display:flex; gap:6px; margin-bottom:8px; } #termform input { flex:1; height:32px; }
   @media (max-width: 800px) { main { grid-template-columns:1fr; grid-template-rows: 1fr 40vh; } #chat { border-right:0; } }
 </style>
@@ -42,18 +50,20 @@
 <main>
   <section id="chat">
     <div id="msgs"></div>
+    <div id="fa"><textarea id="first" placeholder="Deep mode: paste the first answer to stress-test (optional; leave empty to run a squad first)."></textarea></div>
     <form id="f">
       <textarea id="q" placeholder="Ask anything. Squad mode runs several agents in parallel, then a lead merges them."></textarea>
-      <select id="mode"><option value="squad">Squad</option><option value="chat">Chat</option></select>
+      <select id="mode"><option value="squad">Squad</option><option value="chat">Chat</option><option value="deep">Deep</option></select>
       <button>Send</button>
     </form>
   </section>
   <aside>
     <div class="tabs">
-      <button data-p="hud" class="on">HUD</button><button data-p="logs">Logs</button><button data-p="term">Terminal</button>
+      <button data-p="hud" class="on">HUD</button><button data-p="logs">Logs</button><button data-p="tools">Tools</button><button data-p="term">Terminal</button>
     </div>
     <div class="pane on" id="hud"></div>
     <div class="pane" id="logs"></div>
+    <div class="pane" id="tools"><div id="extinfo"></div><div id="toollist">Loading…</div></div>
     <div class="pane" id="term">
       <form id="termform"><input id="tok" type="password" placeholder="admin token" style="max-width:110px" /><input id="cmd" placeholder="command" /></form>
       <div id="termout"></div>
@@ -63,11 +73,49 @@
 <script>
 const $ = s => document.querySelector(s);
 const agents = {};
-function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function addMsg(text, cls, extra){ const d=document.createElement('div'); d.className='msg '+cls; d.textContent=text; if(extra){ const a=document.createElement('div'); a.className='agents'; a.textContent=extra; d.appendChild(a);} $('#msgs').appendChild(d); $('#msgs').scrollTop=1e9; return d; }
 function renderHud(){ $('#hud').innerHTML = Object.entries(agents).reverse().map(([n,a]) =>
   `<div class="agent ${a.status}"><span class="st">${a.status}</span><b>${esc(n)}</b> ${a.parent?'↳ '+esc(a.parent):''}<br>${esc(a.focus||'').slice(0,140)}<br><span style="color:var(--dim)">${esc(a.last||'')}</span></div>`).join('') || '<span style="color:var(--dim)">No agents yet.</span>'; }
-async function status(){ try { const s = await (await fetch('/api/status')).json(); $('#meta').textContent = `runner: ${s.runner} · model: ${s.model} @ ${s.backend} · squad: ${s.squad_size}`; } catch(e){ $('#meta').textContent='offline'; } }
+function md(src){
+  const blocks = String(src).split(/```/); let html='';
+  blocks.forEach((b,i) => { if(i%2){ html += '<pre><code>'+esc(b.replace(/^\w*\n/,''))+'</code></pre>'; return; }
+    let inList=false;
+    b.split('\n').forEach(line => {
+      let t = esc(line).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
+        .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+      const li = /^\s*[-*]\s+(.*)/.exec(t);
+      if(li){ if(!inList){ html+='<ul>'; inList=true; } html+='<li>'+li[1]+'</li>'; return; }
+      if(inList){ html+='</ul>'; inList=false; }
+      const h = /^(#{1,4})\s+(.*)/.exec(t);
+      if(h) html += `<h${Math.min(h[1].length+1,4)}>${h[2]}</h${Math.min(h[1].length+1,4)}>`;
+      else if(t.trim()) html += '<p>'+t+'</p>';
+    });
+    if(inList) html+='</ul>';
+  });
+  return html;
+}
+function addReport(j){
+  const d=document.createElement('div'); d.className='msg bot md';
+  d.innerHTML = '<span class="badge">Deep analysis</span>' + md(j.report||j.answer||'');
+  const det=document.createElement('details'); const sm=document.createElement('summary');
+  sm.textContent = `first answer · ${(j.agents||[]).length} reviewers: ${(j.agents||[]).map(a=>a.role).join(', ')} · run ${j.run_id}`;
+  const body=document.createElement('div'); body.textContent = j.first_answer||''; det.append(sm, body); d.appendChild(det);
+  $('#msgs').appendChild(d); $('#msgs').scrollTop=1e9;
+}
+async function loadTools(){
+  try {
+    const [tools, ext] = await Promise.all([(await fetch('/api/tools')).json(), (await fetch('/api/extensions')).json()]);
+    $('#toollist').innerHTML = tools.map(t => `<div class="tool"><span class="src">${esc(t.source)}</span><b>${esc(t.name)}</b> <span style="color:var(--dim)">${esc(t.args)}</span><div class="d">${esc(t.description)}</div></div>`).join('') || 'No tools.';
+    const parts=[]; const p=ext.plugins, m=ext.mcp;
+    if(p && p.installed) parts.push('plugins: '+(Array.isArray(p.loaded)? p.loaded.map(x=>(x.name||x)+(x.error?' (error)':'')).join(', ')||'none' : (p.error||'loaded')));
+    if(m && m.installed) parts.push('mcp: '+(m.servers && typeof m.servers==='object' ? Object.entries(m.servers).map(([k,v])=>k+(v.connected?' ✓':' ✗')).join(', ')||'none' : (m.error||'none')));
+    if(ext.errors && ext.errors.length) parts.push('errors: '+ext.errors.join('; '));
+    $('#extinfo').textContent = `${tools.length} tools` + (parts.length? ' · '+parts.join(' · ') : '');
+  } catch(e){ $('#toollist').textContent = 'Could not load tools: '+e; }
+}
+async function status(){ try { const s = await (await fetch('/api/status')).json(); $('#meta').textContent = `runner: ${s.runner} · ${s.provider||''} model: ${s.model} @ ${s.backend} · squad: ${s.squad_size} · tools: ${s.tools??'?'}`; } catch(e){ $('#meta').textContent='offline'; } }
 function ws(){
   const w = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/events');
   w.onmessage = m => { const e = JSON.parse(m.data);
@@ -83,17 +131,23 @@ function ws(){
   w.onclose = () => setTimeout(ws, 1500);
 }
 $('#f').onsubmit = async ev => { ev.preventDefault(); const q=$('#q').value.trim(); if(!q) return; $('#q').value='';
-  addMsg(q,'user'); const pending = addMsg('Agents working…','bot');
-  try { const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q, mode:$('#mode').value})});
+  const mode=$('#mode').value; const payload={message:q, mode};
+  if(mode==='deep' && $('#first').value.trim()){ payload.first_answer=$('#first').value.trim(); $('#first').value=''; }
+  addMsg(q,'user'); const pending = addMsg(mode==='deep' ? 'Second wave reviewing…' : 'Agents working…','bot');
+  try { const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const j = await r.json(); pending.remove();
+    if(!r.ok){ addMsg('Error: '+(j.detail||r.status),'bot'); return; }
+    if(j.mode==='deep'){ addReport(j); return; }
     addMsg(j.answer || JSON.stringify(j), 'bot', j.agents && j.agents.length ? `${j.agents.length} agents: ${j.agents.map(a=>a.role).join(', ')} · run ${j.run_id}` : `run ${j.run_id||''}`);
   } catch(e){ pending.textContent = 'Error: '+e; } };
 $('#q').addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); $('#f').requestSubmit(); } });
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { document.querySelectorAll('.tabs button,.pane').forEach(x=>x.classList.remove('on')); b.classList.add('on'); $('#'+b.dataset.p).classList.add('on'); });
+$('#mode').onchange = () => { $('#fa').style.display = $('#mode').value==='deep' ? 'block' : 'none'; };
+document.querySelector('[data-p=tools]').addEventListener('click', loadTools);
 $('#termform').onsubmit = async ev => { ev.preventDefault(); const cmd=$('#cmd').value; $('#cmd').value='';
   const r = await fetch('/api/terminal',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':$('#tok').value},body:JSON.stringify({cmd})});
   const j = await r.json(); $('#termout').textContent = (r.ok ? `$ ${j.cmd}\n${j.stdout}${j.stderr?'\n'+j.stderr:''}\n[exit ${j.exit_code}]` : 'Error: '+(j.detail||r.status)) + '\n\n' + $('#termout').textContent; };
-renderHud(); status(); ws(); setInterval(status, 10000);
+renderHud(); status(); ws(); loadTools(); setInterval(status, 10000);
 </script>
 </body>
 </html>

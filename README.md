@@ -37,6 +37,38 @@ backend works too: xAI Grok, OpenAI, Ollama, LM Studio, vLLM).
 | HUD display for hosted environments | HUD tab: live agent tree, current tool, status |
 | Agents spawn sub-agents | `spawn` tool (depth-limited by `AVRONE_MAX_SPAWN_DEPTH`) |
 
+## v0.2: Deep Analysis, MCP, plugins, 17 tools
+
+**Deep Analysis (second wave).** Give AVRONE a question plus an answer that
+already exists (from you, another AI, or its own squad) and a second squad
+stress-tests it: Fact-Checker, Gap-Finder, Contrarian, Deep-Diver, Forecaster,
+Source-Synthesizer. The Deep Lead returns: Verdict (confirmed / corrected /
+extended + confidence), Corrections, Additions, Counterpoints, Sources, Bottom line.
+
+```bash
+avrone-cli deep "Is X true?" --first-answer-file answer.txt -n 4
+avrone-cli deep "Plan a home lab"            # runs wave 1 squad, then wave 2
+```
+
+**Tools.** shell, python, read_file, write_file, edit_file, list_files,
+search_files, fetch, http_request, web_search (DuckDuckGo free; Brave/Tavily
+if keyed), git (no force push), docker_run, memory_save, memory_recall,
+artifact_save, think, spawn. Plus plugin and MCP tools.
+
+**MCP, both ways.** AVRONE loads any MCP server from `mcp.json` (Claude Desktop
+format, stdio or Streamable HTTP; see `examples/mcp.json.example`); its tools
+appear as `mcp__<server>__<tool>`. And `avrone-mcp` serves AVRONE itself over
+stdio with `avrone_squad`, `avrone_chat`, `avrone_deep`, `avrone_tools`, so
+OpenClaw, Claude Desktop or Cursor can call the squad.
+
+**Plugins.** Drop a `.py` with `def register(registry, settings)` in `plugins/`
+(examples: calculator, current_time) or publish an `avrone.plugins` entry point.
+
+**Providers.** `AVRONE_PROVIDER=openclaw|xai|openai|openrouter|ollama|custom`,
+with `AVRONE_LEAD_MODEL` for a stronger merge model. Retries with backoff.
+
+**CLI.** `avrone-cli squad|chat|deep|tools|runs [--json out.json] [--quiet]`.
+
 ## Quick start
 
 ```bash

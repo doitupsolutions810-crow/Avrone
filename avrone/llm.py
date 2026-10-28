@@ -1,12 +1,15 @@
 """Model client. Talks to any OpenAI-compatible /chat/completions endpoint.
 
-Default target is the OpenClaw Gateway (enable
+Pick a backend with AVRONE_PROVIDER (openclaw | xai | openai | openrouter |
+ollama | custom); AVRONE_LLM_BASE_URL / AVRONE_LLM_MODEL override the preset.
+The default is the OpenClaw Gateway (enable
 gateway.http.endpoints.chatCompletions.enabled = true in OpenClaw's config).
-Point AVRONE_LLM_BASE_URL at xAI, OpenAI, Ollama, LM Studio, vLLM, etc. to use
-those instead. AVRONE_LLM_MODE=mock runs a scripted model for demos/tests.
+429 and 5xx responses are retried with exponential backoff.
+AVRONE_LLM_MODE=mock runs a scripted model for demos/tests.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -14,6 +17,8 @@ from typing import Any
 import httpx
 
 from .config import Settings
+
+RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 class LLMError(RuntimeError):
@@ -29,28 +34,56 @@ class LLM:
         if self.s.llm_mode == "mock":
             return _mock_reply(messages)
         headers = {"Content-Type": "application/json"}
-        if self.s.llm_api_key:
+        if self.s.llm_api_key:  # empty is fine: a proxy may inject auth
             headers["Authorization"] = f"Bearer {self.s.llm_api_key}"
-        if session:
+        if session and self.s.provider in {"openclaw", "custom"}:
             # OpenClaw: keep each agent in its own gateway session.
             headers["x-openclaw-session-key"] = session
+        if self.s.provider == "openrouter":
+            headers["X-Title"] = "AVRONE"
         body: dict[str, Any] = {
             "model": model or self.s.llm_model,
             "messages": messages,
             "temperature": temperature,
         }
         url = self.s.llm_base_url.rstrip("/") + "/chat/completions"
-        try:
-            async with httpx.AsyncClient(timeout=self.s.llm_timeout) as client:
-                r = await client.post(url, headers=headers, json=body)
-        except httpx.HTTPError as e:
-            raise LLMError(f"Model backend unreachable at {url}: {e}") from e
+        tries = max(1, self.s.llm_retries)
+        last_err = ""
+        r = None
+        for attempt in range(tries):
+            try:
+                async with httpx.AsyncClient(timeout=self.s.llm_timeout) as client:
+                    r = await client.post(url, headers=headers, json=body)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                raise LLMError(f"Model backend unreachable at {url}: {e}") from e
+            except httpx.HTTPError as e:  # read timeouts, dropped connections: retry
+                last_err = f"Model backend request failed at {url}: {e}"
+                r = None
+            else:
+                if r.status_code not in RETRY_STATUS:
+                    break
+                last_err = f"Model backend error {r.status_code}: {r.text[:500]}"
+            if attempt < tries - 1:
+                await asyncio.sleep(_retry_delay(r, self.s.llm_backoff, attempt))
+        else:
+            raise LLMError(f"{last_err} (after {tries} tries)")
         if r.status_code >= 400:
             raise LLMError(f"Model backend error {r.status_code}: {r.text[:500]}")
         try:
             return r.json()["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, ValueError) as e:
+        except (KeyError, IndexError, ValueError, TypeError) as e:
             raise LLMError(f"Unexpected model response: {r.text[:500]}") from e
+
+
+def _retry_delay(r: httpx.Response | None, base: float, attempt: int) -> float:
+    delay = base * (2 ** attempt)
+    if r is not None:
+        ra = r.headers.get("retry-after", "")
+        try:
+            delay = max(delay, min(float(ra), 30.0))
+        except ValueError:
+            pass
+    return delay
 
 
 # ---------------------------------------------------------------- mock model
@@ -65,9 +98,22 @@ def _mock_reply(messages: list[dict[str, str]]) -> str:
             {"role": "Engineer", "focus": f"Work out a concrete solution for: {t}"},
             {"role": "Critic", "focus": f"Find flaws and risks in approaches to: {t}"},
         ]})
+    if "You are the DEEP LEAD" in system:
+        n = last.count("### Reviewer ")
+        return (
+            "## Verdict\nExtended (mock). Confidence: Med\n\n"
+            "## Corrections\n- None found by the mock Fact-Checker.\n\n"
+            "## Additions\n- Mock Gap-Finder added edge cases.\n\n"
+            "## Counterpoints\n- Mock Contrarian offered an alternative.\n\n"
+            "## Sources\n- https://example.com/mock-source\n\n"
+            f"## Bottom line\nDEEP REPORT (mock): {n} reviewers stress-tested the first answer."
+        )
     if "You are the LEAD" in system:
         return "FINAL ANSWER (mock): merged the squad's findings into one answer."
-    # Worker: use one tool on the first step, then answer.
+    # Worker (squad or deep wave): use one tool on the first step, then answer.
     if "TOOL RESULT" not in last:
         return '```json\n{"tool": "shell", "args": {"cmd": "echo avrone-online && uname -s"}}\n```'
+    if "DEEP ANALYSIS wave" in system:
+        role = re.search(r"the (.+?) reviewer", system)
+        return json.dumps({"final": f"Mock {role.group(1) if role else 'deep'} review: first answer checked."})
     return '```json\n{"final": "Mock worker result: environment checked, findings ready."}\n```'

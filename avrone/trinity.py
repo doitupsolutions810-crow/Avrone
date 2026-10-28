@@ -27,8 +27,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from .checkpoint import Checkpoint
 from .codex import Codex
 from .config import Settings
+from .governor import Governor
 from .llm import LLM, LLMError
 from .sovereign import Runner
 from .tools import ToolRegistry, builtin_registry
@@ -291,6 +293,9 @@ class TrinityCore:
         self._counter = 0
         # Bound concurrent model calls (squads, sub-agents and leads all share it).
         self._sem = asyncio.Semaphore(max(1, settings.max_parallel))
+        # Advisory health/thermal governor: consulted before a squad or deep wave spawns its
+        # workers, so a hot or loaded node runs fewer of them at once (never fewer than 1).
+        self.governor = Governor.from_settings(settings)
         self.active: dict[str, dict[str, Any]] = {}  # agent name -> status, for the HUD
         self.inbox: dict[str, list[str]] = {}  # agent name -> messages waiting for its next step
 
@@ -391,8 +396,34 @@ class TrinityCore:
             result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
         return result
 
+    def _worker_limit(self, run_id: str, n: int) -> int:
+        """Ask the governor how many of n workers may run at once; never raises, never < 1."""
+        try:
+            limit = int(self.governor.target(n))
+        except Exception:
+            return n
+        limit = max(1, min(n, limit))
+        if limit < n:
+            self.codex.emit(run_id, "governor.throttle", "Governor", workers=n, parallel=limit,
+                            reason=self.governor.last_reason)
+        return limit
+
     async def _gather_agents(self, run_id: str, coros: list[Any]) -> list[str]:
-        """Run agents in parallel; one that still blows up becomes a failure note, never a crash."""
+        """Run agents in parallel; one that still blows up becomes a failure note, never a crash.
+
+        The governor may cap how many run at once: the rest wait at a local gate (workers'
+        own sub-agents bypass it, so the gate can never deadlock)."""
+        limit = self._worker_limit(run_id, len(coros)) if coros else 0
+        if 0 < limit < len(coros):
+            gate = asyncio.Semaphore(limit)
+
+            async def gated(c: Any) -> Any:
+                try:
+                    async with gate:
+                        return await c
+                finally:
+                    c.close()  # no-op once awaited; avoids a never-awaited warning on cancel
+            coros = [gated(c) for c in coros]
         out = await asyncio.gather(*coros, return_exceptions=True)
         results: list[str] = []
         for i, r in enumerate(out):
@@ -403,6 +434,33 @@ class TrinityCore:
                 r = f"[agent {i + 1} failed: {type(r).__name__}: {r}]"
             results.append(str(r))
         return results
+
+    async def _ck_step(self, ck: "Checkpoint | None", key: str, factory: Any) -> str:
+        """Run one worker unless the checkpoint already holds its good result; record it after.
+
+        Failure notes are never recorded, so a resumed run retries those workers."""
+        if ck is not None:
+            cached = ck.get(key)
+            if isinstance(cached, str) and not _reviewer_failed(cached):
+                return cached
+        result = await factory()
+        if ck is not None and isinstance(result, str) and not _reviewer_failed(result):
+            ck.put(key, result)
+        return result
+
+    def _ck_open(self, checkpoint: Any, task: str, mode: str, run_id: str | None,
+                 **extra: Any) -> tuple["Checkpoint | None", str | None, Any]:
+        """(checkpoint view, run_id to use, stored final result or None). Never raises."""
+        try:
+            ck = Checkpoint.coerce(checkpoint)
+            if ck is None:
+                return None, run_id, None
+            prev = ck.resume_point(task, mode, **extra)
+            if prev and not run_id:
+                run_id = prev.get("run_id")
+            return ck, run_id, (ck.get("result") if prev else None)
+        except Exception:  # a bad checkpoint path must not sink the run
+            return None, run_id, None
 
     # ------------------------------------------------------------ the squad
     async def plan(self, run_id: str, task: str, n: int) -> list[dict[str, str]]:
@@ -415,19 +473,40 @@ class TrinityCore:
         self.codex.emit(run_id, "lead.planned", "Planner", subtasks=subtasks)
         return subtasks
 
-    async def squad(self, task: str, n: int | None = None, run_id: str | None = None) -> dict[str, Any]:
-        run_id = run_id or uuid.uuid4().hex[:10]
+    async def squad(self, task: str, n: int | None = None, run_id: str | None = None,
+                    checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None) -> dict[str, Any]:
+        """Plan, run the squad in parallel, merge with the lead.
+
+        With `checkpoint` (a path or Checkpoint), the plan, every finished worker result and
+        the final result are recorded; calling again with the same task and file resumes:
+        finished workers are not re-run and a finished run is returned as is."""
         n = max(1, min(n or self.settings.squad_size, 8))
+        ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
+        if isinstance(done, dict):
+            return done
+        run_id = run_id or uuid.uuid4().hex[:10]
+        if ck is not None:
+            ck.begin(task, "squad", run_id, n=n)
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", squad_size=n)
-        try:
-            subtasks = await self.plan(run_id, task, n)
-        except LLMError as e:
-            self.codex.emit(run_id, "error", "Planner", message=str(e))
-            self.codex.emit(run_id, "run.done", "Trinity", answer=f"Model backend error: {e}")
-            return {"run_id": run_id, "answer": f"Model backend error: {e}", "agents": []}
+        subtasks = ck.get("subtasks") if ck is not None else None
+        if ck is not None and isinstance(subtasks, list) and subtasks:
+            finished = sum(1 for i in range(len(subtasks)) if isinstance(ck.get(f"worker.{i}"), str))
+            self.codex.emit(run_id, "checkpoint.resume", "Trinity", path=str(ck.path),
+                            workers_done=finished, workers=len(subtasks))
+        else:
+            try:
+                subtasks = await self.plan(run_id, task, n)
+            except LLMError as e:
+                self.codex.emit(run_id, "error", "Planner", message=str(e))
+                self.codex.emit(run_id, "run.done", "Trinity", answer=f"Model backend error: {e}")
+                return {"run_id": run_id, "answer": f"Model backend error: {e}", "agents": []}
+            if ck is not None:
+                ck.put("subtasks", subtasks)
 
         results = await self._gather_agents(run_id, [
-            self.run_agent(run_id, s["role"], task, focus=s["focus"]) for s in subtasks])
+            self._ck_step(ck, f"worker.{i}",
+                          lambda s=s: self.run_agent(run_id, s["role"], task, focus=s["focus"]))
+            for i, s in enumerate(subtasks)])
         reports = "\n\n".join(
             f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']})\n{r}"
             for i, (s, r) in enumerate(zip(subtasks, results)))
@@ -451,28 +530,44 @@ class TrinityCore:
             self.codex.emit(run_id, "error", "Lead", message=f"{type(e).__name__}: {e}")
             answer = f"Lead failed ({e}). Raw agent reports:\n\n{reports}"
         self.codex.emit(run_id, "run.done", "Trinity", answer=answer)
-        return {"run_id": run_id, "answer": answer,
-                "agents": [{"role": s.get("role"), "focus": s["focus"], "result": r} for s, r in zip(subtasks, results)]}
+        out = {"run_id": run_id, "answer": answer,
+               "agents": [{"role": s.get("role"), "focus": s["focus"], "result": r} for s, r in zip(subtasks, results)]}
+        if ck is not None and not answer.startswith("Lead failed ("):
+            ck.put("result", out)  # a failed merge is retried on resume
+        return out
 
     # ------------------------------------------------------------ deep analysis
     async def deep(self, task: str, first_answer: str | None = None, n: int | None = None,
-                   run_id: str | None = None, rounds: int | None = None) -> dict[str, Any]:
+                   run_id: str | None = None, rounds: int | None = None,
+                   checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None) -> dict[str, Any]:
         """Stress-test and extend an existing answer to `task`, in up to `rounds` waves.
 
         Round 1 is the classic second wave. Each later round reviews the previous round's
         corrected answer (its Bottom line) and is told which corrections are already applied.
-        The loop stops early when a round's lead reports no correction not seen before."""
-        run_id = run_id or uuid.uuid4().hex[:10]
+        The loop stops early when a round's lead reports no correction not seen before.
+
+        With `checkpoint`, the first wave (its own squad checkpoint), each reviewer result and
+        each completed round are recorded, so an interrupted run resumes mid-round."""
         # n=None -> configured size; n<=0 -> zero reviewers (the answer is reported unreviewed).
         n = max(0, min(self.settings.deep_squad_size if n is None else int(n), MAX_DEEP))
         max_rounds = resolve_deep_rounds(rounds, self.settings)
+        given = first_answer if first_answer and str(first_answer).strip() else None
+        ck, run_id, done = self._ck_open(checkpoint, task, "deep", run_id, n=n, first_answer=given)
+        if isinstance(done, dict):
+            return done
+        run_id = run_id or uuid.uuid4().hex[:10]
+        if ck is not None:
+            ck.begin(task, "deep", run_id, n=n, first_answer=given)
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="deep", squad_size=n,
                         has_first_answer=first_answer is not None, max_rounds=max_rounds)
         first_run_id = None
         if first_answer is None or not str(first_answer).strip():
             first_run_id = f"{run_id}-wave1"
             self.codex.emit(run_id, "deep.first_wave", "Trinity", first_run_id=first_run_id)
-            first = await self.squad(task, run_id=first_run_id)
+            if ck is not None:
+                first = await self.squad(task, run_id=first_run_id, checkpoint=ck.scope("wave1."))
+            else:
+                first = await self.squad(task, run_id=first_run_id)
             first_answer = first["answer"]
             self.codex.emit(run_id, "deep.first_wave_done", "Trinity", first_run_id=first_run_id,
                             answer=first_answer[:6000])
@@ -487,7 +582,26 @@ class TrinityCore:
         lead_ok = True
         stop_reason = "cap"
         total_ok = total_failed = 0
-        for rnd in range(1, max_rounds + 1):
+        start = 1
+        saved = ck.get("rounds") if ck is not None else None
+        if ck is not None and isinstance(saved, dict) and saved.get("history"):
+            history, all_agents, seen = saved["history"], saved["all_agents"], saved["seen"]
+            current, report = saved["current"], saved["report"]
+            converged, lead_ok = saved["converged"], saved["lead_ok"]
+            total_ok, total_failed = saved["total_ok"], saved["total_failed"]
+            stop_reason = saved.get("stop_reason") or "cap"
+            start = max_rounds + 1 if saved.get("stop_reason") else len(history) + 1
+            self.codex.emit(run_id, "checkpoint.resume", "DeepLead", path=str(ck.path),
+                            rounds_done=len(history), next_round=start)
+
+        def save_rounds(stop: str | None = None) -> None:
+            if ck is not None:
+                ck.put("rounds", {"history": history, "all_agents": all_agents, "seen": seen,
+                                  "current": current, "report": report, "converged": converged,
+                                  "lead_ok": lead_ok, "total_ok": total_ok,
+                                  "total_failed": total_failed, "stop_reason": stop})
+
+        for rnd in range(start, max_rounds + 1):
             self.codex.emit(run_id, "deep.round.start", "DeepLead", round=rnd, max_rounds=max_rounds)
             if rnd == 1:
                 brief = f"QUESTION:\n{task}\n\nFIRST-WAVE ANSWER TO REVIEW:\n{current}"
@@ -496,7 +610,9 @@ class TrinityCore:
                 brief = (f"QUESTION:\n{task}\n\nCURRENT ANSWER TO REVIEW (after deep round {rnd - 1}):\n"
                          f"{current}\n\nCORRECTIONS ALREADY APPLIED (do not repeat them):\n{applied}\n\n"
                          "Find anything that is STILL wrong, missing or unsupported.")
-            report, results, lead_ok = await self._deep_wave(run_id, rnd, brief, angles, current)
+            report, results, lead_ok = await self._deep_wave(
+                run_id, rnd, brief, angles, current,
+                ck=ck.scope(f"round{rnd}.") if ck is not None else None)
             all_agents += [{"role": a["role"], "focus": a["focus"], "result": r, "round": rnd,
                             "ok": not _reviewer_failed(r)} for a, r in zip(angles, results)]
             ok = sum(not _reviewer_failed(r) for r in results)
@@ -519,14 +635,17 @@ class TrinityCore:
                 # Nothing usable came back (no reviewers, or every one failed): another
                 # round would only repeat that, and the lead had nothing to weigh.
                 stop_reason = "no_reviews"
+                save_rounds(stop_reason)
                 break
             if converged:
                 stop_reason = "converged"
+                save_rounds(stop_reason)
                 break
             if not lead_ok:
                 stop_reason = "lead_failed"
-                break
+                break  # not saved: a resume retries this round's lead (its reviews are cached)
             current = _md_section(report, "Bottom line") or report
+            save_rounds()
         last = history[-1]
         confidence = deep_confidence(report, lead_ok, last["reviewers_ok"], last["reviewers_failed"],
                                      converged, len(history))
@@ -553,11 +672,13 @@ class TrinityCore:
         }
         if first_run_id:
             out["first_run_id"] = first_run_id
+        if ck is not None and lead_ok:
+            ck.put("result", out)
         return out
 
     async def _deep_wave(self, run_id: str, rnd: int, brief: str,
                          angles: list[dict[str, str]],
-                         current: str = "") -> tuple[str, list[str], bool]:
+                         current: str = "", ck: "Checkpoint | None" = None) -> tuple[str, list[str], bool]:
         """One wave: reviewers in parallel (isolated failures), then the deep lead's report.
 
         Returns (report, reviewer results, lead_ok). With no usable review the lead is not
@@ -565,8 +686,9 @@ class TrinityCore:
         self.codex.emit(run_id, "lead.plan", "DeepLead", squad_size=len(angles), round=rnd)
         self.codex.emit(run_id, "lead.planned", "DeepLead", subtasks=angles, round=rnd)
         results = await self._gather_agents(run_id, [
-            self.run_agent(run_id, a["role"], brief, focus=a["focus"], system=DEEP_WORKER_PROMPT)
-            for a in angles])
+            self._ck_step(ck, f"reviewer.{i}", lambda a=a: self.run_agent(
+                run_id, a["role"], brief, focus=a["focus"], system=DEEP_WORKER_PROMPT))
+            for i, a in enumerate(angles)])
         reviews = "\n\n".join(f"### Reviewer {i + 1}: {a['role']}\n{r}"
                                for i, (a, r) in enumerate(zip(angles, results)))
         if not any(not _reviewer_failed(r) for r in results):

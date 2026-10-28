@@ -7,6 +7,8 @@ Contract:
 from __future__ import annotations
 
 import re
+
+import httpx
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -111,7 +113,12 @@ async def t_fetch(ctx: "AgentContext", args: dict[str, Any]) -> str:
     url = str(args.get("url", ""))
     if not re.match(r"^https?://", url):
         return "ERROR: url must start with http(s)://"
-    r = await safe_http_request("GET", url, headers={"User-Agent": "AVRONE/0.2"}, timeout=30)
+    try:
+        r = await safe_http_request("GET", url, headers={"User-Agent": "AVRONE/0.2"}, timeout=30)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    except httpx.HTTPError as exc:
+        return f"ERROR: outbound HTTP request failed ({type(exc).__name__})"
     text = re.sub(r"<script.*?</script>|<style.*?</style>", "", r.text, flags=re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)

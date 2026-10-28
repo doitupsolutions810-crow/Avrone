@@ -348,7 +348,7 @@ AVRONE concludes into one system with its Node twin, [Grok Bot](https://github.c
 - **Outbound:** AVRONE agents reach Grok Bot's terminal, browser and team via the built-in `http_request` tool — e.g. `http_request POST http://localhost:3000/api/chat {"message": "...", "mode": "squad"}`.
 - **MCP, both ways:** `avrone-mcp` serves this AVRONE to any MCP client (Grok Bot handshakes MCP servers at boot); `mcp.json` loads external tools into AVRONE.
 
-Grok Bot's `launch.sh` boots both systems in sequence and runs their live tests.
+Grok Bot's `launch.sh` boots both systems in sequence and runs their live tests; `./verify.sh` proves the combined boot locally (verdict in Grok Bot's `data/VERIFY.md`).
 
 
 ## Roadmap

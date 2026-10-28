@@ -12,6 +12,8 @@ New options (all optional, read via env / getattr so config.py needs no change):
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import html as _html
 import json
 import os
@@ -863,8 +865,11 @@ async def t_capabilities_report(ctx: "AgentContext", args: dict[str, Any]) -> st
 
 # --------------------------------------------------------------------------- privileged tier (priv_shell)
 # Deny by default. A tool here runs ONLY when the run was granted the matching elevated capability
-# through the signed fleet gateway (fleet.handle_run sets ctx.core.fleet_privileged), and even then
-# only inside a hard allowlist. Every attempt is audited to the Eternal CodeX.
+# through the signed fleet gateway, and even then only inside a hard allowlist / fixed action set.
+# fleet.handle_run marks the grant TWICE and both must agree: ctx.core.fleet_privileged (core-wide)
+# and the PRIV_GRANT context variable, which is scoped to that run's task tree -- so an unrelated run
+# executing concurrently on the same core never inherits the elevated capability.
+# Every attempt is audited to the Eternal CodeX.
 #   AVRONE_PRIV_SHELL_ALLOW    comma list of allowed argv[0] names (bare names, e.g. "ls,cat,git");
 #                              default empty = refuse every command
 #   AVRONE_PRIV_SHELL_TIMEOUT  per-command timeout ceiling in seconds (default 30, clamped 1..300)
@@ -877,10 +882,27 @@ PRIV_SHELL_TIMEOUT_MAX = 300
 _PRIV_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+\-]*")
 
 
+PRIV_GRANT: contextvars.ContextVar[str] = contextvars.ContextVar("avrone_priv_grant", default="")
+
+
+@contextlib.contextmanager
+def priv_grant(cap: str):
+    """Scope a granted capability to the current task tree. Only fleet.handle_run should call this,
+    after the signed privileged gate has accepted the request."""
+    token = PRIV_GRANT.set(cap or "")
+    try:
+        yield
+    finally:
+        PRIV_GRANT.reset(token)
+
+
 def granted_capability(ctx: "AgentContext") -> str:
-    """The elevated capability the signed gateway granted this run ("" = none)."""
+    """The elevated capability the signed gateway granted THIS run ("" = none): the core flag and
+    the run-scoped grant must both be set and identical."""
     cap = getattr(ctx.core, "fleet_privileged", "")
-    return cap if isinstance(cap, str) else ""
+    if not isinstance(cap, str) or not cap or PRIV_GRANT.get() != cap:
+        return ""
+    return cap
 
 
 def priv_shell_allowlist() -> set[str]:
@@ -954,6 +976,92 @@ async def t_priv_shell(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return res.text()
 
 
+
+# --------------------------------------------------------------------------- privileged tier (priv_admin)
+# A SMALL, explicit set of read-only admin views. Never arbitrary code, never a write.
+PRIV_ADMIN_CAP = "priv:admin"
+PRIV_ADMIN_MAX_CHARS = 12000
+
+
+def _admin_fleet(ctx: "AgentContext") -> Any:
+    f = getattr(ctx.core, "fleet", None)
+    if f is None:
+        raise LookupError("fleet is not available on this node")
+    return f
+
+
+async def _admin_queue_stats(ctx: "AgentContext", args: dict[str, Any]) -> Any:
+    q = getattr(_admin_fleet(ctx), "queue", None)
+    if q is None:
+        raise LookupError("queue not running")
+    return await q.stats()
+
+
+async def _admin_node_list(ctx: "AgentContext", args: dict[str, Any]) -> Any:
+    keep = ("node_id", "status", "load", "children", "last_seen")
+    return [{**{k: n.get(k) for k in keep}, "runner": (n.get("capabilities") or {}).get("runner")}
+            for n in _admin_fleet(ctx).list_nodes()]
+
+
+async def _admin_fleet_info(ctx: "AgentContext", args: dict[str, Any]) -> Any:
+    return _admin_fleet(ctx).info()
+
+
+def _admin_codex(ctx: "AgentContext") -> Any:
+    codex = getattr(ctx.core, "codex", None)
+    if codex is None or not callable(getattr(codex, "replay", None)):
+        raise LookupError("the Eternal CodeX log is not available")
+    return codex
+
+
+async def _admin_codex_runs(ctx: "AgentContext", args: dict[str, Any]) -> Any:
+    return _admin_codex(ctx).runs(_int(args.get("limit"), 20, 1, 50))
+
+
+async def _admin_codex_tail(ctx: "AgentContext", args: dict[str, Any]) -> Any:
+    run_id = str(args.get("run_id") or ctx.run_id or "").strip()
+    if not _RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+        raise ValueError("invalid run_id")
+    n = _int(args.get("limit"), 20, 1, 100)
+    out = []
+    for e in _admin_codex(ctx).replay(run_id)[-n:]:
+        data = e.get("data")
+        out.append({"ts": e.get("ts"), "kind": e.get("kind"), "agent": e.get("agent"),
+                    "data": json.dumps(data, default=str)[:300] if data is not None else None})
+    return out
+
+
+PRIV_ADMIN_ACTIONS: dict[str, tuple[str, Any]] = {
+    "queue_stats": ("job counts by status", _admin_queue_stats),
+    "node_list": ("linked fleet nodes with status/load/runner", _admin_node_list),
+    "fleet_info": ("this node's fleet summary", _admin_fleet_info),
+    "codex_runs": ("recent CodeX runs (limit<=50)", _admin_codex_runs),
+    "codex_tail": ("last events of a CodeX run (run_id, default this run; limit<=100)", _admin_codex_tail),
+}
+
+
+async def t_priv_admin(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    action = str(args.get("action") or "").strip()
+    shown = action[:80]
+    if granted_capability(ctx) != PRIV_ADMIN_CAP:
+        _emit(ctx, "admin.refused", tool="priv_admin", code="no_capability", action=shown,
+              capability=granted_capability(ctx))
+        return "ERROR: requires a granted priv:admin capability (signed fleet privileged run)"
+    entry = PRIV_ADMIN_ACTIONS.get(action)
+    if entry is None:
+        _emit(ctx, "admin.refused", tool="priv_admin", code="unknown_action", action=shown,
+              capability=PRIV_ADMIN_CAP)
+        return f"ERROR: unknown admin action {shown!r}; allowed: {', '.join(sorted(PRIV_ADMIN_ACTIONS))}"
+    try:
+        result = await entry[1](ctx, args)
+    except Exception as e:  # noqa: BLE001 -- audited, then reported to the agent
+        _emit(ctx, "admin.action", tool="priv_admin", action=action, ok=False, error=f"{type(e).__name__}: {e}"[:300])
+        return f"ERROR: {e}"
+    _emit(ctx, "admin.action", tool="priv_admin", action=action, ok=True)
+    text = json.dumps(result, default=str, indent=1)
+    return text[:PRIV_ADMIN_MAX_CHARS] + ("\n...[truncated]" if len(text) > PRIV_ADMIN_MAX_CHARS else "")
+
+
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
     ("web_search", "search the web (DuckDuckGo by default; Brave/Tavily if API keys set); returns numbered title/url/snippet results.",
      '{"query": str, "max_results"?: int}', t_web_search),
@@ -989,6 +1097,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"format"?: "text"|"json"}', t_capabilities_report),
     ("priv_shell", "PRIVILEGED: run ONE allowlisted command (AVRONE_PRIV_SHELL_ALLOW) on the host runner; only in a run granted priv:shell via the signed fleet gateway; no pipes/metacharacters; audited.",
      '{"cmd": str, "timeout"?: int}', t_priv_shell),
+    ("priv_admin", "PRIVILEGED: read-only admin views (queue_stats, node_list, fleet_info, codex_runs, codex_tail); only in a run granted priv:admin via the signed fleet gateway; audited.",
+     '{"action": "queue_stats"|"node_list"|"fleet_info"|"codex_runs"|"codex_tail", "run_id"?: str, "limit"?: int}', t_priv_admin),
 ]
 
 

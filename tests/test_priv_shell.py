@@ -35,9 +35,18 @@ def _env(monkeypatch):
     monkeypatch.delenv("AVRONE_PRIV_SHELL_TIMEOUT", raising=False)
 
 
-def make_ctx(priv=""):
+def make_ctx(priv="", grant=None):
+    """`priv` = core.fleet_privileged; `grant` = the run-scoped PRIV_GRANT (defaults to the same value,
+    as fleet.handle_run sets both after the signed gate accepts)."""
     core = SimpleNamespace(runner=FakeRunner(), codex=MagicMock(), fleet_privileged=priv)
-    return SimpleNamespace(core=core, name="Ops-1", run_id="r1", depth=0)
+    g = priv if grant is None else grant
+    return SimpleNamespace(core=core, name="Ops-1", run_id="r1", depth=0,
+                           grant=g if isinstance(g, str) else "")
+
+
+def in_run(ctx, coro):
+    with tx.priv_grant(ctx.grant):
+        return run(coro)
 
 
 def events(ctx, kind):
@@ -45,7 +54,7 @@ def events(ctx, kind):
 
 
 def shell(ctx, cmd, **kw):
-    return run(tx.t_priv_shell(ctx, {"cmd": cmd, **kw}))
+    return in_run(ctx, tx.t_priv_shell(ctx, {"cmd": cmd, **kw}))
 
 
 # ---------------------------------------------------------------- deny by default
@@ -65,6 +74,18 @@ def test_refused_when_core_has_no_privileged_attribute(monkeypatch):
     monkeypatch.setenv("AVRONE_PRIV_SHELL_ALLOW", "ls")
     ctx = make_ctx()
     del ctx.core.fleet_privileged
+    assert shell(ctx, "ls").startswith("ERROR: requires a granted priv:shell capability")
+    assert ctx.core.runner.calls == []
+
+
+@pytest.mark.parametrize("priv,grant", [
+    ("priv:shell", ""),            # core flag set by some OTHER concurrent privileged run: no run-scoped grant
+    ("", "priv:shell"),            # run-scoped grant without the core flag
+    ("priv:shell", "priv:admin"),  # the two halves disagree
+])
+def test_refused_unless_core_flag_and_run_grant_agree(monkeypatch, priv, grant):
+    monkeypatch.setenv("AVRONE_PRIV_SHELL_ALLOW", "ls")
+    ctx = make_ctx(priv, grant)
     assert shell(ctx, "ls").startswith("ERROR: requires a granted priv:shell capability")
     assert ctx.core.runner.calls == []
 
@@ -189,6 +210,6 @@ def test_registered_and_refuses_through_registry(monkeypatch):
     tx.register_extra_tools(reg)
     assert "priv_shell" in reg.names()
     ctx = make_ctx("")
-    out = run(reg.call(ctx, "priv_shell", {"cmd": "ls"}))
+    out = in_run(ctx, reg.call(ctx, "priv_shell", {"cmd": "ls"}))
     assert out.startswith("ERROR: requires a granted priv:shell capability")
     assert ctx.core.runner.calls == []

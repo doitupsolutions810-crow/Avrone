@@ -42,3 +42,5 @@
 - Made fleet registry persistence atomic and symlink-safe; validate persisted load/capabilities/children/presence fields, reject future timestamps, and bound registry and stored presence data.
 - Added targeted test modules for dispatch validation, runner secret isolation/root guard, server auth modes, restricted host service operations, and daily budget contention/corrupt-state handling.
 - Verification remains pending. GitHub source reads/writes work through the connector, but shell cloning is unavailable in this environment; prior Actions jobs failed without assigned runners. This branch must not be called green until its exact commit runs the full pytest matrix and bundle job successfully.
+
+- Added exact private HTTP destination opt-in via `AVRONE_HTTP_PRIVATE_ALLOWLIST` so operator-authorized internal fleet nodes can be reached without opening all RFC1918/ULA space. The entry is an exact hostname or IP only; wildcards/CIDRs are ignored, and loopback/link-local/reserved/metadata endpoints remain denied.

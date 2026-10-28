@@ -3,7 +3,7 @@ import socket
 import httpx
 import pytest
 
-from avrone.network_policy import safe_http_request, validate_public_http_url
+from avrone.network_policy import MAX_RESPONSE_BYTES, safe_http_request, validate_public_http_url
 
 
 @pytest.mark.parametrize(
@@ -68,12 +68,11 @@ async def test_cross_origin_redirect_drops_authentication_headers():
             return httpx.Response(302, headers={"location": "https://second.test/target"}, request=request)
         return httpx.Response(200, text="ok", request=request)
 
-    transport = httpx.MockTransport(handler)
     response = await safe_http_request(
         "GET",
         "https://first.test/start",
         headers={"Authorization": "Bearer secret"},
-        transport=transport,
+        transport=httpx.MockTransport(handler),
     )
     assert response.status_code == 200
     assert observed[0][1] == "Bearer secret"
@@ -85,8 +84,16 @@ async def test_write_requests_do_not_follow_redirects():
     async def handler(request):
         return httpx.Response(302, headers={"location": "https://other.test/target"}, request=request)
 
-    transport = httpx.MockTransport(handler)
     with pytest.raises(ValueError, match="redirects are disabled"):
         await safe_http_request(
-            "POST", "https://first.test/start", transport=transport, json={"x": 1}
+            "POST", "https://first.test/start", transport=httpx.MockTransport(handler), json={"x": 1}
         )
+
+
+@pytest.mark.asyncio
+async def test_http_response_body_is_bounded():
+    async def handler(request):
+        return httpx.Response(200, content=b"x" * (MAX_RESPONSE_BYTES + 1), request=request)
+
+    with pytest.raises(ValueError, match="decoded bytes"):
+        await safe_http_request("GET", "https://public.test/large", transport=httpx.MockTransport(handler))

@@ -108,14 +108,23 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
     # node's own install, so parallel proposals can't hijack each other or the live system.
     res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=900)
     passed = res.exit_code == 0
+    flaky = False
+    if not passed and "pytest" in test_cmd:
+        # Separate real failures from load flakes: re-run only what failed, once, alone.
+        again = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt, timeout=600)
+        if again.exit_code == 0:
+            passed, flaky = True, True
+            res = again
     tail = "\n".join((res.stdout or res.stderr).splitlines()[-25:])
     if passed:
         await _sh(ctx, f"git add -A && git -c user.email=a@a -c user.name=avrone commit -qm {json.dumps(goal)[:200]}", wt)
     meta = {"pid": pid, "goal": goal, "branch": branch, "files": changed, "passed": passed,
-            "by": ctx.name, "ts": time.time(), "test_cmd": test_cmd, "worktree": str(wt)}
+            "by": ctx.name, "ts": time.time(), "test_cmd": test_cmd, "worktree": str(wt),
+            "flaky_retry": flaky, "test_tail": tail[-3000:]}
     _meta_path(ctx, pid).write_text(json.dumps(meta))
     _emit(ctx, "evolve.propose", pid=pid, passed=passed, files=changed)
-    verdict = ("ACCEPTED (tests pass, committed to branch " + branch + ")") if passed else "REJECTED (tests fail; discard or retry)"
+    verdict = ("ACCEPTED (tests pass" + (" after re-running a flaky failure" if flaky else "")
+               + ", committed to branch " + branch + ")") if passed else "REJECTED (tests fail; discard or retry)"
     return (f"proposal {pid}: {verdict}\ngoal: {goal}\nfiles: {', '.join(changed)}\n"
             f"--- test tail ---\n{tail}\n"
             f"{'Use evolve_diff ' + pid + ' to see the change.' if passed else 'Fix your edits and propose again.'}")

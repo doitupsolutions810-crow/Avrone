@@ -154,3 +154,22 @@ async def test_start_stop_heartbeat(mock_core, tmp_path):
     assert fm._task is not None
     await fm.stop()
     assert fm._task is None
+
+
+def test_status_of_all_freshness_bands(mock_core, tmp_path):
+    fm = FleetManager(mock_core, tmp_path)
+    fm.heartbeat_s = 10
+    now = time.time()
+    assert fm.status_of({"last_seen": now - 2}) == "online"
+    assert fm.status_of({"last_seen": now - 40}) == "degraded"
+    assert fm.status_of({"last_seen": now - 120}) == "offline"
+
+
+def test_verify_disabled_and_bad_timestamp(mock_core, tmp_path):
+    fm = FleetManager(mock_core, tmp_path)
+    fm.token = ""
+    with pytest.raises(PermissionError, match="fleet disabled"):
+        fm.verify("POST", "/api/fleet/run", b"{}", {})
+    fm.token = "secret123"
+    with pytest.raises(PermissionError, match="bad timestamp"):
+        fm.verify("POST", "/api/fleet/run", b"{}", {"x-avrone-ts": "not-a-time"})

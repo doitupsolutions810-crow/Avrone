@@ -61,3 +61,36 @@ def test_registration():
     reg = ToolRegistry()
     osint.register_osint_tools(reg)
     assert reg.get("osint_domain") and reg.get("osint_metrics")
+
+
+def test_metrics_skips_malformed_and_non_object_events(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    lines = [
+        "{broken-json",
+        json.dumps(None),
+        json.dumps([]),
+        json.dumps({"kind": None, "data": {"host": "ignored.example"}}),
+        json.dumps({"kind": "recon.dns", "data": []}),
+        json.dumps({"kind": "recon.dns", "data": {"host": "safe.example"}}),
+        json.dumps({"kind": "agent.done", "data": {"host": "ignored.example"}}),
+    ]
+    (runs / "mixed.jsonl").write_text("\n".join(lines))
+    out = run(osint.t_osint_metrics(ctx(tmp_path), {}))
+    assert "recon.dns: 2" in out
+    assert "safe.example: 1" in out
+    assert "ignored.example" not in out
+    assert "total probes: 2" in out
+
+
+def test_metrics_ignores_non_string_host_values(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    events = [
+        {"kind": "osint.domain", "data": {"host": ["not", "a", "hostname"]}},
+        {"kind": "osint.domain", "data": {"host": "  example.com  "}},
+    ]
+    (runs / "typed.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    out = run(osint.t_osint_metrics(ctx(tmp_path), {}))
+    assert "example.com: 1" in out
+    assert "not" not in out

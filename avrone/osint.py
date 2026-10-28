@@ -65,17 +65,29 @@ async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if log_dir.exists():
         for p in log_dir.glob("*.jsonl"):
             runs += 1
-            for line in p.read_text().splitlines():
+            try:
+                lines_in_file = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                # A single unreadable run log must not break the aggregate view.
+                continue
+            for line in lines_in_file:
                 try:
                     ev = json.loads(line)
-                except ValueError:
+                except (ValueError, TypeError):
                     continue
-                k = ev.get("kind", "")
-                if k.startswith(("recon.", "osint.")):
-                    kinds[k] += 1
-                    h = (ev.get("data") or {}).get("host")
-                    if h:
-                        hosts[h] += 1
+                # Corrupted or hand-edited logs may contain JSON scalars, lists,
+                # or malformed fields. Only aggregate Codex-shaped events.
+                if not isinstance(ev, dict):
+                    continue
+                k = ev.get("kind")
+                if not isinstance(k, str) or not k.startswith(("recon.", "osint.")):
+                    continue
+                kinds[k] += 1
+                data = ev.get("data")
+                if isinstance(data, dict):
+                    h = data.get("host")
+                    if isinstance(h, str) and h.strip():
+                        hosts[h.strip()] += 1
     if not kinds:
         return "no recon/OSINT activity recorded yet"
     lines = [f"recon/OSINT metrics across {runs} run logs", "", "by tool:"]

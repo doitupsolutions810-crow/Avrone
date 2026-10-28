@@ -227,3 +227,27 @@ def test_shutdown_noop_when_core_failed():
             await s.core()
         await s.shutdown()  # must not raise
     run(go())
+
+
+def test_bad_request_shapes_return_invalid_params():
+    s = server(FakeCore())
+    with pytest.raises(ms._RPCError) as e:
+        run(s.handle("tools/list", []))
+    assert e.value.code == -32602
+    with pytest.raises(ms._RPCError) as e:
+        run(s.handle("tools/call", {"name": "avrone_chat", "arguments": ["not", "an", "object"]}))
+    assert e.value.code == -32602
+
+
+def test_missing_task_does_not_boot_core():
+    count = {"factory": 0}
+
+    async def factory():
+        count["factory"] += 1
+        return FakeCore(), {}
+
+    s = ms.AvroneMCPServer(core_factory=factory)
+    res = run(s.call_tool("avrone_chat", {"task": "   "}))
+    assert res["isError"] is True
+    assert "required" in res["content"][0]["text"]
+    assert count["factory"] == 0

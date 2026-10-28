@@ -8,12 +8,31 @@ otherwise in a local subprocess confined to the workspace directory.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
+
+
+_SENSITIVE_ENV_PARTS = ("_TOKEN", "_API_KEY", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_PRIVATE_KEY")
+_SENSITIVE_ENV_NAMES = {
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "GITHUB_TOKEN", "GH_TOKEN", "DOCKER_AUTH_CONFIG", "NPM_TOKEN",
+}
+
+
+def _agent_safe_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Build the child-process environment without application credentials."""
+    env = dict(os.environ if source is None else source)
+    for key in tuple(env):
+        upper = key.upper()
+        if upper in _SENSITIVE_ENV_NAMES or any(part in upper for part in _SENSITIVE_ENV_PARTS):
+            env.pop(key, None)
+    return env
 
 
 @dataclass
@@ -48,7 +67,7 @@ class Runner:
 
     async def _exec(self, argv: list[str], cmd: str, timeout: int, cwd: Path | None = None) -> CommandResult:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(cwd) if cwd else None,
+            *argv, cwd=str(cwd) if cwd else None, env=_agent_safe_environment(),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -63,6 +82,12 @@ class LocalRunner(Runner):
     kind = "local"
 
     async def start(self) -> None:
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and os.getenv("AVRONE_ALLOW_ROOT_LOCAL", "").lower() not in {"1", "true", "yes"}:
+            raise RuntimeError(
+                "Refusing to run agent shell commands as host root. Use AVRONE_RUNNER=docker "
+                "or run AVRONE under an unprivileged account. AVRONE_ALLOW_ROOT_LOCAL=true "
+                "is a dangerous break-glass override for disposable isolated hosts only."
+            )
         self.workspace.mkdir(parents=True, exist_ok=True)
 
     async def run(self, cmd: str, timeout: int | None = None) -> CommandResult:

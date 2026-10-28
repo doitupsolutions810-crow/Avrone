@@ -2,7 +2,7 @@
 
     avrone-cli squad "build a todo app" [-n 4]
     avrone-cli chat  "what's in the workspace?"
-    avrone-cli deep  "is X true?" [--first-answer TEXT | --first-answer-file PATH] [-n 4]
+    avrone-cli deep  "is X true?" [--first-answer TEXT | --first-answer-file PATH] [-n 4] [--rounds 1..5]
     avrone-cli tools
     avrone-cli runs [--limit 20]
 
@@ -113,7 +113,9 @@ async def _run(args: argparse.Namespace) -> int:
             first = args.first_answer
             if args.first_answer_file:
                 first = Path(args.first_answer_file).read_text()
-            result = await core.deep(args.prompt, first, args.n)
+            # Only pass rounds when asked, so cores without the knob keep working.
+            kw = {"rounds": args.rounds} if args.rounds is not None else {}
+            result = await core.deep(args.prompt, first, args.n, **kw)
             text = result["report"]
         await asyncio.sleep(0)  # let the pump print the last events
         _write_json(args.json, result)
@@ -150,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--first-answer", metavar="TEXT", help="the answer to stress-test")
     g.add_argument("--first-answer-file", metavar="PATH", help="read the answer to stress-test from a file")
     d.add_argument("-n", type=int, default=None, help="number of reviewers (max 6)")
+    d.add_argument("--rounds", type=int, default=None,
+                   help="max deep waves (1-5, default AVRONE_DEEP_ROUNDS or 1); stops early on convergence")
     d.add_argument("--max-steps", type=int, default=None)
 
     sub.add_parser("tools", parents=[common], help="list registered tools")

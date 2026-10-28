@@ -11,11 +11,15 @@ Three stages, Grok Heavy style:
 
 "deep" mode is a second wave: given a question and a first answer (or a fresh
 squad answer), fixed reviewer angles stress-test and extend it, then a DEEP
-LEAD writes a verdict report.
+LEAD writes a verdict report. With rounds > 1 (arg, settings.deep_rounds or env
+AVRONE_DEEP_ROUNDS, capped at MAX_DEEP_ROUNDS) further waves stress-test the
+previous round's corrected answer, stopping early once a wave reports no new
+corrections (converged).
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import json
 import re
@@ -129,6 +133,83 @@ DEEP_ANGLES: list[dict[str, str]] = [
      "support or refute the first answer; open them and note what each says."},
 ]
 MAX_DEEP = len(DEEP_ANGLES)
+# Hard ceiling on successive deep waves, whatever the caller or env asks for.
+MAX_DEEP_ROUNDS = 5
+
+_NONE_RE = re.compile(r"^(none|n/?a|no corrections?|nothing)\b", re.I)
+
+
+def _md_section(report: str, title: str) -> str:
+    """Body of the '## <title>' section of a markdown report ('' if absent)."""
+    m = re.search(rf"^##\s*{re.escape(title)}\s*$(.*?)(?=^##\s|\Z)", report or "", re.S | re.M | re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _corrections(report: str) -> list[str]:
+    """Normalized correction points from a deep report's '## Corrections' section.
+
+    "None", "None found ...", "N/A" and blank lines are not corrections."""
+    out: list[str] = []
+    for line in _md_section(report, "Corrections").splitlines():
+        t = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s*", "", line).strip()
+        if not t or _NONE_RE.match(t):
+            continue
+        t = re.sub(r"\s+", " ", t).strip(" .;").lower()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+_FAILED_RE = re.compile(r"^\[[^\]\n]*? failed: ")
+_CONF_RE = re.compile(r"confidence\s*[:=]?\s*\**\s*(high|medium|med|low)\b", re.I)
+_CONF_LEVELS = ["Low", "Med", "High"]
+
+
+def _reviewer_failed(result: str) -> bool:
+    """A reviewer result that is a failure note (crash, timeout, model error) or empty."""
+    r = (result or "").strip()
+    return not r or bool(_FAILED_RE.match(r))
+
+
+def _lead_confidence(report: str) -> str | None:
+    m = _CONF_RE.search(_md_section(report, "Verdict") or report or "")
+    if not m:
+        return None
+    v = m.group(1).lower()
+    return "High" if v == "high" else "Low" if v == "low" else "Med"
+
+
+def deep_confidence(report: str, lead_ok: bool, ok: int, failed: int, converged: bool,
+                    rounds_run: int) -> str:
+    """Overall confidence for a deep run: the lead's own call, discounted for evidence gaps.
+
+    No lead or no usable review -> Low. Otherwise start from the final lead's
+    "Confidence:" (Med if absent) and drop one level each when at least half the
+    reviewers failed, and when a multi-round run hit its cap still finding corrections."""
+    if not lead_ok or ok == 0:
+        return "Low"
+    level = _CONF_LEVELS.index(_lead_confidence(report) or "Med")
+    if failed and failed >= ok:
+        level -= 1
+    if rounds_run > 1 and not converged:
+        level -= 1
+    return _CONF_LEVELS[max(0, level)]
+
+
+def resolve_deep_rounds(requested: int | None, settings: Any = None) -> int:
+    """Rounds to run: explicit arg, else settings.deep_rounds, else env AVRONE_DEEP_ROUNDS, else 1.
+
+    Always clamped to 1..MAX_DEEP_ROUNDS; junk values fall back to 1."""
+    raw: Any = requested
+    if raw is None:
+        raw = getattr(settings, "deep_rounds", None)
+    if raw is None:
+        raw = os.environ.get("AVRONE_DEEP_ROUNDS")
+    try:
+        r = int(raw) if raw not in (None, "") else 1
+    except (TypeError, ValueError):
+        r = 1
+    return max(1, min(r, MAX_DEEP_ROUNDS))
 
 
 @dataclass
@@ -361,12 +442,18 @@ class TrinityCore:
 
     # ------------------------------------------------------------ deep analysis
     async def deep(self, task: str, first_answer: str | None = None, n: int | None = None,
-                   run_id: str | None = None) -> dict[str, Any]:
-        """Second wave: stress-test and extend an existing answer to `task`."""
+                   run_id: str | None = None, rounds: int | None = None) -> dict[str, Any]:
+        """Stress-test and extend an existing answer to `task`, in up to `rounds` waves.
+
+        Round 1 is the classic second wave. Each later round reviews the previous round's
+        corrected answer (its Bottom line) and is told which corrections are already applied.
+        The loop stops early when a round's lead reports no correction not seen before."""
         run_id = run_id or uuid.uuid4().hex[:10]
-        n = max(1, min(n or self.settings.deep_squad_size, MAX_DEEP))
+        # n=None -> configured size; n<=0 -> zero reviewers (the answer is reported unreviewed).
+        n = max(0, min(self.settings.deep_squad_size if n is None else int(n), MAX_DEEP))
+        max_rounds = resolve_deep_rounds(rounds, self.settings)
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="deep", squad_size=n,
-                        has_first_answer=first_answer is not None)
+                        has_first_answer=first_answer is not None, max_rounds=max_rounds)
         first_run_id = None
         if first_answer is None or not str(first_answer).strip():
             first_run_id = f"{run_id}-wave1"
@@ -377,33 +464,121 @@ class TrinityCore:
                             answer=first_answer[:6000])
 
         angles = DEEP_ANGLES[:n]
-        self.codex.emit(run_id, "lead.plan", "DeepLead", squad_size=n)
-        self.codex.emit(run_id, "lead.planned", "DeepLead", subtasks=angles)
-        brief = f"QUESTION:\n{task}\n\nFIRST-WAVE ANSWER TO REVIEW:\n{first_answer}"
-        results = await self._gather_agents(run_id, [
-            self.run_agent(run_id, a["role"], brief, focus=a["focus"], system=DEEP_WORKER_PROMPT)
-            for a in angles])
-        reviews = "\n\n".join(f"### Reviewer {i + 1}: {a['role']}\n{r}"
-                               for i, (a, r) in enumerate(zip(angles, results)))
-        self.codex.emit(run_id, "lead.merge", "DeepLead", agents=len(results))
-        try:
-            report = await self._chat([
-                {"role": "system", "content": DEEP_LEAD_PROMPT},
-                {"role": "user", "content": f"{brief}\n\nSECOND-WAVE REVIEWS:\n{reviews}"},
-            ], lead=True, temperature=0.3, session=f"avrone:{run_id}:deeplead")
-        except LLMError as e:
-            report = f"Deep lead failed ({e}). Raw reviews:\n\n{reviews}"
-            self.codex.emit(run_id, "error", "DeepLead", message=str(e))
+        current = first_answer
+        seen: list[str] = []
+        history: list[dict[str, Any]] = []
+        all_agents: list[dict[str, Any]] = []
+        report = ""
+        converged = False
+        lead_ok = True
+        stop_reason = "cap"
+        total_ok = total_failed = 0
+        for rnd in range(1, max_rounds + 1):
+            self.codex.emit(run_id, "deep.round.start", "DeepLead", round=rnd, max_rounds=max_rounds)
+            if rnd == 1:
+                brief = f"QUESTION:\n{task}\n\nFIRST-WAVE ANSWER TO REVIEW:\n{current}"
+            else:
+                applied = "\n".join(f"- {c}" for c in seen) or "- None"
+                brief = (f"QUESTION:\n{task}\n\nCURRENT ANSWER TO REVIEW (after deep round {rnd - 1}):\n"
+                         f"{current}\n\nCORRECTIONS ALREADY APPLIED (do not repeat them):\n{applied}\n\n"
+                         "Find anything that is STILL wrong, missing or unsupported.")
+            report, results, lead_ok = await self._deep_wave(run_id, rnd, brief, angles, current)
+            all_agents += [{"role": a["role"], "focus": a["focus"], "result": r, "round": rnd,
+                            "ok": not _reviewer_failed(r)} for a, r in zip(angles, results)]
+            ok = sum(not _reviewer_failed(r) for r in results)
+            failed = len(results) - ok
+            total_ok += ok
+            total_failed += failed
+            found = _corrections(report) if lead_ok else []
+            new = [c for c in found if c not in seen]
+            seen += new
+            # A failed lead tells us nothing: not converged, and no basis for another round.
+            # Nothing reviewed is not the same as nothing wrong: no usable review never converges.
+            converged = lead_ok and ok > 0 and not new
+            history.append({"round": rnd, "report": report, "corrections": found, "new_corrections": new,
+                            "converged": converged, "lead_ok": lead_ok,
+                            "reviewers_ok": ok, "reviewers_failed": failed})
+            self.codex.emit(run_id, "deep.round.done", "DeepLead", round=rnd, corrections=len(found),
+                            new_corrections=new[:20], converged=converged, lead_ok=lead_ok,
+                            reviewers_ok=ok, reviewers_failed=failed, report=report[:6000])
+            if ok == 0:
+                # Nothing usable came back (no reviewers, or every one failed): another
+                # round would only repeat that, and the lead had nothing to weigh.
+                stop_reason = "no_reviews"
+                break
+            if converged:
+                stop_reason = "converged"
+                break
+            if not lead_ok:
+                stop_reason = "lead_failed"
+                break
+            current = _md_section(report, "Bottom line") or report
+        last = history[-1]
+        confidence = deep_confidence(report, lead_ok, last["reviewers_ok"], last["reviewers_failed"],
+                                     converged, len(history))
+        why = {"converged": f"converged: no new corrections in round {len(history)}",
+               "cap": "stopped at the round cap" + ("" if max_rounds == 1 else ", still finding corrections"),
+               "lead_failed": "stopped: the deep lead failed",
+               "no_reviews": "stopped: no usable reviews came back"}[stop_reason]
+        report = (f"{report.rstrip()}\n\n## Deep rounds\n"
+                  f"Rounds run: {len(history)} of {max_rounds} ({why}).\n"
+                  f"Reviewers: {total_ok} of {total_ok + total_failed} returned usable reviews.\n"
+                  f"Confidence: {confidence}")
+        self.codex.emit(run_id, "deep.done", "DeepLead", rounds_run=len(history), max_rounds=max_rounds,
+                        converged=converged, stop_reason=stop_reason, confidence=confidence,
+                        reviewers_ok=total_ok, reviewers_failed=total_failed)
         self.codex.emit(run_id, "run.done", "Trinity", answer=report)
         out: dict[str, Any] = {
             "run_id": run_id, "mode": "deep", "first_answer": first_answer, "report": report,
             # "answer" mirrors report so clients that read .answer keep working.
             "answer": report,
-            "agents": [{"role": a["role"], "focus": a["focus"], "result": r} for a, r in zip(angles, results)],
+            "agents": all_agents,
+            "rounds_run": len(history), "max_rounds": max_rounds, "converged": converged,
+            "stop_reason": stop_reason, "rounds": history, "confidence": confidence,
+            "reviewers_ok": total_ok, "reviewers_failed": total_failed,
         }
         if first_run_id:
             out["first_run_id"] = first_run_id
         return out
+
+    async def _deep_wave(self, run_id: str, rnd: int, brief: str,
+                         angles: list[dict[str, str]],
+                         current: str = "") -> tuple[str, list[str], bool]:
+        """One wave: reviewers in parallel (isolated failures), then the deep lead's report.
+
+        Returns (report, reviewer results, lead_ok). With no usable review the lead is not
+        called: the report says the answer stands unverified."""
+        self.codex.emit(run_id, "lead.plan", "DeepLead", squad_size=len(angles), round=rnd)
+        self.codex.emit(run_id, "lead.planned", "DeepLead", subtasks=angles, round=rnd)
+        results = await self._gather_agents(run_id, [
+            self.run_agent(run_id, a["role"], brief, focus=a["focus"], system=DEEP_WORKER_PROMPT)
+            for a in angles])
+        reviews = "\n\n".join(f"### Reviewer {i + 1}: {a['role']}\n{r}"
+                               for i, (a, r) in enumerate(zip(angles, results)))
+        if not any(not _reviewer_failed(r) for r in results):
+            why = "no reviewers were assigned" if not angles else "every reviewer failed"
+            self.codex.emit(run_id, "error", "DeepLead", message=f"round {rnd}: {why}")
+            report = (f"## Verdict\nUnverified: {why}. Confidence: Low\n\n## Corrections\nNone\n\n"
+                      f"## Additions\nNone\n\n## Counterpoints\nNone\n\n## Sources\nNone\n\n"
+                      f"## Bottom line\n{current}")
+            if reviews:
+                report += f"\n\n## Reviewer errors\n{reviews}"
+            return report, results, True
+        self.codex.emit(run_id, "lead.merge", "DeepLead", agents=len(results), round=rnd)
+        try:
+            report = await self._chat([
+                {"role": "system", "content": DEEP_LEAD_PROMPT},
+                {"role": "user", "content": f"{brief}\n\nSECOND-WAVE REVIEWS:\n{reviews}"},
+            ], lead=True, temperature=0.3,
+                session=f"avrone:{run_id}:deeplead" + (f":{rnd}" if rnd > 1 else ""))
+        except Exception as e:  # never throw away the reviews because the merge failed
+            msg = str(e) if isinstance(e, LLMError) else f"{type(e).__name__}: {e}"
+            self.codex.emit(run_id, "error", "DeepLead", message=msg)
+            return f"Deep lead failed ({msg}). Raw reviews:\n\n{reviews}", results, False
+        if not isinstance(report, str) or not report.strip():
+            self.codex.emit(run_id, "error", "DeepLead", message="empty deep lead reply")
+            return f"Deep lead failed (empty reply). Raw reviews:\n\n{reviews}", results, False
+        return report, results, True
 
     async def chat(self, task: str, run_id: str | None = None) -> dict[str, Any]:
         run_id = run_id or uuid.uuid4().hex[:10]

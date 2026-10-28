@@ -1,0 +1,15 @@
+# AVRONE in a container. It reaches OpenClaw on the host and spawns its agent
+# environment as sibling containers through the host's Docker socket.
+services:
+  avrone:
+    build: .
+    ports: ["8710:8710"]
+    env_file: .env
+    environment:
+      AVRONE_LLM_BASE_URL: ${AVRONE_LLM_BASE_URL:-http://host.docker.internal:18789/v1}
+      AVRONE_WORKSPACE: ${PWD}/workspace   # same path on host and in container, so bind mounts line up
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./workspace:${PWD}/workspace
+      - ./data:/srv/data
+    extra_hosts: ["host.docker.internal:host-gateway"]

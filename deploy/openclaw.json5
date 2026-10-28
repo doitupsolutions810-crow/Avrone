@@ -1,0 +1,11 @@
+// Merge into ~/.openclaw/openclaw.json so AVRONE can talk to your OpenClaw Gateway.
+{
+  gateway: {
+    auth: { mode: "token", token: "CHANGE-ME" },   // put the same token in AVRONE_LLM_API_KEY
+    http: {
+      endpoints: {
+        chatCompletions: { enabled: true },
+      },
+    },
+  },
+}

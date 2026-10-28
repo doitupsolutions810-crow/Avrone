@@ -34,12 +34,9 @@ if TYPE_CHECKING:
 
 async def t_osint_domain(ctx: "AgentContext", args: dict[str, Any]) -> str:
     """One structured public-footprint profile of a domain: DNS, CT subdomains, TLS, HTTP."""
-    if (d := recon._denied()):
-        return d
-    host, err = recon._host_arg(args)
+    # kill switch, target syntax, _reject_private and allowlist; refusals are audited
+    host, err = recon._gate(ctx, "osint_domain", args)
     if err:
-        return err
-    if (err := recon._reject_private(host)):  # belt and braces: never profile a private target
         return err
     report: dict[str, Any] = {"host": host}
     # Each section degrades independently: a failure in one does not sink the profile.
@@ -70,6 +67,7 @@ async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
     log_dir = data_dir / "runs"
     kinds = Counter()
     hosts = Counter()
+    refused = Counter()
     runs = 0
     if log_dir.exists():
         for p in log_dir.glob("*.jsonl"):
@@ -80,18 +78,24 @@ async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
                 except ValueError:
                     continue
                 k = ev.get("kind", "")
+                if k == recon.REFUSED_KIND:  # refusals are audited, not probes
+                    refused[(ev.get("data") or {}).get("tool", "?")] += 1
+                    continue
                 if k.startswith(("recon.", "osint.")):
                     kinds[k] += 1
                     h = (ev.get("data") or {}).get("host")
                     if h:
                         hosts[h] += 1
-    if not kinds:
+    if not kinds and not refused:
         return "no recon/OSINT activity recorded yet"
     lines = [f"recon/OSINT metrics across {runs} run logs", "", "by tool:"]
     lines += [f"  {k}: {n}" for k, n in kinds.most_common()]
     lines += ["", "top targets:"]
     lines += [f"  {h}: {n}" for h, n in hosts.most_common(10)]
     lines += ["", f"total probes: {sum(kinds.values())}"]
+    if refused:
+        lines += [f"refused by guardrails: {sum(refused.values())} "
+                  f"({', '.join(f'{t}: {n}' for t, n in refused.most_common())})"]
     return "\n".join(lines)
 
 

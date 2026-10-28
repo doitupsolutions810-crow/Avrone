@@ -31,7 +31,10 @@ AUDIT NOTE (v0.13 hardening) -- the guardrails, in the order every tool applies 
      http_fingerprint) resolve the name first and refuse if ANY address is non-public,
      then connect to the vetted address; http_fingerprint re-checks every redirect hop.
   6. Output caps: CT rows/names, DNS types/answers/answer length, SAN and header lengths.
-  7. Every call is written to the Codex action log.
+  7. Audit trail. Every call is written to the Codex action log: the tool's own event
+     (recon.tls / recon.http / recon.portscan / recon.ct / recon.dns / osint.domain),
+     with an "error" field when the probe failed, and a recon.refused event (tool,
+     target, reason) for every refusal by any gate above.
 No guardrail may be loosened; sweeps, ranges and multi-target calls are out of scope.
 """
 from __future__ import annotations
@@ -251,19 +254,39 @@ def _port_arg(args: dict[str, Any], default: int) -> tuple[int, str | None]:
     return port, None
 
 
+REFUSED_KIND = "recon.refused"
+
+
+def _refuse(ctx: "AgentContext", tool: str, target: Any, err: str) -> str:
+    """Audit a refusal (kill switch, syntax, private target, allowlist, authorization) and return it."""
+    _emit(ctx, REFUSED_KIND, tool=tool, target=str(target or "")[:200], reason=err[:300])
+    return err
+
+
+def _gate(ctx: "AgentContext", tool: str, args: dict[str, Any]) -> tuple[str, str | None]:
+    """The single entry gate every recon/OSINT tool passes: kill switch, target, private, allowlist."""
+    raw = args.get("host") or args.get("domain") or args.get("target") or ""
+    if (d := _denied()):
+        return "", _refuse(ctx, tool, raw, d)
+    host, err = _host_arg(args)
+    if not err:
+        err = _reject_private(host)
+    if err:
+        return host, _refuse(ctx, tool, host or raw, err)
+    return host, None
+
+
 class _Refused(Exception):
     """A guardrail tripped mid-call (resolution or redirect hop); message is the ERROR text."""
 
 
 async def t_tls_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    if (d := _denied()):
-        return d
-    host, err = _host_arg(args)
+    host, err = _gate(ctx, "tls_inspect", args)
     if err:
         return err
     port, perr = _port_arg(args, 443)
     if perr:
-        return perr
+        return _refuse(ctx, "tls_inspect", host, perr)
 
     def _get():
         # resolve + vet inside the worker thread, then connect to the vetted address only
@@ -278,8 +301,9 @@ async def t_tls_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
     try:
         cert, ver, cipher = await asyncio.to_thread(_get)
     except _Refused as e:
-        return str(e)
+        return _refuse(ctx, "tls_inspect", host, str(e))
     except (OSError, ssl.SSLError) as e:
+        _emit(ctx, "recon.tls", host=host, port=port, error=type(e).__name__)
         return f"ERROR: TLS to {host}:{port}: {type(e).__name__}: {e}"
     _emit(ctx, "recon.tls", host=host, port=port)
     subj = dict(x[0] for x in cert.get("subject", []))
@@ -300,18 +324,16 @@ async def t_tls_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_http_fingerprint(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    if (d := _denied()):
-        return d
-    host, err = _host_arg(args)
+    host, err = _gate(ctx, "http_fingerprint", args)
     if err:
         return err
     import httpx
     scheme = str(args.get("scheme", "https")).strip().lower()
     if scheme not in ("http", "https"):
-        return "ERROR: scheme must be http or https"
+        return _refuse(ctx, "http_fingerprint", host, "ERROR: scheme must be http or https")
     _, rerr = await _vet_resolved(host)
     if rerr:
-        return rerr
+        return _refuse(ctx, "http_fingerprint", host, rerr)
     url = f"{scheme}://{host}/"
 
     async def _guard_hop(request) -> None:
@@ -329,8 +351,9 @@ async def t_http_fingerprint(ctx: "AgentContext", args: dict[str, Any]) -> str:
                                      event_hooks={"request": [_guard_hop]}) as c:
             r = await c.get(url, headers={"user-agent": "AVRONE-recon/0.10"})
     except _Refused as e:
-        return str(e)
+        return _refuse(ctx, "http_fingerprint", host, str(e))
     except httpx.HTTPError as e:
+        _emit(ctx, "recon.http", host=host, error=type(e).__name__)
         return f"ERROR: HTTP to {url}: {type(e).__name__}: {e}"
     _emit(ctx, "recon.http", host=host, status=r.status_code)
     interesting = ["server", "x-powered-by", "via", "x-cache", "cf-ray", "x-amz-cf-id", "content-type",
@@ -349,27 +372,28 @@ async def t_http_fingerprint(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_port_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    raw = args.get("host") or args.get("domain") or args.get("target") or ""
     if (d := _denied()):
-        return d
+        return _refuse(ctx, "port_scan", raw, d)
     if not bool(args.get("authorized")):
-        return ('ERROR: port_scan needs {"authorized": true} to confirm you own or are authorized to scan '
-                "this host. Scanning third-party hosts is abuse and is refused.")
-    host, err = _host_arg(args)
+        return _refuse(ctx, "port_scan", raw,
+                       'ERROR: port_scan needs {"authorized": true} to confirm you own or are authorized to scan '
+                       "this host. Scanning third-party hosts is abuse and is refused.")
+    host, err = _gate(ctx, "port_scan", args)
     if err:
         return err
     ports = args.get("ports") or COMMON_PORTS
     if not isinstance(ports, list) or len(ports) > 32:
-        return "ERROR: ports must be a list of at most 32 integers"
+        return _refuse(ctx, "port_scan", host, "ERROR: ports must be a list of at most 32 integers")
     try:
         ports = sorted({int(p) for p in ports})
     except (TypeError, ValueError):
-        return "ERROR: ports must be integers"
+        return _refuse(ctx, "port_scan", host, "ERROR: ports must be integers")
     if any(p < 1 or p > 65535 for p in ports):
-        return "ERROR: ports must be between 1 and 65535"
-
+        return _refuse(ctx, "port_scan", host, "ERROR: ports must be between 1 and 65535")
     addr, rerr = await _vet_resolved(host)
     if rerr:
-        return rerr
+        return _refuse(ctx, "port_scan", host, rerr)
 
     async def probe(p: int) -> tuple[int, bool]:
         try:
@@ -393,9 +417,7 @@ async def t_port_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_cert_transparency(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    if (d := _denied()):
-        return d
-    host, err = _host_arg(args)
+    host, err = _gate(ctx, "cert_transparency", args)
     if err:
         return err
     import httpx
@@ -406,8 +428,10 @@ async def t_cert_transparency(ctx: "AgentContext", args: dict[str, Any]) -> str:
             r.raise_for_status()
             rows = r.json()
     except (httpx.HTTPError, ValueError) as e:
+        _emit(ctx, "recon.ct", host=host, error=type(e).__name__)
         return f"ERROR: crt.sh lookup for {host}: {type(e).__name__}: {e}"
     if not isinstance(rows, list):
+        _emit(ctx, "recon.ct", host=host, error="bad_shape")
         return f"ERROR: crt.sh lookup for {host}: unexpected response shape"
     names: set[str] = set()
     for row in rows[:CT_MAX_ROWS]:
@@ -431,16 +455,14 @@ async def t_cert_transparency(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_dns_enum(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    if (d := _denied()):
-        return d
-    host, err = _host_arg(args)
+    host, err = _gate(ctx, "dns_enum", args)
     if err:
         return err
     import httpx
     types = args.get("types") or ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA"]
     if not isinstance(types, list) or not all(isinstance(t, str) and re.fullmatch(r"[A-Za-z0-9]{1,10}", t)
                                               for t in types):
-        return 'ERROR: types must be a list of record type names, e.g. ["A", "MX"]'
+        return _refuse(ctx, "dns_enum", host, 'ERROR: types must be a list of record type names, e.g. ["A", "MX"]')
     out = [f"DNS for {host}"]
     try:
         async with httpx.AsyncClient(timeout=10) as c:
@@ -453,6 +475,7 @@ async def t_dns_enum(ctx: "AgentContext", args: dict[str, Any]) -> str:
                        if isinstance(a, dict) and a.get("data")]
                 out.append(f"  {t}: {', '.join(ans[:DNS_MAX_ANSWERS]) if ans else '-'}")
     except (httpx.HTTPError, ValueError) as e:
+        _emit(ctx, "recon.dns", host=host, error=type(e).__name__)
         return f"ERROR: DNS lookup for {host}: {type(e).__name__}: {e}"
     _emit(ctx, "recon.dns", host=host)
     return "\n".join(out)

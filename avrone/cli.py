@@ -3,6 +3,7 @@
     avrone-cli squad "build a todo app" [-n 4]
     avrone-cli chat  "what's in the workspace?"
     avrone-cli deep  "is X true?" [--first-answer TEXT | --first-answer-file PATH] [-n 4] [--rounds 1..5]
+    (squad and deep take --checkpoint PATH to record progress and resume an interrupted run)
     avrone-cli tools
     avrone-cli runs [--limit 20]
     avrone-cli doctor [--strict]   (offline hosting preflight; starts nothing)
@@ -105,8 +106,10 @@ async def _run(args: argparse.Namespace) -> int:
         if not args.quiet:
             q = core.codex.subscribe()
             pump = asyncio.create_task(_pump(q))
+        # Only pass checkpoint when asked, so cores without the knob keep working.
+        ck = {"checkpoint": args.checkpoint} if getattr(args, "checkpoint", None) else {}
         if args.cmd == "squad":
-            result = await core.squad(args.prompt, args.n)
+            result = await core.squad(args.prompt, args.n, **ck)
             text = result["answer"]
         elif args.cmd == "chat":
             result = await core.chat(args.prompt)
@@ -118,6 +121,7 @@ async def _run(args: argparse.Namespace) -> int:
             # Only pass rounds when asked, so cores without the knob keep working.
             rounds = clamp_deep_rounds(args.rounds)
             kw = {"rounds": rounds} if rounds is not None else {}
+            kw.update(ck)
             result = await core.deep(args.prompt, first, args.n, **kw)
             text = result["report"]
         await asyncio.sleep(0)  # let the pump print the last events
@@ -144,6 +148,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("prompt")
     s.add_argument("-n", type=int, default=None, help="squad size")
     s.add_argument("--max-steps", type=int, default=None)
+    s.add_argument("--checkpoint", metavar="PATH", default=None,
+                   help="record progress to PATH; re-run with the same task and PATH to resume")
 
     c = sub.add_parser("chat", parents=[common], help="one tool-using agent")
     c.add_argument("prompt")
@@ -158,6 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--rounds", type=int, default=None,
                    help="max deep waves (1-5, default AVRONE_DEEP_ROUNDS or 1); stops early on convergence")
     d.add_argument("--max-steps", type=int, default=None)
+    d.add_argument("--checkpoint", metavar="PATH", default=None,
+                   help="record progress to PATH; re-run with the same task and PATH to resume")
 
     sub.add_parser("tools", parents=[common], help="list registered tools")
     r = sub.add_parser("runs", parents=[common], help="list recent runs")

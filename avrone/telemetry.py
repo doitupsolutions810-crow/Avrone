@@ -41,6 +41,8 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     errors = 0
     pending_calls: dict[tuple[str, str], tuple[str, float]] = {}
     tool_latency: dict[str, list[float]] = defaultdict(list)
+    throttles: list[dict[str, Any]] = []
+    resumes = 0
 
     for ev in _iter_events(core.codex.log_dir, since):
         rid, kind, agent, data, ts = ev.get("run_id"), ev.get("kind"), ev.get("agent", ""), ev.get("data", {}), ev.get("ts", 0)
@@ -64,6 +66,11 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
                 tool_latency[tool].append(ts - started[1])
         elif kind == "error":
             errors += 1
+        elif kind == "governor.throttle":
+            throttles.append({"run_id": rid, "ts": ts, "workers": data.get("workers"),
+                              "parallel": data.get("parallel"), "reason": data.get("reason")})
+        elif kind == "checkpoint.resume":
+            resumes += 1
 
     done = [r for r in runs.values() if r["end"]]
     durations = sorted(r["end"] - r["start"] for r in done)
@@ -83,7 +90,22 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
                   for t, c in tool_calls.most_common()},
         "errors": errors,
         "recent_runs": sorted(runs.values(), key=lambda r: r["start"], reverse=True)[:10],
+        "node": node_health(core),
+        "resilience": {"throttles": len(throttles), "checkpoint_resumes": resumes,
+                       "recent_throttles": sorted(throttles, key=lambda t: t["ts"], reverse=True)[:5]},
     }
+
+
+def node_health(core: "TrinityCore") -> dict[str, Any]:
+    """Governor state + this node's health (load, memory, disk, temperature). Never raises."""
+    try:
+        gov = getattr(core, "governor", None)
+        if gov is None:
+            from .governor import Governor
+            gov = Governor.from_settings(core.settings)
+        return gov.state()
+    except Exception as e:
+        return {"enabled": False, "error": f"{type(e).__name__}: {e}"[:200]}
 
 
 def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:

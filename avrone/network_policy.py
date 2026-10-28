@@ -152,6 +152,8 @@ async def safe_http_request(
     method = method.upper()
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= 300:
         raise ValueError("HTTP timeout must be between 0 and 300 seconds")
+    if isinstance(max_redirects, bool) or not isinstance(max_redirects, int) or not 0 <= max_redirects <= MAX_REDIRECTS:
+        raise ValueError(f"max_redirects must be an integer between 0 and {MAX_REDIRECTS}")
     current_headers = dict(headers or {})
     if len(current_headers) > MAX_HEADERS:
         raise ValueError(f"HTTP request has too many headers (maximum {MAX_HEADERS})")
@@ -220,13 +222,27 @@ async def safe_http_request(
                     continue
 
                 chunks = bytearray()
-                async for chunk in response.aiter_bytes():
+                iterator = response.aiter_bytes().__aiter__()
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError("HTTP request total deadline exhausted")
+                    try:
+                        chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        raise ValueError("HTTP request total deadline exhausted") from None
                     if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
                         raise ValueError(f"HTTP response exceeds {MAX_RESPONSE_BYTES} decoded bytes")
                     chunks.extend(chunk)
+                output_headers = {
+                    key: value for key, value in response.headers.items()
+                    if key.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
+                }
                 return httpx.Response(
                     response.status_code,
-                    headers=response.headers,
+                    headers=output_headers,
                     content=bytes(chunks),
                     request=response.request,
                 )

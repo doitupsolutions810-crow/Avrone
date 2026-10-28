@@ -81,6 +81,18 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.13: Full squad hardening round (coverage report enabled; tests pending)
+
+Four independent review lanes added two primary changes each, followed by a Lead integration pass:
+
+- **Coverage lane:** offline gateway failover/fallback parsing cases and presence-directory/name-resolution boundary cases.
+- **Tooling lane:** text_diff (bounded unified text diff) and json_inspect (strict JSON validation and bounded structure summary).
+- **Skills lane:** code-review and release-verification playbooks, with loader/discovery tests.
+- **Robustness lane:** Codex run/replay now tolerates corrupt JSONL records; JobQueue validates enqueue inputs and reports unknown jobs as missing.
+- **Release pipeline:** the development extra includes pytest-cov, and CI emits a whole-package coverage report. avrone.zip remains gated on the Python test matrix.
+
+**Validation status:** pending. The connected GitHub Actions runs have been terminating without assigning a runner or executing a test step. No test-passing claim is made for this candidate.
+
 ## v0.12: Hardening + coverage round (66% -> 78%)
 
 - OSINT metrics now ignore malformed JSONL records and invalid event shapes instead of crashing, while preserving valid per-tool and top-target counts.

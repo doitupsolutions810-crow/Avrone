@@ -27,3 +27,12 @@ After each meaningful version change:
 ## Current release: v0.12.0
 
 The main v0.12.0 hardening commit fixes DNS-label allowlist matching, validates and de-duplicates scan ports, clamps MCP squad size to the published schema, and adds offline tests for CLI, MCP, legacy LLM and recon. The follow-on edge round makes OSINT log aggregation tolerant of malformed event lines, strengthens MCP input validation, adds fleet boundary/status tests, and configures the source ZIP artifact. Validation status must remain pending until a test gate completes successfully.
+
+## v0.13 full-squad round
+
+- Coverage lane: gateway fallback parsing/permanent failover/malformed-response edges and presence cap/route/ambiguity/render behavior.
+- New deterministic tools: bounded unified text diff and strict JSON shape summary; both are registered as built-ins and have input/output limits.
+- New skills: code review/regression analysis and release verification; both are discovered by the existing skill loader.
+- Robustness fixes: ignore malformed/non-object Codex log records and avoid crashes in run listing/replay; validate JobQueue kind/payload/attempt limits and report a missing job id without mutating records.
+- CI now requests a package-wide term-missing coverage report through pytest-cov.
+- Validation must stay pending until the exact candidate commit executes the full suite on an assigned runner. A workflow configuration or runnerless failure is not a passing test.

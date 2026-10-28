@@ -383,3 +383,41 @@ def test_recent_calls_ring_is_bounded(tmp_path):
         ctx.recent_calls.append(("think", {"thought": i}, "ok"))
     assert len(ctx.recent_calls) == ctxspawn.RECENT_CALLS
     assert ctx.recent_calls[0][1] == {"thought": 12}
+
+
+# ------------------------------------------------------------------ edges
+def test_share_dir_ignored_without_agent_fs(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_FS", "0")
+    llm = RoleLLM({"Root": [call("spawn", role="Kid", task="t", share_dir=True)]})
+    core = _core(tmp_path, llm)
+    run(core.run_agent("r1", "Root", "x"))
+    ev = _spawn_event(core, "Kid")["data"]
+    assert ev["share_dir"] is False and ev["context_mode"] == "full"
+    assert "## Files in parent agent dir" not in llm.system("Kid")
+
+
+def test_memory_and_file_sections_are_redacted_and_bounded(tmp_path):
+    llm = RoleLLM({"Root": [call("spawn", role="Kid", task="t")]})
+    core = _core(tmp_path, llm)
+    store = memstore.MemoryStore(core.settings.data_dir / "memory.jsonl")
+    store.save("root", "creds", "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123")
+    for i in range(30):
+        store.save("root", f"k{i:02d}", "v" * 1000)
+    d = agentfs.agent_dir(core.settings.workspace, "root")
+    for i in range(60):
+        (d / f"f{i:02d}.txt").write_text("x")
+    run(core.run_agent("r1", "Root", "x"))
+    sysmsg = llm.system("Kid")
+    assert "ghp_abc" not in sysmsg
+    mem = sysmsg.split("## Parent memory (read-only snapshot)\n")[1].split("\n## ")[0]
+    assert len([ln for ln in mem.splitlines() if ln.startswith("- ")]) == ctxspawn.MEMORY_ENTRIES
+    assert "- k29:" in mem and "- k00:" not in mem  # newest first
+    files = sysmsg.split("## Files in parent agent dir\n")[1].splitlines()
+    assert files[ctxspawn.DIR_FILES] == "..." and len(files) <= ctxspawn.DIR_FILES + 2
+
+
+def test_spawn_tool_schema_accepts_new_args():
+    r = builtin_registry()
+    assert r.check("spawn", {"task": "t", "context": "summary", "focus": "f", "share_dir": True}) is None
+    assert r.check("spawn", {"task": "t", "share_dir": "yes"})[0] == "bad_args"
+    assert "share_dir" in r.get("spawn").args_doc

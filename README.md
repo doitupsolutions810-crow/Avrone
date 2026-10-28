@@ -81,6 +81,10 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.18
+
+- **ctxspawn** — `spawn` now hands the child a ContextPack: `context` = `full` (default: the run's original task, a lineage chain root -> ... -> parent, the parent's role/focus, squad sibling roles/focuses, the parent's last 8 tool calls/results, a read-only snapshot of its memory namespace and the file names in its agent dir) | `summary` (task + lineage + a compact digest) | `none` (old behaviour); optional `focus` and `share_dir` (child may read, never write, the parent's agent dir under a confined `parent/` prefix in read_file/list_files/search_files/diff_files). Packs are capped by `AVRONE_SPAWN_CONTEXT_CHARS` (default 12000, max 64000; deterministic truncation keeps task + lineage first) and secret-redacted (tokens, keys, Authorization headers, `*_TOKEN/*_KEY/*_SECRET` values). Children get their own dir `<parent id>-<role>`; lineage lives on AgentContext and in the `agent.spawn` CodeX event (`context_mode`, `context_chars`, `lineage`, `share_dir`); `AVRONE_MAX_AGENTS_PER_RUN` (default 64) caps agents per run alongside the unchanged depth limit.
+
 ## v0.17: Squad round 4 + edgepack — unified agent fs, batched + schema-checked tool calls, health-routed edge offload, API/fleet checkpoints, container-hosted agent homes with thermal migration — 1586 tests
 
 Five lanes in parallel (git worktrees, two green commits each), Lead merge + fixes (collision-free fleet checkpoint keys; one shared node-health block for routing and migration). Everything new is off by default except fsunify and toolcall.

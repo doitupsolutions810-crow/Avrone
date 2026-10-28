@@ -19,7 +19,7 @@ def test_agent_environment_removes_application_credentials():
     assert safe["PATH"] == "/usr/bin"
     assert safe["HOME"] == "/tmp/agent"
     assert safe["LANG"] == "C.UTF-8"
-    assert not set(source) - {"PATH", "HOME", "LANG"} & set(safe)
+    assert not ((set(source) - {"PATH", "HOME", "LANG"}) & set(safe))
 
 
 @pytest.mark.asyncio

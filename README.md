@@ -81,6 +81,10 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.18
+
+- **edgecases** — agent spawning / per-agent env / fleet edge cases (tests/test_edgecases_v018.py, 27 tests): concurrent live agents of one run whose roles sanitize alike ("Builder!" / "Builder?", or "Fact-Checker" / "FactChecker" for memory) now get distinct homes and memory namespaces (`-2`, `-3` suffix; the first keeps the plain id, so persistence across runs and sequential re-spawns is unchanged); `core.active` records each agent's `agent_id`, so thermal migration never moves the home of a working agent whose `agent_id` differs from its role; messages that land during an agent's last turn are audited as `agent.message_dropped` instead of vanishing; a deep checkpoint resumed after `squad_size` changed no longer mixes cached reviews of the old first-wave answer with the new one; memstore appends after a torn (crash mid-append) last line no longer lose the new record; `remote_broadcast` normalizes routes before de-duplicating (`good/`, `/good`, ` good `) and drops empty targets instead of turning them into an `auto` pick. Pinned as safe: batched spawns with `max_parallel=1` at depth 2 (no deadlock), squad cancellation (no ghosts, inbox cleared, no failed step checkpointed), quota races, self/A→B→A routes and hops at the limit, multi-process memstore writers, empty/zero-memory/at-quota agent packs, unicode/huge checkpoint tasks.
+
 ## v0.17: Squad round 4 + edgepack — unified agent fs, batched + schema-checked tool calls, health-routed edge offload, API/fleet checkpoints, container-hosted agent homes with thermal migration — 1586 tests
 
 Five lanes in parallel (git worktrees, two green commits each), Lead merge + fixes (collision-free fleet checkpoint keys; one shared node-health block for routing and migration). Everything new is off by default except fsunify and toolcall.

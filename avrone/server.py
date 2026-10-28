@@ -229,6 +229,18 @@ async def fleet_jobs(job_id: str | None = None, x_admin_token: str | None = Head
     return await f.queue.stats()
 
 
+@app.post("/api/fleet/memory")
+async def fleet_memory(request: Request):
+    """Inbound memory sync from a child node: same signed gateway as run/message (kind "memory")."""
+    payload = await _gateway(request, "memory")
+    try:
+        return _fleet().receive_memory(payload)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+
+
 @app.post("/api/fleet/run")
 async def fleet_run(request: Request):
     payload = await _gateway(request, "run")

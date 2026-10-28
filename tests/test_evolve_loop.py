@@ -202,3 +202,93 @@ def test_meta_tags_loop_iterations(env):
         m = json.loads((env.tmp / "d" / "evolve" / f"{a['pid']}.json").read_text())
         assert m["loop_id"] == res["loop_id"] and m["iteration"] == a["iteration"]
     assert [x["pid"] for x in evolve.list_accepted(ctx.core.settings)] == [res["accepted"]["pid"]]
+
+
+# ---- observability + duration controls --------------------------------------------------------
+
+def test_per_iteration_timing_in_meta_codex_and_loop_json(env):
+    events = []
+    ctx = mkctx(env.tmp, FakeRunner(clock=env.clock, step=7), events)
+    res = run(evolve.evolve_loop(ctx, "g", candidates=[BAD, GOOD], time_budget_s=100, test_cmd=GATE))
+    assert [a["duration_s"] for a in res["attempts"]] == [7, 7] and res["duration_s"] == 14
+    for a in res["attempts"]:
+        m = json.loads((env.tmp / "d" / "evolve" / f"{a['pid']}.json").read_text())
+        assert m["duration_s"] == 7
+    it_events = [d for k, d in events if k == "evolve.iteration"]
+    assert [(e["iteration"], e["outcome"], e["duration_s"]) for e in it_events] == \
+        [(0, "rejected", 7), (1, "accepted", 7)]
+    assert all(e["loop_id"] == res["loop_id"] for e in it_events)
+    (loop_ev,) = [d for k, d in events if k == "evolve.loop"]
+    assert loop_ev["stopped"] == "accepted" and loop_ev["duration_s"] == 14
+    lp = json.loads((env.tmp / "d" / "evolve" / "loops" / f"{res['loop_id']}.json").read_text())
+    assert lp["status"] == "done" and lp["stopped"] == "accepted" and lp["duration_s"] == 14
+    assert [(i["outcome"], i["duration_s"]) for i in lp["iterations"]] == [("rejected", 7), ("accepted", 7)]
+    assert lp["accepted"]["pid"] == res["accepted"]["pid"]
+
+
+def test_loop_json_written_while_running(env):
+    ctx = mkctx(env.tmp, FakeRunner())
+    snaps = []
+
+    def fn(i, prev):
+        (lp,) = evolve.list_loops(ctx.core.settings)
+        snaps.append((lp["status"], len(lp["iterations"])))
+        return BAD
+    run(evolve.evolve_loop(ctx, "g", edits_fn=fn, max_iters=2, test_cmd=GATE))
+    assert snaps == [("running", 0), ("running", 1)]
+
+
+def test_evolve_status_and_list(env):
+    ctx = mkctx(env.tmp, FakeRunner(clock=env.clock, step=3))
+    assert "no evolve loops yet" in run(evolve.t_evolve_status(ctx, {}))
+    res = run(evolve.evolve_loop(ctx, "fix value", candidates=[BAD, BAD, GOOD], max_iters=5, test_cmd=GATE))
+    st = run(evolve.t_evolve_status(ctx, {}))
+    assert res["loop_id"] in st and "iters=3/5" in st and "accepted=1" in st and "rejected=2" in st
+    assert st.count("REJECTED") == 2 and st.count("ACCEPTED") == 1 and "3.00s" in st
+    assert f"on branch evolve/{res['accepted']['pid']}" in st
+    assert res["loop_id"] in run(evolve.t_evolve_status(ctx, {"loop_id": res["loop_id"]}))
+    assert run(evolve.t_evolve_status(ctx, {"loop_id": "nope"})).startswith("ERROR")
+    ls = run(evolve.t_evolve_list(ctx, {}))
+    assert "loops:" in ls and f"loop={res['loop_id']}#2" in ls and "3.0s" in ls
+    assert ls.count("[FAIL]") == 2 and ls.count("[PASS]") == 1
+    assert "done/accepted" in ls
+
+
+def test_env_max_iters_default_and_ceiling(env, monkeypatch):
+    monkeypatch.setenv("AVRONE_EVOLVE_MAX_ITERS", "2")
+    assert evolve.loop_limits() == (2, evolve.DEFAULT_TIME_BUDGET_S)
+    assert evolve.loop_limits(max_iters=1)[0] == 1           # agent may ask for fewer
+    assert evolve.loop_limits(max_iters=9)[0] == 2           # never more than the node allows
+    ctx = mkctx(env.tmp, FakeRunner())
+    res = run(evolve.evolve_loop(ctx, "g", edits_fn=lambda i, p: BAD, max_iters=9, test_cmd=GATE))
+    assert res["stopped"] == "max_iters" and len(res["attempts"]) == 2
+    monkeypatch.setenv("AVRONE_EVOLVE_MAX_ITERS", "500")      # env can't lift the hard cap
+    assert evolve.loop_limits()[0] == evolve.MAX_ITERS_CAP
+    monkeypatch.setenv("AVRONE_EVOLVE_MAX_ITERS", "junk")     # garbage -> built-in default
+    assert evolve.loop_limits()[0] == evolve.DEFAULT_MAX_ITERS
+
+
+def test_env_time_budget_default_and_ceiling(env, monkeypatch):
+    monkeypatch.setenv("AVRONE_EVOLVE_TIME_BUDGET", "50")
+    assert evolve.loop_limits()[1] == 50
+    assert evolve.loop_limits(time_budget_s=20)[1] == 20
+    assert evolve.loop_limits(time_budget_s=1000)[1] == 50
+    monkeypatch.setenv("AVRONE_EVOLVE_TIME_BUDGET", "99999")
+    assert evolve.loop_limits()[1] == evolve.TIME_BUDGET_CAP_S
+    monkeypatch.setenv("AVRONE_EVOLVE_TIME_BUDGET", "-5")
+    assert evolve.loop_limits()[1] == evolve.DEFAULT_TIME_BUDGET_S
+    # budget from env actually stops the loop: 30s/iteration against a 50s env budget -> 2 iters
+    monkeypatch.setenv("AVRONE_EVOLVE_TIME_BUDGET", "50")
+    ctx = mkctx(env.tmp, FakeRunner(clock=env.clock, step=30))
+    res = run(evolve.evolve_loop(ctx, "g", edits_fn=lambda i, p: BAD, max_iters=10, test_cmd=GATE))
+    assert res["stopped"] == "time_budget" and len(res["attempts"]) == 2
+    lp = evolve.list_loops(ctx.core.settings)[-1]
+    assert lp["time_budget_s"] == 50 and lp["stopped"] == "time_budget" and lp["duration_s"] == 60
+
+
+def test_single_propose_records_duration(env):
+    ctx = mkctx(env.tmp, FakeRunner(clock=env.clock, step=4))
+    out = run(evolve.t_evolve_propose(ctx, {"goal": "g", "edits": GOOD, "test_cmd": GATE}))
+    assert "ACCEPTED" in out
+    m = json.loads((env.tmp / "d" / "evolve" / f"{out.split()[1].rstrip(':')}.json").read_text())
+    assert m["duration_s"] == 4 and "loop_id" not in m

@@ -530,3 +530,5 @@ def register_extra_tools(registry) -> None:
     """Add every extra tool to `registry` (an avrone.tools.ToolRegistry)."""
     for name, desc, args_doc, fn in EXTRA_TOOLS:
         registry.register(Tool(name, desc, args_doc, fn, source="builtin"))
+    from .netdiag import register_net_tools
+    register_net_tools(registry)

@@ -81,6 +81,18 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.4: Network diagnostics tools
+
+Real, bounded networking from AVRONE's own host (one host and port per call, no port sweeping):
+
+- `dns_lookup`: A/AAAA/MX/TXT/NS/CNAME/SOA/PTR/CAA/SRV via the system resolver plus DNS-over-HTTPS
+- `tcp_ping`: TCP connect latency to host:port, no root or ICMP needed
+- `traceroute`: hop-by-hop route via mtr, traceroute or tracepath (bundled in the Docker image)
+- `rdap_whois`: registrar, dates, nameservers or IP network owner via RDAP
+- `ip_geo`: approximate city, ASN and ISP for a public IP or hostname (blank = AVRONE's own)
+
+Ask a squad things like "trace the route to github.com and tell me who runs each network".
+
 ## Quick start
 
 ```bash

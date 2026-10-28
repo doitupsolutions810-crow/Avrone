@@ -68,3 +68,21 @@ def test_deny(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_SELF_EVOLVE", "deny")
     c = mkctx(tmp_path, tmp_path / "repo")
     assert "disabled" in run(evolve.t_evolve_propose(c, {"goal": "g", "edits": [{"path": "a", "content": "b"}]}))
+
+
+def test_parallel_ids_unique_and_install_untouched(tmp_path, monkeypatch):
+    import avrone
+    before = avrone.__file__
+    monkeypatch.setenv("AVRONE_REPO_DIR", str(repo(tmp_path)))
+    c = mkctx(tmp_path, tmp_path / "repo")
+    async def both():
+        e = [{"path": "pkg/a.py", "content": "A = 1\n"}]
+        return await asyncio.gather(evolve.t_evolve_propose(c, {"goal": "a", "edits": e}),
+                                    evolve.t_evolve_propose(c, {"goal": "b", "edits": e}))
+    outs = run(both())
+    ids = {o.split()[1] for o in outs}
+    assert len(ids) == 2 and all("ACCEPTED" in o for o in outs)
+    import subprocess, sys
+    now = subprocess.run([sys.executable, "-c", "import avrone;print(avrone.__file__)"],
+                         capture_output=True, text=True).stdout.strip()
+    assert now == before

@@ -91,7 +91,8 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not goal or not isinstance(edits, list) or not edits:
         return ('ERROR: give {"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}. '
                 "Each edit replaces that file's whole contents with content.")
-    pid = SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}")[:48]
+    import uuid
+    pid = SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
     wt, branch = await _ensure_worktree(ctx, pid)
     changed = []
     for e in edits:
@@ -103,8 +104,9 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
         p.write_text(str(e.get("content", "")))
         changed.append(str(e["path"]))
     test_cmd = str(args.get("test_cmd") or os.getenv("AVRONE_EVOLVE_TEST_CMD") or "python -m pytest -q")
-    # Make sure the package is importable from the worktree, then test.
-    res = await _sh(ctx, f"python -m pip install -q -e '.[dev]' >/dev/null 2>&1; {test_cmd} 2>&1", wt, timeout=900)
+    # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
+    # node's own install, so parallel proposals can't hijack each other or the live system.
+    res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=900)
     passed = res.exit_code == 0
     tail = "\n".join((res.stdout or res.stderr).splitlines()[-25:])
     if passed:

@@ -109,16 +109,26 @@ _INSTALL_RE = __import__("re").compile(
 
 
 async def t_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    p = _safe_path(ctx.core.runner.workspace, str(args.get("path", "")))
+    from . import fsunify
+    p = fsunify.resolve(ctx, args.get("path", ""), "read_file").path
     if not p.exists():
         return f"ERROR: {args.get('path')} not found"
     return p.read_text(errors="replace")[:12000]
 
 
 async def t_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    p = _safe_path(ctx.core.runner.workspace, str(args.get("path", "")))
+    from . import fsunify
+    r = fsunify.resolve(ctx, args.get("path", ""), "write_file")
+    p = r.path
+    if r.in_agent:
+        from .agentfs_tools import quota_write
+        size, used, quota = quota_write(ctx, r.root, p, str(args.get("content", "")).encode("utf-8"),
+                                        tool="write_file")
+        return f"wrote {fsunify.display(ctx, p)} ({size} bytes; agent dir {used}/{quota} bytes)"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(str(args.get("content", "")))
+    if r.unified:
+        return f"wrote {fsunify.display(ctx, p)} ({p.stat().st_size} bytes)"
     return f"wrote {p.relative_to(ctx.core.runner.workspace.resolve())} ({p.stat().st_size} bytes)"
 
 

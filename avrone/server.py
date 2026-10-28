@@ -131,7 +131,13 @@ async def _verified(request: Request) -> dict:
     except PermissionError as e:
         raise HTTPException(401, str(e)) from None
     import json as _json
-    return _json.loads(body or b"{}")
+    try:
+        payload = _json.loads(body or b"{}")
+    except ValueError:
+        raise HTTPException(400, "body must be JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    return payload
 
 
 @app.get("/api/fleet")
@@ -257,7 +263,10 @@ async def runs():
 
 @app.get("/api/runs/{run_id}")
 async def run_log(run_id: str):
-    return core().codex.replay(run_id)
+    events = core().codex.replay(run_id)
+    if not events:
+        raise HTTPException(404, f"no run {run_id!r}")
+    return events
 
 
 @app.post("/api/terminal")

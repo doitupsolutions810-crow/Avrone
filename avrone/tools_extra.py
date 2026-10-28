@@ -339,6 +339,8 @@ async def t_http_request(ctx: "AgentContext", args: dict[str, Any]) -> str:
         r = await safe_http_request(method, url, headers=headers, timeout=30, transport=HTTP_TRANSPORT, **kw)
     except ValueError as exc:
         return f"ERROR: {exc}"
+    except httpx.HTTPError as exc:
+        return f"ERROR: HTTP request failed ({type(exc).__name__})"
     lines = [f"HTTP {r.status_code} {r.reason_phrase}"]
     for h in _KEY_HEADERS:
         if h in r.headers:

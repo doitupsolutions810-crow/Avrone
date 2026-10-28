@@ -25,8 +25,10 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from . import agentfs
 from .checkpoint import Checkpoint
 from .codex import Codex
 from .config import Settings
@@ -234,6 +236,10 @@ class AgentContext:
     run_id: str
     name: str
     depth: int
+    # Per-agent persistent workspace (workspace/agents/<agent_id>/), stable across runs for
+    # the same agent_id. None when AVRONE_AGENT_FS=0 or the dir could not be made.
+    agent_id: str | None = None
+    agent_dir: Path | None = None
 
 
 def parse_action(text: str) -> dict[str, Any] | None:
@@ -312,15 +318,31 @@ class TrinityCore:
         self._counter += 1
         return f"{re.sub(r'[^A-Za-z0-9]', '', str(role or ''))[:16] or 'Agent'}-{self._counter}"
 
+    def _attach_agent_dir(self, ctx: AgentContext, agent_id: Any) -> None:
+        """Give the agent its own persistent dir. Never fatal: on failure the agent runs as before."""
+        if not agentfs.agent_fs_enabled():
+            return
+        ws = getattr(self.runner, "workspace", None) or getattr(self.settings, "workspace", None)
+        if ws is None:
+            return
+        try:
+            ctx.agent_id = agentfs.sanitize_agent_id(agent_id)
+            ctx.agent_dir = agentfs.agent_dir(Path(ws), ctx.agent_id)
+        except (OSError, agentfs.AgentFSError) as e:
+            ctx.agent_id, ctx.agent_dir = None, None
+            self.codex.emit(ctx.run_id, "error", ctx.name, message=f"agent dir unavailable: {e}")
+
     async def _chat(self, messages: list[dict[str, str]], **kw: Any) -> str:
         async with self._sem:
             return await self.llm.chat(messages, **kw)
 
     # ------------------------------------------------------------ one agent
     async def run_agent(self, run_id: str, role: str, task: str, focus: str | None = None,
-                        parent: str | None = None, depth: int = 0, system: str | None = None) -> str:
+                        parent: str | None = None, depth: int = 0, system: str | None = None,
+                        agent_id: str | None = None) -> str:
         name = self._name(role)
         ctx = AgentContext(self, run_id, name, depth)
+        self._attach_agent_dir(ctx, agent_id or role)
         self.active[name] = {"role": role, "status": "working", "parent": parent, "run_id": run_id,
                              "task": (focus or task)[:300], "depth": depth, "started": time.time()}
         self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth)

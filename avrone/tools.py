@@ -6,6 +6,7 @@ Contract:
 """
 from __future__ import annotations
 
+import inspect
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,11 +74,27 @@ def _safe_path(root: Path, rel: str) -> Path:
     return p
 
 
+async def run_for_agent(ctx: "AgentContext", cmd: str, timeout: int | None = None):
+    """Run `cmd` for this agent: in its own persistent dir when it has one, else as before.
+
+    Runners that predate per-agent cwd (no `cwd` parameter) keep their old behavior."""
+    runner = ctx.core.runner
+    agent_dir = getattr(ctx, "agent_dir", None)
+    if agent_dir is not None:
+        try:
+            accepts = "cwd" in inspect.signature(runner.run).parameters
+        except (TypeError, ValueError):
+            accepts = False
+        if accepts:
+            return await runner.run(cmd, timeout=timeout, cwd=agent_dir)
+    return await runner.run(cmd, timeout=timeout) if timeout else await runner.run(cmd)
+
+
 async def t_shell(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not ctx.core.settings.agents_can_shell:
         return "ERROR: shell is disabled for agents (AVRONE_AGENTS_CAN_SHELL=false)."
     cmd = str(args.get("cmd", ""))
-    res = await ctx.core.runner.run(cmd)
+    res = await run_for_agent(ctx, cmd)
     if _INSTALL_RE.search(cmd):  # self-change: record it in the resource ledger
         try:
             from .agentkit import record_change
@@ -129,7 +146,7 @@ async def t_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 def builtin_registry() -> ToolRegistry:
     r = ToolRegistry()
-    r.register(Tool("shell", "run a real terminal command in the environment (install packages, run code, docker, git...).", '{"cmd": str}', t_shell))
+    r.register(Tool("shell", "run a real terminal command in the environment (install packages, run code, docker, git...). Runs in your own persistent agent dir ($AVRONE_AGENT_DIR) when you have one; the shared workspace is $AVRONE_SHARED_WORKSPACE.", '{"cmd": str}', t_shell))
     r.register(Tool("read_file", "read a file from the workspace.", '{"path": str}', t_read))
     r.register(Tool("write_file", "create or overwrite a file in the workspace.", '{"path": str, "content": str}', t_write))
     r.register(Tool("fetch", "HTTP GET a URL and return its text (first 8000 chars).", '{"url": str}', t_fetch))

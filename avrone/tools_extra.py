@@ -1182,3 +1182,5 @@ def register_extra_tools(registry) -> None:
     register_recon_tools(registry)
     from .osint import register_osint_tools
     register_osint_tools(registry)
+    from .agentfs_tools import register_agent_fs_tools
+    register_agent_fs_tools(registry)

@@ -26,6 +26,14 @@ through the same dispatch_gateway (kind "memory", capability "memory:sync", all 
 receiver files them under "fleet:<sender>/<ns>" where <sender> is the HMAC-signed `from` node id, so
 a push can never overwrite the receiver's own (local) namespaces. Accepts are audited as
 `fleet.memory.merge`. Caps: MEMORY_SYNC_MAX_ENTRIES per push plus the store's per-namespace caps.
+Agent migration (edgepack): POST /api/fleet/agentpack carries one agent's HOME (its dir + memory
+namespace, an avrone.agentpack bundle) to a peer. Same dispatch_gateway (kind "agentpack", capability
+"agent:migrate"), plus: the sender MUST be listed in a non-empty AVRONE_FLEET_ALLOW (an open allowlist
+refuses), the privileged flag is always refused, and the receiver must itself run AVRONE_AGENT_MIGRATE=on.
+The pack's origin must equal the signed sender; import verifies hashes/paths/quota and never overwrites
+another agent's home. FleetManager.migrate_agent() sends one; thermal_migrate() moves idle agents off a hot
+node (governor temp over AVRONE_THERMAL_MAX_C). Audited as agent.migrate / agent.migrate_refused /
+agent.migrate_failed; on any failure the agent stays put.
 Privileged ("root-enabled") tier -- OFF by default, deny by default:
   AVRONE_FLEET_PRIVILEGED      must be exactly "allow" (case-insensitive) to enable; anything else = deny
   AVRONE_PRIVILEGED_NODES      comma list of SENDER node ids this node grants elevated capabilities to
@@ -95,9 +103,24 @@ SPAWN_MODES = ("squad", "chat", "deep")
 PRIVILEGED_CAPABILITIES = {"priv:shell", "priv:admin"}
 PRIVILEGED_HEADER = "x-avrone-privileged"
 # non-spawn capabilities, kept apart from the (minimal) spawn/message table above
-SYNC_CAPABILITIES: dict[str, set[str]] = {"memory": {"memory:sync"}}
+SYNC_CAPABILITIES: dict[str, set[str]] = {"memory": {"memory:sync"}, "agentpack": {"agent:migrate"}}
 MEMORY_PATH = "/api/fleet/memory"
 MEMORY_SYNC_MAX_ENTRIES = 200
+AGENTPACK_PATH = "/api/fleet/agentpack"
+DEFAULT_MIGRATE_INTERVAL_S, MIN_MIGRATE_INTERVAL_S = 60.0, 10.0
+
+
+def migrate_enabled() -> bool:
+    """AVRONE_AGENT_MIGRATE=on (default off): send/accept agent homes between nodes."""
+    return _env("AVRONE_AGENT_MIGRATE").lower() in TRUTHY
+
+
+def migrate_interval() -> float:
+    try:
+        v = float(_env("AVRONE_AGENT_MIGRATE_INTERVAL") or DEFAULT_MIGRATE_INTERVAL_S)
+    except ValueError:
+        v = DEFAULT_MIGRATE_INTERVAL_S
+    return max(MIN_MIGRATE_INTERVAL_S, v if v == v else DEFAULT_MIGRATE_INTERVAL_S)
 
 
 def kind_capabilities(kind: str) -> set[str]:
@@ -171,6 +194,7 @@ class FleetManager:
         self.nodes: dict[str, dict[str, Any]] = saved.get("nodes", {})
         self._nonces: dict[str, float] = {}
         self._task: asyncio.Task | None = None
+        self._thermal_task: asyncio.Task | None = None
         self._bg: set[asyncio.Task] = set()
         self.queue = None  # JobQueue, attached by start_queue()
         self.worker = None
@@ -252,6 +276,10 @@ class FleetManager:
             if not self.allowed(sender):
                 why = "empty allowlist with AVRONE_FLEET_REQUIRE_ALLOW" if not self.allow else "AVRONE_FLEET_ALLOW"
                 raise self._refuse("sender_not_allowed", f"sender {sender} not in AVRONE_FLEET_ALLOW ({why})", **ctx)
+        if kind == "agentpack" and (not self.allow or sender not in self.allow):
+            # moving a whole agent home is never open to "any token holder": explicit allowlist only
+            raise self._refuse("sender_not_allowed", f"agent migration from {sender or '?'} refused: sender must be "
+                               "listed in a non-empty AVRONE_FLEET_ALLOW", **ctx)
         try:
             hops = int(payload.get("hops", 1))
         except (TypeError, ValueError):
@@ -371,6 +399,9 @@ class FleetManager:
                            "children": payload.get("children", []),
                            "load": payload.get("load", 0),
                            "presence": payload.get("presence")}
+        if isinstance(payload.get("health"), dict):  # governor readings: thermal migration picks cool peers
+            self.nodes[nid]["health"] = {k: payload["health"].get(k) for k in ("temp_c", "load", "mem_pct",
+                                                                                 "disk_free_pct")}
         self._save()
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)
         return {"ok": True, "parent": self.node_id}
@@ -438,11 +469,172 @@ class FleetManager:
         self._audit("fleet.memory.merge", sender=sender, namespaces=sorted(groups), **stats)
         return {"ok": True, "node": self.node_id, "namespaces": sorted(groups), **stats}
 
+    # ------------------------------------------------------------ agent migration (edgepack)
+    def _workspace(self) -> Path:
+        ws = getattr(getattr(self.core, "settings", None), "workspace", None)
+        if not isinstance(ws, (str, Path)):
+            raise RuntimeError("no workspace configured for agent homes")
+        return Path(ws)
+
+    def pick_migration_target(self, target: str = "auto") -> dict[str, Any]:
+        """A healthy peer for an agent home: an explicit online node, or (auto) the coolest /
+        least-loaded online allowed node by its governor readings, else any online node."""
+        if target not in ("", "auto"):
+            n = self.pick(target)
+            if self.status_of(n) != "online":
+                raise RuntimeError(f"node {target} is not online")
+            return n
+        thermal_max = getattr(getattr(self.core, "governor", None), "thermal_max_c", None)
+        live = [n for n in self.nodes.values() if self.status_of(n) == "online" and self.allowed(n["node_id"])
+                and n["node_id"] != self.node_id]
+        if not live:
+            raise RuntimeError("no online nodes to migrate to")
+
+        def h(n: dict[str, Any], k: str) -> float | None:
+            v = (n.get("health") or {}).get(k)
+            return float(v) if isinstance(v, (int, float)) else None
+        if isinstance(thermal_max, (int, float)):
+            cool = [n for n in live if h(n, "temp_c") is None or h(n, "temp_c") < thermal_max]
+            live = cool or live
+        measured = [n for n in live if h(n, "temp_c") is not None or h(n, "load") is not None]
+        if measured:
+            return min(measured, key=lambda n: (h(n, "temp_c") if h(n, "temp_c") is not None else 0.0,
+                                                h(n, "load") or 0.0, n.get("load", 0), n["node_id"]))
+        return min(live, key=lambda n: (n.get("load", 0), n["node_id"]))
+
+    async def migrate_agent(self, agent_id: str, target: str = "auto") -> dict[str, Any]:
+        """Send one agent's home (dir + memory) to a peer over the signed gateway. Raises on
+        refusal/failure (audited as agent.migrate_refused / agent.migrate_failed); the local home
+        is never touched, so a failed migration leaves the agent where it is."""
+        from . import agentfs, agentpack
+        aid = str(agent_id or "")
+        ctx = {"agent_id": aid, "target": target or "auto"}
+        try:
+            if agentfs.sanitize_agent_id(aid) != aid:
+                raise PermissionError(f"invalid agent id {aid!r}")
+            if not migrate_enabled():
+                raise PermissionError("agent migration disabled (AVRONE_AGENT_MIGRATE != on)")
+            first = target if target not in ("", "auto") else ""
+            self.check_outbound("agentpack", "agent:migrate", 0, first)
+            node = self.pick_migration_target(target)
+            bundle, man = agentpack.export_pack(self._workspace(), self.data_dir, aid, self.node_id,
+                                                home=agentpack.home_node(self.data_dir, aid, self.node_id))
+        except (PermissionError, agentpack.PackError) as e:
+            self._audit("agent.migrate_refused", reason=str(e)[:300], **ctx)
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._audit("agent.migrate_failed", reason=f"{type(e).__name__}: {e}"[:300], **ctx)
+            raise
+        import base64
+        payload = {"from": self.node_id, "hops": 1, "capability": "agent:migrate", "agent_id": aid,
+                   "bundle": base64.b64encode(bundle).decode()}
+        try:
+            res = await self._post(node["url"], AGENTPACK_PATH, payload, timeout=120)
+        except Exception as e:  # noqa: BLE001
+            refused = isinstance(e, RuntimeError) and re.search(r"-> (401|403|400):", str(e)) is not None
+            self._audit("agent.migrate_refused" if refused else "agent.migrate_failed",
+                        reason=f"{type(e).__name__}: {e}"[:300], **{**ctx, "target": node["node_id"]})
+            raise
+        agentpack.record(self.data_dir, aid, migrated_to=node["node_id"], migrated_stamp=man["created"],
+                         migrated_at=int(time.time()))
+        self._audit("agent.migrate", agent_id=aid, target=node["node_id"], files=len(man["files"]),
+                    bytes=man["total_bytes"], created=man["created"], home=man["home"])
+        return {"ok": True, "agent_id": aid, "target": node["node_id"], "files": len(man["files"]),
+                "bytes": man["total_bytes"], "remote": res}
+
+    def receive_agentpack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Server side of /api/fleet/agentpack. Call ONLY with a payload returned by dispatch_gateway."""
+        import base64
+        import binascii
+
+        from . import agentpack
+        if request_capability("agentpack", payload) != "agent:migrate" or payload.get("privileged"):
+            raise PermissionError("capability agent:migrate required (never privileged)")
+        sender = sender_node(payload.get("from"))
+        ctx = {"direction": "in", "sender": sender or None, "agent_id": str(payload.get("agent_id", ""))[:64]}
+        if not migrate_enabled():
+            self._audit("agent.migrate_refused", reason="AVRONE_AGENT_MIGRATE != on", **ctx)
+            raise PermissionError("agent migration disabled on this node (AVRONE_AGENT_MIGRATE != on)")
+        if not ID_RE.match(sender) or sender == self.node_id:
+            raise ValueError("invalid sender node id")
+        try:
+            bundle = base64.b64decode(str(payload.get("bundle", "")), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("bundle must be base64") from None
+        try:
+            res = agentpack.import_pack(self._workspace(), self.data_dir, bundle, self.node_id,
+                                        expect_agent=str(payload.get("agent_id", "")), expect_origin=sender)
+        except agentpack.PackError as e:
+            self._audit("agent.migrate_refused", reason=str(e)[:300], **ctx)
+            raise ValueError(str(e)) from None
+        self._audit("agent.migrate", **ctx, files=res["files"], bytes=res["bytes"], home=res["home"])
+        return {"ok": True, "node": self.node_id, **res}
+
+    def idle_agents(self, now: float | None = None) -> list[str]:
+        """Agent homes on this node that are not running and untouched for AVRONE_AGENT_IDLE_SECS."""
+        from . import agentcontainer, agentfs, agentpack, memstore
+        now = time.time() if now is None else now
+        root = agentfs.agents_root(self._workspace())
+        if not root.is_dir() or root.is_symlink():
+            return []
+        busy = {agentfs.sanitize_agent_id(a.get("agent_id") or a.get("role") or memstore.agent_namespace(n))
+                for n, a in list(self.core.active.items()) if isinstance(a, dict) and a.get("status") == "working"}
+        idx = agentpack.load_index(self.data_dir)
+        out = []
+        for d in sorted(root.iterdir()):
+            aid = d.name
+            if d.is_symlink() or not d.is_dir() or agentfs.sanitize_agent_id(aid) != aid or aid in busy:
+                continue
+            stamp = agentpack.content_stamp(self._workspace(), self.data_dir, aid)
+            if now - stamp < agentcontainer.idle_secs():
+                continue
+            if idx.get(aid, {}).get("migrated_stamp") == stamp:  # already moved, unchanged since
+                continue
+            out.append(aid)
+        return out
+
+    async def thermal_migrate(self, now: float | None = None) -> list[dict[str, Any]]:
+        """Governor hook: when this node is hot and AVRONE_AGENT_MIGRATE=on, move idle agents'
+        homes to a cooler peer. Never raises; a failed agent stays put."""
+        if not (self.enabled and migrate_enabled()):
+            return []
+        gov = getattr(self.core, "governor", None)
+        try:
+            if gov is None or not gov.is_hot():
+                return []
+            agents = self.idle_agents(now)
+        except Exception as e:  # noqa: BLE001
+            log.warning("thermal migrate check failed: %s", e)
+            return []
+        out: list[dict[str, Any]] = []
+        for aid in agents:
+            try:
+                res = await self.migrate_agent(aid, "auto")
+                out.append({"agent_id": aid, "ok": True, "target": res["target"]})
+            except Exception as e:  # noqa: BLE001 - audited in migrate_agent; agent stays put
+                out.append({"agent_id": aid, "ok": False, "error": str(e)[:200]})
+                if "no online nodes" in str(e):
+                    break
+        return out
+
+    async def thermal_loop(self) -> None:
+        while True:
+            await asyncio.sleep(migrate_interval())
+            await self.thermal_migrate()
+
     async def join_parent_once(self) -> dict[str, Any]:
         from .presence import snapshot
         payload = {"presence": await snapshot(self.core),"node_id": self.node_id, "url": self.public_url,
                    "capabilities": {"tools": self.core.tools.names(), "runner": self.core.runner.kind},
                    "children": sorted(self.nodes), "load": self.info()["active_agents"]}
+        try:
+            from .governor import Governor
+            gov = getattr(self.core, "governor", None)
+            if isinstance(gov, Governor):
+                h = gov.read().as_dict()
+                payload["health"] = {k: h.get(k) for k in ("temp_c", "load", "mem_pct", "disk_free_pct")}
+        except Exception:  # noqa: BLE001 - health is advisory
+            pass
         return await self._post(self.parent, "/api/fleet/register", payload, timeout=10)
 
     async def heartbeat_loop(self) -> None:
@@ -459,6 +651,8 @@ class FleetManager:
     def start(self) -> None:
         if self.enabled and self.parent and self.public_url and self._task is None:
             self._task = asyncio.create_task(self.heartbeat_loop())
+        if self.enabled and migrate_enabled() and self._thermal_task is None:
+            self._thermal_task = asyncio.create_task(self.thermal_loop())
 
     def start_queue(self, data_dir: Path) -> None:
         from .jobqueue import JobQueue, Worker
@@ -470,6 +664,9 @@ class FleetManager:
         if self._task:
             self._task.cancel()
             self._task = None
+        if self._thermal_task:
+            self._thermal_task.cancel()
+            self._thermal_task = None
         if self.worker:
             await self.worker.stop()
         if self.queue:

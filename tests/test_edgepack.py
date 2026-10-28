@@ -370,3 +370,354 @@ def test_empty_home_exports(tmp_path):
     b, man = agentpack.export_pack(tmp_path / "ws", tmp_path / "data", "ghost", "edge")
     assert man["files"] == [] and man["memory"]["entries"] == 0 and man["created"] == 0
     assert agentpack.read_pack(b)[0]["agent_id"] == "ghost"
+
+
+# ------------------------------------------------------------------ 3. fleet migration
+import base64  # noqa: E402
+import time  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+import httpx  # noqa: E402
+
+from avrone import doctor  # noqa: E402
+from avrone import fleet as fleet_mod  # noqa: E402
+from avrone import agentpack_tools as apt  # noqa: E402
+from avrone.fleet import AGENTPACK_PATH, FleetManager, GatewayRefused, sign  # noqa: E402
+from avrone.governor import Governor  # noqa: E402
+
+FLEET_ENVS = ("AVRONE_FLEET_TOKEN", "AVRONE_FLEET_ALLOW", "AVRONE_FLEET_PARENT", "AVRONE_FLEET_REQUIRE_ALLOW",
+              "AVRONE_FLEET_PRIVILEGED", "AVRONE_PRIVILEGED_NODES", "AVRONE_FLEET_MAX_HOPS", "AVRONE_PUBLIC_URL")
+
+
+@pytest.fixture
+def fleet_env(monkeypatch):
+    for k in FLEET_ENVS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(fleet_mod, "HTTP_TRANSPORT", None)
+    return monkeypatch
+
+
+def mkfleet(mp, root, node, allow="", temp=None):
+    mp.setenv("AVRONE_FLEET_TOKEN", "tok-0123456789abcdef")
+    mp.setenv("AVRONE_NODE_ID", node)
+    mp.setenv("AVRONE_FLEET_ALLOW", allow)
+    core = MagicMock()
+    core.active = {}
+    core.codex.emit = MagicMock()
+    core.settings = Settings(workspace=root / "ws", data_dir=root / "data")
+    core.governor = Governor(4, thermal_max_c=80, readers={
+        "temp_c": (lambda: temp[0]) if temp else (lambda: None), "load": lambda: None,
+        "mem_pct": lambda: None, "disk_free_pct": lambda: None}, ttl_s=0)
+    return FleetManager(core, root / "data")
+
+
+def events(fm, kind):
+    return [c.kwargs for c in fm.core.codex.emit.call_args_list if c.args[1] == kind]
+
+
+def seed(fm, aid="builder", text="hello", mtime=1_700_000_000):
+    d = agentfs.agent_dir(fm.core.settings.workspace, aid)
+    (d / "notes.txt").write_text(text)
+    os.utime(d / "notes.txt", (mtime, mtime))
+    return d
+
+
+def online(fm, nid, url=None, health=None, load=0):
+    fm.nodes[nid] = {"node_id": nid, "url": url or f"http://{nid}", "last_seen": time.time(), "load": load,
+                     **({"health": health} if health else {})}
+
+
+def signed(fm, payload, path=AGENTPACK_PATH, headers=None):
+    body = json.dumps(payload).encode()
+    return body, {**sign(fm.token, "POST", path, body), **(headers or {})}
+
+
+def transport_to(receivers):
+    """MockTransport standing in for peers' HTTP servers (same gateway + status mapping as server.py)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        rx = receivers[request.url.host]
+        try:
+            payload = rx.dispatch_gateway("agentpack", request.method, request.url.path, request.content,
+                                          {k.lower(): v for k, v in request.headers.items()})
+            return httpx.Response(200, json=rx.receive_agentpack(payload))
+        except GatewayRefused as e:
+            return httpx.Response(401 if e.auth else 403, json={"detail": str(e)})
+        except PermissionError as e:
+            return httpx.Response(403, json={"detail": str(e)})
+        except ValueError as e:
+            return httpx.Response(400, json={"detail": str(e)})
+    return httpx.MockTransport(handler)
+
+
+def pack_payload(fm, aid="builder", **extra):
+    bundle, _ = agentpack.export_pack(fm.core.settings.workspace, fm.data_dir, aid, fm.node_id)
+    return {"from": fm.node_id, "hops": 1, "capability": "agent:migrate", "agent_id": aid,
+            "bundle": base64.b64encode(bundle).decode(), **extra}
+
+
+def test_capability_registered():
+    assert fleet_mod.kind_capabilities("agentpack") == {"agent:migrate"}
+    assert not fleet_mod.migrate_enabled()
+
+
+def test_gateway_refuses_open_allowlist(tmp_path, fleet_env):
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool")                    # open allowlist
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    with pytest.raises(GatewayRefused) as e:
+        rx.dispatch_gateway("agentpack", "POST", AGENTPACK_PATH, *signed(rx, pack_payload(tx)))
+    assert e.value.code == "sender_not_allowed"
+
+
+def test_gateway_refuses_unlisted_sender(tmp_path, fleet_env):
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool", allow="other")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    with pytest.raises(GatewayRefused) as e:
+        rx.dispatch_gateway("agentpack", "POST", AGENTPACK_PATH, *signed(rx, pack_payload(tx)))
+    assert e.value.code == "sender_not_allowed" and events(rx, "fleet.refused")
+
+
+def test_gateway_refuses_wrong_capability(tmp_path, fleet_env):
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool", allow="edge")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    for cap in ("spawn:squad", "memory:sync"):
+        with pytest.raises(GatewayRefused) as e:
+            rx.dispatch_gateway("agentpack", "POST", AGENTPACK_PATH, *signed(rx, pack_payload(tx, capability=cap)))
+        assert e.value.code == "capability"
+    # and agent:migrate is not accepted on the run endpoint
+    with pytest.raises(GatewayRefused):
+        rx.dispatch_gateway("run", "POST", "/api/fleet/run",
+                            *signed(rx, {"from": "edge", "hops": 1, "capability": "agent:migrate"}, "/api/fleet/run"))
+
+
+def test_gateway_refuses_privileged(tmp_path, fleet_env):
+    fleet_env.setenv("AVRONE_FLEET_PRIVILEGED", "allow")
+    fleet_env.setenv("AVRONE_PRIVILEGED_NODES", "edge")
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool", allow="edge")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    with pytest.raises(GatewayRefused) as e:
+        rx.dispatch_gateway("agentpack", "POST", AGENTPACK_PATH, *signed(rx, pack_payload(tx, privileged=True)))
+    assert e.value.code == "privileged_capability" and events(rx, "fleet.privileged.refused")
+    with pytest.raises(GatewayRefused) as e:
+        rx.dispatch_gateway("agentpack", "POST", AGENTPACK_PATH,
+                            *signed(rx, pack_payload(tx), headers={"x-avrone-privileged": "1"}))
+    assert e.value.code == "privileged_unsigned"
+
+
+def test_receiver_needs_migrate_on(tmp_path, fleet_env):
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool", allow="edge")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    payload = rx.dispatch_gateway("agentpack", "POST", AGENTPACK_PATH, *signed(rx, pack_payload(tx)))
+    with pytest.raises(PermissionError, match="disabled"):
+        rx.receive_agentpack(payload)
+    assert events(rx, "agent.migrate_refused")
+    fleet_env.setenv("AVRONE_AGENT_MIGRATE", "on")
+    assert rx.receive_agentpack(payload)["files"] == 1
+    # the pack's origin must be the signed sender
+    spoof = {**pack_payload(tx), "from": "mallory"}
+    with pytest.raises(ValueError, match="origin"):
+        rx.receive_agentpack(spoof)
+
+
+def test_migrate_end_to_end(tmp_path, fleet_env):
+    fleet_env.setenv("AVRONE_AGENT_MIGRATE", "on")
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool", allow="edge")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    d = seed(tx)
+    memstore.MemoryStore(tx.data_dir / "memory.jsonl").save("builder", "goal", "ship")
+    online(tx, "cool")
+    fleet_env.setattr(fleet_mod, "HTTP_TRANSPORT", transport_to({"cool": rx}))
+    res = run(tx.migrate_agent("builder"))
+    assert res["ok"] and res["target"] == "cool" and res["remote"]["memory"]["merged"] == 1
+    got = rx.core.settings.workspace.resolve() / "agents" / "builder" / "notes.txt"
+    assert got.read_text() == "hello" and (d / "notes.txt").exists()     # copied; source home kept
+    assert events(tx, "agent.migrate")[0]["target"] == "cool"
+    assert agentpack.load_index(tx.data_dir)["builder"]["migrated_to"] == "cool"
+    assert agentpack.load_index(rx.data_dir)["builder"]["home"] == "edge"
+
+
+def test_migrate_disabled_by_default(tmp_path, fleet_env):
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    online(tx, "cool")
+    with pytest.raises(PermissionError, match="disabled"):
+        run(tx.migrate_agent("builder"))
+    assert events(tx, "agent.migrate_refused")
+    assert run(tx.thermal_migrate()) == []
+
+
+def test_pick_target_prefers_cool_then_fallback(tmp_path, fleet_env):
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    with pytest.raises(RuntimeError, match="no online nodes"):
+        tx.pick_migration_target()
+    online(tx, "a", load=3)
+    online(tx, "b", load=1)
+    assert tx.pick_migration_target()["node_id"] == "b"             # no governor numbers: least loaded
+    online(tx, "hot", health={"temp_c": 90, "load": 0.1})
+    online(tx, "warm", health={"temp_c": 60, "load": 0.5})
+    online(tx, "cool", health={"temp_c": 45, "load": 1.5})
+    assert tx.pick_migration_target()["node_id"] == "cool"          # coolest under thermal max
+    tx.nodes["cool"]["last_seen"] = 0                                # offline peers are never picked
+    assert tx.pick_migration_target()["node_id"] == "warm"
+    assert tx.pick_migration_target("a")["node_id"] == "a"
+
+
+def test_migrate_failure_stays_put(tmp_path, fleet_env):
+    fleet_env.setenv("AVRONE_AGENT_MIGRATE", "on")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    d = seed(tx)
+    online(tx, "down")
+
+    def boom(request):
+        raise httpx.ConnectError("unreachable")
+    fleet_env.setattr(fleet_mod, "HTTP_TRANSPORT", httpx.MockTransport(boom))
+    with pytest.raises(httpx.ConnectError):
+        run(tx.migrate_agent("builder"))
+    assert events(tx, "agent.migrate_failed") and (d / "notes.txt").read_text() == "hello"
+    assert "migrated_to" not in agentpack.load_index(tx.data_dir).get("builder", {})
+    # a peer that refuses (403) is audited as refused
+    rx = mkfleet(fleet_env, tmp_path / "rx", "down")                 # open allowlist -> refuses packs
+    tx2 = mkfleet(fleet_env, tmp_path / "tx2", "edge")
+    seed(tx2)
+    online(tx2, "down")
+    fleet_env.setattr(fleet_mod, "HTTP_TRANSPORT", transport_to({"down": rx}))
+    with pytest.raises(RuntimeError, match="403"):
+        run(tx2.migrate_agent("builder"))
+    assert events(tx2, "agent.migrate_refused")
+
+
+def test_thermal_hook_moves_idle_agents_only(tmp_path, fleet_env):
+    fleet_env.setenv("AVRONE_AGENT_MIGRATE", "on")
+    temp = [70.0]
+    rx = mkfleet(fleet_env, tmp_path / "rx", "cool", allow="edge")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge", temp=temp)
+    seed(tx, "idler")
+    seed(tx, "busy")
+    seed(tx, "fresh", mtime=int(time.time()))                        # touched just now: not idle
+    tx.core.active = {"Busy-2": {"role": "Busy", "status": "working"}}
+    online(tx, "cool")
+    fleet_env.setattr(fleet_mod, "HTTP_TRANSPORT", transport_to({"cool": rx}))
+    assert run(tx.thermal_migrate()) == []                           # 70C: not hot
+    temp[0] = 92.0
+    assert tx.core.governor.is_hot()
+    out = run(tx.thermal_migrate())
+    assert [o["agent_id"] for o in out] == ["idler"] and out[0]["ok"]
+    assert run(tx.thermal_migrate()) == []                           # unchanged since: not re-sent
+
+
+def test_thermal_hook_failure_is_contained(tmp_path, fleet_env):
+    fleet_env.setenv("AVRONE_AGENT_MIGRATE", "on")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge", temp=[99.0])
+    seed(tx, "a")
+    seed(tx, "b")
+    out = run(tx.thermal_migrate())                                  # no peers at all
+    assert out == [{"agent_id": "a", "ok": False, "error": "no online nodes to migrate to"}]
+    assert events(tx, "agent.migrate_failed") and (agentfs.agents_root(tx.core.settings.workspace) / "a").is_dir()
+
+
+def test_governor_is_hot_unreadable():
+    g = Governor(2, thermal_max_c=80, readers={"temp_c": lambda: None, "load": lambda: None,
+                                               "mem_pct": lambda: None, "disk_free_pct": lambda: None})
+    assert g.is_hot() is False
+
+
+def test_register_keeps_health(tmp_path, fleet_env):
+    rx = mkfleet(fleet_env, tmp_path / "rx", "router")
+    rx.register({"node_id": "e1", "url": "http://e1", "health": {"temp_c": 55.5, "load": 0.2, "junk": 1}})
+    assert rx.nodes["e1"]["health"] == {"temp_c": 55.5, "load": 0.2, "mem_pct": None, "disk_free_pct": None}
+
+
+def test_server_endpoint_registered():
+    from avrone.server import app
+    assert AGENTPACK_PATH in {r.path for r in app.routes}
+
+
+# ------------------------------------------------------------------ 4. tools + doctor
+def tool_ctx(fm, aid="builder"):
+    return SimpleNamespace(core=fm.core, run_id="r1", name="Builder-1", depth=0, agent_id=aid,
+                           agent_dir=agentfs.agent_dir(fm.core.settings.workspace, aid))
+
+
+def test_tools_export_import_own_only(tmp_path, fleet_env):
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    d = seed(tx)
+    out = run(apt.t_agent_pack_export(tool_ctx(tx), {}))
+    assert out.startswith("packed agent builder: builder-1700000000.tar.gz")
+    name = "builder-1700000000.tar.gz"
+    assert (agentpack.pack_dir(tx.data_dir) / name).is_file() and d.is_dir()
+    assert "not newer" in run(apt.t_agent_pack_import(tool_ctx(tx), {"name": name}))   # same copy: no-op refusal
+    # another agent can't import builder's pack, and paths/URLs are refused
+    for bad in (name, "../x.tar.gz", "http://evil/builder-1.tar.gz", "/etc/passwd"):
+        assert run(apt.t_agent_pack_import(tool_ctx(tx, "coder"), {"name": bad})).startswith("ERROR")
+    assert events(tx, "agentpack.export") and events(tx, "agentpack.refused")
+
+
+def test_tool_import_restores_into_empty_home(tmp_path, fleet_env):
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    d = seed(tx)
+    run(apt.t_agent_pack_export(tool_ctx(tx), {}))
+    import shutil
+    shutil.rmtree(d)
+    out = run(apt.t_agent_pack_import(tool_ctx(tx), {"name": "builder-1700000000.tar.gz"}))
+    assert out.startswith("restored agent builder") and (d / "notes.txt").read_text() == "hello"
+
+
+def test_tool_migrate_gated(tmp_path, fleet_env):
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge")
+    seed(tx)
+    assert "AVRONE_AGENT_MIGRATE=on" in run(apt.t_agent_migrate(tool_ctx(tx), {}))
+    fleet_env.setenv("AVRONE_AGENT_MIGRATE", "on")
+    assert "home stays" in run(apt.t_agent_migrate(tool_ctx(tx), {}))     # no peers
+    no_home = SimpleNamespace(core=tx.core, run_id="r", name="X", depth=0, agent_id=None)
+    assert run(apt.t_agent_pack_export(no_home, {})).startswith("ERROR")
+
+
+def test_tools_registered():
+    from avrone.tools import ToolRegistry
+    from avrone.tools_extra import register_extra_tools
+    r = ToolRegistry()
+    register_extra_tools(r)
+    assert {"agent_pack_export", "agent_pack_import", "agent_migrate"} <= set(r.names())
+
+
+def _doc(env, settings):
+    return doctor.run_doctor(settings, env=env, which=lambda _: None, python_version=(3, 12, 0))
+
+
+def _checks(rep, name):
+    return [c for c in rep["checks"] if c["name"] == name]
+
+
+def test_doctor_migrate_open_allowlist(tmp_path):
+    s = Settings(workspace=tmp_path / "ws", data_dir=tmp_path / "data")
+    base = {"AVRONE_FLEET_TOKEN": "x" * 32}
+    rep = _doc(base, s)
+    assert rep["toggles"]["agent_migrate"] == "off" and rep["toggles"]["agent_container"] == "off"
+    assert not _checks(rep, "security.agent_migrate")
+    rep = _doc({**base, "AVRONE_AGENT_MIGRATE": "on"}, s)
+    assert [c["status"] for c in _checks(rep, "security.agent_migrate")] == ["warn"]
+    rep = _doc({**base, "AVRONE_AGENT_MIGRATE": "on", "AVRONE_FLEET_ALLOW": "a,b",
+                "AVRONE_AGENT_CONTAINER": "persistent"}, s)
+    assert [c["status"] for c in _checks(rep, "security.agent_migrate")] == ["info"]
+    assert rep["toggles"]["agent_container"] == "persistent"
+
+
+def test_heartbeat_carries_health(tmp_path, fleet_env):
+    fleet_env.setenv("AVRONE_FLEET_PARENT", "http://router")
+    tx = mkfleet(fleet_env, tmp_path / "tx", "edge", temp=[61.0])
+    tx.core.tools.names.return_value = []
+    tx.core.runner.kind = "local"
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+    fleet_env.setattr(fleet_mod, "HTTP_TRANSPORT", httpx.MockTransport(handler))
+    fleet_env.setattr("avrone.presence.snapshot", lambda core: asyncio.sleep(0, result={}))
+    assert run(tx.join_parent_once())["ok"]
+    assert seen[0]["health"]["temp_c"] == 61.0

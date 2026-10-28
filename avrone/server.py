@@ -241,6 +241,18 @@ async def fleet_memory(request: Request):
         raise HTTPException(400, str(e)) from None
 
 
+@app.post("/api/fleet/agentpack")
+async def fleet_agentpack(request: Request):
+    """Inbound agent-home migration (edgepack): signed gateway, kind "agentpack", cap agent:migrate."""
+    payload = await _gateway(request, "agentpack")
+    try:
+        return _fleet().receive_agentpack(payload)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e)) from None
+
+
 @app.post("/api/fleet/run")
 async def fleet_run(request: Request):
     payload = await _gateway(request, "run")

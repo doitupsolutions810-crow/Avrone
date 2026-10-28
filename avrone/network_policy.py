@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import socket
+import time
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -16,6 +18,9 @@ import httpx
 MAX_URL_CHARS = 2_048
 MAX_REDIRECTS = 4
 MAX_RESPONSE_BYTES = 4_000_000
+MAX_REQUEST_BYTES = 1_000_000
+MAX_HEADERS = 64
+MAX_HEADER_BYTES = 32_768
 _BLOCKED_HOSTS = {
     "localhost",
     "metadata",
@@ -97,12 +102,56 @@ async def safe_http_request(
     """Request a validated public URL, bounding response bytes and revalidating redirects."""
     current = await validate_public_http_url(url, mock_transport=transport is not None)
     method = method.upper()
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= 300:
+        raise ValueError("HTTP timeout must be between 0 and 300 seconds")
     current_headers = dict(headers or {})
+    if len(current_headers) > MAX_HEADERS:
+        raise ValueError(f"HTTP request has too many headers (maximum {MAX_HEADERS})")
+    header_bytes = 0
+    for key, value in current_headers.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("HTTP header names and values must be strings")
+        if any(ord(char) < 32 or ord(char) == 127 for char in key + value):
+            raise ValueError("HTTP headers must not contain control characters")
+        header_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+    if header_bytes > MAX_HEADER_BYTES:
+        raise ValueError(f"HTTP headers exceed {MAX_HEADER_BYTES} bytes")
+
     current_kwargs = dict(kwargs)
+    if "json" in current_kwargs:
+        try:
+            request_body_size = len(json.dumps(current_kwargs["json"], ensure_ascii=False,
+                                               separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("HTTP JSON body is not serializable") from None
+    elif "content" in current_kwargs:
+        request_body = current_kwargs["content"]
+        if isinstance(request_body, str):
+            request_body_size = len(request_body.encode("utf-8"))
+        elif isinstance(request_body, (bytes, bytearray, memoryview)):
+            request_body_size = len(request_body)
+        else:
+            raise ValueError("HTTP request body must be a string or byte sequence")
+    elif "data" in current_kwargs:
+        request_body = current_kwargs["data"]
+        if isinstance(request_body, (str, bytes, bytearray, memoryview)):
+            request_body_size = len(request_body.encode("utf-8") if isinstance(request_body, str) else request_body)
+        else:
+            request_body_size = len(json.dumps(request_body, ensure_ascii=False).encode("utf-8"))
+    else:
+        request_body_size = 0
+    if request_body_size > MAX_REQUEST_BYTES:
+        raise ValueError(f"HTTP request body exceeds {MAX_REQUEST_BYTES} bytes")
+
+    deadline = time.monotonic() + float(timeout)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False,
                                  transport=transport) as client:
         for redirect_count in range(max_redirects + 1):
-            async with client.stream(method, current, headers=current_headers, **current_kwargs) as response:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("HTTP request total deadline exhausted")
+            async with client.stream(method, current, headers=current_headers,
+                                     timeout=remaining, **current_kwargs) as response:
                 if response.status_code in {301, 302, 303, 307, 308} and "location" in response.headers:
                     if method not in {"GET", "HEAD"}:
                         raise ValueError("redirects are disabled for write requests")

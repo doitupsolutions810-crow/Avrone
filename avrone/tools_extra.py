@@ -9,6 +9,8 @@ New options (all optional, read via env / getattr so config.py needs no change):
     AVRONE_SEARCH_PROVIDER  auto | duckduckgo | brave | tavily   (default auto)
     BRAVE_API_KEY           enables Brave Search API (auto picks it when set)
     TAVILY_API_KEY          enables Tavily Search API (auto picks it when Brave is not set)
+    AVRONE_MEMORY_MAX_ENTRIES / AVRONE_MEMORY_MAX_VALUE / AVRONE_MEMORY_MAX_NAMESPACES
+                            per-namespace memory caps (see avrone.memstore; hard ceilings apply)
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
+from . import memstore
 from .tools import Tool, _safe_path
 
 if TYPE_CHECKING:
@@ -386,18 +389,25 @@ def _mem_file(ctx: "AgentContext") -> Path:
     return d / "memory.jsonl"
 
 
-def load_memory(path: Path) -> dict[str, dict[str, Any]]:
-    """Latest record per key."""
+def _mem_ns(ctx: "AgentContext") -> str:
+    """This agent's own namespace (see avrone.memstore): pinned via ctx.memory_namespace, else
+    the agent id derived from its name. Always a local namespace (never 'fleet:...')."""
+    pinned = getattr(ctx, "memory_namespace", None)
+    if isinstance(pinned, str) and memstore.is_local(pinned):
+        return pinned
+    return memstore.agent_namespace(getattr(ctx, "name", ""))
+
+
+def load_memory(path: Path, namespace: str | None = None) -> dict[str, dict[str, Any]]:
+    """Latest record per key: within `namespace` when given, else across every namespace."""
+    store = memstore.MemoryStore(path)
+    if namespace is not None:
+        return store.load(namespace)
     latest: dict[str, dict[str, Any]] = {}
-    if not path.exists():
-        return latest
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(rec, dict) and "key" in rec:
-            latest[str(rec["key"])] = rec
+    for space in store.namespaces().values():
+        for k, rec in space.items():
+            if k not in latest or rec.get("ts", 0) >= latest[k].get("ts", 0):
+                latest[k] = rec
     return latest
 
 
@@ -406,10 +416,12 @@ async def t_memory_save(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not key:
         return "ERROR: key is required"
     value = str(args.get("value", ""))
-    rec = {"key": key, "value": value, "ts": time.time(), "run_id": ctx.run_id, "agent": ctx.name}
-    with _mem_file(ctx).open("a") as f:
-        f.write(json.dumps(rec) + "\n")
-    _emit(ctx, "memory.save", key=key, bytes=len(value.encode()))
+    ns = _mem_ns(ctx)
+    try:
+        memstore.MemoryStore(_mem_file(ctx)).save(ns, key, value, run_id=ctx.run_id, agent=ctx.name)
+    except memstore.MemoryRefused as e:
+        return f"ERROR: {e}"
+    _emit(ctx, "memory.save", key=key, ns=ns, bytes=len(value.encode()))
     return f"saved memory '{key}'"
 
 
@@ -418,7 +430,7 @@ def _tokens(s: str) -> set[str]:
 
 
 async def t_memory_recall(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    mem = load_memory(_mem_file(ctx))
+    mem = load_memory(_mem_file(ctx), _mem_ns(ctx))
     if not mem:
         return "No memories saved yet."
     query = str(args.get("query", "") or "").strip()
@@ -444,6 +456,19 @@ async def t_memory_recall(ctx: "AgentContext", args: dict[str, Any]) -> str:
         recs.sort(key=lambda r: r.get("ts", 0), reverse=True)
     out = [f"- {r['key']}: {str(r.get('value', ''))[:1000]}" for r in recs[:20]]
     return "\n".join(out)
+
+
+async def t_memory_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """List the keys in this agent's own namespace, newest first (keys only, no values)."""
+    ns = _mem_ns(ctx)
+    mem = load_memory(_mem_file(ctx), ns)
+    limit = _int(args.get("limit"), 50, 1, 500)
+    if not mem:
+        return f"namespace {ns}: no memories saved yet."
+    recs = sorted(mem.values(), key=lambda r: r.get("ts", 0), reverse=True)
+    rows = [f"- {r['key']} ({len(str(r.get('value', '')).encode())} bytes)" for r in recs[:limit]]
+    head = f"namespace {ns}: {len(mem)}/{memstore.max_entries()} entries"
+    return head + "\n" + "\n".join(rows)
 
 
 # --------------------------------------------------------------------------- artifact_save
@@ -880,6 +905,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"key": str, "value": str}', t_memory_save),
     ("memory_recall", "recall persistent memories, ranked by keyword match (all recent if no query).",
      '{"query"?: str}', t_memory_recall),
+    ("memory_list", "list the keys in your own persistent memory namespace, newest first (survives restarts).",
+     '{"limit"?: int}', t_memory_list),
     ("artifact_save", "save a deliverable file under artifacts/<run_id>/ and announce it; returns its path.",
      '{"name": str, "content": str}', t_artifact_save),
     ("docker_run", "run a command in a fresh container of the given image with the workspace mounted at /workspace.",

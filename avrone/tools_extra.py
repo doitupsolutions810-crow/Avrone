@@ -13,6 +13,7 @@ New options (all optional, read via env / getattr so config.py needs no change):
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 import html as _html
 import json
 import os

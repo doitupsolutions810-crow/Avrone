@@ -184,6 +184,8 @@ class AvroneMCPServer:
 
     # ---------------------------------------------------------------- methods
     async def handle(self, method: str, params: dict) -> Any:
+        if not isinstance(params, dict):
+            raise _RPCError(-32602, "Params must be an object")
         if method == "initialize":
             requested = params.get("protocolVersion")
             version = requested if requested in SUPPORTED_VERSIONS else PROTOCOL_VERSION
@@ -199,19 +201,25 @@ class AvroneMCPServer:
         if method == "tools/list":
             return {"tools": TOOLS}
         if method == "tools/call":
-            return await self.call_tool(str(params.get("name", "")), params.get("arguments") or {})
+            args = params.get("arguments") or {}
+            if not isinstance(args, dict):
+                raise _RPCError(-32602, "Tool arguments must be an object")
+            return await self.call_tool(str(params.get("name", "")), args)
         raise _RPCError(-32601, f"Method not found: {method}")
 
     async def call_tool(self, name: str, args: dict) -> dict:
         if name not in {t["name"] for t in TOOLS}:
             raise _RPCError(-32602, f"Unknown tool: {name}")
+        if not isinstance(args, dict):
+            raise _RPCError(-32602, "Tool arguments must be an object")
         task = str(args.get("task", "")).strip()
+        # Check task input before initializing runner or launching MCP children.
+        if name != "avrone_tools" and not task:
+            return _err("'task' is required")
         try:
             core = await self.core()
             if name == "avrone_tools":
                 return _ok(json.dumps(core.tools.list(), indent=2), {"tools": core.tools.list()})
-            if not task:
-                return _err("'task' is required")
             if name == "avrone_squad":
                 res = await core.squad(task, _clamp_size(args.get("squad_size")))
             elif name == "avrone_chat":

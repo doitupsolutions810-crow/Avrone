@@ -83,6 +83,10 @@ probes outside networks.
 
 ## v0.12: Hardening + coverage round (66% -> 78%)
 
+- OSINT metrics now ignore malformed JSONL records and invalid event shapes instead of crashing, while preserving valid per-tool and top-target counts.
+- Added offline tests for malformed OSINT logs and fleet status/authentication edge cases; MCP rejects malformed parameter shapes before runner startup.
+- On a green Python test matrix, CI now builds and uploads an `avrone.zip` source artifact named `avrone-<commit-sha>` (14-day retention).
+
 - **Security fix:** `AVRONE_RECON_ALLOWLIST` matched bare suffixes, so `evilmysite.com` passed an allowlist of `mysite.com`. Now only the exact host or a true subdomain (`*.mysite.com`) passes; a leading-dot entry (`.partner.org`) works too.
 - `port_scan` validates ports (1-65535) and de-duplicates them before probing.
 - MCP server clamps `squad_size` to its advertised 1-8 schema and reports the real package version.

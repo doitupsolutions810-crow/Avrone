@@ -12,3 +12,20 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q
         env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }
+
+  bundle:
+    name: Build avrone.zip
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build source archive
+        run: |
+          zip -r avrone.zip . \
+            -x ".git/*" ".pytest_cache/*" "__pycache__/*" "*/__pycache__/*" "*.pyc" ".env" "data/*" "workspace/*" "*.egg-info/*" "avrone.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avrone-${{ github.sha }}
+          path: avrone.zip
+          if-no-files-found: error
+          retention-days: 14

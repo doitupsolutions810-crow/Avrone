@@ -74,8 +74,10 @@ class FleetManager:
         self.path = Path(data_dir) / "fleet.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         saved = json.loads(self.path.read_text()) if self.path.exists() else {}
-        nid = _env("AVRONE_NODE_ID") or saved.get("node_id") or re.sub(
-            r"[^a-z0-9-]", "-", socket.gethostname().lower())[:40] + "-" + secrets.token_hex(3)
+        nid = _env("AVRONE_NODE_ID") or saved.get("node_id")
+        if not nid:
+            base = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().lower()).strip("-")[:40]
+            nid = f"{base or 'node'}-{secrets.token_hex(3)}"
         if not ID_RE.match(nid):
             raise ValueError(f"AVRONE_NODE_ID {nid!r} must match {ID_RE.pattern}")
         self.node_id = nid

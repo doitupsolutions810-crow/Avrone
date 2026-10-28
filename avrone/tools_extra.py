@@ -483,7 +483,7 @@ async def t_docker_run(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return "ERROR: docker is not available on this host (no `docker` binary found)."
     image = str(args.get("image", "")).strip()
     cmd = str(args.get("cmd", ""))
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.\\-/:@]*", image):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.\-/:@]*", image):
         return "ERROR: invalid image name"
     if not cmd.strip():
         return "ERROR: cmd is required"

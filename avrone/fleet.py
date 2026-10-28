@@ -94,7 +94,7 @@ class FleetManager:
         if not nid:
             base = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().lower()).strip("-")[:40]
             nid = f"{base or 'node'}-{secrets.token_hex(3)}"
-        if not ID_RE.match(nid):
+        if not isinstance(nid, str) or not ID_RE.fullmatch(nid):
             raise ValueError(f"AVRONE_NODE_ID {nid!r} must match {ID_RE.pattern}")
         self.node_id = nid
         raw_nodes = saved.get("nodes", {})
@@ -291,13 +291,13 @@ class FleetManager:
     async def dispatch(self, route: list[str], mode: str, prompt: str, hops: int, n: int | None = None,
                        origin_run: str = "") -> dict[str, Any]:
         """Send a validated run request down a route or to an auto-selected child."""
+        if isinstance(hops, int) and not isinstance(hops, bool) and hops >= self.max_hops:
+            raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
         outbound = validate_run_payload(
             {"route": route, "mode": mode, "prompt": prompt, "n": n, "hops": hops,
              "from": self.node_id, "origin_run": origin_run},
             max_hops=self.max_hops,
         )
-        if hops >= self.max_hops:
-            raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
         route = outbound["route"]
         mode, prompt, n, hops, origin_run = (outbound["mode"], outbound["prompt"], outbound["n"],
                                                outbound["hops"], outbound["origin_run"])

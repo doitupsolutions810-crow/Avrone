@@ -176,7 +176,7 @@ def _mutate_budget(ctx: "AgentContext", day: str, change: Any) -> dict[str, Any]
             fd, tmp_name = tempfile.mkstemp(prefix=".budget-", suffix=".tmp", dir=str(path.parent))
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-                    json.dump(data, tmp, sort_keys=True)
+                    json.dump(data, tmp, sort_keys=True, allow_nan=False)
                     tmp.flush()
                     os.fsync(tmp.fileno())
                 os.replace(tmp_name, path)

@@ -396,6 +396,22 @@ async def run_log(run_id: str):
     return events
 
 
+@app.get("/api/runs/{run_id}/bridge")
+async def run_bridge(run_id: str):
+    """The learning bridge of a run: every post agents shared with each other, oldest first."""
+    from .bridge import bridge_run_id, load_posts, safe_run_id
+    if safe_run_id(run_id) != run_id:
+        raise HTTPException(400, "bad run id")
+    c = core()
+    open_ = (getattr(c, "_bridges", None) or {}).get(bridge_run_id(run_id))
+    posts = open_.posts() if open_ is not None else load_posts(c.settings.data_dir, run_id)
+    if posts is None:
+        if not c.codex.replay(run_id):
+            raise HTTPException(404, f"no run {run_id!r}")
+        posts = []
+    return {"run_id": run_id, "count": len(posts), "posts": posts}
+
+
 @app.post("/api/terminal")
 async def terminal(body: TerminalIn, x_admin_token: str | None = Header(default=None)):
     require_admin(x_admin_token)

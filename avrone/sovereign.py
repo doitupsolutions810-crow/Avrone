@@ -96,6 +96,11 @@ class LocalRunner(Runner):
     kind = "local"
 
     async def start(self) -> None:
+        if not self.s.allow_network:
+            raise RuntimeError(
+                "The local runner cannot enforce AVRONE_ALLOW_NETWORK=false for arbitrary shell commands. "
+                "Use AVRONE_RUNNER=docker (which applies --network none) or configure host-level egress rules."
+            )
         if hasattr(os, "geteuid") and os.geteuid() == 0 and os.getenv("AVRONE_ALLOW_ROOT_LOCAL", "").lower() not in {"1", "true", "yes"}:
             raise RuntimeError(
                 "Refusing to run agent shell commands as host root. Use AVRONE_RUNNER=docker "

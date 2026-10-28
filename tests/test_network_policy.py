@@ -97,3 +97,25 @@ async def test_http_response_body_is_bounded():
 
     with pytest.raises(ValueError, match="decoded bytes"):
         await safe_http_request("GET", "https://public.test/large", transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_http_request_header_and_body_limits_apply_before_network():
+    async def handler(request):
+        raise AssertionError("request should be rejected before reaching transport")
+
+    transport = httpx.MockTransport(handler)
+    with pytest.raises(ValueError, match="request body exceeds"):
+        await safe_http_request(
+            "POST", "https://target.test/", transport=transport, content=b"x" * 1_000_001
+        )
+    with pytest.raises(ValueError, match="too many headers"):
+        await safe_http_request(
+            "GET", "https://target.test/", transport=transport,
+            headers={f"X-{n}": "x" for n in range(65)},
+        )
+    with pytest.raises(ValueError, match="control characters"):
+        await safe_http_request(
+            "GET", "https://target.test/", transport=transport,
+            headers={"X-Bad": "ok\r\nInjected: yes"},
+        )

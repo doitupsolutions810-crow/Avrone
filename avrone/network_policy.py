@@ -60,13 +60,13 @@ def _is_allowed_private_address(host: str, address: ipaddress._BaseAddress) -> b
     else:
         private_range = address in _PRIVATE_V6
     allowlist = _private_allowlist()
-    return private_range and (host in allowlist or address.compressed.lower() in allowlist)
+    return private_range and host in allowlist
 
 
 def _json_size(value: object, limit: int) -> int:
     """Estimate encoded JSON size and stop as soon as the request cap is exceeded."""
     size = 0
-    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     try:
         for chunk in encoder.iterencode(value):
             size += len(chunk.encode("utf-8"))

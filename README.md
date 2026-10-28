@@ -81,6 +81,10 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.18
+
+- **bridge** — a recursive learning bridge so agents among agents conclude with each other's information: a run-scoped blackboard (`avrone/bridge.py`; posts `finding|question|answer|correction|conclusion` with refs, bounded by `AVRONE_BRIDGE_MAX_POSTS` (500) and 4000 chars/post, persisted to `data_dir/bridge/<run_id>.jsonl` with corrupt-line-tolerant replay) shared by every squad worker, sub-agent at any depth and deep reviewer via `bridge_post` / `bridge_read` / `bridge_reply` (codex `bridge.post`); a squad cross-examination round before the Lead merge (`AVRONE_BRIDGE_ROUNDS`, default 1, max 3, 0 = classic squad; stops early when a round adds no correction) whose digest of joint conclusions and unresolved disagreements goes to the Lead; run-end distillation of up to 5 conclusions into a `lessons` memory namespace (hash-deduped, `AVRONE_LESSONS_MAX` 200, oldest evicted) that is keyword-matched back into new runs' worker prompts (`AVRONE_LESSONS=off` disables); `Bridge.export(since)` / `merge_remote(posts, origin_node)` hooks for fleet relay; `GET /api/runs/{id}/bridge`.
+
 ## v0.17: Squad round 4 + edgepack — unified agent fs, batched + schema-checked tool calls, health-routed edge offload, API/fleet checkpoints, container-hosted agent homes with thermal migration — 1586 tests
 
 Five lanes in parallel (git worktrees, two green commits each), Lead merge + fixes (collision-free fleet checkpoint keys; one shared node-health block for routing and migration). Everything new is off by default except fsunify and toolcall.

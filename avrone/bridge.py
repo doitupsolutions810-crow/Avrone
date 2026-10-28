@@ -434,3 +434,161 @@ BRIDGE_TOOLS: list[tuple[str, str, str, Any, dict[str, dict[str, str]]]] = [
 def register_bridge_tools(registry: Any) -> None:
     for name, desc, args_doc, fn, schema in BRIDGE_TOOLS:
         registry.register(Tool(name, desc, args_doc, fn, source="builtin", schema=schema))
+
+
+# --------------------------------------------------------------------------- recursive learning
+#
+# At run end up to AVRONE_LESSONS_K (default 5) conclusions (then corrections) from the bridge
+# are distilled into the ``lessons`` memstore namespace (data_dir/memory.jsonl), deduped by a
+# hash of their normalized text and capped at AVRONE_LESSONS_MAX (default 200, oldest evicted).
+# New runs inject the most relevant lessons (keyword overlap with the task, <= 2000 chars) into
+# their worker prompts. AVRONE_LESSONS=off disables both.
+
+LESSONS_NS = "lessons"
+LESSONS_CHARS = 2000
+LESSON_TEXT = 500
+_STOP = frozenset("the and for with that this from what are was were has have had not but you your "
+                  "our its their they them into over than then can will should would could about "
+                  "which when where who how why all any each more most some such only also very "
+                  "use used using does did done just like make made task agent agents answer".split())
+
+
+def lessons_enabled() -> bool:
+    return os.getenv("AVRONE_LESSONS", "on").strip().lower() not in ("off", "0", "false", "no", "disabled")
+
+
+def lessons_max() -> int:
+    return _int_env("AVRONE_LESSONS_MAX", 200, 1, 5000)
+
+
+def lessons_k() -> int:
+    return _int_env("AVRONE_LESSONS_K", 5, 1, 20)
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text).lower()).strip(" .;:!\t\n")
+
+
+def lesson_key(text: str) -> str:
+    import hashlib
+    return "l-" + hashlib.sha1(_norm(text).encode()).hexdigest()[:16]
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(text).lower()) if w not in _STOP}
+
+
+def _store(data_dir: Path | str):
+    from .memstore import MemoryStore
+    return MemoryStore(Path(data_dir) / "memory.jsonl")
+
+
+def distill_lessons(data_dir: Path | str, bridge: "Bridge", task: str = "", k: int | None = None) -> list[str]:
+    """Save up to k of the bridge's conclusions (then corrections) as lessons; returns new keys."""
+    k = lessons_k() if k is None else max(0, int(k))
+    posts = bridge.posts()
+    picks: list[str] = []
+    seen: set[str] = set()
+    for kind in ("conclusion", "correction"):
+        for p in reversed([p for p in posts if p["kind"] == kind]):
+            t = re.sub(r"\s+", " ", p["text"]).strip()[:LESSON_TEXT]
+            key = lesson_key(t)
+            if t and key not in seen:
+                seen.add(key)
+                picks.append(t)
+            if len(picks) >= k:
+                break
+        if len(picks) >= k:
+            break
+    if not picks:
+        return []
+    store = _store(data_dir)
+    have = store.load(LESSONS_NS)
+    saved: list[str] = []
+    for t in picks:
+        key = lesson_key(t)
+        if key in have or key in saved:
+            continue
+        store.save(LESSONS_NS, key, t, run_id=bridge.run_id, task=str(task)[:200])
+        saved.append(key)
+    if saved:
+        store.trim(LESSONS_NS, lessons_max())
+    return saved
+
+
+def relevant_lessons(data_dir: Path | str, task: str, max_chars: int = LESSONS_CHARS) -> list[str]:
+    """Lessons sharing keywords with `task`, best overlap first (newest breaks ties), within max_chars."""
+    try:
+        recs = list(_store(data_dir).load(LESSONS_NS).values())
+    except OSError:
+        return []
+    want = _words(task)
+    if not want:
+        return []
+    scored = []
+    for r in recs:
+        s = len(want & _words(r.get("value", "")))
+        if s:
+            scored.append((s, float(r.get("ts", 0)), str(r.get("value", ""))))
+    scored.sort(key=lambda x: (-x[0], -x[1]))
+    out: list[str] = []
+    used = 0
+    for _, _, v in scored:
+        line = f"- {v}"
+        if used + len(line) + 1 > max_chars:
+            continue
+        out.append(v)
+        used += len(line) + 1
+    return out
+
+
+def lessons_block(data_dir: Path | str, task: str) -> str:
+    """Text appended to a worker's focus ('' when off or nothing relevant)."""
+    if not lessons_enabled():
+        return ""
+    try:
+        found = relevant_lessons(data_dir, task)
+    except Exception:  # noqa: BLE001 - learning must never sink a run
+        return ""
+    if not found:
+        return ""
+    return ("\n\nLESSONS FROM EARLIER RUNS (agents concluded these before; reuse what applies, verify "
+            "what matters):\n" + "\n".join(f"- {v}" for v in found))
+
+
+# --------------------------------------------------------------------------- cross-examination
+
+REVISE_PROMPT = """You are the CROSS-EXAMINATION agent {label} in AVRONE (round {rnd}). You and other
+agents worked the same task in parallel from different angles. Read their results and the shared
+bridge posts, then cross-check them against your own result:
+- post a "correction" only for a real error (yours or another agent's): say who and what is wrong
+  and the fix; cite post ids in refs when you can;
+- post a "conclusion" for each point you now agree on with the others;
+- post a "question" for a disagreement you cannot settle, or an "answer" to an open question.
+If your own result changes, give the complete revised result; otherwise leave "revised" empty.
+You have no tools and this is your only turn. Reply with JSON only:
+{{"posts": [{{"kind": "correction|conclusion|question|answer", "text": "...", "refs": ["<post id>"]}}], "revised": ""}}"""
+
+_REVISE_KINDS = ("correction", "conclusion", "question", "answer", "finding")
+
+
+def parse_revise(reply: Any) -> tuple[list[dict[str, Any]], str]:
+    """(posts, revised) from a cross-exam reply; junk yields ([], '')."""
+    text = reply if isinstance(reply, str) else ""
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S) or re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return [], ""
+    try:
+        obj = json.loads(m.group(1) if m.re.groups else m.group(0))
+    except (json.JSONDecodeError, RecursionError):
+        return [], ""
+    if not isinstance(obj, dict):
+        return [], ""
+    posts = []
+    for p in obj.get("posts") if isinstance(obj.get("posts"), list) else []:
+        if isinstance(p, dict) and str(p.get("kind", "")).lower() in _REVISE_KINDS and str(p.get("text") or "").strip():
+            posts.append({"kind": str(p["kind"]).lower(), "text": str(p["text"]), "refs": _refs(p.get("refs"))})
+        if len(posts) >= 10:
+            break
+    revised = obj.get("revised")
+    return posts, revised.strip() if isinstance(revised, str) else ""

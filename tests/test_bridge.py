@@ -240,3 +240,252 @@ def test_api_run_bridge(tmp_path, monkeypatch):
         assert c.get("/api/runs/runC/bridge").json() == {"run_id": "runC", "count": 0, "posts": []}
         assert c.get("/api/runs/ghost/bridge").status_code == 404
         assert c.get("/api/runs/a%20b/bridge").status_code == 400
+
+
+# ------------------------------------------------------------------ cross-examination in squad
+
+PLAN3 = json.dumps({"subtasks": [
+    {"role": "A", "focus": "alpha"}, {"role": "B", "focus": "beta"}, {"role": "C", "focus": "gamma"}]})
+
+
+class ScriptLLM:
+    """Planner/lead scripted; worker finals per focus; cross-exam replies scripted per round."""
+
+    def __init__(self, xexam=None, boom=(), worker_text=None):
+        self.xexam = xexam or (lambda label, rnd, user: '{"posts": [], "revised": ""}')
+        self.boom = set(boom)
+        self.worker_text = worker_text or {}
+        self.lead_inputs: list[str] = []
+        self.worker_systems: list[str] = []
+        self.xcalls: list[tuple[str, int]] = []
+
+    async def chat(self, messages, **kw):
+        system = messages[0]["content"]
+        if "You are the PLANNER" in system:
+            return PLAN3
+        if "You are the LEAD" in system:
+            self.lead_inputs.append(messages[1]["content"])
+            return "LEAD MERGED " + ("x" * 400)
+        if "CROSS-EXAMINATION agent" in system:
+            label = system.split("CROSS-EXAMINATION agent ")[1].split(" ")[0]
+            rnd = int(system.split("(round ")[1].split(")")[0])
+            self.xcalls.append((label, rnd))
+            out = self.xexam(label, rnd, messages[1]["content"])
+            if isinstance(out, BaseException):
+                raise out
+            return out
+        self.worker_systems.append(system)
+        for focus in self.boom:
+            if f"Your focus: {focus}" in system:
+                raise RuntimeError("worker crashed")
+        for focus, text in self.worker_text.items():
+            if f"Your focus: {focus}" in system:
+                return json.dumps({"final": text})
+        return '{"final": "worker ok"}'
+
+
+def test_rounds_zero_is_old_behaviour(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "0")
+    llm = ScriptLLM()
+    core = _core(tmp_path, llm)
+    out = asyncio.run(core.squad("task", n=3, run_id="z0"))
+    assert llm.xcalls == [] and "bridge" not in out
+    assert llm.lead_inputs[0] == ("TASK:\ntask\n\nAGENT REPORTS:\n" + "\n\n".join(
+        f"### Agent {i + 1}: {r} (focus: {f})\nworker ok" for i, (r, f) in enumerate(
+            [("A", "alpha"), ("B", "beta"), ("C", "gamma")])))
+    assert for_core(core, "z0").posts() == []
+    assert not any(e["kind"].startswith("bridge.") for e in core.codex.replay("z0"))
+
+
+def test_cross_exam_round_posts_and_digest(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "3")
+
+    def xexam(label, rnd, user):
+        assert "OTHER AGENTS' RESULTS" in user and "BRIDGE POSTS" in user
+        if rnd == 1 and label == "Agent2:B":
+            fid = user.split("BRIDGE POSTS:\n")[1].split("[")[1].split("]")[0]
+            return json.dumps({"posts": [
+                {"kind": "correction", "text": "Agent1 got the port wrong: it is 443", "refs": [fid, "ghost"]},
+                {"kind": "question", "text": "is TLS terminated upstream?"}],
+                "revised": "B revised: port 443"})
+        if rnd == 2 and label == "Agent1:A":
+            return '```json\n{"posts": [{"kind": "conclusion", "text": "port is 443"}], "revised": "A: 443"}\n```'
+        return "no json at all"
+    llm = ScriptLLM(xexam=xexam, worker_text={"alpha": "port 80", "beta": "port 443"})
+    core = _core(tmp_path, llm)
+    out = asyncio.run(core.squad("which port?", n=3, run_id="x1"))
+    br = out["bridge"]
+    assert br["rounds_run"] == 2 and br["stop_reason"] == "converged"
+    assert br["corrections"] == 1 and br["revised"] == 2 and br["max_rounds"] == 3
+    assert br["unresolved"] == 2  # the correction and the question are not referenced by a conclusion
+    assert [a["result"] for a in out["agents"]] == ["A: 443", "B revised: port 443", "worker ok"]
+    lead = llm.lead_inputs[0]
+    assert "BRIDGE DIGEST" in lead and "port is 443" in lead and "Unresolved" in lead
+    assert "A: 443" in lead.split("BRIDGE DIGEST")[0]
+    posts = for_core(core, "x1").posts()
+    kinds = [p["kind"] for p in posts]
+    assert kinds[:3] == ["finding"] * 3 and "correction" in kinds and "conclusion" in kinds
+    corr = next(p for p in posts if p["kind"] == "correction")
+    assert corr["refs"] == [posts[0]["id"]] and corr["agent"] == "Agent2:B"  # unknown ref dropped
+    assert {r for _, r in llm.xcalls} == {1, 2} and len(llm.xcalls) == 6
+    evs = [e["kind"] for e in core.codex.replay("x1")]
+    assert evs.count("bridge.round.done") == 2 and "bridge.post" in evs
+    assert evs.index("bridge.round.done") < evs.index("lead.merge")
+
+
+def test_cross_exam_stops_at_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "2")
+    llm = ScriptLLM(xexam=lambda label, rnd, u: json.dumps(
+        {"posts": [{"kind": "correction", "text": f"{label} fix r{rnd}"}]}))
+    core = _core(tmp_path, llm)
+    out = asyncio.run(core.squad("t", n=3, run_id="x2"))
+    assert out["bridge"]["rounds_run"] == 2 and out["bridge"]["stop_reason"] == "cap"
+    assert out["bridge"]["corrections"] == 6
+
+
+def test_cross_exam_skips_crashed_and_survives_turn_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "1")
+
+    def xexam(label, rnd, u):
+        if label == "Agent1:A":
+            return RuntimeError("model down")
+        assert "worker crashed" not in u  # the crashed worker's note is not shown to others
+        return '{"posts": [{"kind": "conclusion", "text": "ok"}]}'
+    llm = ScriptLLM(xexam=xexam, boom={"beta"})
+    core = _core(tmp_path, llm)
+    out = asyncio.run(core.squad("t", n=3, run_id="x3"))
+    assert sorted(lbl for lbl, _ in llm.xcalls) == ["Agent1:A", "Agent3:C"]
+    assert out["answer"].startswith("LEAD MERGED") and out["bridge"]["stop_reason"] == "converged"
+    assert "failed" in out["agents"][1]["result"]
+    assert any(e["kind"] == "error" and "cross-exam" in e["data"].get("message", "")
+               for e in core.codex.replay("x3"))
+    assert [p["agent"] for p in for_core(core, "x3").read(kind="finding")] == ["Agent1:A", "Agent3:C"]
+
+
+def test_cross_exam_too_few_workers(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "1")
+    llm = ScriptLLM(boom={"beta", "gamma"})
+    core = _core(tmp_path, llm)
+    out = asyncio.run(core.squad("t", n=3, run_id="x4"))
+    assert llm.xcalls == [] and out["bridge"]["stop_reason"] == "too_few_workers"
+    assert out["bridge"]["rounds_run"] == 0
+
+
+def test_parse_revise_junk():
+    assert bridge_mod.parse_revise(None) == ([], "")
+    assert bridge_mod.parse_revise("{bad json}") == ([], "")
+    assert bridge_mod.parse_revise("[1]") == ([], "")
+    posts, rev = bridge_mod.parse_revise(json.dumps({"posts": [
+        {"kind": "gossip", "text": "x"}, {"kind": "conclusion", "text": " "}, "str",
+        {"kind": "Answer", "text": "y", "refs": "abc"}], "revised": 5}))
+    assert posts == [{"kind": "answer", "text": "y", "refs": ["abc"]}] and rev == ""
+
+
+# ------------------------------------------------------------------ recursive learning
+
+def test_lessons_distill_dedupe_evict(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_LESSONS_MAX", "3")
+    b = Bridge("L1", tmp_path)
+    b.post("a", "correction", "Nginx default port is 80, not 8080")
+    for t in ("Port 443 needs TLS cert", "port 443 needs  TLS cert.", "Use certbot for TLS certs"):
+        b.post("a", "conclusion", t)
+    saved = bridge_mod.distill_lessons(tmp_path, b, "tls task", k=5)
+    assert len(saved) == 3  # the two 443 lines normalize to one
+    assert bridge_mod.distill_lessons(tmp_path, b, "again") == []  # deduped across runs
+    store = bridge_mod._store(tmp_path)
+    vals = {r["value"] for r in store.load("lessons").values()}
+    assert "Use certbot for TLS certs" in vals and "Nginx default port is 80, not 8080" in vals
+    b2 = Bridge("L2", tmp_path)
+    b2.post("b", "conclusion", "Rotate SSH keys yearly")
+    b2.post("b", "conclusion", "Disable SSH password auth")
+    assert len(bridge_mod.distill_lessons(tmp_path, b2, "ssh", k=1)) == 1
+    bridge_mod.distill_lessons(tmp_path, b2, "ssh", k=5)
+    live = store.load("lessons")
+    assert len(live) == 3  # capped, oldest evicted
+    assert "Rotate SSH keys yearly" in {r["value"] for r in live.values()}
+    assert all(r.get("run_id") for r in live.values())
+    assert bridge_mod.distill_lessons(tmp_path, Bridge("empty", tmp_path), "x") == []
+
+
+def test_lessons_relevance_and_bound(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_LESSONS", "on")
+    b = Bridge("L", tmp_path)
+    b.post("a", "conclusion", "nginx reverse proxy needs proxy_pass to the upstream port")
+    b.post("a", "conclusion", "postgres vacuum keeps tables healthy")
+    b.post("a", "conclusion", "nginx tls config: ssl_certificate and ssl_certificate_key " + "z" * 300)
+    bridge_mod.distill_lessons(tmp_path, b, "", k=5)
+    got = bridge_mod.relevant_lessons(tmp_path, "configure nginx tls ssl_certificate")
+    assert got[0].startswith("nginx tls config") and not any("postgres" in g for g in got)
+    assert len(got) == 2
+    assert bridge_mod.relevant_lessons(tmp_path, "the and for") == []
+    small = bridge_mod.relevant_lessons(tmp_path, "nginx tls ssl_certificate proxy", max_chars=100)
+    assert small == ["nginx reverse proxy needs proxy_pass to the upstream port"]
+    block = bridge_mod.lessons_block(tmp_path, "nginx proxy")
+    assert block.startswith("\n\nLESSONS FROM EARLIER RUNS") and len(block) < 2200
+
+
+def test_lessons_off_and_env(tmp_path, monkeypatch):
+    b = Bridge("L", tmp_path)
+    b.post("a", "conclusion", "nginx needs a reload after config edits")
+    bridge_mod.distill_lessons(tmp_path, b, "", k=5)
+    monkeypatch.setenv("AVRONE_LESSONS", "off")
+    assert bridge_mod.lessons_block(tmp_path, "nginx reload") == ""
+    monkeypatch.setenv("AVRONE_LESSONS", "on")
+    assert "reload" in bridge_mod.lessons_block(tmp_path, "nginx reload")
+    monkeypatch.setenv("AVRONE_LESSONS_K", "99")
+    assert bridge_mod.lessons_k() == 20
+    monkeypatch.delenv("AVRONE_LESSONS_MAX", raising=False)
+    assert bridge_mod.lessons_max() == 200
+
+
+def test_recursive_learning_across_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "1")
+    monkeypatch.setenv("AVRONE_LESSONS", "on")
+    llm = ScriptLLM(xexam=lambda label, rnd, u: json.dumps(
+        {"posts": [{"kind": "conclusion", "text": "redis default port is 6379"}]}))
+    core = _core(tmp_path, llm)
+    out1 = asyncio.run(core.squad("find the redis port", n=3, run_id="run1"))
+    assert out1["lessons_learned"] == 1  # three identical conclusions -> one lesson
+    assert not any("LESSONS FROM EARLIER RUNS" in s for s in llm.worker_systems)
+    llm.worker_systems.clear()
+    out2 = asyncio.run(core.squad("is redis on its default port?", n=3, run_id="run2"))
+    assert len(llm.worker_systems) == 3
+    assert all("LESSONS FROM EARLIER RUNS" in s and "6379" in s for s in llm.worker_systems)
+    assert "lessons_learned" not in out2  # nothing new
+    assert out2["agents"][0]["focus"] == "alpha"  # reported focus stays the planner's
+    assert any(e["kind"] == "lessons.inject" for e in core.codex.replay("run2"))
+    # unrelated task: nothing injected
+    llm.worker_systems.clear()
+    asyncio.run(core.squad("bake sourdough bread", n=3, run_id="run3"))
+    assert not any("LESSONS FROM EARLIER RUNS" in s for s in llm.worker_systems)
+
+
+def test_deep_reviewers_get_lessons(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_LESSONS", "on")
+    b = Bridge("old", tmp_path / "d")
+    b.post("a", "conclusion", "kubernetes pods restart on OOMKilled")
+    bridge_mod.distill_lessons(tmp_path / "d", b, "", k=5)
+    seen = []
+
+    class L:
+        async def chat(self, messages, **kw):
+            sysm = messages[0]["content"]
+            if "DEEP LEAD" in sysm:
+                return "## Verdict\nConfirmed. Confidence: High\n## Corrections\nNone\n## Bottom line\nok"
+            seen.append(sysm)
+            return '{"final": "fine"}'
+    core = _core(tmp_path, L())
+    out = asyncio.run(core.deep("why do kubernetes pods restart?", first_answer="OOM", n=2, run_id="dp"))
+    assert out["converged"] and len(seen) == 2 and all("OOMKilled" in s for s in seen)
+    assert out["agents"][0]["focus"].startswith("Verify each factual claim")
+
+
+def test_distill_failure_never_sinks_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_LESSONS", "on")
+    monkeypatch.setattr(bridge_mod, "distill_lessons", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    monkeypatch.setattr(bridge_mod, "lessons_block", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    core = _core(tmp_path, ScriptLLM())
+    out = asyncio.run(core.squad("t", n=3, run_id="f1"))
+    assert out["answer"].startswith("LEAD MERGED") and "lessons_learned" not in out
+    assert any("lessons distill failed" in e["data"].get("message", "")
+               for e in core.codex.replay("f1") if e["kind"] == "error")

@@ -245,3 +245,18 @@ class MemoryStore:
                 stats["merged"] += 1
             self._commit(records, spaces, pending, evicted)
         return stats
+
+    def trim(self, ns: str, keep: int) -> int:
+        """Drop the oldest keys of `ns` until at most `keep` remain (atomic rewrite).
+        Returns how many keys were evicted."""
+        keep = max(0, int(keep))
+        with self._locked():
+            spaces = self._fold(self._records())
+            space = spaces.get(ns, {})
+            extra = len(space) - keep
+            if extra <= 0:
+                return 0
+            for key in sorted(space, key=lambda k: space[k].get("ts", 0))[:extra]:
+                del space[key]
+            self._rewrite(spaces)
+        return extra

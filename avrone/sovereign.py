@@ -208,17 +208,31 @@ class DockerRunner(Runner):
 
 
 async def establish(settings: Settings) -> Runner:
-    """Pick and boot the runner, then health-check it."""
+    """Pick and boot the runner without silently downgrading to host execution."""
+    allow_local_fallback = os.getenv("AVRONE_ALLOW_UNSANDBOXED_LOCAL", "").lower() in {"1", "true", "yes"}
     choice = settings.runner
     if choice == "auto":
-        choice = "docker" if shutil.which("docker") else "local"
+        if shutil.which("docker"):
+            choice = "docker"
+        elif allow_local_fallback:
+            choice = "local"
+        else:
+            raise RuntimeError(
+                "AVRONE_RUNNER=auto could not find Docker and will not fall back to unsandboxed host execution. "
+                "Install Docker or explicitly set AVRONE_ALLOW_UNSANDBOXED_LOCAL=true for a trusted local-only setup."
+            )
     runner: Runner = DockerRunner(settings) if choice == "docker" else LocalRunner(settings)
     try:
         await runner.start()
-    except Exception:
-        if choice == "docker" and settings.runner == "auto":
+    except Exception as exc:
+        if choice == "docker" and settings.runner == "auto" and allow_local_fallback:
             runner = LocalRunner(settings)
             await runner.start()
+        elif choice == "docker" and settings.runner == "auto":
+            raise RuntimeError(
+                "Docker runner failed; refusing implicit fallback to host-local shell execution. "
+                "Repair Docker or explicitly set AVRONE_ALLOW_UNSANDBOXED_LOCAL=true for a trusted local-only setup."
+            ) from exc
         else:
             raise
     check = await runner.run("echo ready", timeout=60)

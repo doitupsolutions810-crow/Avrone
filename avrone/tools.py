@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import httpx
 
+from .network_policy import safe_http_request
+
 if TYPE_CHECKING:
     from .trinity import AgentContext
 
@@ -111,8 +113,7 @@ async def t_fetch(ctx: "AgentContext", args: dict[str, Any]) -> str:
     url = str(args.get("url", ""))
     if not re.match(r"^https?://", url):
         return "ERROR: url must start with http(s)://"
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-        r = await c.get(url, headers={"User-Agent": "AVRONE/0.2"})
+    r = await safe_http_request("GET", url, headers={"User-Agent": "AVRONE/0.2"}, timeout=30)
     text = re.sub(r"<script.*?</script>|<style.*?</style>", "", r.text, flags=re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)

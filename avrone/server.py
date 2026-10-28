@@ -115,6 +115,20 @@ async def extensions():
     return getattr(core(), "extensions", {})
 
 
+@app.get("/api/telemetry")
+async def api_telemetry(hours: float = 24):
+    from .telemetry import telemetry
+    return telemetry(core(), hours * 3600)
+
+
+@app.get("/api/map")
+async def api_map(hours: float = 24, format: str = "json"):
+    from fastapi.responses import PlainTextResponse
+    from .telemetry import system_map, to_mermaid
+    g = system_map(core(), hours * 3600)
+    return PlainTextResponse(to_mermaid(g)) if format == "mermaid" else g
+
+
 @app.get("/api/runs")
 async def runs():
     return core().codex.runs()

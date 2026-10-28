@@ -79,6 +79,19 @@ async def _run(args: argparse.Namespace) -> int:
                 print(f"{r['run_id']}  {str(r.get('prompt', ''))[:90]}")
             return 0
 
+        if args.cmd in ("telemetry", "map"):
+            from .telemetry import system_map, telemetry, to_mermaid
+            hours = args.hours
+            if args.cmd == "telemetry":
+                data = telemetry(core, hours * 3600)
+                _write_json(args.json, data)
+                print(json.dumps(data, indent=2, default=str))
+            else:
+                data = system_map(core, hours * 3600)
+                _write_json(args.json, data)
+                print(to_mermaid(data) if args.format == "mermaid" else json.dumps(data, indent=2))
+            return 0
+
         if not args.quiet:
             q = core.codex.subscribe()
             pump = asyncio.create_task(_pump(q))
@@ -134,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tools", parents=[common], help="list registered tools")
     r = sub.add_parser("runs", parents=[common], help="list recent runs")
     r.add_argument("--limit", type=int, default=20)
+    t = sub.add_parser("telemetry", parents=[common], help="run/agent/tool metrics from the action logs")
+    t.add_argument("--hours", type=float, default=24)
+    m = sub.add_parser("map", parents=[common], help="system map of AVRONE's own nodes and traffic")
+    m.add_argument("--hours", type=float, default=24)
+    m.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
     return p
 
 

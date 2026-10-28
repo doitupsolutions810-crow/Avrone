@@ -69,6 +69,18 @@ with `AVRONE_LEAD_MODEL` for a stronger merge model. Retries with backoff.
 
 **CLI.** `avrone-cli squad|chat|deep|tools|runs [--json out.json] [--quiet]`.
 
+## v0.3: Telemetry + System Map
+
+AVRONE traces its own nodes: Trinity Core, Eternal CodeX, the Sovereign OS
+runner, worker and lead models, every tool (built-in, plugin, MCP) and every
+agent role, with the traffic between them built from the action logs. It never
+probes outside networks.
+
+- `GET /api/telemetry?hours=24`: runs (total, live, by mode, p50/p95 duration), agents by role, per-tool calls, errors and average latency
+- `GET /api/map?format=json|mermaid`: node/edge graph, or a Mermaid flowchart you can paste into GitHub
+- **Map** tab in the UI: live graph + headline metrics
+- `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
+
 ## Quick start
 
 ```bash

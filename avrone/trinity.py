@@ -54,6 +54,10 @@ Reply with ONE fenced JSON block per turn, either a tool call:
 ```json
 {{"tool": "<name>", "args": {{...}}}}
 ```
+or, for independent calls that can run at the same time (up to {max_calls}), a batch:
+```json
+{{"tools": [{{"tool": "<name>", "args": {{...}}}}, {{"tool": "<name>", "args": {{...}}}}]}}
+```
 or, when you are done, your final result:
 ```json
 {{"final": "<your complete findings, including any code, commands run and results>"}}
@@ -252,11 +256,27 @@ def parse_action(text: str) -> dict[str, Any] | None:
     for c in candidates:
         try:
             obj = json.loads(c)
-            if isinstance(obj, dict) and ("tool" in obj or "final" in obj):
+            if isinstance(obj, dict) and ("tool" in obj or "final" in obj or "tools" in obj):
                 return obj
         except json.JSONDecodeError:
             continue
     return None
+
+
+DEFAULT_MAX_CALLS_PER_TURN = 4
+HARD_MAX_CALLS_PER_TURN = 8
+# After this many consecutive ARG ERRORs from one agent, stop blocking its calls on the
+# schema (the tools' own error handling takes over) so a confused model can't stall a run.
+ARG_ERROR_BUDGET = 3
+
+
+def max_calls_per_turn() -> int:
+    """AVRONE_MAX_CALLS_PER_TURN (default 4), clamped to 1..8; junk falls back to the default."""
+    try:
+        n = int(os.environ.get("AVRONE_MAX_CALLS_PER_TURN", DEFAULT_MAX_CALLS_PER_TURN))
+    except (TypeError, ValueError):
+        n = DEFAULT_MAX_CALLS_PER_TURN
+    return max(1, min(n, HARD_MAX_CALLS_PER_TURN))
 
 
 def _normalize_subtasks(reply: str, n: int) -> list[dict[str, str]]:
@@ -349,7 +369,7 @@ class TrinityCore:
         messages = [
             {"role": "system", "content": (system or WORKER_PROMPT).format(
                 name=name, role=role, task=task, focus=focus or task, tools=self.tools.docs(),
-                steps=self.settings.max_steps)},
+                steps=self.settings.max_steps, max_calls=max_calls_per_turn())},
             {"role": "user", "content": "Begin."},
         ]
         result = ""
@@ -380,6 +400,7 @@ class TrinityCore:
                           messages: list[dict[str, str]]) -> str:
         result = ""
         nudges = 0
+        budget = {"arg_errors": 0, "spent": 0}  # consecutive ARG ERRORs; spent = stop validating
         for step in range(self.settings.max_steps):
             for note in self.inbox.pop(name, []):
                 messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
@@ -408,15 +429,80 @@ class TrinityCore:
             if "final" in action:
                 result = str(action["final"])
                 break
-            tool, args = str(action.get("tool")), action.get("args") or {}
-            self.codex.emit(run_id, "tool.call", name, tool=tool, args=args, step=step)
-            out = await self.tools.call(ctx, tool, args if isinstance(args, dict) else {})
-            self.codex.emit(run_id, "tool.result", name, tool=tool, output=out[:4000])
+            if "tools" in action and "tool" not in action:
+                calls = action.get("tools")
+                if not isinstance(calls, list) or not calls:
+                    messages.append({"role": "user", "content": (
+                        "ERROR: \"tools\" must be a non-empty list of {\"tool\": ..., \"args\": ...} "
+                        "objects. Nothing ran.")})
+                    continue
+                cap = max_calls_per_turn()
+                dropped = max(0, len(calls) - cap)
+                calls = calls[:cap]
+                self.codex.emit(run_id, "tool.batch", name, count=len(calls), dropped=dropped, step=step)
+                outs = await asyncio.gather(*(self._one_call(run_id, name, ctx, c, step, budget)
+                                              for c in self._prechecked(run_id, name, calls, step, budget)))
+                total = len(outs)
+                parts = [f"TOOL RESULT [{i + 1}/{total}] ({t}):\n{o}" for i, (t, o) in enumerate(outs)]
+                if dropped:
+                    parts.append(f"NOTE: {dropped} more call(s) were skipped (limit {cap} per turn); "
+                                 "send them next turn if still needed.")
+                messages.append({"role": "user", "content": "\n\n".join(parts)})
+                continue
+            [call] = self._prechecked(run_id, name, [action], step, budget)
+            tool, out = await self._one_call(run_id, name, ctx, call, step, budget)
             messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
         else:
             messages.append({"role": "user", "content": "Out of turns. Give your final result now as plain text."})
             result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
         return result
+
+    def _prechecked(self, run_id: str, name: str, calls: list[Any], step: int,
+                    budget: dict[str, int]) -> list[dict[str, Any]]:
+        """Validate calls in order (before anything runs) and tag each with its arg error.
+
+        Each call becomes {"tool", "args", "error"}; error is None when it may run. Errors
+        count toward the agent's consecutive ARG_ERROR_BUDGET (reset by a clean call); once
+        it is spent, schema checks stop for the rest of this agent's loop and bad-args calls
+        run as before (unknown tools still can't run)."""
+        checked: list[dict[str, Any]] = []
+        for c in calls:
+            if not isinstance(c, dict):
+                tool, args = "?", {}
+                problem: tuple[str, str] | None = (
+                    "bad_args", "ARG ERROR (?): each batch entry must be {\"tool\": ..., \"args\": {...}}")
+            else:
+                tool, args = str(c.get("tool")), c.get("args")
+                args = {} if args is None else args
+                problem = self.tools.check(tool, args)
+            if problem and problem[0] == "bad_args" and budget["spent"] and isinstance(c, dict):
+                problem = None  # budget spent: stop nudging, let the tool handle its args
+            if problem:
+                budget["arg_errors"] += 1
+                if budget["arg_errors"] >= ARG_ERROR_BUDGET:
+                    budget["spent"] = 1
+                self.codex.emit(run_id, "tool.arg_error", name, tool=tool, reason=problem[0],
+                                message=problem[1][:1000], step=step, consecutive=budget["arg_errors"])
+            else:
+                budget["arg_errors"] = 0
+            checked.append({"tool": tool, "args": args, "error": problem[1] if problem else None})
+        return checked
+
+    async def _one_call(self, run_id: str, name: str, ctx: AgentContext, call: dict[str, Any],
+                        step: int, budget: dict[str, int]) -> tuple[str, str]:
+        """Run one pre-checked call, logged as tool.call/tool.result. Never raises."""
+        tool, args = call["tool"], call["args"]
+        self.codex.emit(run_id, "tool.call", name, tool=tool, args=args, step=step)
+        if call["error"] is not None:
+            out = call["error"]
+        else:
+            try:
+                out = await self.tools.call(ctx, tool, args if isinstance(args, dict) else {})
+            except Exception as e:  # a crash in one call is that call's result, never the turn's
+                out = f"ERROR: {type(e).__name__}: {e}"
+            out = out if isinstance(out, str) else str(out)
+        self.codex.emit(run_id, "tool.result", name, tool=tool, output=out[:4000])
+        return tool, out
 
     def _worker_limit(self, run_id: str, n: int) -> int:
         """Ask the governor how many of n workers may run at once; never raises, never < 1."""

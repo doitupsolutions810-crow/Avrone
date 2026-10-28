@@ -102,6 +102,9 @@ class Settings:
     max_parallel: int = field(default_factory=_int("AVRONE_MAX_PARALLEL", 6))  # concurrent LLM calls
     max_steps: int = field(default_factory=_int("AVRONE_MAX_STEPS", 6))
     max_spawn_depth: int = field(default_factory=_int("AVRONE_MAX_SPAWN_DEPTH", 2))
+    # Wall-clock cap (seconds) on one agent's whole run; 0 = no cap. A worker that hits it is
+    # reported as timed out and the squad merges the others instead of waiting forever.
+    agent_timeout: float = field(default_factory=_float("AVRONE_AGENT_TIMEOUT", 0))
 
     # --- Environment (Sovereign OS layer) ---
     workspace: Path = field(default_factory=_path("AVRONE_WORKSPACE", "./workspace"))

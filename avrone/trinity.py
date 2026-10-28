@@ -156,6 +156,35 @@ def parse_action(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _normalize_subtasks(reply: str, n: int) -> list[dict[str, str]]:
+    """Turn whatever the planner replied into 1..n clean {"role": str, "focus": str} dicts.
+
+    Model output is untrusted: subtasks may be missing, not a list, hold non-dicts, null or
+    numeric roles, nested focus objects, or far more than n items. Anything unusable falls
+    back to n independent solvers (pure Heavy style).
+    """
+    raw: Any = []
+    try:
+        m = re.search(r"\{.*\}", reply or "", re.S)
+        obj = json.loads(m.group(0)) if m else {}
+        raw = obj.get("subtasks", []) if isinstance(obj, dict) else []
+    except (json.JSONDecodeError, RecursionError):
+        raw = []
+    subtasks: list[dict[str, str]] = []
+    for s in raw if isinstance(raw, list) else []:
+        if not isinstance(s, dict) or not s.get("focus"):
+            continue
+        focus = s["focus"] if isinstance(s["focus"], str) else json.dumps(s["focus"], default=str)
+        role = s.get("role")
+        role = role.strip() if isinstance(role, str) and role.strip() else f"Agent{len(subtasks) + 1}"
+        subtasks.append({"role": role[:60], "focus": focus[:2000]})
+        if len(subtasks) >= n:
+            break
+    if not subtasks:
+        subtasks = [{"role": f"Solver{i + 1}", "focus": "Solve the whole task independently."} for i in range(n)]
+    return subtasks
+
+
 class TrinityCore:
     def __init__(self, settings: Settings, llm: LLM, runner: Runner, codex: Codex,
                  tools: ToolRegistry | None = None):
@@ -181,7 +210,7 @@ class TrinityCore:
 
     def _name(self, role: str) -> str:
         self._counter += 1
-        return f"{re.sub(r'[^A-Za-z0-9]', '', role)[:16] or 'Agent'}-{self._counter}"
+        return f"{re.sub(r'[^A-Za-z0-9]', '', str(role or ''))[:16] or 'Agent'}-{self._counter}"
 
     async def _chat(self, messages: list[dict[str, str]], **kw: Any) -> str:
         async with self._sem:
@@ -202,51 +231,83 @@ class TrinityCore:
             {"role": "user", "content": "Begin."},
         ]
         result = ""
+        timeout = float(getattr(self.settings, "agent_timeout", 0) or 0)
         try:
-            nudges = 0
-            for step in range(self.settings.max_steps):
-                for note in self.inbox.pop(name, []):
-                    messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
-                reply = await self._chat(messages, session=f"avrone:{run_id}:{name}")
-                messages.append({"role": "assistant", "content": reply})
-                action = parse_action(reply)
-                if action is None:
-                    # A reply that clearly MEANT to call a tool (a json fence or a "tool"/"final"
-                    # key) but didn't parse is a malformed action, not a final answer. Accepting it
-                    # as the result silently throws the whole run away, so nudge once and retry
-                    # instead (bounded, so a model that keeps failing still terminates).
-                    looks_like_action = ('"tool"' in reply or '"final"' in reply
-                                         or re.search(r"```(?:json)?\s*\{", reply))
-                    if looks_like_action and nudges < 2:
-                        nudges += 1
-                        self.codex.emit(run_id, "action.malformed", name, step=step)
-                        messages.append({"role": "user", "content": (
-                            "Your last message was not valid JSON, so no tool ran. Resend ONLY one "
-                            "JSON object, either {\"tool\": ..., \"args\": ...} or {\"final\": ...}. "
-                            "If a field holds code or multi-line text, escape every newline as \\n and "
-                            "every quote as \\\" so it is strict JSON. No prose, no code fences.")})
-                        continue
-                    # Genuine prose answer: accept it as the final result.
-                    result = reply.strip()
-                    break
-                if "final" in action:
-                    result = str(action["final"])
-                    break
-                tool, args = str(action.get("tool")), action.get("args") or {}
-                self.codex.emit(run_id, "tool.call", name, tool=tool, args=args, step=step)
-                out = await self.tools.call(ctx, tool, args if isinstance(args, dict) else {})
-                self.codex.emit(run_id, "tool.result", name, tool=tool, output=out[:4000])
-                messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
-            else:
-                messages.append({"role": "user", "content": "Out of turns. Give your final result now as plain text."})
-                result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
+            loop = self._agent_loop(run_id, name, ctx, messages)
+            result = await (asyncio.wait_for(loop, timeout) if timeout > 0 else loop)
         except LLMError as e:
             result = f"[{name} failed: {e}]"
             self.codex.emit(run_id, "error", name, message=str(e))
-        self.active[name]["status"] = "done"
-        self.inbox.pop(name, None)
+        except Exception as e:  # any other crash stays inside this agent; the squad goes on
+            if isinstance(e, asyncio.TimeoutError) and timeout > 0:
+                why = f"timed out after {timeout:g}s"
+            else:
+                why = f"{type(e).__name__}: {e}"
+            result = f"[{name} failed: {why}]"
+            self.codex.emit(run_id, "error", name, message=why)
+        finally:
+            # Always retire the agent (also on cancellation) so the HUD never shows a ghost
+            # "working" agent and message_agent stops accepting messages for it.
+            if name in self.active:
+                self.active[name]["status"] = "done"
+            self.inbox.pop(name, None)
         self.codex.emit(run_id, "agent.done", name, result=result[:6000])
         return result
+
+    async def _agent_loop(self, run_id: str, name: str, ctx: AgentContext,
+                          messages: list[dict[str, str]]) -> str:
+        result = ""
+        nudges = 0
+        for step in range(self.settings.max_steps):
+            for note in self.inbox.pop(name, []):
+                messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
+            reply = await self._chat(messages, session=f"avrone:{run_id}:{name}")
+            messages.append({"role": "assistant", "content": reply})
+            action = parse_action(reply)
+            if action is None:
+                # A reply that clearly MEANT to call a tool (a json fence or a "tool"/"final"
+                # key) but didn't parse is a malformed action, not a final answer. Accepting it
+                # as the result silently throws the whole run away, so nudge once and retry
+                # instead (bounded, so a model that keeps failing still terminates).
+                looks_like_action = ('"tool"' in reply or '"final"' in reply
+                                     or re.search(r"```(?:json)?\s*\{", reply))
+                if looks_like_action and nudges < 2:
+                    nudges += 1
+                    self.codex.emit(run_id, "action.malformed", name, step=step)
+                    messages.append({"role": "user", "content": (
+                        "Your last message was not valid JSON, so no tool ran. Resend ONLY one "
+                        "JSON object, either {\"tool\": ..., \"args\": ...} or {\"final\": ...}. "
+                        "If a field holds code or multi-line text, escape every newline as \\n and "
+                        "every quote as \\\" so it is strict JSON. No prose, no code fences.")})
+                    continue
+                # Genuine prose answer: accept it as the final result.
+                result = reply.strip()
+                break
+            if "final" in action:
+                result = str(action["final"])
+                break
+            tool, args = str(action.get("tool")), action.get("args") or {}
+            self.codex.emit(run_id, "tool.call", name, tool=tool, args=args, step=step)
+            out = await self.tools.call(ctx, tool, args if isinstance(args, dict) else {})
+            self.codex.emit(run_id, "tool.result", name, tool=tool, output=out[:4000])
+            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
+        else:
+            messages.append({"role": "user", "content": "Out of turns. Give your final result now as plain text."})
+            result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
+        return result
+
+    async def _gather_agents(self, run_id: str, coros: list[Any]) -> list[str]:
+        """Run agents in parallel; one that still blows up becomes a failure note, never a crash."""
+        out = await asyncio.gather(*coros, return_exceptions=True)
+        results: list[str] = []
+        for i, r in enumerate(out):
+            if isinstance(r, BaseException):
+                if isinstance(r, asyncio.CancelledError):
+                    raise r
+                self.codex.emit(run_id, "error", "Trinity", message=f"agent {i + 1} crashed: {r!r}")
+                r = f"[agent {i + 1} failed: {type(r).__name__}: {r}]"
+            results.append(str(r))
+        return results
 
     # ------------------------------------------------------------ the squad
     async def plan(self, run_id: str, task: str, n: int) -> list[dict[str, str]]:
@@ -255,14 +316,7 @@ class TrinityCore:
             {"role": "system", "content": PLANNER_PROMPT.format(n=n)},
             {"role": "user", "content": f"TASK: {task}"},
         ], temperature=0.4, session=f"avrone:{run_id}:planner")
-        try:
-            m = re.search(r"\{.*\}", reply, re.S)
-            subtasks = json.loads(m.group(0))["subtasks"] if m else []
-        except (json.JSONDecodeError, KeyError, TypeError):
-            subtasks = []
-        subtasks = [s for s in subtasks if isinstance(s, dict) and s.get("focus")][:n]
-        if not subtasks:  # fallback: same task, independent attempts (pure Heavy style)
-            subtasks = [{"role": f"Solver{i + 1}", "focus": "Solve the whole task independently."} for i in range(n)]
+        subtasks = _normalize_subtasks(reply, n)
         self.codex.emit(run_id, "lead.planned", "Planner", subtasks=subtasks)
         return subtasks
 
@@ -277,9 +331,8 @@ class TrinityCore:
             self.codex.emit(run_id, "run.done", "Trinity", answer=f"Model backend error: {e}")
             return {"run_id": run_id, "answer": f"Model backend error: {e}", "agents": []}
 
-        results = await asyncio.gather(*[
-            self.run_agent(run_id, s.get("role", "Agent"), task, focus=s["focus"]) for s in subtasks
-        ])
+        results = await self._gather_agents(run_id, [
+            self.run_agent(run_id, s["role"], task, focus=s["focus"]) for s in subtasks])
         reports = "\n\n".join(
             f"### Agent {i + 1}: {s.get('role')} (focus: {s['focus']})\n{r}"
             for i, (s, r) in enumerate(zip(subtasks, results)))
@@ -299,7 +352,8 @@ class TrinityCore:
                      "Write the complete final answer now from the reports: exact findings, what was "
                      "verified, what is only claimed, what is unknown."},
                 ], lead=True, temperature=0.2, session=f"avrone:{run_id}:lead2")
-        except LLMError as e:
+        except Exception as e:  # never throw away the squad's work because the merge failed
+            self.codex.emit(run_id, "error", "Lead", message=f"{type(e).__name__}: {e}")
             answer = f"Lead failed ({e}). Raw agent reports:\n\n{reports}"
         self.codex.emit(run_id, "run.done", "Trinity", answer=answer)
         return {"run_id": run_id, "answer": answer,
@@ -326,7 +380,7 @@ class TrinityCore:
         self.codex.emit(run_id, "lead.plan", "DeepLead", squad_size=n)
         self.codex.emit(run_id, "lead.planned", "DeepLead", subtasks=angles)
         brief = f"QUESTION:\n{task}\n\nFIRST-WAVE ANSWER TO REVIEW:\n{first_answer}"
-        results = await asyncio.gather(*[
+        results = await self._gather_agents(run_id, [
             self.run_agent(run_id, a["role"], brief, focus=a["focus"], system=DEEP_WORKER_PROMPT)
             for a in angles])
         reviews = "\n\n".join(f"### Reviewer {i + 1}: {a['role']}\n{r}"

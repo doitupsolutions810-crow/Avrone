@@ -104,16 +104,38 @@ class FleetManager:
         self.nodes: dict[str, dict[str, Any]] = {}
         if isinstance(raw_nodes, dict):
             for key, node in raw_nodes.items():
+                if len(self.nodes) >= MAX_NODES:
+                    break
                 if not isinstance(key, str) or not ID_RE.fullmatch(key) or not isinstance(node, dict):
                     continue
                 try:
                     peer_url = validate_node_url(node.get("url"))
-                    last_seen = float(node.get("last_seen", 0))
-                    if not math.isfinite(last_seen) or last_seen < 0 or last_seen > time.time() + 60:
+                    raw_seen = node.get("last_seen", 0)
+                    raw_load = node.get("load", 0)
+                    if (isinstance(raw_seen, bool) or not isinstance(raw_seen, (int, float))
+                            or isinstance(raw_load, bool) or not isinstance(raw_load, (int, float))):
                         continue
-                except (ValueError, TypeError):
+                    last_seen, load = float(raw_seen), float(raw_load)
+                    if (not math.isfinite(last_seen) or last_seen < 0 or last_seen > time.time() + 60
+                            or not math.isfinite(load) or load < 0):
+                        continue
+                    capabilities = node.get("capabilities", {})
+                    if not isinstance(capabilities, dict) or len(json.dumps(capabilities, default=str)) > 8_000:
+                        continue
+                    children = node.get("children", [])
+                    if (not isinstance(children, list) or len(children) > MAX_NODES
+                            or any(not isinstance(child, str) or not ID_RE.fullmatch(child) for child in children)):
+                        continue
+                    presence = node.get("presence")
+                    if len(json.dumps(presence, default=str)) > 16_000:
+                        continue
+                except (ValueError, TypeError, OverflowError):
                     continue
-                self.nodes[key] = {**node, "node_id": key, "url": peer_url, "last_seen": last_seen}
+                self.nodes[key] = {
+                    "node_id": key, "url": peer_url, "last_seen": last_seen, "load": load,
+                    "capabilities": capabilities, "children": list(dict.fromkeys(children)),
+                    "presence": presence,
+                }
         self._nonces: dict[str, float] = {}
         self._task: asyncio.Task | None = None
         self._bg: set[asyncio.Task] = set()

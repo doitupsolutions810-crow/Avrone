@@ -330,13 +330,13 @@ async def t_http_request(ctx: "AgentContext", args: dict[str, Any]) -> str:
     headers = {str(k): str(v) for k, v in headers.items()}
     headers.setdefault("User-Agent", "AVRONE/0.2")
     body = args.get("body")
-    kw: dict[str, Any] = {"headers": headers}
+    kw: dict[str, Any] = {}
     if isinstance(body, (dict, list)):
         kw["json"] = body
     elif body is not None:
         kw["content"] = str(body).encode()
     try:
-        r = await safe_http_request(method, url, timeout=30, transport=HTTP_TRANSPORT, **kw)
+        r = await safe_http_request(method, url, headers=headers, timeout=30, transport=HTTP_TRANSPORT, **kw)
     except ValueError as exc:
         return f"ERROR: {exc}"
     lines = [f"HTTP {r.status_code} {r.reason_phrase}"]

@@ -672,6 +672,135 @@ async def t_codex_search(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- self_scan
+# Read-only self-inventory of the agent's OWN environment. Never probes other hosts and
+# never reveals a secret value: secret-shaped env names only report "***set***" / "unset".
+
+SELF_SCAN_MAX_CHARS = 8000
+SELF_SCAN_MAX_IFACES = 16
+SELF_SCAN_MAX_ADDRS = 8
+SELF_SCAN_MAX_SECRET_NAMES = 40
+SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+# Secret-shaped names always listed (as set/unset) so the report is stable across hosts.
+KNOWN_SECRET_ENV = ("AVRONE_ADMIN_TOKEN", "AVRONE_LLM_API_KEY", "OPENCLAW_GATEWAY_TOKEN", "XAI_API_KEY",
+                    "OPENAI_API_KEY", "OPENROUTER_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY")
+_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/@\s]*@")
+
+
+def is_secret_name(name: str) -> bool:
+    up = name.upper()
+    return any(m in up for m in SECRET_MARKERS)
+
+
+def redact_env(name: str, value: str | None) -> str:
+    """How an env var may appear in a report: secret-shaped -> presence only; URLs lose credentials."""
+    if is_secret_name(name):
+        return "***set***" if value else "unset"
+    if value is None:
+        return "unset"
+    v = _URL_USERINFO_RE.sub(r"\1***@", str(value))
+    return v[:200] + ("..." if len(v) > 200 else "")
+
+
+def _writable(p: Path) -> bool:
+    try:
+        return p.exists() and os.access(p, os.W_OK)
+    except OSError:
+        return False
+
+
+def _disk(p: Path) -> dict[str, Any] | None:
+    try:
+        u = shutil.disk_usage(p)
+    except OSError:
+        return None
+    gib = 1024 ** 3
+    return {"total_gib": round(u.total / gib, 1), "free_gib": round(u.free / gib, 1)}
+
+
+def _own_interfaces() -> list[dict[str, Any]]:
+    """This host's own interfaces (presence helper: local `ip addr` / own sockets, no probing)."""
+    from .presence import _host_interfaces
+    try:
+        ifs = _host_interfaces()
+    except Exception:  # noqa: BLE001
+        return []
+    return [{"name": str(i.get("name")), "state": str(i.get("state")),
+             "addrs": [str(a) for a in (i.get("addrs") or [])][:SELF_SCAN_MAX_ADDRS]}
+            for i in ifs[:SELF_SCAN_MAX_IFACES]]
+
+
+def self_inventory(ctx: "AgentContext") -> dict[str, Any]:
+    """Structured, secret-free inventory of the environment this agent runs in."""
+    import platform
+    import socket
+
+    core = ctx.core
+    s = core.settings
+    runner = getattr(core, "runner", None)
+    ws = Path(getattr(runner, "workspace", None) or _setting(ctx, "workspace", ".")).resolve()
+    cwd = Path(os.getcwd())
+    tools = getattr(core, "tools", None)
+    try:
+        tool_count: int | None = len(tools.names()) if tools is not None else None
+    except Exception:  # noqa: BLE001
+        tool_count = None
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = "unknown"
+    allowlist = [h.strip() for h in os.getenv("AVRONE_RECON_ALLOWLIST", "").split(",") if h.strip()]
+    secret_names = set(KNOWN_SECRET_ENV) | {k for k in os.environ if is_secret_name(k)}
+    secrets = {k: redact_env(k, os.environ.get(k)) for k in sorted(secret_names)[:SELF_SCAN_MAX_SECRET_NAMES]}
+    return {
+        "system": {"os": f"{platform.system()} {platform.release()}".strip(), "arch": platform.machine(),
+                   "python": platform.python_version(), "hostname": hostname, "pid": os.getpid()},
+        "paths": {"cwd": str(cwd), "cwd_writable": _writable(cwd), "workspace": str(ws),
+                  "workspace_writable": _writable(ws), "workspace_disk": _disk(ws if ws.exists() else cwd)},
+        "runner": {"kind": getattr(runner, "kind", "unknown"), "configured": str(_setting(ctx, "runner", "auto")),
+                   "docker_available": bool(shutil.which("docker"))},
+        "toggles": {
+            "AVRONE_RECON": os.getenv("AVRONE_RECON", "allow").lower(),
+            "AVRONE_RECON_ALLOWLIST": ",".join(allowlist)[:300] or "(any)",
+            "AVRONE_ALLOW_NETWORK": bool(_setting(ctx, "allow_network", True)),
+            "AVRONE_AGENTS_CAN_SHELL": bool(_setting(ctx, "agents_can_shell", True)),
+            "AVRONE_SELF_EVOLVE": os.getenv("AVRONE_SELF_EVOLVE", "allow").lower(),
+            "AVRONE_SELF_CHANGES": os.getenv("AVRONE_SELF_CHANGES", "allow").lower(),
+            "admin_token": "on" if _setting(ctx, "admin_token", "") else "off",
+        },
+        "tools": {"registered": tool_count},
+        "network_interfaces": _own_interfaces(),
+        "secrets": secrets,
+    }
+
+
+def _cap(text: str, limit: int = SELF_SCAN_MAX_CHARS) -> str:
+    return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
+
+
+async def t_self_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    inv = self_inventory(ctx)
+    if str(args.get("format", "text")).lower() == "json":
+        return _cap(json.dumps(inv, indent=1, sort_keys=True))
+    sy, pa, ru, tg = inv["system"], inv["paths"], inv["runner"], inv["toggles"]
+    disk = pa["workspace_disk"]
+    lines = [
+        "self_scan (own environment only; read-only; secret values never shown)",
+        f"system: {sy['os']} {sy['arch']} python {sy['python']} host={sy['hostname']} pid={sy['pid']}",
+        f"cwd: {pa['cwd']} (writable={pa['cwd_writable']})",
+        f"workspace: {pa['workspace']} (writable={pa['workspace_writable']})"
+        + (f" disk free {disk['free_gib']}/{disk['total_gib']} GiB" if disk else ""),
+        f"runner: {ru['kind']} (configured={ru['configured']}) docker_available={ru['docker_available']}",
+        "toggles: " + " ".join(f"{k}={v}" for k, v in tg.items()),
+        f"tools registered: {inv['tools']['registered'] if inv['tools']['registered'] is not None else 'unknown'}",
+        "network interfaces:",
+    ]
+    for i in inv["network_interfaces"] or [{"name": "(none found)", "state": "", "addrs": []}]:
+        lines.append(f"  {i['name']} {i['state']} {', '.join(i['addrs'])}".rstrip())
+    lines.append("secret-shaped env: " + (", ".join(f"{k}={v}" for k, v in inv["secrets"].items()) or "(none)"))
+    return _cap("\n".join(lines))
+
+
 # --------------------------------------------------------------------------- registration
 
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
@@ -703,6 +832,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"path_a": str, "path_b"?: str, "text_b"?: str, "context"?: int}', t_diff_files),
     ("codex_search", "read-only search of the Eternal CodeX run logs by event kind (exact, or prefix ending in '.'/'*'), agent, tool name, substring and/or run_id; newest first, bounded.",
      '{"kind"?: str, "agent"?: str, "tool"?: str, "query"?: str, "run_id"?: str, "limit"?: int, "runs"?: int}', t_codex_search),
+    ("self_scan", "read-only inventory of YOUR OWN environment: OS/arch/python, host, cwd/workspace writability, runner, docker, AVRONE toggles, tool count, own network interfaces; secret env values redacted.",
+     '{"format"?: "text"|"json"}', t_self_scan),
 ]
 
 

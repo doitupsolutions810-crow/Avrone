@@ -59,3 +59,9 @@ def test_json_inspect_registered_as_builtin():
     reg = ToolRegistry()
     tx.register_extra_tools(reg)
     assert reg.get("json_inspect") is not None and reg.get("json_inspect").source == "builtin"
+
+
+def test_text_diff_truncates_large_output():
+    out = run(tx.t_text_diff(None, {"old": "", "new": "x" * (tx.TEXT_TOOL_MAX_OUTPUT + 500)}))
+    assert out.endswith("... diff truncated ...")
+    assert len(out) <= tx.TEXT_TOOL_MAX_OUTPUT + len("\n... diff truncated ...")

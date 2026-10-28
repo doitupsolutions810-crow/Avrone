@@ -17,6 +17,9 @@ def reset_transport():
 def make_gateway(monkeypatch, handler, **values):
     defaults = {
         "AVRONE_PROVIDER": "xai",
+        "AVRONE_LLM_BASE_URL": "",
+        "AVRONE_LLM_MODEL": "",
+        "AVRONE_LEAD_MODEL": "",
         "AVRONE_LLM_API_KEY": "test-key",
         "AVRONE_LLM_FALLBACKS": "ollama:llama3.1",
         "AVRONE_LLM_MODE": "live",

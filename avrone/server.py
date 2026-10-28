@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from . import __version__
 from .bootstrap import build_core, run_cleanups
 from .config import settings
-from .trinity import TrinityCore
+from .trinity import TrinityCore, clamp_deep_rounds
 
 STATIC = Path(__file__).parent / "static"
 state: dict = {}
@@ -56,6 +56,7 @@ class ChatIn(BaseModel):
     mode: str = "squad"  # squad | chat | deep
     squad_size: int | None = None
     first_answer: str | None = None  # deep mode: the answer to stress-test (else a squad runs first)
+    rounds: int | None = None  # deep mode: max waves, clamped to 1..5 (default settings/env, else 1)
     background: bool = False
 
 
@@ -95,7 +96,10 @@ async def chat(body: ChatIn):
     elif body.mode == "chat":
         job = c.chat(body.message, run_id)
     elif body.mode == "deep":
-        job = c.deep(body.message, body.first_answer, body.squad_size, run_id)
+        rounds = clamp_deep_rounds(body.rounds)
+        # Only pass rounds when asked, so cores without the knob keep working.
+        kw = {"rounds": rounds} if rounds is not None else {}
+        job = c.deep(body.message, body.first_answer, body.squad_size, run_id, **kw)
     else:
         raise HTTPException(400, f"Unknown mode {body.mode!r}. Use squad, chat or deep.")
     if body.background:  # long-running artifact: return now, watch it on the HUD

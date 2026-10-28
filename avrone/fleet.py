@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from .tools import Tool
+from .trinity import clamp_deep_rounds
 
 if TYPE_CHECKING:
     from .trinity import AgentContext, TrinityCore
@@ -428,9 +429,10 @@ class FleetManager:
         return n
 
     async def dispatch(self, route: list[str], mode: str, prompt: str, hops: int, n: int | None = None,
-                       origin_run: str = "", privileged: str = "") -> dict[str, Any]:
+                       origin_run: str = "", privileged: str = "", rounds: int | None = None) -> dict[str, Any]:
         """Send a job down `route` (first element = one of my children).
-        `privileged` = "priv:shell"/"priv:admin" requests the elevated tier (signed into the body)."""
+        `privileged` = "priv:shell"/"priv:admin" requests the elevated tier (signed into the body).
+        `rounds` (deep only) is clamped to 1..5 and only sent when given."""
         if hops >= self.max_hops:
             raise PermissionError(f"max fleet hops ({self.max_hops}) reached")
         mode = mode if mode in SPAWN_MODES else "squad"  # the remote ran unknown modes as squad anyway
@@ -441,6 +443,9 @@ class FleetManager:
                    "from": self.node_id, "origin_run": origin_run}
         if privileged:  # inside the signed body: cannot be added, removed or changed in transit
             payload.update(privileged=True, capability=privileged)
+        rounds = clamp_deep_rounds(rounds)
+        if rounds is not None:
+            payload["rounds"] = rounds
         node["load"] = node.get("load", 0) + 1
         try:
             return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
@@ -512,8 +517,9 @@ class FleetManager:
             self._privileged_gate("run", cap, payload.get("privileged") is True, sender_node(payload.get("from")), hops)
             priv = cap
         if route:
+            kw = {"rounds": r} if (r := clamp_deep_rounds(payload.get("rounds"))) is not None else {}
             res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), payload.get("origin_run", ""),
-                                      privileged=priv)
+                                      privileged=priv, **kw)
             return {**res, "path": [self.node_id] + res.get("path", [])}
         c = self.core
         self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=payload.get("from"), hops=hops,
@@ -526,7 +532,8 @@ class FleetManager:
             if mode == "chat":
                 res = await c.chat(prompt)
             elif mode == "deep":
-                res = await c.deep(prompt, None, payload.get("n"))
+                r = clamp_deep_rounds(payload.get("rounds"))
+                res = await c.deep(prompt, None, payload.get("n"), **({"rounds": r} if r is not None else {}))
             else:
                 res = await c.squad(prompt, payload.get("n"))
         finally:
@@ -561,9 +568,10 @@ async def t_remote_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:
     priv = str(args.get("privileged") or "")
     if priv and not priv.startswith("priv:"):
         priv = f"priv:{priv}"
+    kw = {"rounds": r} if (r := clamp_deep_rounds(args.get("rounds"))) is not None else {}
     try:
         res = await f.dispatch(route, str(args.get("mode", "squad")), str(args["task"]), hops, args.get("n"),
-                               ctx.run_id, privileged=priv)
+                               ctx.run_id, privileged=priv, **kw)
     except GatewayRefused as e:
         if not priv:
             raise
@@ -651,7 +659,7 @@ FLEET_TOOLS = [
     ("queue_status", "status/result of a queued job, or queue counts if no job_id.", '{"job_id"?: str}', t_queue_status),
     ("fleet_nodes", "list linked AVRONE nodes/routers with status, load and their children.", "{}", t_fleet_nodes),
     ("remote_spawn", "spawn a squad/chat/deep run on a remote AVRONE node; node may be a route like \"router1/edge7\" or \"auto\" (least loaded). Returns its answer.",
-     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "privileged"?: "shell"|"admin"}', t_remote_spawn),
+     '{"task": str, "node"?: str, "mode"?: "squad"|"chat"|"deep", "n"?: int, "rounds"?: 1-5 (deep), "privileged"?: "shell"|"admin"}', t_remote_spawn),
     ("remote_broadcast", "run the same task on several remote nodes in parallel (default: all online, max 8) and return every answer.",
      '{"task": str, "nodes"?: [str], "mode"?: str, "n"?: int}', t_remote_broadcast),
 ]

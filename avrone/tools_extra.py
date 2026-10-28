@@ -801,6 +801,64 @@ async def t_self_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return _cap("\n".join(lines))
 
 
+# --------------------------------------------------------------------------- capabilities_report
+# Plain-English capability ledger derived from self_inventory(): what this agent CAN and
+# CANNOT do under current settings. Read-only; secret values never appear.
+
+def capability_ledger(inv: dict[str, Any]) -> list[dict[str, Any]]:
+    tg, ru, pa = inv["toggles"], inv["runner"], inv["paths"]
+    shell = bool(tg["AVRONE_AGENTS_CAN_SHELL"])
+    net = bool(tg["AVRONE_ALLOW_NETWORK"])
+    recon = tg["AVRONE_RECON"] != "deny"
+    evolve = tg["AVRONE_SELF_EVOLVE"] != "deny"
+    changes = tg["AVRONE_SELF_CHANGES"]
+    docker_ok = shell and ru["docker_available"]
+    if not shell:
+        docker_detail = "AVRONE_AGENTS_CAN_SHELL=false"
+    elif not ru["docker_available"]:
+        docker_detail = "no docker binary on this host"
+    else:
+        docker_detail = "docker_run" + ("" if net else " (containers get --network none)")
+    secrets_set = sum(1 for v in inv["secrets"].values() if v == "***set***")
+
+    def row(cap: str, can: bool, status: str, detail: str) -> dict[str, Any]:
+        return {"capability": cap, "can": can, "status": status, "detail": detail}
+
+    return [
+        row("shell", shell, "enabled" if shell else "disabled",
+            "shell, python, git" + ("" if shell else " refused (AVRONE_AGENTS_CAN_SHELL=false)")),
+        row("docker", docker_ok, "enabled" if docker_ok else "unavailable", docker_detail),
+        row("outbound network", net, "enabled" if net else "disabled",
+            "fetch, web_search, http_request" + ("" if net else " refused (AVRONE_ALLOW_NETWORK=false)")),
+        row("recon", recon, "allow" if recon else "deny",
+            f"allowlist={tg['AVRONE_RECON_ALLOWLIST']}" + ("" if net or not recon else "; outbound network is off")),
+        row("self-evolve", evolve, "allow" if evolve else "deny", "AVRONE_SELF_EVOLVE=" + tg["AVRONE_SELF_EVOLVE"]),
+        row("self-changes", changes != "deny", changes,
+            "env_install " + {"deny": "refused", "log": "runs and is logged"}.get(changes, "runs and is recorded")),
+        row("workspace write", bool(pa["workspace_writable"]),
+            "enabled" if pa["workspace_writable"] else "read-only", pa["workspace"]),
+        row("admin API", tg["admin_token"] == "on", tg["admin_token"],
+            "AVRONE_ADMIN_TOKEN " + ("set (value hidden)" if tg["admin_token"] == "on" else "unset; admin endpoints refuse")),
+        row("runner", True, str(ru["kind"]), f"configured={ru['configured']}"),
+        row("credentials", secrets_set > 0, f"{secrets_set} set",
+            "secret-shaped env vars present; values never shown"),
+    ]
+
+
+async def t_capabilities_report(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    inv = self_inventory(ctx)
+    ledger = capability_ledger(inv)
+    if str(args.get("format", "text")).lower() == "json":
+        return _cap(json.dumps({"host": inv["system"]["hostname"], "tools_registered": inv["tools"]["registered"],
+                                "ledger": ledger}, indent=1))
+    lines = [f"capabilities_report for {inv['system']['hostname']} (own settings only; read-only)"]
+    for r in ledger:
+        lines.append(f"- {r['capability']}: {r['status']} ({r['detail']})")
+    lines.append("CAN: " + (", ".join(r["capability"] for r in ledger if r["can"]) or "(nothing)"))
+    lines.append("CANNOT: " + (", ".join(r["capability"] for r in ledger if not r["can"]) or "(nothing)"))
+    return _cap("\n".join(lines))
+
+
 # --------------------------------------------------------------------------- registration
 
 EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
@@ -834,6 +892,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"kind"?: str, "agent"?: str, "tool"?: str, "query"?: str, "run_id"?: str, "limit"?: int, "runs"?: int}', t_codex_search),
     ("self_scan", "read-only inventory of YOUR OWN environment: OS/arch/python, host, cwd/workspace writability, runner, docker, AVRONE toggles, tool count, own network interfaces; secret env values redacted.",
      '{"format"?: "text"|"json"}', t_self_scan),
+    ("capabilities_report", "read-only plain-English ledger of what YOU can and cannot do under current settings (shell, docker, network, recon+allowlist, self-evolve, self-changes, workspace write, admin); for squad reviews.",
+     '{"format"?: "text"|"json"}', t_capabilities_report),
 ]
 
 

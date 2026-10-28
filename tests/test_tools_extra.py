@@ -48,7 +48,7 @@ def test_registration():
     tx.register_extra_tools(reg)
     expected = {"web_search", "python", "list_files", "search_files", "edit_file", "http_request", "git",
                 "memory_save", "memory_recall", "artifact_save", "docker_run", "think", "diff_files", "codex_search",
-                "self_scan"}
+                "self_scan", "capabilities_report"}
     assert expected <= set(reg.names())
     assert all(t["source"] == "builtin" for t in reg.list())
 

@@ -61,7 +61,17 @@ parallel from different angles. Compare their work like a study group:
 - where they disagree, reason out which is right (say so briefly),
 - drop anything unsupported,
 then write ONE final answer for the user. Answer the task directly; do not
-describe the agents unless it helps."""
+describe the agents unless it helps. You have no tools and no further turns:
+never say you will check, inspect or verify something. Write the finished answer now,
+with the concrete facts, numbers and exact strings the agents verified."""
+
+_NARRATION = __import__("re").compile(r"^\s*(I['’]ll|I will|I am|I'm|Let me|Checking|I am checking)\b", __import__("re").I)
+
+
+def _weak_lead(answer: str, reports: str) -> bool:
+    """A lead reply that narrates intent or is far thinner than the reports it merges."""
+    a = (answer or "").strip()
+    return bool(_NARRATION.match(a)) or (len(a) < 300 and len(reports) > 2000)
 
 
 DEEP_WORKER_PROMPT = """You are {name}, the {role} reviewer in AVRONE's DEEP ANALYSIS wave, working
@@ -263,6 +273,16 @@ class TrinityCore:
                 {"role": "system", "content": LEAD_PROMPT},
                 {"role": "user", "content": f"TASK:\n{task}\n\nAGENT REPORTS:\n{reports}"},
             ], lead=True, temperature=0.3, session=f"avrone:{run_id}:lead")
+            if _weak_lead(answer, reports):
+                self.codex.emit(run_id, "lead.retry", "Lead", reason="narration or too thin")
+                answer = await self._chat([
+                    {"role": "system", "content": LEAD_PROMPT},
+                    {"role": "user", "content": f"TASK:\n{task}\n\nAGENT REPORTS:\n{reports}"},
+                    {"role": "assistant", "content": answer},
+                    {"role": "user", "content": "That is a plan, not an answer. You cannot run anything. "
+                     "Write the complete final answer now from the reports: exact findings, what was "
+                     "verified, what is only claimed, what is unknown."},
+                ], lead=True, temperature=0.2, session=f"avrone:{run_id}:lead2")
         except LLMError as e:
             answer = f"Lead failed ({e}). Raw agent reports:\n\n{reports}"
         self.codex.emit(run_id, "run.done", "Trinity", answer=answer)

@@ -65,3 +65,15 @@ def test_task_board(tmp_path):
     run(agentkit.t_task_board(c, {"op": "add", "title": "decode"}))
     out = run(agentkit.t_task_board(c, {"op": "update", "id": 1, "status": "done", "note": "QR ok"}))
     assert "#1 [done] decode" in out and "QR ok" in out
+
+
+def test_install_dedupe_and_weak_lead(tmp_path, monkeypatch):
+    c, _ = ctx(tmp_path)
+    monkeypatch.setenv("AVRONE_SELF_CHANGES", "allow")
+    run(agentkit.t_env_install(c, {"package": "requests"}))
+    n = len(c.core.runner.cmds)
+    assert "already installed" in run(agentkit.t_env_install(c, {"package": "requests"}))
+    assert len(c.core.runner.cmds) == n
+    from avrone.trinity import _weak_lead
+    assert _weak_lead("I'll inspect the image and decode it directly.", "x" * 5000)
+    assert not _weak_lead("The QR decodes to " + "data " * 100, "x" * 5000)

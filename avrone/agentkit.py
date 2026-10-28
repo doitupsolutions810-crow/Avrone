@@ -15,6 +15,7 @@ Self-changes policy (AVRONE_SELF_CHANGES): allow (default) | log | deny.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -91,7 +92,8 @@ async def t_image_decode(ctx: "AgentContext", args: dict[str, Any]) -> str:
     try:
         import zxingcpp
     except ImportError:
-        return "ERROR: zxing-cpp not installed. Use env_install {\"package\": \"zxing-cpp\"} then retry."
+        return ("ERROR: zxing-cpp not installed. It is a pip package (not apt): "
+                "env_install {\"package\": \"zxing-cpp\", \"manager\": \"pip\"} then retry.")
     from PIL import Image
     p = _img_path(ctx, str(args["path"]))
     im = Image.open(p).convert("L")
@@ -102,7 +104,9 @@ async def t_image_decode(ctx: "AgentContext", args: dict[str, Any]) -> str:
             key = (str(r.format), r.text)
             if key not in seen:
                 pos = r.position
-                seen[key] = (f"- {r.format.name} valid={r.valid} ec={getattr(r, 'ec_level', '?')} "
+                extra = getattr(r, "extra", None) or {}
+                ver = f" version={extra['Version']}" if isinstance(extra, dict) and extra.get("Version") else ""
+                seen[key] = (f"- {r.format.name}{ver} valid={r.valid} ec={getattr(r, 'ec_level', '?')} "
                              f"scale={scale} at ({pos.top_left.x},{pos.top_left.y})-({pos.bottom_right.x},{pos.bottom_right.y})"
                              f"\n  text[{len(r.text)}]: {r.text[:4000]}")
     _emit(ctx, "image.decode", path=str(p), found=len(seen))
@@ -161,6 +165,37 @@ async def t_env_install(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if policy == "deny":
         record_change(ctx, f"{mgr} install (denied)", pkg, False, "AVRONE_SELF_CHANGES=deny")
         return "ERROR: self-changes are disabled on this node (AVRONE_SELF_CHANGES=deny)"
+    prior = _installed_before(ctx, mgr, pkg)
+    if prior:
+        return f"{pkg} already installed via {mgr} by {prior} (resource ledger); no change made"
+    lock = _data(ctx) / f".install-{mgr}.lock"
+    with open(lock, "w") as lf:  # one installer per package manager per node: no apt/dpkg lock fights
+        import fcntl
+        await asyncio.to_thread(fcntl.flock, lf, fcntl.LOCK_EX)
+        try:
+            prior = _installed_before(ctx, mgr, pkg)
+            if prior:
+                return f"{pkg} already installed via {mgr} by {prior} (resource ledger); no change made"
+            return await _do_install(ctx, mgr, pkg)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def _installed_before(ctx: "AgentContext", mgr: str, pkg: str) -> str | None:
+    p = _ledger(ctx)
+    if not p.exists():
+        return None
+    for line in reversed(p.read_text().splitlines()):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("ok") and r.get("action") == f"{mgr} install" and r.get("target") == pkg:
+            return r.get("agent", "another agent")
+    return None
+
+
+async def _do_install(ctx: "AgentContext", mgr: str, pkg: str) -> str:
     if mgr == "pip":
         cmd = f"python3 -m pip install -q {pkg} 2>&1 | tail -n 3"
     elif mgr == "apt":

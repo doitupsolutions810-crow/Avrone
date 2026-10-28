@@ -21,6 +21,11 @@ goes through FleetManager.dispatch_gateway(), which enforces, in this order:
   5 sender in FLEET_ALLOW 6 hops within MAX_HOPS   7 per-request capability check
 and records every accept as a Codex `fleet.dispatch` event and every refusal as `fleet.refused`.
 Outbound spawns (dispatch / remote_spawn / queue_submit) run the matching local checks first.
+Memory sync: POST /api/fleet/memory carries an agent's/node's memory entries UP to the parent. It goes
+through the same dispatch_gateway (kind "memory", capability "memory:sync", all seven steps); the
+receiver files them under "fleet:<sender>/<ns>" where <sender> is the HMAC-signed `from` node id, so
+a push can never overwrite the receiver's own (local) namespaces. Accepts are audited as
+`fleet.memory.merge`. Caps: MEMORY_SYNC_MAX_ENTRIES per push plus the store's per-namespace caps.
 Privileged ("root-enabled") tier -- OFF by default, deny by default:
   AVRONE_FLEET_PRIVILEGED      must be exactly "allow" (case-insensitive) to enable; anything else = deny
   AVRONE_PRIVILEGED_NODES      comma list of SENDER node ids this node grants elevated capabilities to
@@ -86,6 +91,14 @@ SPAWN_MODES = ("squad", "chat", "deep")
 # elevated capabilities: only on the run endpoint, only through the privileged gate
 PRIVILEGED_CAPABILITIES = {"priv:shell", "priv:admin"}
 PRIVILEGED_HEADER = "x-avrone-privileged"
+# non-spawn capabilities, kept apart from the (minimal) spawn/message table above
+SYNC_CAPABILITIES: dict[str, set[str]] = {"memory": {"memory:sync"}}
+MEMORY_PATH = "/api/fleet/memory"
+MEMORY_SYNC_MAX_ENTRIES = 200
+
+
+def kind_capabilities(kind: str) -> set[str]:
+    return CAPABILITIES.get(kind) or SYNC_CAPABILITIES.get(kind) or set()
 
 
 class GatewayRefused(PermissionError):
@@ -141,6 +154,7 @@ class FleetManager:
         self.parent = _env("AVRONE_FLEET_PARENT").rstrip("/")
         self.public_url = _env("AVRONE_PUBLIC_URL").rstrip("/")
         self.heartbeat_s = float(_env("AVRONE_FLEET_HEARTBEAT", "15") or 15)
+        self.data_dir = Path(data_dir)
         self.path = Path(data_dir) / "fleet.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         saved = json.loads(self.path.read_text()) if self.path.exists() else {}
@@ -250,7 +264,7 @@ class FleetManager:
         if flag or cap in PRIVILEGED_CAPABILITIES:
             self._privileged_gate(kind, cap, flag, sender, hops)
             return {**ctx, "hops": hops, "capability": cap, "privileged": True}
-        if cap not in CAPABILITIES.get(kind, set()):
+        if cap not in kind_capabilities(kind):
             raise self._refuse("capability", f"capability {cap!r} not permitted for {kind}", capability=cap,
                                hops=hops, **ctx)
         return {**ctx, "hops": hops, "capability": cap}
@@ -328,7 +342,7 @@ class FleetManager:
             if not self.allowed(first_hop):
                 raise self._refuse("target_not_allowed", f"node {first_hop} not in AVRONE_FLEET_ALLOW", **ctx)
             return
-        if capability not in CAPABILITIES.get(kind, set()):
+        if capability not in kind_capabilities(kind):
             raise self._refuse("capability", f"capability {capability!r} not permitted for {kind}",
                                capability=capability, **ctx)
         if first_hop and first_hop not in ("auto", "local") and not self.allowed(first_hop):
@@ -373,6 +387,53 @@ class FleetManager:
         if r.status_code >= 400:
             raise RuntimeError(f"{base}{path} -> {r.status_code}: {r.text[:300]}")
         return r.json()
+
+    # ------------------------------------------------------------ memory sync
+    async def push_memory(self, entries: list[dict[str, Any]], origin: str) -> dict[str, Any]:
+        """Send memory entries ({ns, key, value, ts, agent}) up to the parent over the signed gateway."""
+        if not self.enabled:
+            raise GatewayRefused("no_token", "fleet disabled: set AVRONE_FLEET_TOKEN")
+        if not self.parent:
+            raise RuntimeError("no parent node: set AVRONE_FLEET_PARENT to sync memory upward")
+        self.check_outbound("memory", "memory:sync", 0)
+        if len(entries) > MEMORY_SYNC_MAX_ENTRIES:
+            raise ValueError(f"too many entries ({len(entries)} > {MEMORY_SYNC_MAX_ENTRIES})")
+        payload = {"from": origin or self.node_id, "hops": 1, "capability": "memory:sync", "entries": entries}
+        res = await self._post(self.parent, MEMORY_PATH, payload, timeout=30)
+        self._audit("fleet.memory.push", entries=len(entries), parent=self.parent)
+        return res
+
+    def receive_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Server side of /api/fleet/memory. Call ONLY with a payload returned by dispatch_gateway.
+        Merges into fleet:<sender>/<ns> (sender = signed `from` node id); never into a local namespace."""
+        from . import memstore
+        if request_capability("memory", payload) != "memory:sync":  # defense in depth
+            raise PermissionError("capability memory:sync required")
+        sender = sender_node(payload.get("from"))
+        if not ID_RE.match(sender):
+            raise ValueError("invalid sender node id")
+        if sender == self.node_id:
+            raise ValueError("refusing memory sync from this node's own id")
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            raise ValueError("entries must be a list")
+        if len(entries) > MEMORY_SYNC_MAX_ENTRIES:
+            raise ValueError(f"too many entries ({len(entries)} > {MEMORY_SYNC_MAX_ENTRIES})")
+        groups: dict[str, list[dict[str, Any]]] = {}
+        bad = 0
+        for e in entries:
+            ns = e.get("ns") if isinstance(e, dict) else None
+            if not isinstance(ns, str) or not memstore.is_local(ns):  # sender may only name its own local ns
+                bad += 1
+                continue
+            groups.setdefault(memstore.remote_namespace(sender, ns), []).append(e)
+        store = memstore.MemoryStore(self.data_dir / "memory.jsonl")
+        stats = {"merged": 0, "skipped": 0, "rejected": bad}
+        for target, items in groups.items():
+            for k, v in store.merge(target, items, source=sender).items():
+                stats[k] += v
+        self._audit("fleet.memory.merge", sender=sender, namespaces=sorted(groups), **stats)
+        return {"ok": True, "node": self.node_id, "namespaces": sorted(groups), **stats}
 
     async def join_parent_once(self) -> dict[str, Any]:
         from .presence import snapshot

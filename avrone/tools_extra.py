@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import httpx
 
 from .network_policy import safe_http_request
-from .sovereign import _docker_image_policy_error, _docker_sandbox_args
+from .sovereign import _docker_image_policy_error, _docker_sandbox_args, _docker_workspace_user_args
 from .tools import Tool, _safe_path
 
 if TYPE_CHECKING:
@@ -496,6 +496,7 @@ async def t_docker_run(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return "ERROR: " + image_error
     argv = ["docker", "run", "--rm", "--name", container_name, "--label", "io.avrone.agent-run=true",
             *_docker_sandbox_args(allow_network=allow_network),
+            *_docker_workspace_user_args(ws),
             "-v", f"{ws}:/workspace", "-w", "/workspace"]
     argv += [image, "sh", "-c", cmd]
     command_timeout = _int(_setting(ctx, "command_timeout", 120), 120, 1, 3600)

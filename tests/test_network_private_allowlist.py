@@ -19,10 +19,10 @@ async def test_private_hostname_requires_exact_allowlist_and_private_dns_answer(
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.delenv("AVRONE_HTTP_PRIVATE_ALLOWLIST", raising=False)
     with pytest.raises(ValueError, match="non-public IP"):
-        await validate_public_http_url("https://db.internal")
+        await validate_public_http_url("https://db.example")
 
     monkeypatch.setenv("AVRONE_HTTP_PRIVATE_ALLOWLIST", "db.internal")
-    assert await validate_public_http_url("https://db.internal") == "https://db.internal"
+    assert await validate_public_http_url("https://db.example") == "https://db.example"
 
 
 @pytest.mark.asyncio
@@ -33,7 +33,7 @@ async def test_private_cidr_and_wildcard_are_not_allowlist_entries(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setenv("AVRONE_HTTP_PRIVATE_ALLOWLIST", "10.0.0.0/8,*.internal")
     with pytest.raises(ValueError, match="non-public IP"):
-        await validate_public_http_url("https://db.internal")
+        await validate_public_http_url("https://db.example")
 
 
 @pytest.mark.asyncio

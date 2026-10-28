@@ -203,6 +203,7 @@ class TrinityCore:
         ]
         result = ""
         try:
+            nudges = 0
             for step in range(self.settings.max_steps):
                 for note in self.inbox.pop(name, []):
                     messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
@@ -210,7 +211,22 @@ class TrinityCore:
                 messages.append({"role": "assistant", "content": reply})
                 action = parse_action(reply)
                 if action is None:
-                    # Model answered in prose: accept it as the final result.
+                    # A reply that clearly MEANT to call a tool (a json fence or a "tool"/"final"
+                    # key) but didn't parse is a malformed action, not a final answer. Accepting it
+                    # as the result silently throws the whole run away, so nudge once and retry
+                    # instead (bounded, so a model that keeps failing still terminates).
+                    looks_like_action = ('"tool"' in reply or '"final"' in reply
+                                         or re.search(r"```(?:json)?\s*\{", reply))
+                    if looks_like_action and nudges < 2:
+                        nudges += 1
+                        self.codex.emit(run_id, "action.malformed", name, step=step)
+                        messages.append({"role": "user", "content": (
+                            "Your last message was not valid JSON, so no tool ran. Resend ONLY one "
+                            "JSON object, either {\"tool\": ..., \"args\": ...} or {\"final\": ...}. "
+                            "If a field holds code or multi-line text, escape every newline as \\n and "
+                            "every quote as \\\" so it is strict JSON. No prose, no code fences.")})
+                        continue
+                    # Genuine prose answer: accept it as the final result.
                     result = reply.strip()
                     break
                 if "final" in action:

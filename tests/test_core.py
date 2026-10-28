@@ -56,3 +56,31 @@ def test_events_websocket(client):
     with client.websocket_connect("/ws/events") as ws:
         client.post("/api/chat", json={"message": "x", "mode": "chat"})
         assert ws.receive_json()["kind"] == "run.start"
+
+
+def test_malformed_action_is_nudged_not_accepted(tmp_path):
+    """A reply that means to call a tool but doesn't parse should be retried, not taken as final."""
+    import asyncio
+    from avrone.trinity import TrinityCore
+    from avrone.config import Settings
+    from avrone.codex import Codex
+    from avrone.sovereign import LocalRunner
+
+    class ScriptLLM:
+        def __init__(self, replies): self.replies = list(replies); self.calls = 0
+        async def chat(self, messages, **kw):
+            self.calls += 1
+            return self.replies.pop(0) if self.replies else '{"final": "ran out"}'
+
+    # First reply: a fenced tool call with an unescaped newline in a value -> invalid JSON.
+    bad = '```json\n{"tool": "noop", "args": {"text": "line1\nline2"}}\n```'
+    good = '{"final": "done properly"}'
+    llm = ScriptLLM([bad, good])
+    s = Settings(); s.data_dir = tmp_path / "d"; s.workspace = tmp_path / "ws"; s.max_steps = 6
+    runner = LocalRunner(s)
+    core = TrinityCore(s, llm, runner, Codex(s.data_dir))
+    out = asyncio.run(core.run_agent("r1", "Worker", "do a thing"))
+    assert out == "done properly"       # it recovered to the real final, not the broken text
+    assert llm.calls == 2               # it asked again instead of giving up on call 1
+    log = [e["kind"] for e in core.codex.replay("r1")]
+    assert "action.malformed" in log

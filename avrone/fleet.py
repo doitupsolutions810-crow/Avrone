@@ -58,6 +58,10 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value} is not accepted")
+
+
 def sign(token: str, method: str, path: str, body: bytes, ts: str | None = None, nonce: str | None = None) -> dict[str, str]:
     ts = ts or str(int(time.time()))
     nonce = nonce or secrets.token_hex(12)
@@ -88,7 +92,7 @@ class FleetManager:
         if self.path.is_symlink():
             raise ValueError("fleet registry file must not be a symlink")
         try:
-            saved = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+            saved = json.loads(self.path.read_text(encoding="utf-8"), parse_constant=_reject_nonfinite_json) if self.path.exists() else {}
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             saved = {}
         if not isinstance(saved, dict):
@@ -120,14 +124,14 @@ class FleetManager:
                             or not math.isfinite(load) or load < 0):
                         continue
                     capabilities = node.get("capabilities", {})
-                    if not isinstance(capabilities, dict) or len(json.dumps(capabilities, default=str)) > 8_000:
+                    if not isinstance(capabilities, dict) or len(json.dumps(capabilities, default=str, allow_nan=False)) > 8_000:
                         continue
                     children = node.get("children", [])
                     if (not isinstance(children, list) or len(children) > MAX_NODES
                             or any(not isinstance(child, str) or not ID_RE.fullmatch(child) for child in children)):
                         continue
                     presence = node.get("presence")
-                    if len(json.dumps(presence, default=str)) > 16_000:
+                    if len(json.dumps(presence, default=str, allow_nan=False)) > 16_000:
                         continue
                 except (ValueError, TypeError, OverflowError):
                     continue
@@ -151,7 +155,7 @@ class FleetManager:
     def _save(self) -> None:
         if self.path.is_symlink():
             raise ValueError("fleet registry file must not be a symlink")
-        payload = json.dumps({"node_id": self.node_id, "nodes": self.nodes}, indent=2)
+        payload = json.dumps({"node_id": self.node_id, "nodes": self.nodes}, indent=2, allow_nan=False)
         fd, tmp_name = tempfile.mkstemp(prefix=".fleet-", suffix=".tmp", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:

@@ -61,6 +61,8 @@ class ChatIn(BaseModel):
     # squad/deep: server-managed checkpoint (data_dir/checkpoints/<id>.json). Re-posting the same
     # id and task resumes an interrupted (or background) run; a different task is refused (409).
     checkpoint_id: str | None = None
+    # squad only: netsquad placement for this request (local|network|hybrid); default AVRONE_SQUAD_DISPATCH
+    dispatch: str | None = None
 
 
 class TerminalIn(BaseModel):
@@ -112,6 +114,11 @@ async def chat(body: ChatIn):
     c = core()
     if body.mode not in ("squad", "chat", "deep"):
         raise HTTPException(400, f"Unknown mode {body.mode!r}. Use squad, chat or deep.")
+    if body.dispatch is not None:
+        if body.mode != "squad":
+            raise HTTPException(400, "dispatch works with mode squad")
+        if body.dispatch not in ("local", "network", "hybrid"):
+            raise HTTPException(400, f"Unknown dispatch {body.dispatch!r}. Use local, network or hybrid.")
     run_id = uuid.uuid4().hex[:10]
     ck: dict = {}
     cid, release = None, None
@@ -122,7 +129,9 @@ async def chat(body: ChatIn):
             run_id = meta["run_id"]  # a resume keeps logging under the original run
     try:
         if body.mode == "squad":
-            job = c.squad(body.message, body.squad_size, run_id, **ck)
+            # Only pass dispatch when asked, so cores without the knob keep working.
+            dk = {"dispatch": body.dispatch} if body.dispatch is not None else {}
+            job = c.squad(body.message, body.squad_size, run_id, **ck, **dk)
         elif body.mode == "chat":
             job = c.chat(body.message, run_id)
         else:  # deep

@@ -81,6 +81,16 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.13.1: Self-evolution containment and duration budget
+
+- Proposal paths use resolved path containment rather than string-prefix checks; proposal IDs and metadata/worktree lookup are validated.
+- Proposal input is bounded to 20 edits, 250 KiB per file and 1 MiB per proposal, with duplicate paths rejected.
+- Test commands must be direct pytest invocations; shell control operators are rejected. Commit goals and working directories are shell-quoted.
+- Every proposal has one monotonic deadline spanning worktree setup, edits, test execution, retry and commit. The operator cap is `AVRONE_EVOLVE_MAX_SECONDS` (default 900 seconds, hard maximum 1800).
+- Added `evolve_status` to report accepted/rejected proposals, recorded durations and configured caps. This reports the current state and does not start an autonomous infinite loop.
+- FastAPI reports the package version from `avrone.__version__` rather than a stale literal.
+- Validation status: pending a real full-suite run; runnerless GitHub Actions failures do not count as a pass.
+
 ## v0.13: Full squad hardening round (coverage report enabled; tests pending)
 
 Four independent review lanes added two primary changes each, followed by a Lead integration pass:

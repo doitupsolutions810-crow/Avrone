@@ -15,6 +15,7 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow),
 from __future__ import annotations
 
 import json
+import shlex
 import os
 import re
 import shutil
@@ -28,6 +29,14 @@ if TYPE_CHECKING:
     from .trinity import AgentContext
 
 SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]")
+PID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,55}$")
+
+DEFAULT_MAX_PROPOSAL_SECONDS = 900
+MAX_PROPOSAL_SECONDS = 1800
+MAX_PROPOSAL_EDITS = 20
+MAX_EDIT_BYTES = 250_000
+MAX_TOTAL_EDIT_BYTES = 1_000_000
+SHELL_META = re.compile(r"[;&|\x60$><\n\r]")
 
 
 def _repo_root(ctx: "AgentContext") -> Path:
@@ -39,9 +48,17 @@ def _repo_root(ctx: "AgentContext") -> Path:
 
 
 def _data(ctx: "AgentContext") -> Path:
-    d = Path(ctx.core.settings.data_dir) / "evolve"
+    root = Path(ctx.core.settings.data_dir).resolve()
+    d = root / "evolve"
+    if d.is_symlink():
+        raise ValueError("evolution data directory must not be a symlink")
     d.mkdir(parents=True, exist_ok=True)
-    return d
+    resolved = d.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError("evolution data directory escapes the configured data root") from None
+    return resolved
 
 
 def _emit(ctx: "AgentContext", kind: str, **data: Any) -> None:
@@ -52,34 +69,165 @@ def _emit(ctx: "AgentContext", kind: str, **data: Any) -> None:
 
 
 async def _sh(ctx: "AgentContext", cmd: str, cwd: Path, timeout: int = 600):
-    return await ctx.core.runner.run(f"cd {cwd} && {cmd}", timeout=timeout)
+    """Run a command with a shell-quoted working directory and explicit timeout."""
+    return await ctx.core.runner.run(f"cd {shlex.quote(str(cwd))} && {cmd}", timeout=timeout)
+
+
+def _proposal_timeout(args: dict[str, Any]) -> int:
+    """Return requested duration, bounded by the operator-configured ceiling."""
+    try:
+        configured = int(os.getenv("AVRONE_EVOLVE_MAX_SECONDS", str(DEFAULT_MAX_PROPOSAL_SECONDS)))
+    except (TypeError, ValueError):
+        configured = DEFAULT_MAX_PROPOSAL_SECONDS
+    ceiling = max(1, min(configured, MAX_PROPOSAL_SECONDS))
+    raw = args.get("duration_seconds", ceiling)
+    if isinstance(raw, bool):
+        raise ValueError("duration_seconds must be a positive integer")
+    if isinstance(raw, float) and not raw.is_integer():
+        raise ValueError("duration_seconds must be a positive integer")
+    try:
+        requested = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("duration_seconds must be a positive integer") from None
+    if requested < 1:
+        raise ValueError("duration_seconds must be a positive integer")
+    return min(requested, ceiling)
+
+
+def _remaining(deadline: float, cap: int) -> int:
+    seconds = deadline - time.monotonic()
+    if seconds <= 0:
+        raise TimeoutError("proposal duration budget exhausted")
+    return max(1, min(cap, int(seconds + 0.999)))
+
+
+def _validate_edits(edits: Any) -> list[dict[str, str]]:
+    if not isinstance(edits, list) or not edits:
+        raise ValueError("edits must be a non-empty list")
+    if len(edits) > MAX_PROPOSAL_EDITS:
+        raise ValueError(f"too many edits: maximum is {MAX_PROPOSAL_EDITS}")
+    validated: list[dict[str, str]] = []
+    seen: set[str] = set()
+    total = 0
+    for index, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise ValueError(f"edit {index + 1} must be an object")
+        rel = edit.get("path")
+        value = edit.get("content", "")
+        if not isinstance(rel, str) or not rel.strip():
+            raise ValueError(f"edit {index + 1} path must be a non-empty string")
+        candidate = Path(rel)
+        if candidate.is_absolute() or "\\" in rel or "\x00" in rel:
+            raise ValueError(f"edit path must be a relative POSIX path: {rel!r}")
+        if not candidate.parts:
+            raise ValueError("edit path must name a file")
+        if any(part in {"..", ".git"} for part in candidate.parts):
+            raise ValueError(f"edit path escapes repo or contains a forbidden component: {rel!r}")
+        if not isinstance(value, str):
+            raise ValueError(f"edit {index + 1} content must be a string")
+        key = candidate.as_posix()
+        if key in seen:
+            raise ValueError(f"duplicate edit path: {key}")
+        seen.add(key)
+        size = len(value.encode("utf-8"))
+        if size > MAX_EDIT_BYTES:
+            raise ValueError(f"edit {key!r} exceeds {MAX_EDIT_BYTES} bytes")
+        total += size
+        if total > MAX_TOTAL_EDIT_BYTES:
+            raise ValueError(f"proposal exceeds {MAX_TOTAL_EDIT_BYTES} total edit bytes")
+        validated.append({"path": key, "content": value})
+    return validated
+
+
+def _validated_test_command(args: dict[str, Any]) -> str:
+    """Allow pytest invocation only; shell operators are never accepted from an agent."""
+    raw = args.get("test_cmd") or os.getenv("AVRONE_EVOLVE_TEST_CMD") or 'python -m pytest -q -m "not integration"'
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("test_cmd must invoke pytest")
+    if SHELL_META.search(raw):
+        raise ValueError("test_cmd contains shell control syntax; only a direct pytest invocation is allowed")
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        raise ValueError("test_cmd quoting is invalid") from None
+    if not parts:
+        raise ValueError("test_cmd must invoke pytest")
+    executable = Path(parts[0]).name.lower()
+    is_pytest = executable in {"pytest", "pytest-3"}
+    is_python_pytest = (
+        executable in {"python", "python3", "python3.11", "python3.12", "python3.13"}
+        and len(parts) >= 3 and parts[1:3] == ["-m", "pytest"]
+    )
+    if not (is_pytest or is_python_pytest):
+        raise ValueError("test_cmd must be pytest or python -m pytest")
+    return shlex.join(parts)
+
+
+def _validated_pid(pid: str) -> str:
+    if not isinstance(pid, str) or not PID_RE.fullmatch(pid) or pid in {".", ".."}:
+        raise ValueError("invalid proposal id")
+    return pid
 
 
 def _meta_path(ctx: "AgentContext", pid: str) -> Path:
-    return _data(ctx) / f"{pid}.json"
+    return _data(ctx) / f"{_validated_pid(pid)}.json"
 
 
-async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
-    """A fresh checkout of the repo's HEAD for proposal `pid`, on its own branch."""
-    repo = _repo_root(ctx)
-    wt = _data(ctx) / f"wt-{pid}"
+def _worktree_path(ctx: "AgentContext", pid: str) -> Path:
+    return _data(ctx) / f"wt-{_validated_pid(pid)}"
+
+
+async def _ensure_worktree(ctx: "AgentContext", pid: str, deadline: float) -> tuple[Path, str]:
+    """Create an isolated proposal clone, respecting the proposal deadline."""
+    repo = _repo_root(ctx).resolve()
+    wt = _worktree_path(ctx, pid)
     branch = f"evolve/{pid}"
+    if wt.is_symlink():
+        raise ValueError("proposal worktree path must not be a symlink")
     if wt.exists():
-        return wt, branch
-    # Clone the local repo (cheap, isolated) rather than add a worktree to the live .git.
-    r = await _sh(ctx, f"git clone -q --no-hardlinks . {wt} 2>&1", repo)
+        raise FileExistsError("proposal worktree path already exists; reset it before retrying")
+    r = await _sh(
+        ctx, f"git clone -q --no-hardlinks . {shlex.quote(str(wt))} 2>&1",
+        repo, timeout=_remaining(deadline, 600),
+    )
     if r.exit_code != 0:
-        # Fallback: plain copy if not a git repo
-        shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(".git", "data", "*.egg-info", "__pycache__"))
-        await _sh(ctx, "git init -q && git add -A && git -c user.email=a@a -c user.name=avrone commit -qm base", wt)
-    await _sh(ctx, f"git checkout -q -b {branch}", wt)
+        _remaining(deadline, 120)
+        if wt.exists():
+            shutil.rmtree(wt, ignore_errors=True)
+        shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(
+            ".git", "data", "*.egg-info", "__pycache__", ".pytest_cache", ".venv", "venv"
+        ))
+        initialized = await _sh(
+            ctx,
+            "git init -q && git add -A && git -c user.email=avrone@localhost "
+            "-c user.name=avrone commit -qm base",
+            wt, timeout=_remaining(deadline, 120),
+        )
+        if initialized.exit_code != 0:
+            raise RuntimeError("could not initialize isolated proposal worktree")
+    checkout = await _sh(
+        ctx, f"git checkout -q -b {shlex.quote(branch)}", wt,
+        timeout=_remaining(deadline, 120),
+    )
+    if checkout.exit_code != 0:
+        raise RuntimeError(f"could not create proposal branch {branch}")
     return wt, branch
 
 
 def _in_repo(wt: Path, rel: str) -> Path:
-    p = (wt / rel).resolve()
-    if not str(p).startswith(str(wt.resolve())):
-        raise ValueError(f"path escapes repo: {rel}")
+    root = wt.resolve()
+    candidate = Path(rel)
+    if candidate.is_absolute():
+        raise ValueError(f"path must be relative to repo: {rel}")
+    p = (root / candidate).resolve()
+    try:
+        relative = p.relative_to(root)
+    except ValueError:
+        raise ValueError(f"path escapes repo: {rel}") from None
+    if not relative.parts:
+        raise ValueError("edit path must target a file inside the repo")
+    if ".git" in relative.parts:
+        raise ValueError("edits to Git metadata are forbidden")
     return p
 
 
@@ -87,82 +235,185 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if os.getenv("AVRONE_SELF_EVOLVE", "allow").lower() == "deny":
         return "ERROR: self-evolution is disabled on this node (AVRONE_SELF_EVOLVE=deny)"
     goal = str(args.get("goal", "")).strip()
-    edits = args.get("edits")
-    if not goal or not isinstance(edits, list) or not edits:
-        return ('ERROR: give {"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}. '
-                "Each edit replaces that file's whole contents with content.")
+    if not goal:
+        return "ERROR: goal is required"
+    if len(goal) > 500:
+        return "ERROR: goal must be at most 500 characters"
+    try:
+        edits = _validate_edits(args.get("edits"))
+        timeout_s = _proposal_timeout(args)
+        test_cmd = _validated_test_command(args)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+
     import uuid
     pid = SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
-    wt, branch = await _ensure_worktree(ctx, pid)
-    changed = []
-    for e in edits:
-        try:
-            p = _in_repo(wt, str(e["path"]))
-        except (KeyError, ValueError) as ex:
-            return f"ERROR: {ex}"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(e.get("content", "")))
-        changed.append(str(e["path"]))
-    # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
-    # under the parallel-clone load of a squad and would reject good unit-level proposals.
-    test_cmd = str(args.get("test_cmd") or os.getenv("AVRONE_EVOLVE_TEST_CMD")
-                   or 'python -m pytest -q -m "not integration"')
-    # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
-    # node's own install, so parallel proposals can't hijack each other or the live system.
-    res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=900)
-    passed = res.exit_code == 0
+    started_wall = time.time()
+    started_mono = time.monotonic()
+    deadline = started_mono + timeout_s
+    wt: Path | None = None
+    branch = f"evolve/{pid}"
+    changed: list[str] = []
+    passed = False
     flaky = False
-    if not passed and "pytest" in test_cmd:
-        # Separate real failures from load flakes: re-run only what failed, once, alone.
-        again = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt, timeout=600)
-        if again.exit_code == 0:
-            passed, flaky = True, True
-            res = again
-    tail = "\n".join((res.stdout or res.stderr).splitlines()[-25:])
+    tail = ""
+    test_result = None
+    failure = ""
+
+    try:
+        wt, branch = await _ensure_worktree(ctx, pid, deadline)
+        for edit in edits:
+            _remaining(deadline, 1)
+            p = _in_repo(wt, edit["path"])
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(edit["content"], encoding="utf-8")
+            changed.append(edit["path"])
+
+        # One deadline covers clone/setup, edits, test execution, retry, and commit.
+        test_env = "PYTHONPATH=" + shlex.quote(str(wt)) + "${PYTHONPATH:+:$PYTHONPATH}"
+        res = await _sh(
+            ctx, f"{test_env} {test_cmd} 2>&1", wt,
+            timeout=_remaining(deadline, timeout_s),
+        )
+        test_result = res
+        passed = res.exit_code == 0
+
+        if not passed and "pytest" in test_cmd:
+            try:
+                retry_timeout = _remaining(deadline, min(600, timeout_s))
+            except TimeoutError:
+                retry_timeout = 0
+            if retry_timeout:
+                again = await _sh(
+                    ctx, f"{test_env} {test_cmd} 2>&1", wt,
+                    timeout=retry_timeout,
+                )
+                test_result = again
+                if again.exit_code == 0:
+                    passed, flaky = True, True
+
+        output = (getattr(test_result, "stdout", "") or "") + (getattr(test_result, "stderr", "") or "")
+        tail = "\n".join(output.splitlines()[-25:])
+        if passed:
+            commit = await _sh(
+                ctx,
+                "git add -A && git -c user.email=avrone@localhost -c user.name=avrone "
+                f"commit -qm {shlex.quote(goal)}",
+                wt, timeout=_remaining(deadline, 120),
+            )
+            if commit.exit_code != 0:
+                passed = False
+                failure = "tests passed, but proposal commit failed"
+                tail = (tail + "\n" + failure).strip()
+    except TimeoutError as exc:
+        passed = False
+        failure = str(exc) or "proposal duration budget exhausted"
+        tail = (tail + "\n" + failure).strip()
+    except Exception as exc:  # noqa: BLE001
+        passed = False
+        failure = f"{type(exc).__name__}: {exc}"
+        tail = (tail + "\n" + failure).strip()
+
+    duration_s = round(max(0.0, time.monotonic() - started_mono), 3)
+    meta = {
+        "pid": pid, "goal": goal, "branch": branch, "files": changed,
+        "passed": passed, "by": ctx.name, "ts": started_wall,
+        "duration_s": duration_s, "timeout_s": timeout_s,
+        "test_cmd": test_cmd, "worktree": str(wt) if wt else "",
+        "flaky_retry": flaky, "failure": failure, "test_tail": tail[-3000:],
+    }
+    _meta_path(ctx, pid).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _emit(ctx, "evolve.propose", pid=pid, passed=passed, files=changed,
+          duration_s=duration_s, timeout_s=timeout_s, flaky_retry=flaky, failure=failure)
     if passed:
-        await _sh(ctx, f"git add -A && git -c user.email=a@a -c user.name=avrone commit -qm {json.dumps(goal)[:200]}", wt)
-    meta = {"pid": pid, "goal": goal, "branch": branch, "files": changed, "passed": passed,
-            "by": ctx.name, "ts": time.time(), "test_cmd": test_cmd, "worktree": str(wt),
-            "flaky_retry": flaky, "test_tail": tail[-3000:]}
-    _meta_path(ctx, pid).write_text(json.dumps(meta))
-    _emit(ctx, "evolve.propose", pid=pid, passed=passed, files=changed)
-    verdict = ("ACCEPTED (tests pass" + (" after re-running a flaky failure" if flaky else "")
-               + ", committed to branch " + branch + ")") if passed else "REJECTED (tests fail; discard or retry)"
-    return (f"proposal {pid}: {verdict}\ngoal: {goal}\nfiles: {', '.join(changed)}\n"
-            f"--- test tail ---\n{tail}\n"
-            f"{'Use evolve_diff ' + pid + ' to see the change.' if passed else 'Fix your edits and propose again.'}")
+        verdict = "ACCEPTED (tests pass" + (" after a retry" if flaky else "") + f", committed to {branch})"
+    else:
+        verdict = "REJECTED (validation or test gate did not pass)"
+    return (
+        f"proposal {pid}: {verdict}\ngoal: {goal}\nfiles: {', '.join(changed)}\n"
+        f"duration: {duration_s:.3f}s / {timeout_s}s\n"
+        f"failure: {failure or 'none'}\n--- test tail ---\n{tail}\n"
+        f"{'Use evolve_diff ' + pid + ' to review the change.' if passed else 'Inspect the recorded failure and retry with a corrected proposal.'}"
+    )
 
 
 async def t_evolve_diff(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    pid = str(args.get("pid", ""))
-    mp = _meta_path(ctx, pid)
+    try:
+        pid = _validated_pid(str(args.get("pid", "")))
+        mp = _meta_path(ctx, pid)
+        wt = _worktree_path(ctx, pid)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
     if not mp.exists():
         return f"ERROR: no proposal {pid}. evolve_list to see them."
-    wt = Path(json.loads(mp.read_text())["worktree"])
+    if not wt.is_dir() or wt.is_symlink():
+        return f"ERROR: proposal worktree is missing or invalid: {pid}"
     r = await _sh(ctx, "git --no-pager diff HEAD~1..HEAD 2>/dev/null || git --no-pager diff", wt)
     return r.text(8000) or "(no diff)"
 
 
-async def t_evolve_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    rows = []
+def _load_proposals(ctx: "AgentContext") -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for f in sorted(_data(ctx).glob("*.json")):
         try:
-            m = json.loads(f.read_text())
-        except ValueError:
+            item = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
             continue
-        rows.append(f"{m['pid']} [{'PASS' if m['passed'] else 'FAIL'}] {m['goal'][:70]} "
-                    f"({', '.join(m['files'])}) by {m['by']}")
+        if isinstance(item, dict) and isinstance(item.get("pid"), str):
+            rows.append(item)
+    return rows
+
+
+async def t_evolve_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    rows = []
+    for m in _load_proposals(ctx):
+        pid = m.get("pid", "?")
+        passed = bool(m.get("passed"))
+        goal = str(m.get("goal", ""))[:70]
+        files = m.get("files") if isinstance(m.get("files"), list) else []
+        duration = m.get("duration_s")
+        elapsed = f"{float(duration):.2f}s" if isinstance(duration, (int, float)) else "duration unknown"
+        rows.append(f"{pid} [{'PASS' if passed else 'FAIL'}] {elapsed} {goal} "
+                    f"({', '.join(str(p) for p in files)}) by {m.get('by', '?')}")
     return "\n".join(rows) or "no proposals yet"
 
 
+async def t_evolve_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    proposals = _load_proposals(ctx)
+    accepted = [p for p in proposals if p.get("passed") is True]
+    rejected = [p for p in proposals if p.get("passed") is not True]
+    durations = [float(p["duration_s"]) for p in proposals
+                 if isinstance(p.get("duration_s"), (int, float)) and p["duration_s"] >= 0]
+    total = sum(durations)
+    average = total / len(durations) if durations else 0.0
+    cap = _proposal_timeout({})
+    return (
+        "AVRONE self-evolution budget\n"
+        f"proposals: {len(proposals)} total; {len(accepted)} accepted; {len(rejected)} rejected\n"
+        f"recorded runtime: {total:.2f}s total; {average:.2f}s average per proposal\n"
+        f"per-proposal duration ceiling: {cap}s (operator ceiling AVRONE_EVOLVE_MAX_SECONDS; hard max {MAX_PROPOSAL_SECONDS}s)\n"
+        f"input limits: {MAX_PROPOSAL_EDITS} edits; {MAX_EDIT_BYTES} bytes/file; {MAX_TOTAL_EDIT_BYTES} bytes/proposal\n"
+        "loop status: proposals are individually gated; this tool does not start an autonomous infinite loop"
+    )
+
+
 async def t_evolve_reset(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    pid = str(args.get("pid", ""))
-    mp = _meta_path(ctx, pid)
+    try:
+        pid = _validated_pid(str(args.get("pid", "")))
+        mp = _meta_path(ctx, pid)
+        wt = _worktree_path(ctx, pid)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
     if not mp.exists():
         return f"ERROR: no proposal {pid}"
-    wt = Path(json.loads(mp.read_text())["worktree"])
-    shutil.rmtree(wt, ignore_errors=True)
-    mp.unlink()
+    try:
+        if wt.is_symlink():
+            wt.unlink()
+        else:
+            shutil.rmtree(wt, ignore_errors=True)
+        mp.unlink()
+    except OSError as exc:
+        return f"ERROR: could not reset proposal {pid}: {exc}"
     _emit(ctx, "evolve.reset", pid=pid)
     return f"discarded proposal {pid}"
 
@@ -172,8 +423,9 @@ EVOLVE_TOOLS = [
      "test suite is run; it is kept only if every test passes. Nothing touches the live tree or main.",
      '{"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}', t_evolve_propose),
     ("evolve_diff", "show the unified diff of an accepted proposal.", '{"pid": str}', t_evolve_diff),
-    ("evolve_list", "list self-evolution proposals and whether each passed tests.", "{}", t_evolve_list),
-    ("evolve_reset", "discard a proposal and its worktree.", '{"pid": str}', t_evolve_reset),
+    ("evolve_list", "list self-evolution proposals and their outcomes and durations.", "{}", t_evolve_list),
+    ("evolve_status", "summarize accepted/rejected proposals, recorded duration, hard limits, and loop status.", "{}", t_evolve_status),
+    ("evolve_reset", "discard a proposal and its validated isolated worktree.", '{"pid": str}', t_evolve_reset),
 ]
 
 
@@ -184,14 +436,18 @@ def register_evolve_tools(registry) -> None:
 
 def list_accepted(settings) -> list[dict[str, Any]]:
     """Accepted proposals, for /api/evolve and the CLI."""
-    d = Path(settings.data_dir) / "evolve"
+    root = Path(settings.data_dir).resolve()
+    d = root / "evolve"
+    if d.is_symlink():
+        return []
     out = []
     if d.exists():
         for f in sorted(d.glob("*.json")):
             try:
                 m = json.loads(f.read_text())
-            except ValueError:
+            except (OSError, ValueError, TypeError):
                 continue
-            if m.get("passed"):
-                out.append({k: m[k] for k in ("pid", "goal", "branch", "files", "by", "ts")})
+            if not isinstance(m, dict) or m.get("passed") is not True:
+                continue
+            out.append({k: m[k] for k in ("pid", "goal", "branch", "files", "by", "ts", "duration_s", "timeout_s") if k in m})
     return out

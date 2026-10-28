@@ -36,3 +36,11 @@ The main v0.12.0 hardening commit fixes DNS-label allowlist matching, validates 
 - Robustness fixes: ignore malformed/non-object Codex log records and avoid crashes in run listing/replay; validate JobQueue kind/payload/attempt limits and report a missing job id without mutating records.
 - CI now requests a package-wide term-missing coverage report through pytest-cov.
 - Validation must stay pending until the exact candidate commit executes the full suite on an assigned runner. A workflow configuration or runnerless failure is not a passing test.
+
+## v0.13.1 self-evolution containment
+
+- Validate proposal IDs before reading/deleting metadata, derive worktree paths from the validated ID, and never trust a worktree path from mutable JSON metadata.
+- Resolve each requested file path and verify it is relative to the canonical worktree root. Reject absolute paths, parent traversal, .git metadata, duplicate paths, non-string content and over-limit edit payloads.
+- Reject shell operators in the agent-supplied test command; only direct pytest invocations are accepted.
+- Apply one monotonic deadline to setup, edits, testing, retry and commit. Record elapsed seconds and the enforced ceiling in each proposal event and metadata record.
+- Never claim a change passed before both the test gate and proposal commit succeed. A timed-out or malformed proposal is rejected and its failure is recorded.

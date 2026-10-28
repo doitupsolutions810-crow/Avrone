@@ -10,8 +10,9 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -77,7 +78,9 @@ def require_api_access(request: Request | WebSocket, token: str | None) -> None:
     expected = os.getenv("AVRONE_API_TOKEN", "") or settings.admin_token
     if not expected:
         raise HTTPException(503, "Remote API access is locked: set AVRONE_API_TOKEN or AVRONE_ADMIN_TOKEN")
-    if not isinstance(token, str) or not hmac.compare_digest(token, expected):
+    cookies = getattr(request, "cookies", {}) or {}
+    provided = token or cookies.get("avrone_api_token")
+    if not isinstance(provided, str) or not hmac.compare_digest(provided, expected):
         raise HTTPException(401, "API authentication required")
 
 
@@ -96,6 +99,31 @@ class TerminalIn(BaseModel):
 class RootDispatchIn(BaseModel):
     operation: str
     service: str
+
+
+@app.post("/api/auth/session")
+async def create_api_session(request: Request, response: Response,
+                             x_api_token: str | None = Header(default=None)):
+    if os.getenv("AVRONE_API_AUTH", "auto").strip().lower() == "off":
+        return {"ok": True, "auth": "off"}
+    expected = os.getenv("AVRONE_API_TOKEN", "") or settings.admin_token
+    if not expected:
+        raise HTTPException(503, "Remote API access is locked: set AVRONE_API_TOKEN or AVRONE_ADMIN_TOKEN")
+    if not isinstance(x_api_token, str) or not hmac.compare_digest(x_api_token, expected):
+        raise HTTPException(401, "Invalid API token")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    secure = request.url.scheme == "https" or forwarded_proto == "https"
+    response.set_cookie(
+        "avrone_api_token", expected, max_age=8 * 60 * 60, httponly=True,
+        secure=secure, samesite="strict", path="/",
+    )
+    return {"ok": True, "expires_in": 8 * 60 * 60}
+
+
+@app.delete("/api/auth/session")
+async def delete_api_session(response: Response):
+    response.delete_cookie("avrone_api_token", path="/", httponly=True, samesite="strict")
+    return {"ok": True}
 
 
 @app.get("/")
@@ -357,8 +385,19 @@ async def root_dispatch(body: RootDispatchIn, x_admin_token: str | None = Header
 
 @app.websocket("/ws/events")
 async def events(ws: WebSocket):
+    origin = ws.headers.get("origin")
+    if origin:
+        try:
+            parsed_origin = urlsplit(origin)
+            host = ws.headers.get("host", "").lower()
+            if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.netloc or parsed_origin.netloc.lower() != host:
+                await ws.close(code=4403, reason="Cross-origin event stream denied")
+                return
+        except ValueError:
+            await ws.close(code=4403, reason="Invalid event stream origin")
+            return
     try:
-        require_api_access(ws, ws.headers.get("x-api-token") or ws.cookies.get("avrone_api_token"))
+        require_api_access(ws, ws.headers.get("x-api-token"))
     except HTTPException:
         await ws.close(code=4401, reason="API authentication required")
         return

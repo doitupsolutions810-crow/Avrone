@@ -46,3 +46,36 @@ async def test_local_runner_refuses_to_claim_network_isolation(monkeypatch, tmp_
     runner = LocalRunner(Settings(runner="local", workspace=tmp_path, allow_network=False))
     with pytest.raises(RuntimeError, match="cannot enforce AVRONE_ALLOW_NETWORK=false"):
         await runner.start()
+
+
+@pytest.mark.asyncio
+async def test_auto_runner_refuses_implicit_host_fallback(monkeypatch, tmp_path):
+    from avrone.sovereign import establish
+
+    monkeypatch.setattr("avrone.sovereign.shutil.which", lambda _name: None)
+    monkeypatch.delenv("AVRONE_ALLOW_UNSANDBOXED_LOCAL", raising=False)
+    with pytest.raises(RuntimeError, match="will not fall back to unsandboxed host execution"):
+        await establish(Settings(runner="auto", workspace=tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_auto_runner_does_not_downgrade_after_docker_failure(monkeypatch, tmp_path):
+    from avrone.sovereign import establish
+
+    class FailedDockerRunner:
+        def __init__(self, _settings):
+            pass
+
+        async def start(self):
+            raise RuntimeError("simulated Docker daemon failure")
+
+    class MustNotBeUsedLocalRunner:
+        def __init__(self, _settings):
+            raise AssertionError("implicit local fallback must not run")
+
+    monkeypatch.setattr("avrone.sovereign.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("avrone.sovereign.DockerRunner", FailedDockerRunner)
+    monkeypatch.setattr("avrone.sovereign.LocalRunner", MustNotBeUsedLocalRunner)
+    monkeypatch.delenv("AVRONE_ALLOW_UNSANDBOXED_LOCAL", raising=False)
+    with pytest.raises(RuntimeError, match="refusing implicit fallback"):
+        await establish(Settings(runner="auto", workspace=tmp_path))

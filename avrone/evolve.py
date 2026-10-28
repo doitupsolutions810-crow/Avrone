@@ -10,11 +10,12 @@ Guardrails, by construction:
 
 Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_start / evolve_cancel (the same
        loop as a background task), evolve_status, evolve_diff, evolve_list, evolve_accept (branch only),
-       evolve_reset.
+       evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate).
 Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; also checked between
      iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
      AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
-     AVRONE_EVOLVE_MAX_BG (concurrent background loops per process; default 2, hard cap 4).
+     AVRONE_EVOLVE_MAX_BG (concurrent background loops per process; default 2, hard cap 4),
+     AVRONE_EVOLVE_SKILL_MAX_BYTES (proposed skill size ceiling; default/hard cap 16384).
 """
 from __future__ import annotations
 
@@ -104,11 +105,13 @@ def _new_pid(ctx: "AgentContext") -> str:
 
 
 async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: str | None = None,
-                        timeout: int = 900, extra_meta: dict[str, Any] | None = None) -> dict[str, Any]:
+                        timeout: int = 900, extra_meta: dict[str, Any] | None = None,
+                        confine_to: str | None = None) -> dict[str, Any]:
     """One proposal -> test cycle in its own throwaway clone. Returns a result dict.
 
     Every guardrail lives here so single proposals and loop iterations share it: fresh clone
     under data_dir, edits confined to the clone, accept only on a clean full-suite pass.
+    `confine_to` (a repo-relative dir) narrows the edits further, e.g. "skills" for skill proposals.
     """
     pid = _new_pid(ctx)
     t0 = _now()
@@ -117,6 +120,10 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
     for e in edits:
         try:
             p = _in_repo(wt, str(e["path"]))
+            if confine_to is not None:
+                base = _in_repo(wt, confine_to)
+                if p == base or base not in p.parents:
+                    raise ValueError(f"path escapes {confine_to}/: {e['path']}")
         except (KeyError, ValueError, TypeError) as ex:
             shutil.rmtree(wt, ignore_errors=True)
             return {"pid": pid, "error": str(ex), "passed": False, "branch": None, "files": changed,
@@ -496,6 +503,84 @@ async def t_evolve_loop(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ---- bounded skill self-authoring ------------------------------------------------------------
+SKILL_MAX_BYTES_CAP = 16384
+SKILL_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+SKILLS_DIR = "skills"
+
+
+def skill_max_bytes() -> int:
+    env = _env_num("AVRONE_EVOLVE_SKILL_MAX_BYTES")
+    return int(min(SKILL_MAX_BYTES_CAP, env)) if env else SKILL_MAX_BYTES_CAP
+
+
+def _skill_markdown(name: str, content: str | None, description: str | None, body: str | None) -> str:
+    """Full SKILL.md text: `content` as given, or frontmatter built from description + body."""
+    if content is not None:
+        return str(content)
+    desc = " ".join(str(description or "").split())
+    return f"---\nname: {name}\ndescription: {desc}\n---\n{str(body or '').strip()}\n"
+
+
+def check_skill(name: Any, md: str, repo: Path | None = None) -> str | None:
+    """Why a skill proposal is refused, or None. Refused BEFORE any clone is made."""
+    from .agentkit import parse_skill
+    raw = str(name or "")
+    if not SKILL_NAME_RE.fullmatch(raw) or "--" in raw:
+        return (f"bad skill name {raw[:80]!r}: use 1-64 chars of lowercase a-z, 0-9 and single hyphens "
+                "(no slashes, dots, or path parts)")
+    size, cap = len(md.encode("utf-8")), skill_max_bytes()
+    if size > cap:
+        return f"skill too large: {size} bytes > {cap} byte cap"
+    fm, steps = parse_skill(md)
+    if fm.get("name") != raw:
+        return f"frontmatter name must be {raw!r} (got {fm.get('name')!r})"
+    if len(fm.get("description", "")) < 20:
+        return "frontmatter description must be at least 20 characters"
+    if not re.search(r"(?m)^\s*\d+[.)]\s+\S", steps):
+        return "skill body needs numbered steps (1. ..., 2. ...)"
+    if repo is not None and (repo / SKILLS_DIR / raw).exists():
+        return f"skill {raw!r} already exists; proposals add NEW skills only (use evolve_propose to edit one)"
+    return None
+
+
+async def evolve_skill_propose(ctx: "AgentContext", name: str, content: str | None = None,
+                               description: str | None = None, body: str | None = None,
+                               test_cmd: str | None = None, goal: str | None = None) -> dict[str, Any]:
+    """Propose a NEW skill at skills/<name>/SKILL.md through the same throwaway-clone + full-suite gate
+    as evolve_propose (it IS _propose_once, confined to skills/). Lands only on a branch in the clone,
+    and only if the suite (which validates every shipped skill) still passes. Never touches the live tree.
+    """
+    if _denied():
+        return {"error": DENIED_MSG, "passed": False}
+    md = _skill_markdown(str(name or ""), content, description, body)
+    why = check_skill(name, md, _repo_root(ctx))
+    if why:
+        return {"error": f"ERROR: {why}", "passed": False}
+    rel = f"{SKILLS_DIR}/{name}/SKILL.md"
+    r = await _propose_once(ctx, goal or f"add skill {name}", [{"path": rel, "content": md}], test_cmd,
+                            extra_meta={"kind": "skill", "skill": name}, confine_to=SKILLS_DIR)
+    _emit(ctx, "evolve.skill", skill=name, pid=r.get("pid"), passed=r.get("passed"))
+    return {**r, "skill": name, "path": rel, "bytes": len(md.encode("utf-8"))}
+
+
+async def t_evolve_skill_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    if _denied():
+        return DENIED_MSG
+    name = args.get("name")
+    if not name or (args.get("content") is None and not args.get("body")):
+        return ('ERROR: give {"name": str, "content": str (whole SKILL.md)} or '
+                '{"name": str, "description": str, "body": str (numbered steps)}, "test_cmd"?: str')
+    r = await evolve_skill_propose(ctx, name, content=args.get("content"), description=args.get("description"),
+                                   body=args.get("body"), test_cmd=args.get("test_cmd"), goal=args.get("goal"))
+    if r.get("error"):
+        return r["error"] if r["error"].startswith("ERROR") else f"ERROR: {r['error']}"
+    verdict = (f"ACCEPTED (tests pass, committed to branch {r['branch']})" if r["passed"]
+               else "REJECTED (suite fails with this skill; fix and propose again)")
+    return (f"skill proposal {r['pid']}: {verdict}\nskill: {r['skill']} -> {r['path']} ({r['bytes']} bytes)\n"
+            f"--- test tail ---\n{r['test_tail']}")
+
+
 async def t_evolve_diff(ctx: "AgentContext", args: dict[str, Any]) -> str:
     pid = str(args.get("pid", ""))
     mp = _meta_path(ctx, pid)
@@ -595,6 +680,10 @@ EVOLVE_TOOLS = [
      '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_start),
     ("evolve_cancel", "stop an evolve loop cleanly: the running iteration finishes, the next never starts.",
      '{"loop_id": str}', t_evolve_cancel),
+    ("evolve_skill_propose", "propose a NEW skill (skills/<name>/SKILL.md) for AVRONE itself: built in a throwaway "
+     "copy and kept on a branch only if the full test suite (which checks every skill) passes. Name: lowercase "
+     "a-z0-9-; max 16384 bytes; never overwrites an existing skill or writes outside skills/.",
+     '{"name": str, "content"?: str, "description"?: str, "body"?: str, "test_cmd"?: str}', t_evolve_skill_propose),
     ("evolve_diff", "show the unified diff of an accepted proposal.", '{"pid": str}', t_evolve_diff),
     ("evolve_list", "list self-evolution proposals (pass/fail, duration, loop iteration) and loops.", "{}",
      t_evolve_list),

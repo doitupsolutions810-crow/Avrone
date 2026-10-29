@@ -2,7 +2,7 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)
+    runs-on: [self-hosted, linux, control12]  # use swarm-vm-runner labels; hosted jobs report runner_id=0 in this environment
     strategy:
       matrix: { python: ["3.11", "3.12"] }
     steps:

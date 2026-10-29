@@ -212,6 +212,7 @@ def test_runtime_swarm_create_is_idempotent_and_normalizes_gateway_snapshots(mon
     }))
     monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
     monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "avr_test_tenant_key")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON", '["research", "verify"]')
     calls = []
 
     async def fake_request(target, method, path, body=None, idempotency_key=None):

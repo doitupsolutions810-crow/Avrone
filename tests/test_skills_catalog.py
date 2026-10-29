@@ -107,3 +107,31 @@ def test_evolve_skill_keeps_long_missions_bounded_and_resumable():
     assert "disable all timeouts" in skill
     assert "900 seconds" in skill
     assert "resume only an interrupted loop" in skill
+
+
+
+def test_node_runtime_skill_documents_safe_internal_service_lifecycle():
+    path = SKILLS / "agent-node-runtime" / "SKILL.md"
+    _, body = agentkit.parse_skill(path.read_text(encoding="utf-8"))
+    for tool in ("runtime_preflight", "node_runtime", "node_service", "agent_home", "fs_write", "agent_pack_export"):
+        assert tool in body
+    assert "127.0.0.1:8765" in body
+    assert "No Docker host port is published" in body
+    assert "do not install packages" in body
+
+
+
+def test_node_agent_image_contains_python_and_node_runtime_checks():
+    dockerfile = (SKILLS.parent / "infra" / "docker" / "agent-node" / "Dockerfile").read_text()
+    assert "FROM node:22-bookworm-slim AS node_runtime" in dockerfile
+    assert "FROM python:3.12-slim-bookworm" in dockerfile
+    assert "node --version" in dockerfile and "npm --version" in dockerfile and "python --version" in dockerfile
+    assert 'CMD ["sleep", "infinity"]' in dockerfile
+
+
+
+def test_node_agent_runtime_documentation_describes_no_host_port_and_privilege_escalation():
+    doc = (SKILLS.parent / "infra" / "docker" / "agent-node" / "README.md").read_text(encoding="utf-8")
+    assert "127.0.0.1:8765" in doc
+    assert "does **not** publish the port to the host" in doc
+    assert "does not enable privileged mode" in doc

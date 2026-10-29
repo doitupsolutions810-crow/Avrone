@@ -122,7 +122,7 @@ def _agent_container_preflight(ctx: "AgentContext", runner: Any, runner_kind: st
             "live_container_for_agent": live,
         }
     except Exception:  # noqa: BLE001 - diagnostics must never break the main run
-        return {"mode": "unknown", "hosted_for_agent": False,
+        return {"mode": "unknown", "persistent_configured": False,
                 "agent_id_present": bool(getattr(ctx, "agent_id", None)),
                 "live_container_for_agent": False}
 
@@ -254,6 +254,205 @@ async def t_node_runtime(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
 
 
+# --------------------------------------------------------------------------- node_service
+
+NODE_SERVER_SOURCE = """\"use strict\";
+const http = require(\"node:http\");
+const HOST = \"127.0.0.1\";
+const PORT = 8765;
+const server = http.createServer((req, res) => {
+  if (req.method !== \"GET\") {
+    res.writeHead(405, {\"content-type\": \"text/plain; charset=utf-8\"});
+    res.end(\"method not allowed\");
+    return;
+  }
+  if (req.url === \"/health\") {
+    res.writeHead(200, {\"content-type\": \"application/json\", \"cache-control\": \"no-store\"});
+    res.end(JSON.stringify({ok: true, service: \"avrone-agent-node\", scope: \"loopback\"}));
+    return;
+  }
+  if (req.url === \"/__stop\") {
+    res.writeHead(200, {\"content-type\": \"application/json\", \"cache-control\": \"no-store\"});
+    res.end(JSON.stringify({ok: true, stopping: true, service: "avrone-agent-node"}));
+    setImmediate(() => server.close(() => process.exit(0)));
+    return;
+  }
+  res.writeHead(404, {\"content-type\": \"text/plain; charset=utf-8\"});
+  res.end(\"not found\");
+});
+server.on(\"error\", () => process.exit(1));
+process.on(\"SIGTERM\", () => server.close(() => process.exit(0)));
+server.listen(PORT, HOST);
+"""
+
+_NODE_HEALTH_PROBE = (
+    "node -e 'const h=require(\"node:http\");"
+    "const r=h.get(\"http://127.0.0.1:8765/health\",res=>{let b=\"\";"
+    "res.on(\"data\",x=>b+=x);res.on(\"end\",()=>{"
+    "if(res.statusCode===200 && b.includes(\"avrone-agent-node\")){console.log(b);process.exit(0)}"
+    "process.exit(1)})});r.setTimeout(1000,()=>r.destroy(new Error(\"timeout\")));"
+    "r.on(\"error\",()=>process.exit(2));'"
+)
+_NODE_STOP_PROBE = (
+    "node -e 'const h=require(\"node:http\");"
+    "const r=h.get(\"http://127.0.0.1:8765/__stop\",res=>{let b=\"\";"
+    "res.on(\"data\",x=>b+=x);res.on(\"end\",()=>{"
+    "process.exit(res.statusCode===200 && b.includes(\"avrone-agent-node\")?0:1)})});"
+    "r.setTimeout(1000,()=>r.destroy(new Error(\"timeout\")));"
+    "r.on(\"error\",()=>process.exit(2));'"
+)
+_NODE_START_COMMAND = (
+    f"if {_NODE_HEALTH_PROBE} >/dev/null 2>&1; then printf already_running; "
+    "else nohup node node-server.js >/dev/null 2>&1 </dev/null & sleep 0.2; "
+    f"if {_NODE_HEALTH_PROBE} >/dev/null 2>&1; then printf started; else exit 3; fi; fi"
+)
+NODE_SERVICE_MAX_SOURCE_BYTES = 4096
+NODE_SERVICE_SCOPE = "127.0.0.1:8765 inside this agent's persistent container; no host port is published"
+
+
+def _node_service_home(ctx: "AgentContext") -> tuple[Path | None, Any, str | None]:
+    """Only permit the caller's own direct agent directory and a runner that validates cwd."""
+    core = getattr(ctx, "core", None)
+    runner = getattr(core, "runner", None)
+    if runner is None or not callable(getattr(runner, "run", None)):
+        return None, runner, "execution runner is not available"
+    if not runner_accepts_cwd(runner):
+        return None, runner, "runner does not support a confined per-agent working directory"
+    agent_id = getattr(ctx, "agent_id", None)
+    raw_home = getattr(ctx, "agent_dir", None)
+    workspace = getattr(runner, "workspace", None) or getattr(getattr(core, "settings", None), "workspace", None)
+    if not agent_id or raw_home is None or workspace is None:
+        return None, runner, "a per-agent home is required; enable AVRONE_AGENT_FS"
+    try:
+        from . import agentfs
+        candidate = Path(raw_home)
+        if candidate.is_symlink():
+            return None, runner, "agent home may not be a symlink"
+        home = candidate.resolve()
+        root = Path(workspace).resolve()
+        if (not agentfs.is_agent_dir(root, home)
+                or home.name != agentfs.sanitize_agent_id(agent_id)
+                or not home.is_dir()):
+            return None, runner, "working directory is not your own confined agent home"
+        return home, runner, None
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None, runner, "could not validate your confined agent home"
+
+
+async def _node_service_scaffold(ctx: "AgentContext", home: Path) -> tuple[str, bool]:
+    """Create only the known health-server file; never replace a different agent-owned file."""
+    target = home / "node-server.js"
+    try:
+        if target.is_symlink():
+            return "ERROR: node-server.js is a symlink; refusing to follow or replace it", False
+        if target.exists():
+            if not target.is_file() or target.stat().st_size > NODE_SERVICE_MAX_SOURCE_BYTES:
+                return "ERROR: existing node-server.js is not a small regular file; preserve it and review manually", False
+            if target.read_text(encoding="utf-8", errors="replace") != NODE_SERVER_SOURCE:
+                return "ERROR: node-server.js already exists with different content; it was not overwritten", False
+            return "node-server.js already matches the AVRONE internal health server", True
+    except OSError:
+        return "ERROR: could not inspect node-server.js safely", False
+    registry = getattr(getattr(ctx, "core", None), "tools", None)
+    if registry is None or not callable(getattr(registry, "call", None)):
+        return "ERROR: the tool registry is not available for quota-enforced file creation", False
+    result = await registry.call(ctx, "fs_write", {"path": "node-server.js", "content": NODE_SERVER_SOURCE})
+    if str(result).startswith("ERROR"):
+        return str(result), False
+    return "created node-server.js in your own agent home (quota-enforced)", True
+
+
+async def t_node_service(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Scaffold or manage a fixed loopback-only Node health server in a persistent agent container."""
+    action = str(args.get("action", "status") or "status").strip().lower()
+    fmt = str(args.get("format", "text") or "text").strip().lower()
+    if action not in {"scaffold", "start", "status", "stop"}:
+        return 'ERROR: action must be "scaffold", "start", "status" or "stop"'
+    if fmt not in {"text", "json"}:
+        return 'ERROR: format must be "text" or "json"'
+
+    home, runner, home_error = _node_service_home(ctx)
+    if home_error or home is None:
+        return "ERROR: " + (home_error or "agent home unavailable")
+
+    report: dict[str, Any] = {
+        "action": action, "ok": False, "status": "refused",
+        "runner": str(getattr(runner, "kind", "unknown") or "unknown"),
+        "file": "node-server.js", "url": None,
+        "scope": "agent-home files only; server is not running",
+    }
+
+    if action in {"start", "status", "stop"}:
+        try:
+            from . import agentcontainer
+            persistent = (getattr(runner, "kind", "") == "docker"
+                          and agentcontainer.container_mode() == "persistent")
+        except Exception:  # noqa: BLE001
+            persistent = False
+        if not persistent:
+            report["message"] = "start/status/stop require AVRONE_RUNNER=docker and AVRONE_AGENT_CONTAINER=persistent"
+            return _node_service_render(report, fmt)
+
+    if action == "scaffold":
+        message, ok = await _node_service_scaffold(ctx, home)
+        report.update(ok=ok, status="scaffolded" if ok else "refused", message=message)
+        return _node_service_render(report, fmt)
+
+    if action == "start":
+        try:
+            version = await runner.run("node --version", timeout=5, cwd=home)
+        except Exception as exc:  # noqa: BLE001
+            report.update(status="node_unavailable", message=f"Node version probe failed ({type(exc).__name__})")
+            return _node_service_render(report, fmt)
+        if bool(getattr(version, "timed_out", False)) or int(getattr(version, "exit_code", 1)) != 0:
+            report.update(status="node_unavailable", message="Node.js is not available in this agent container")
+            return _node_service_render(report, fmt)
+        message, ok = await _node_service_scaffold(ctx, home)
+        if not ok:
+            report.update(status="refused", message=message)
+            return _node_service_render(report, fmt)
+        command, success_status = _NODE_START_COMMAND, "started"
+    elif action == "status":
+        command, success_status = _NODE_HEALTH_PROBE, "running"
+    else:
+        command, success_status = _NODE_STOP_PROBE, "stopped"
+
+    try:
+        result = await runner.run(command, timeout=5, cwd=home)
+    except Exception as exc:  # noqa: BLE001
+        report.update(status="error", message=f"Node service command failed ({type(exc).__name__})")
+        return _node_service_render(report, fmt)
+
+    exit_code = int(getattr(result, "exit_code", 1))
+    timed_out = bool(getattr(result, "timed_out", False))
+    if action == "status" and (timed_out or exit_code != 0):
+        report.update(ok=True, status="not_running", message="No responding AVRONE Node health server at loopback port 8765")
+    elif action == "stop" and (timed_out or exit_code != 0):
+        report.update(ok=True, status="not_running", message="No responding AVRONE Node health server to stop")
+    elif timed_out or exit_code != 0:
+        report.update(status="failed", message=f"Node service {action} failed; detailed stderr is not returned")
+    else:
+        report.update(ok=True, status=success_status,
+                      url="http://127.0.0.1:8765" if action in {"start", "status"} else None,
+                      scope=NODE_SERVICE_SCOPE,
+                      message=(str(getattr(result, "stdout", "") or "").strip()[:200]
+                               or f"Node service {success_status}"))
+    return _node_service_render(report, fmt)
+
+
+def _node_service_render(report: dict[str, Any], fmt: str) -> str:
+    if fmt == "json":
+        return _cap(json.dumps(report, indent=2, sort_keys=True), PREFLIGHT_MAX_CHARS)
+    lines = [f"node_service: action={report['action']} status={report['status']} ok={'yes' if report['ok'] else 'no'}"]
+    if report.get("url"):
+        lines.append(f"url: {report['url']}")
+    if report.get("scope"):
+        lines.append(f"scope: {report['scope']}")
+    if report.get("message"):
+        lines.append(f"detail: {report['message']}")
+    return _cap("\\n".join(lines), PREFLIGHT_MAX_CHARS)
+
+
 # --------------------------------------------------------------------------- env_report
 
 ENV_REPORT_MAX_VARS = 200
@@ -346,6 +545,10 @@ INTROSPECT_TOOLS: list[Tool] = [
          "bounded: check Node.js and npm versions in the active runner (and your per-agent cwd when available); executes only fixed version probes, never installs packages or starts a server.",
          '{"format"?: "text"|"json"}', t_node_runtime, source="builtin",
          schema={"optional": {"format": "str"}}),
+    Tool("node_service",
+         "bounded: scaffold/start/status/stop a fixed HTTP health server bound only to 127.0.0.1 inside this agent's persistent Docker container; files are confined to your agent home and no host port is published.",
+         '{"action"?: str, "format"?: "text"|"json"}', t_node_service, source="builtin",
+         schema={"optional": {"action": "str", "format": "str"}}),
 ]
 
 

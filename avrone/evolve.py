@@ -10,7 +10,8 @@ Guardrails, by construction:
 
 Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_start / evolve_cancel (the same
        loop as a background task), evolve_status, evolve_diff, evolve_list, evolve_accept (branch only),
-       evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate).
+       evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate),
+       evolve_history (finished-loop summaries).
 Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; also checked between
      iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
      AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
@@ -18,6 +19,12 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; 
      AVRONE_EVOLVE_SKILL_MAX_BYTES (proposed skill size ceiling; default/hard cap 16384),
      AVRONE_EVOLVE_HISTORY (finished-loop summaries kept in loops/history.jsonl; default 50, can only
      lower it; hard cap 200). evolve_history() reads it back, across restarts.
+     AVRONE_EVOLVE_LONG=allow (default off): explicit operator opt-in that raises the loop hard caps
+     from 10 / 1800s to LONG_MAX_ITERS_CAP / LONG_TIME_BUDGET_CAP_S (50 / 7200s). It changes no
+     default; AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (or a tool argument) still pick the
+     actual size, and nothing can exceed the long ceilings.
+Restarts: a "running" loop whose owning process is gone is never resumed automatically. The first
+     status/list/history read marks it "interrupted" on disk (with a resume_hint) and records it in history.
 """
 from __future__ import annotations
 
@@ -99,6 +106,11 @@ DENIED_MSG = "ERROR: self-evolution is disabled on this node (AVRONE_SELF_EVOLVE
 
 # Monotonic clock, module-level so tests can drive the loop's time budget deterministically.
 _now = time.monotonic
+
+
+# Identifies THIS process run: a container restart can reuse the same pid (often 1), so a loop file's
+# owner_pid alone cannot tell "my loop" from "a loop of the process that ran here before".
+_PROC_TOKEN = __import__("uuid").uuid4().hex
 
 
 def _new_pid(ctx: "AgentContext") -> str:
@@ -188,6 +200,21 @@ MAX_ITERS_CAP = 10
 TIME_BUDGET_CAP_S = 1800
 DEFAULT_MAX_ITERS = 3
 DEFAULT_TIME_BUDGET_S = 600
+# Opt-in long loops (AVRONE_EVOLVE_LONG=allow) may rise to these, and never past them.
+LONG_MAX_ITERS_CAP = 50
+LONG_TIME_BUDGET_CAP_S = 7200
+
+
+def long_loops_allowed() -> bool:
+    """Exactly "allow" (case-insensitive) opts in; anything else, including unset, keeps the normal caps."""
+    return os.getenv("AVRONE_EVOLVE_LONG", "").strip().lower() == "allow"
+
+
+def hard_caps() -> tuple[int, int]:
+    """The (iterations, seconds) ceilings in force right now."""
+    if long_loops_allowed():
+        return LONG_MAX_ITERS_CAP, LONG_TIME_BUDGET_CAP_S
+    return MAX_ITERS_CAP, TIME_BUDGET_CAP_S
 
 
 def _env_num(name: str) -> float | None:
@@ -205,11 +232,13 @@ def loop_limits(max_iters: Any = None, time_budget_s: Any = None) -> tuple[int, 
     """Effective (max_iters, time_budget_s) for a loop.
 
     AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET set the node's default AND its ceiling
-    (an agent can ask for less, never more); the hard caps bound everything, env included.
+    (an agent can ask for less, never more); the hard caps bound everything, env included. The hard
+    caps are 10 / 1800s unless AVRONE_EVOLVE_LONG=allow raises them to 50 / 7200s.
     """
+    hard_iters, hard_budget = hard_caps()
     env_iters, env_budget = _env_num("AVRONE_EVOLVE_MAX_ITERS"), _env_num("AVRONE_EVOLVE_TIME_BUDGET")
-    iter_cap = min(MAX_ITERS_CAP, env_iters) if env_iters else MAX_ITERS_CAP
-    budget_cap = min(TIME_BUDGET_CAP_S, env_budget) if env_budget else TIME_BUDGET_CAP_S
+    iter_cap = min(hard_iters, env_iters) if env_iters else hard_iters
+    budget_cap = min(hard_budget, env_budget) if env_budget else hard_budget
     n = int(_clamp(max_iters, env_iters or DEFAULT_MAX_ITERS, iter_cap))
     budget = _clamp(time_budget_s, env_budget or DEFAULT_TIME_BUDGET_S, budget_cap)
     return max(1, n), budget
@@ -276,7 +305,8 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
     stopped, accepted = "max_iters", None
     loop_meta = {"loop_id": loop_id, "goal": goal, "by": ctx.name, "ts": time.time(), "max_iters": n,
                  "time_budget_s": budget, "status": "running", "stopped": None, "accepted": None,
-                 "iterations": [], "duration_s": 0.0, "mode": mode, "owner_pid": os.getpid()}
+                 "iterations": [], "duration_s": 0.0, "mode": mode, "owner_pid": os.getpid(),
+                 "owner_token": _PROC_TOKEN}
     loop_path = _loop_path(ctx, loop_id)
 
     def save() -> None:
@@ -357,6 +387,10 @@ def _history_path(ctx: "AgentContext") -> Path:
     return _loops_dir(ctx) / "history.jsonl"
 
 
+def _settings_loops_dir(settings) -> Path:
+    return Path(settings.data_dir) / "evolve" / "loops"
+
+
 def _read_history(path: Path) -> list[dict[str, Any]]:
     out = []
     try:
@@ -386,7 +420,14 @@ def _history_row(m: dict[str, Any]) -> dict[str, Any]:
 def record_history(ctx: "AgentContext", loop_meta: dict[str, Any]) -> None:
     """Append one finished loop's summary (replacing any earlier row for the same loop_id) and trim."""
     try:
-        path = _history_path(ctx)
+        _record_history_at(_history_path(ctx), loop_meta)
+    except Exception:  # noqa: BLE001 - history is best effort
+        pass
+
+
+def _record_history_at(path: Path, loop_meta: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         row = _history_row(loop_meta)
         rows = [r for r in _read_history(path) if r.get("loop_id") != row["loop_id"]]
         rows = (rows + [row])[-history_cap():]
@@ -399,11 +440,39 @@ def record_history(ctx: "AgentContext", loop_meta: dict[str, Any]) -> None:
 
 def evolve_history(ctx: "AgentContext", limit: int | None = None) -> list[dict[str, Any]]:
     """Finished-loop summaries, oldest first (at most `limit`, newest kept)."""
+    reconcile_interrupted(ctx.core.settings)
     rows = _read_history(_history_path(ctx))[-history_cap():]
     if limit is not None:
         n = int(_clamp(limit, history_cap(), history_cap()))
         rows = rows[-n:]
     return rows
+
+
+DEFAULT_HISTORY_TOOL_ROWS = 10
+
+
+async def t_evolve_history(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """The evolve_history tool: newest finished-loop summaries, read-only, bounded 1..HISTORY_CAP."""
+    if _denied():
+        return DENIED_MSG
+    raw = args.get("limit") if isinstance(args, dict) else None
+    if raw is not None and (isinstance(raw, bool) or not isinstance(raw, (int, float, str))):
+        return f"ERROR: limit must be an integer 1..{HISTORY_CAP}"
+    try:
+        limit = DEFAULT_HISTORY_TOOL_ROWS if raw is None or str(raw).strip() == "" else int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return f"ERROR: limit must be an integer 1..{HISTORY_CAP}"
+    limit = max(1, min(HISTORY_CAP, limit))
+    rows = evolve_history(ctx, limit)
+    if not rows:
+        return f"no finished evolve loops yet (history keeps the newest {history_cap()})"
+    lines = [f"evolve history: {len(rows)} loop(s), oldest first (keeps newest {history_cap()})"]
+    for h in rows:
+        acc = f" accepted={h['accepted_pid']}" if h.get("accepted_pid") else ""
+        lines.append(f"  {h['loop_id']} [{h.get('status')}/{h.get('stopped')}] {str(h.get('goal') or '')[:60]} "
+                     f"iters={h.get('iterations')}/{h.get('max_iters')} "
+                     f"{float(h.get('duration_s') or 0):.1f}s{acc}")
+    return "\n".join(lines)
 
 
 # ---- background / resumable loops ------------------------------------------------------------
@@ -443,7 +512,8 @@ async def evolve_start(ctx: "AgentContext", goal: str, candidates: list | None =
     _loop_path(ctx, loop_id).write_text(json.dumps(
         {"loop_id": loop_id, "goal": goal, "by": ctx.name, "ts": time.time(), "max_iters": n,
          "time_budget_s": budget, "status": "running", "stopped": None, "accepted": None, "iterations": [],
-         "duration_s": 0.0, "mode": "background", "owner_pid": os.getpid()}))
+         "duration_s": 0.0, "mode": "background", "owner_pid": os.getpid(),
+         "owner_token": _PROC_TOKEN}))
 
     async def body() -> dict[str, Any]:
         try:
@@ -491,12 +561,59 @@ def _pid_alive(pid: Any) -> bool:
     return True
 
 
+def _orphaned(lp: dict[str, Any]) -> bool:
+    """A "running" loop whose owning process is gone: its pid is dead, or it is our pid but was written
+    by an earlier process run (a different owner_token, e.g. a container restart reusing pid 1).
+    Unknown owners (no owner_pid) and live foreign processes are left alone."""
+    if lp.get("status") != "running" or lp.get("owner_pid") is None:
+        return False
+    if lp["owner_pid"] == os.getpid():
+        tok = lp.get("owner_token")
+        return tok is not None and tok != _PROC_TOKEN
+    return not _pid_alive(lp["owner_pid"])
+
+
 def _effective(lp: dict[str, Any]) -> dict[str, Any]:
     """A "running" loop whose owning process is gone was interrupted by a restart: say so."""
-    if lp.get("status") == "running" and lp.get("owner_pid") not in (None, os.getpid()) \
-            and not _pid_alive(lp["owner_pid"]):
+    if _orphaned(lp):
         lp = dict(lp, status="interrupted")
     return lp
+
+
+def _resume_hint(lp: dict[str, Any]) -> str:
+    done = len(lp.get("iterations") or [])
+    return (f"interrupted by a restart after {done}/{lp.get('max_iters')} iteration(s); not resumed automatically. "
+            "To continue, evolve_start again with the same goal and only the candidates not yet tried "
+            "(see this loop's iterations); evolve_history lists it.")
+
+
+def reconcile_interrupted(settings) -> list[str]:
+    """Mark every orphaned "running" loop as "interrupted" ON DISK (never resumes it: a half-run loop's
+    candidates and gate are not re-run behind the operator's back), add a resume_hint, drop any stale
+    cancel file, and record it in history. Idempotent and best effort. Returns the loop_ids marked."""
+    d = _settings_loops_dir(settings)
+    marked: list[str] = []
+    if not d.exists():
+        return marked
+    for f in sorted(d.glob("*.json")):
+        try:
+            lp = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(lp, dict) or not lp.get("loop_id") or not _orphaned(lp):
+            continue
+        lp.update(status="interrupted", stopped="interrupted", resume_hint=_resume_hint(lp),
+                  interrupted_at=time.time())
+        try:
+            tmp = f.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(lp))
+            os.replace(tmp, f)
+            (d / f"{f.stem}.cancel").unlink(missing_ok=True)
+        except OSError:
+            continue
+        _record_history_at(d / "history.jsonl", lp)
+        marked.append(str(lp["loop_id"]))
+    return marked
 
 
 def evolve_status(ctx: "AgentContext", loop_id: str | None = None) -> dict[str, Any] | None:
@@ -685,7 +802,8 @@ async def t_evolve_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
 def _loop_line(lp: dict[str, Any]) -> str:
     its = lp.get("iterations", [])
     acc = sum(1 for i in its if i.get("outcome") == "accepted")
-    return (f"{lp['loop_id']} [{lp.get('status')}{'/' + lp['stopped'] if lp.get('stopped') else ''}] "
+    why = lp.get("stopped")
+    return (f"{lp['loop_id']} [{lp.get('status')}{'/' + why if why and why != lp.get('status') else ''}] "
             f"{lp.get('goal', '')[:60]} iters={len(its)}/{lp.get('max_iters')} accepted={acc} "
             f"rejected={len(its) - acc} {float(lp.get('duration_s') or 0):.1f}s/"
             f"{float(lp.get('time_budget_s') or 0):.0f}s")
@@ -693,14 +811,17 @@ def _loop_line(lp: dict[str, Any]) -> str:
 
 def list_loops(settings) -> list[dict[str, Any]]:
     """Every evolve loop's meta (oldest first), for evolve_list / evolve_status."""
-    d = Path(settings.data_dir) / "evolve" / "loops"
+    reconcile_interrupted(settings)
+    d = _settings_loops_dir(settings)
     out = []
     if d.exists():
         for f in d.glob("*.json"):
             try:
-                out.append(_effective(json.loads(f.read_text())))
-            except ValueError:
+                lp = json.loads(f.read_text())
+            except (OSError, ValueError):
                 continue
+            if isinstance(lp, dict) and lp.get("loop_id"):
+                out.append(_effective(lp))
     return sorted(out, key=lambda m: m.get("ts", 0))
 
 
@@ -720,6 +841,8 @@ async def t_evolve_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
         lines.append("background loop" + (" (cancel requested)" if _cancel_requested(ctx, lp["loop_id"]) else ""))
     if lp.get("accepted"):
         lines.append(f"accepted: {lp['accepted']['pid']} on branch {lp['accepted']['branch']}")
+    if lp.get("status") == "interrupted" and lp.get("resume_hint"):
+        lines.append(f"resume: {lp['resume_hint']}")
     for it in lp.get("iterations", []):
         lines.append(f"  #{it['iteration']} {it['pid']} {it['outcome'].upper()} "
                      f"{float(it.get('duration_s') or 0):.2f}s" + (f" ({it['error']})" if it.get("error") else ""))
@@ -744,7 +867,7 @@ EVOLVE_TOOLS = [
      '{"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}', t_evolve_propose),
     ("evolve_loop", "bounded self-evolution loop: try candidate edit sets one by one (each in its own throwaway "
      "copy, each needing a full test pass) and stop at the first that passes or when the iteration/time budget "
-     "runs out (hard caps: 10 iterations, 1800s). Returns every attempt's verdict and failing test output.",
+     "runs out (hard caps: 10 iterations, 1800s; 50 / 7200s only if the operator set AVRONE_EVOLVE_LONG=allow). Returns every attempt's verdict and failing test output.",
      '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
      '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_loop),
     ("evolve_start", "evolve_loop in the BACKGROUND: returns a loop_id at once and keeps iterating (same guardrails "
@@ -762,6 +885,9 @@ EVOLVE_TOOLS = [
      t_evolve_list),
     ("evolve_status", "show an evolve loop (latest by default): each iteration's outcome and duration, "
      "accept/reject counts, and the budget used.", '{"loop_id"?: str}', t_evolve_status),
+    ("evolve_history", "list finished evolve loops (done, cancelled, crashed), newest kept, across restarts: "
+     "status, why it stopped, iterations, accepted proposal, duration.", '{"limit"?: int (1..200, default 10)}',
+     t_evolve_history),
     ("evolve_reset", "discard a proposal and its worktree.", '{"pid": str}', t_evolve_reset),
 ]
 

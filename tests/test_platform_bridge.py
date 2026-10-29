@@ -288,3 +288,42 @@ def test_runtime_mission_status_validates_id_before_network(monkeypatch):
     result = json.loads(_call(registry, "platform_bridge_runtime_mission_status", {"mission_id": "mission_abc"}))
     assert result["ok"] is True
     assert calls == [("runtime", "GET", "/v1/missions/mission_abc")]
+
+
+
+def test_runtime_swarm_create_rejects_capability_outside_operator_allowlist(monkeypatch):
+    registry, module = _load_bridge()
+    monkeypatch.setenv("AVRONE_PLATFORM_TARGETS_JSON", json.dumps({
+        "runtime": "http://avrone-runtime:8700"
+    }))
+    monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "avr_test_tenant_key")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON", '["research"]')
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("unapproved capability must not reach network")
+    monkeypatch.setattr(module, "_request", forbidden)
+    result = _call(registry, "platform_bridge_create_runtime_swarm", {
+        "mission_name": "M", "objective": "O", "swarm_name": "S",
+        "capabilities": ["research", "admin"], "idempotency_key": "safe-key",
+    })
+    assert result.startswith("ERROR:")
+    assert "operator-configured allowlist" in result
+
+
+def test_runtime_capability_allowlist_rejects_invalid_operator_config(monkeypatch):
+    registry, module = _load_bridge()
+    monkeypatch.setenv("AVRONE_PLATFORM_TARGETS_JSON", json.dumps({
+        "runtime": "http://avrone-runtime:8700"
+    }))
+    monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "avr_test_tenant_key")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON", '{"admin": true}')
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("invalid allowlist must not reach network")
+    monkeypatch.setattr(module, "_request", forbidden)
+    result = _call(registry, "platform_bridge_create_runtime_swarm", {
+        "mission_name": "M", "objective": "O", "swarm_name": "S",
+        "idempotency_key": "safe-key",
+    })
+    assert result.startswith("ERROR:")
+    assert "is invalid" in result

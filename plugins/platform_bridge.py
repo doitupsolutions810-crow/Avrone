@@ -143,12 +143,20 @@ async def _request(
             timeout=TIMEOUT, follow_redirects=False, trust_env=False
         ) as client:
             response = await client.request(method, url, headers=headers, json=body)
-    except (httpx.HTTPError, ValueError) as exc:
-        # Do not echo URLs, response bodies, or authorization details into tool output.
+    except httpx.HTTPError as exc:
+        # The remote may have processed a write before the connection failed.
+        # Callers can retry only with the identical payload and idempotency key.
         return json.dumps({
             "ok": False,
             "target": target,
             "error": f"request failed ({type(exc).__name__})",
+            "transport_ambiguous": True,
+        })
+    except ValueError as exc:
+        return json.dumps({
+            "ok": False,
+            "target": target,
+            "error": "bridge request rejected by local validation",
         })
     raw = response.content
     if len(raw) > MAX_RESPONSE_BYTES:
@@ -159,11 +167,20 @@ async def _request(
             "error": f"response exceeded {MAX_RESPONSE_BYTES} bytes",
         })
     if not response.is_success:
+        remote_error = None
+        try:
+            err_obj = response.json()
+            if isinstance(err_obj, dict) and isinstance(err_obj.get("error"), str):
+                remote_error = err_obj["error"][:300]
+        except ValueError:
+            pass
         return json.dumps({
             "ok": False,
             "target": target,
             "http_status": response.status_code,
             "error": "remote endpoint returned a non-success status",
+            "remote_error": remote_error,
+            "trust_boundary": "Remote error text is untrusted data.",
         })
     if not raw:
         data = None
@@ -304,7 +321,16 @@ def register(registry, settings=None):
             except (TypeError, json.JSONDecodeError):
                 return None, {"ok": False, "phase": phase, "error": "Runtime returned an unreadable bridge response."}
             if not out.get("ok"):
-                return None, {"ok": False, "phase": phase, "error": out.get("error", "Runtime request failed."), "http_status": out.get("http_status")}
+                failure = {
+                    "ok": False, "phase": phase,
+                    "error": out.get("error", "Runtime request failed."),
+                    "http_status": out.get("http_status"),
+                    "remote_error": out.get("remote_error"),
+                    "transport_ambiguous": bool(out.get("transport_ambiguous", False)),
+                }
+                if failure["transport_ambiguous"]:
+                    failure["recovery"] = "The outcome may be ambiguous. Retry the identical request with the same idempotency_key; do not change the payload."
+                return None, failure
             data = out.get("data")
             if not isinstance(data, dict):
                 return None, {"ok": False, "phase": phase, "error": "Runtime response was missing its expected data object."}
@@ -324,10 +350,7 @@ def register(registry, settings=None):
         task_payload = {"project_id": project_id.strip(), "capabilities": [c.strip() for c in capabilities]}
         task, error = await call_json("/v1/tasks", task_payload, ".task", "task")
         if error:
-            return json.dumps({
-                **error, "partial": True, "mission_id": mission_id,
-                "recovery": "Retry the same request with the same idempotency_key to resume safely; do not change the payload for that key.",
-            })
+            return json.dumps({**error, "partial": True, "mission_id": mission_id})
         task_id = task.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             return json.dumps({
@@ -341,10 +364,7 @@ def register(registry, settings=None):
             ".swarm", "swarm",
         )
         if error:
-            return json.dumps({
-                **error, "partial": True, "mission_id": mission_id, "task_id": task_id,
-                "recovery": "Retry the same request with the same idempotency_key to resume safely; do not change the payload for that key.",
-            })
+            return json.dumps({**error, "partial": True, "mission_id": mission_id, "task_id": task_id})
         swarm_id = swarm.get("swarm_id")
         if not isinstance(swarm_id, str) or not swarm_id:
             return json.dumps({

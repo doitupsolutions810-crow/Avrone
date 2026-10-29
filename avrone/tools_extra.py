@@ -370,8 +370,13 @@ async def t_grokbot_ask(ctx: "AgentContext", args: dict[str, Any]) -> str:
             _emit(ctx, "grokbot.bridge", ok=False, reason="empty answer")
             return "ERROR: Grok Bot returned no textual answer."
         _emit(ctx, "grokbot.bridge", ok=True, agent="grok-researcher", answer_chars=len(answer))
-        return json.dumps({"ok": True, "agent": "grok-researcher", "answer": answer},
-                          ensure_ascii=False)[:9000]
+        result = {"ok": True, "agent": "grok-researcher", "answer": answer}
+        encoded = json.dumps(result, ensure_ascii=False)
+        if len(encoded) > 9000:
+            result["answer"] = answer[:8000]
+            result["truncated"] = True
+            encoded = json.dumps(result, ensure_ascii=False)
+        return encoded
     except (httpx.HTTPError, ValueError) as exc:
         _emit(ctx, "grokbot.bridge", ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
         return f"ERROR: Grok Bot bridge request failed: {type(exc).__name__}: {str(exc)[:200]}"

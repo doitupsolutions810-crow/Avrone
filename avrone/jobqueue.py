@@ -70,34 +70,56 @@ class JobQueue:
             return await asyncio.to_thread(guarded)
 
     async def enqueue(self, kind: str, payload: dict[str, Any], priority: int = 0, max_attempts: int = 3) -> str:
+        if not isinstance(payload, dict):
+            raise TypeError("job payload must be a dict")
+        # Reject non-standard NaN/Infinity values and unserialisable payloads before
+        # touching SQLite, so a caller cannot enqueue a poison row accidentally.
+        encoded_payload = json.dumps(payload, allow_nan=False)
         jid = uuid.uuid4().hex[:12]
         now = time.time()
         await self._run(lambda: self._db.execute(
             "INSERT INTO jobs(id,kind,payload,status,priority,max_attempts,created,updated) VALUES(?,?,?,?,?,?,?,?)",
-            (jid, kind, json.dumps(payload), "queued", priority, max_attempts, now, now)))
-        return jid
+            (jid, kind, encoded_payload, "queued", priority, max_attempts, now, now)))
 
     async def claim(self) -> dict[str, Any] | None:
         def _claim() -> Any:
             now = time.time()
-            cur = self._db.execute(
-                "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) OR (status='running' AND lease_until<?) "
-                "ORDER BY priority DESC, created LIMIT 1", (now, now))
-            row = cur.fetchone()
-            if not row:
-                return None
-            self._db.execute("UPDATE jobs SET status='running', attempts=attempts+1, lease_until=?, updated=? WHERE id=?",
-                             (now + self.lease_s, now, row[0]))
-            return row
+            while True:
+                cur = self._db.execute(
+                    "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) OR (status='running' AND lease_until<?) "
+                    "ORDER BY priority DESC, created LIMIT 1", (now, now))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                try:
+                    payload = json.loads(row[2])
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload is not an object")
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Quarantine the poison row inside the same transaction. It no longer
+                    # gets leased forever or starves valid work behind it.
+                    self._db.execute(
+                        "UPDATE jobs SET status='dead', attempts=attempts+1, lease_until=0, updated=?, "
+                        "error='invalid persisted payload JSON or non-object payload' WHERE id=?",
+                        (now, row[0]))
+                    continue
+                self._db.execute("UPDATE jobs SET status='running', attempts=attempts+1, lease_until=?, updated=? WHERE id=?",
+                                 (now + self.lease_s, now, row[0]))
+                return (*row, payload)
+
         row = await self._run(lambda: self._txn(_claim))
         if row is None:
             return None
-        # parsed after COMMIT, as before: a corrupt payload still leaves the job leased, not re-claimable
-        return {"id": row[0], "kind": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
+        return {"id": row[0], "kind": row[1], "payload": row[4], "attempts": row[3] + 1}
 
     async def complete(self, jid: str, result: Any) -> None:
+        encoded = json.dumps(result, allow_nan=False)
+        if len(encoded) > 100000:
+            # Never cut the serialized JSON itself: a hard slice can make the
+            # persisted result unreadable and break later get() calls.
+            encoded = json.dumps({"truncated": True, "preview": encoded[:99000]}, ensure_ascii=False)
         await self._run(lambda: self._db.execute("UPDATE jobs SET status='done', result=?, updated=? WHERE id=?",
-                                                 (json.dumps(result)[:100000], time.time(), jid)))
+                                                 (encoded, time.time(), jid)))
 
     async def fail(self, jid: str, error: str) -> str:
         def _fail() -> str:
@@ -120,7 +142,17 @@ class JobQueue:
                 return None
             d = dict(zip(cols, r))
             for k in ("payload", "result"):
-                d[k] = json.loads(d[k]) if d[k] else None
+                if not d[k]:
+                    d[k] = None
+                    continue
+                try:
+                    d[k] = json.loads(d[k])
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Keep status inspectable even if the database was modified or
+                    # damaged outside this API. Preserve the raw bytes nowhere in output.
+                    d[k] = None
+                    if k == "payload":
+                        d["error"] = d["error"] or "invalid persisted payload JSON"
             return d
         return await self._run(_g)
 

@@ -154,15 +154,17 @@ def runtime_preflight(ctx: "AgentContext") -> dict[str, Any]:
     kind = str(getattr(runner, "kind", "unknown") or "unknown").lower()
     docker_available = bool(shutil.which("docker"))
     python_ok = sys.version_info >= (3, 11)
+    runner_can_execute = callable(getattr(runner, "run", None))
     checks = {
         "python_311_plus": python_ok,
         "workspace_exists": exists,
         "workspace_writable": writable,
         "runner_known": kind in {"local", "docker"},
+        "runner_can_execute": runner_can_execute,
         "docker_available": docker_available if kind == "docker" else None,
     }
     ready = bool(python_ok and exists and writable and checks["runner_known"]
-                 and (kind != "docker" or docker_available))
+                 and runner_can_execute and (kind != "docker" or docker_available))
     return {
         "ready": ready,
         "python": platform.python_version(),

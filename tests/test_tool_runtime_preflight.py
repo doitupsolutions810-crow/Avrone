@@ -19,7 +19,7 @@ def make_ctx(workspace, runner_kind="local"):
         llm_api_key="api-secret-must-not-appear",
         admin_token="admin-secret-must-not-appear",
     )
-    runner = SimpleNamespace(kind=runner_kind, workspace=workspace)
+    runner = SimpleNamespace(kind=runner_kind, workspace=workspace, run=lambda *args, **kwargs: None)
     core = SimpleNamespace(settings=settings, runner=runner, tools=reg)
     ctx = SimpleNamespace(core=core, run_id="r-preflight", name="Worker", depth=0)
     return reg, ctx

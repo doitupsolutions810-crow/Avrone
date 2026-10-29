@@ -23,8 +23,6 @@ jobs:
       - name: Test avrone
         run: |
           set -o pipefail
-          grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null \
-            | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
           pytest -q 2>&1 | tee /tmp/pytest.log || {
             tail -n 10 /tmp/pytest.log | while IFS= read -r l; do
               l="${l//%/%25}"

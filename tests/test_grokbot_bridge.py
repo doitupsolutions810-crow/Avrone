@@ -9,7 +9,7 @@ import avrone.tools_extra as tools_extra
 
 def _ctx():
     return SimpleNamespace(
-        core=SimpleNamespace(codex=None),
+        core=SimpleNamespace(settings=SimpleNamespace(allow_network=False), codex=None),
         run_id="bridge-test",
         name="bridge-test",
     )

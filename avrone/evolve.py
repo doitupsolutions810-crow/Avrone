@@ -25,6 +25,12 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; 
      actual size, and nothing can exceed the long ceilings.
 Restarts: a "running" loop whose owning process is gone is never resumed automatically. The first
      status/list/history read marks it "interrupted" on disk (with a resume_hint) and records it in history.
+Resume: every loop checkpoints its progress to its loop file after each iteration ("checkpoint": next
+     iteration, elapsed seconds, test_cmd and, when they fit in CHECKPOINT_MAX_BYTES, the candidate edit
+     lists). evolve_start {"resume_loop_id": id} continues an "interrupted" loop (only that status) in the
+     background from its last completed iteration, under the SAME loop_id. Resumed iterations and elapsed
+     time count toward the SAME caps: the iteration cap and time budget are the loop's own, re-clamped by
+     today's limits (a resume can lower them, never raise them), and the background-loop cap applies.
 """
 from __future__ import annotations
 
@@ -280,10 +286,25 @@ def _cancel_requested(ctx: "AgentContext", loop_id: str) -> bool:
     return _cancel_path(ctx, loop_id).exists()
 
 
+# Candidate edit lists are checkpointed into the loop file so a resume needs nothing but the loop_id;
+# larger sets are not stored (the resume must then pass candidates again).
+CHECKPOINT_MAX_BYTES = 1_000_000
+
+
+def _checkpoint_candidates(candidates: list | None) -> list | None:
+    if candidates is None:
+        return None
+    try:
+        raw = json.dumps(candidates)
+    except (TypeError, ValueError):
+        return None
+    return json.loads(raw) if len(raw.encode("utf-8")) <= CHECKPOINT_MAX_BYTES else None
+
+
 async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = None, edits_fn=None,
                       max_iters: int | None = None, time_budget_s: float | None = None,
                       test_cmd: str | None = None, loop_id: str | None = None,
-                      mode: str = "foreground") -> dict[str, Any]:
+                      mode: str = "foreground", resume: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run up to `max_iters` proposal->test iterations, each in its own throwaway clone.
 
     Edits for iteration i come from `candidates[i]` or `edits_fn(i, attempts_so_far)` (sync or
@@ -292,6 +313,11 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
     Caps: max_iters <= MAX_ITERS_CAP, time_budget_s <= TIME_BUDGET_CAP_S. Each iteration's test
     timeout is bounded by the remaining budget. Between iterations it also stops on a cancel
     request (evolve_cancel -> status "cancelled") or if AVRONE_SELF_EVOLVE flips to deny.
+
+    `resume` (set only by evolve_start's resume path) continues an interrupted loop:
+    {"rows": its completed iteration rows, "elapsed": seconds already spent, "meta": keys to keep}.
+    Iteration numbering continues at len(rows) and the time budget clock starts `elapsed` seconds in,
+    so prior iterations and time count toward the same caps.
     """
     if _denied():
         return {"error": DENIED_MSG, "attempts": [], "accepted": None, "stopped": "denied"}
@@ -301,18 +327,25 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
                 "attempts": [], "accepted": None, "stopped": "invalid"}
     n, budget = loop_limits(max_iters, time_budget_s)
     loop_id = loop_id or _new_pid(ctx)
-    start = _now()
+    prior: list[dict[str, Any]] = [dict(r) for r in (resume or {}).get("rows") or [] if isinstance(r, dict)]
+    first = len(prior)
+    elapsed = float((resume or {}).get("elapsed") or 0.0)
+    start = _now() - max(0.0, elapsed)
     attempts: list[dict[str, Any]] = []
     stopped, accepted = "max_iters", None
     loop_meta = {"loop_id": loop_id, "goal": goal, "by": ctx.name, "ts": time.time(), "max_iters": n,
                  "time_budget_s": budget, "status": "running", "stopped": None, "accepted": None,
                  "iterations": [], "duration_s": 0.0, "mode": mode, "owner_pid": os.getpid(),
-                 "owner_token": _PROC_TOKEN}
+                 "owner_token": _PROC_TOKEN, **((resume or {}).get("meta") or {})}
+    stored = _checkpoint_candidates(candidates)
     loop_path = _loop_path(ctx, loop_id)
 
     def save() -> None:
-        loop_meta["iterations"] = [_attempt_row(a) for a in attempts]
+        loop_meta["iterations"] = prior + [_attempt_row(a) for a in attempts]
         loop_meta["duration_s"] = round(_now() - start, 3)
+        loop_meta["checkpoint"] = {"next_iteration": first + len(attempts), "elapsed_s": loop_meta["duration_s"],
+                                   "test_cmd": test_cmd, "candidates": stored,
+                                   "candidates_stored": stored is not None}
         loop_path.write_text(json.dumps(loop_meta))
     save()
     def halted() -> str | None:
@@ -321,7 +354,7 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
         if _denied():
             return "denied"
         return None
-    for i in range(n):
+    for i in range(first, n):
         h = halted()
         if h:
             stopped = h
@@ -333,7 +366,7 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
         if candidates is not None:
             edits = candidates[i] if i < len(candidates) else None
         else:
-            edits = edits_fn(i, [dict(a) for a in attempts])
+            edits = edits_fn(i, [dict(a) for a in prior + attempts])
             if hasattr(edits, "__await__"):
                 edits = await edits
         h = halted()  # generating the candidate may take a while: re-check before cloning/testing
@@ -365,7 +398,8 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
           accepted=accepted and accepted["pid"], duration_s=loop_meta["duration_s"])
     return {"loop_id": loop_id, "goal": goal, "max_iters": n, "time_budget_s": budget,
             "attempts": attempts, "accepted": accepted, "stopped": stopped,
-            "duration_s": loop_meta["duration_s"], "status": loop_meta["status"]}
+            "duration_s": loop_meta["duration_s"], "status": loop_meta["status"],
+            "resumed_from": first if resume is not None else None, "iterations_total": first + len(attempts)}
 
 
 # ---- bounded finished-loop history -----------------------------------------------------------
@@ -506,14 +540,17 @@ def _bg_running() -> list[str]:
 
 async def evolve_start(ctx: "AgentContext", goal: str, candidates: list | None = None, edits_fn=None,
                        max_iters: int | None = None, time_budget_s: float | None = None,
-                       test_cmd: str | None = None) -> dict[str, Any]:
+                       test_cmd: str | None = None, resume_loop_id: str | None = None) -> dict[str, Any]:
     """Launch evolve_loop as a background asyncio task and return its loop_id immediately.
 
     Same guardrails and the SAME hard caps as evolve_loop (it IS evolve_loop). The loop json is
     written (status "running") before this returns, so evolve_status sees it at once.
+    With `resume_loop_id`, continue that interrupted loop instead (see _resume_start).
     """
     if _denied():
         return {"error": DENIED_MSG, "loop_id": None}
+    if resume_loop_id is not None:
+        return _resume_start(ctx, str(resume_loop_id), candidates, edits_fn, max_iters, time_budget_s, test_cmd)
     goal = str(goal or "").strip()
     if not goal or (candidates is None and edits_fn is None):
         return {"error": "ERROR: give a goal and candidates (list of edit lists) or edits_fn", "loop_id": None}
@@ -529,10 +566,22 @@ async def evolve_start(ctx: "AgentContext", goal: str, candidates: list | None =
          "duration_s": 0.0, "mode": "background", "owner_pid": os.getpid(),
          "owner_token": _PROC_TOKEN}))
 
+    _spawn_bg(ctx, goal, candidates, edits_fn, n, budget, test_cmd, loop_id)
+    _emit(ctx, "evolve.start", loop_id=loop_id, max_iters=n, time_budget_s=budget)
+    return {"loop_id": loop_id, "status": "running", "max_iters": n, "time_budget_s": budget}
+
+
+def _spawn_bg(ctx: "AgentContext", goal: str, candidates: list | None, edits_fn, n: int, budget: float,
+              test_cmd: str | None, loop_id: str, resume: dict[str, Any] | None = None) -> None:
     async def body() -> dict[str, Any]:
         try:
-            return await evolve_loop(ctx, goal, candidates=candidates, edits_fn=edits_fn, max_iters=n,
-                                     time_budget_s=budget, test_cmd=test_cmd, loop_id=loop_id, mode="background")
+            r = await evolve_loop(ctx, goal, candidates=candidates, edits_fn=edits_fn, max_iters=n,
+                                  time_budget_s=budget, test_cmd=test_cmd, loop_id=loop_id, mode="background",
+                                  resume=resume)
+            if resume is not None and r.get("stopped") == "denied" and r.get("error"):
+                # refused before its first iteration: it stays resumable, not stuck "running"
+                _finish_abnormally(ctx, loop_id, "interrupted", "interrupted")
+            return r
         except asyncio.CancelledError:
             _finish_abnormally(ctx, loop_id, "cancelled", "cancelled")
             raise
@@ -543,8 +592,89 @@ async def evolve_start(ctx: "AgentContext", goal: str, candidates: list | None =
             _BG.pop(loop_id, None)
 
     _BG[loop_id] = asyncio.get_running_loop().create_task(body(), name=f"evolve-{loop_id}")
-    _emit(ctx, "evolve.start", loop_id=loop_id, max_iters=n, time_budget_s=budget)
-    return {"loop_id": loop_id, "status": "running", "max_iters": n, "time_budget_s": budget}
+
+
+def _num_or(v: Any, default: float) -> float:
+    if isinstance(v, bool):
+        return default
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    return x if x == x and x not in (float("inf"), float("-inf")) else default
+
+
+def _resume_start(ctx: "AgentContext", loop_id: str, candidates: list | None, edits_fn,
+                  max_iters: Any, time_budget_s: Any, test_cmd: str | None) -> dict[str, Any]:
+    """Continue an "interrupted" loop in the background from its last completed iteration.
+
+    Refused for unknown, running, finished (done/cancelled/error) loops, a loop that already has an
+    accepted proposal, or one whose caps are already spent. Caps: the loop's own max_iters and
+    time_budget_s, optionally lowered by the arguments, re-clamped by loop_limits (today's env and hard
+    caps); completed iterations and elapsed time count toward them. The background-loop cap applies.
+    """
+    lp = evolve_status(ctx, loop_id) if loop_id else None
+    if lp is None:
+        return {"error": f"ERROR: no loop {loop_id[:80]}. evolve_list to see them.", "loop_id": None}
+    status = lp.get("status")
+    if status != "interrupted" or loop_id in _bg_running():
+        return {"error": f"ERROR: loop {loop_id} is {status}; only an interrupted loop can be resumed",
+                "loop_id": None}
+    p = _loop_path(ctx, loop_id)
+    try:
+        raw = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {"error": f"ERROR: loop {loop_id} file is unreadable; cannot resume", "loop_id": None}
+    rows = [r for r in (raw.get("iterations") or []) if isinstance(r, dict)]
+    if raw.get("accepted") or any(r.get("outcome") == "accepted" or r.get("passed") is True for r in rows):
+        return {"error": f"ERROR: loop {loop_id} already has an accepted proposal; nothing to resume",
+                "loop_id": None}
+    ck = raw.get("checkpoint") if isinstance(raw.get("checkpoint"), dict) else {}
+    if candidates is None and edits_fn is None:
+        candidates = ck.get("candidates") if isinstance(ck.get("candidates"), list) else None
+    if candidates is not None and (not isinstance(candidates, list)
+                                   or not all(isinstance(c, list) and c for c in candidates)):
+        return {"error": "ERROR: candidates must be a list of non-empty edit lists", "loop_id": None}
+    if candidates is None and edits_fn is None:
+        return {"error": f"ERROR: loop {loop_id} has no checkpointed candidates; pass the loop's full candidates "
+                         "list (iteration i uses candidates[i])", "loop_id": None}
+    cap = max_bg_loops()
+    if len(_bg_running()) >= cap:
+        return {"error": f"ERROR: {cap} background evolve loop(s) already running (AVRONE_EVOLVE_MAX_BG); "
+                         "evolve_cancel one or wait", "loop_id": None}
+    n0 = int(max(1, _num_or(raw.get("max_iters"), DEFAULT_MAX_ITERS)))
+    b0 = max(1.0, _num_or(raw.get("time_budget_s"), DEFAULT_TIME_BUDGET_S))
+    want_n = n0 if max_iters is None else min(n0, _num_or(max_iters, n0))
+    want_b = b0 if time_budget_s is None else min(b0, _num_or(time_budget_s, b0))
+    n, budget = loop_limits(want_n, want_b)
+    done = len(rows)
+    elapsed = max(0.0, _num_or(raw.get("duration_s"), 0.0), _num_or(ck.get("elapsed_s"), 0.0))
+    if done >= n:
+        return {"error": f"ERROR: loop {loop_id} already used its iteration cap ({done}/{n}); start a new loop",
+                "loop_id": None}
+    if elapsed >= budget:
+        return {"error": f"ERROR: loop {loop_id} already used its time budget ({elapsed:.0f}s/{budget:.0f}s); "
+                         "start a new loop", "loop_id": None}
+    if test_cmd is None and isinstance(ck.get("test_cmd"), str):
+        test_cmd = ck["test_cmd"]
+    goal = str(raw.get("goal") or "").strip()
+    if not goal:
+        return {"error": f"ERROR: loop {loop_id} has no goal; cannot resume", "loop_id": None}
+    resumed = int(_num_or(raw.get("resumed"), 0)) + 1
+    keep = {"ts": raw.get("ts", time.time()), "by": raw.get("by", ctx.name), "resumed": resumed,
+            "resumed_at": time.time(), "resumed_by": ctx.name}
+    raw.update(status="running", stopped=None, max_iters=n, time_budget_s=budget, mode="background",
+               owner_pid=os.getpid(), owner_token=_PROC_TOKEN, **keep)
+    for k in ("resume_hint", "interrupted_at"):
+        raw.pop(k, None)
+    p.write_text(json.dumps(raw))  # "running" + our token before returning: a second resume is refused
+    _cancel_path(ctx, loop_id).unlink(missing_ok=True)
+    _spawn_bg(ctx, goal, candidates, edits_fn, n, budget, test_cmd, loop_id,
+              resume={"rows": rows, "elapsed": elapsed, "meta": keep})
+    _emit(ctx, "evolve.resume", loop_id=loop_id, from_iteration=done, max_iters=n, time_budget_s=budget,
+          elapsed_s=round(elapsed, 3))
+    return {"loop_id": loop_id, "status": "running", "max_iters": n, "time_budget_s": budget,
+            "resumed_from": done, "elapsed_s": round(elapsed, 3), "resumed": resumed}
 
 
 def _finish_abnormally(ctx: "AgentContext", loop_id: str, status: str, stopped: str) -> None:
@@ -597,8 +727,9 @@ def _effective(lp: dict[str, Any]) -> dict[str, Any]:
 def _resume_hint(lp: dict[str, Any]) -> str:
     done = len(lp.get("iterations") or [])
     return (f"interrupted by a restart after {done}/{lp.get('max_iters')} iteration(s); not resumed automatically. "
-            "To continue, evolve_start again with the same goal and only the candidates not yet tried "
-            "(see this loop's iterations); evolve_history lists it.")
+            f"To continue from iteration {done} under the same caps, evolve_start "
+            f"{{\"resume_loop_id\": \"{lp.get('loop_id')}\"}}; or evolve_start again with the same goal and only "
+            "the candidates not yet tried (see this loop's iterations); evolve_history lists it.")
 
 
 def reconcile_interrupted(settings) -> list[str]:
@@ -661,6 +792,19 @@ def evolve_cancel(ctx: "AgentContext", loop_id: str) -> dict[str, Any]:
 async def t_evolve_start(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if _denied():
         return DENIED_MSG
+    rid = args.get("resume_loop_id")
+    if rid is not None:
+        if not isinstance(rid, str) or not rid.strip() or len(rid) > 200:
+            return "ERROR: resume_loop_id must be a loop id string (evolve_list shows them)"
+        cands = args.get("candidates")
+        r = await evolve_start(ctx, "", candidates=cands, max_iters=args.get("max_iters"),
+                               time_budget_s=args.get("time_budget_s"), test_cmd=args.get("test_cmd"),
+                               resume_loop_id=rid.strip())
+        if r.get("error"):
+            return r["error"]
+        return (f"resumed loop {r['loop_id']} in the background from iteration {r['resumed_from']} "
+                f"({r['elapsed_s']:.0f}s already spent; caps: {r['max_iters']} iters, {r['time_budget_s']:.0f}s "
+                f"including earlier iterations). evolve_status {{\"loop_id\": \"{r['loop_id']}\"}} for progress.")
     cands = args.get("candidates")
     if not isinstance(cands, list) or not cands or not all(isinstance(c, list) and c for c in cands):
         return ('ERROR: give {"goal": str, "candidates": [[{"path": str, "content": str}], ...], '
@@ -886,8 +1030,11 @@ EVOLVE_TOOLS = [
      '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_loop),
     ("evolve_start", "evolve_loop in the BACKGROUND: returns a loop_id at once and keeps iterating (same guardrails "
      "and hard caps: 10 iterations, 1800s; at most 4 background loops). Poll with evolve_status, stop with "
-     "evolve_cancel.", '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
-     '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_start),
+     "evolve_cancel. resume_loop_id continues an INTERRUPTED loop from its last completed iteration under the "
+     "same caps (earlier iterations and time count; candidates come from its checkpoint unless given).",
+     '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
+     '"time_budget_s"?: number, "test_cmd"?: str} | {"resume_loop_id": str, "candidates"?: [...], '
+     '"max_iters"?: int, "time_budget_s"?: number}', t_evolve_start),
     ("evolve_cancel", "stop an evolve loop cleanly: the running iteration finishes, the next never starts.",
      '{"loop_id": str}', t_evolve_cancel),
     ("evolve_skill_propose", "propose a NEW skill (skills/<name>/SKILL.md) for AVRONE itself: built in a throwaway "

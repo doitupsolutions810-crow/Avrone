@@ -1214,6 +1214,8 @@ def register_extra_tools(registry) -> None:
     register_codex_stats_tools(registry)
     from .tools_mempeek import register_mempeek_tools
     register_mempeek_tools(registry)
+    from .tools_agenthome import register_agenthome_tools
+    register_agenthome_tools(registry)
     from .greatscale import register_greatscale_tools
     register_greatscale_tools(registry)
     from .tools_fleetstatus import register_fleetstatus_tools

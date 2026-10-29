@@ -30,8 +30,11 @@ description: Run, monitor, cancel and restart AVRONE's bounded self-evolve loops
    can only lower how many are kept (default 50, hard cap 200).
 8. After a restart, a background loop whose owning process died is marked "interrupted" on disk the first
    time `evolve_status`, `evolve_list` or `evolve_history` reads it, with a resume hint, and is recorded in
-   history. Loops are never resumed automatically: re-run `evolve_start` with the same goal and only the candidates that
-   were not yet tried (compare its iterations with your list), so finished work is not repeated.
+   history. Loops are never resumed automatically. To continue one from its last completed iteration, call
+   `evolve_start` with {"resume_loop_id": "<id>"}: it reuses the loop's checkpointed candidates (pass the full
+   candidates list again if none were stored) and its earlier iterations and time count toward the same caps.
+   Only an interrupted loop can be resumed; running or finished ones are refused. Otherwise re-run `evolve_start`
+   with the same goal and only the candidates not yet tried, so finished work is not repeated.
 9. When a loop stops with "accepted", inspect the change with `evolve_diff` and the accepted pid, and hand the
    branch to a human for review; discard proposals you will not use with `evolve_reset`.
 10. Report the loop_id, how it stopped (accepted, max_iters, time_budget, exhausted, cancelled, denied,

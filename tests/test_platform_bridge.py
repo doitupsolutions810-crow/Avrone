@@ -164,6 +164,7 @@ def test_runtime_mission_routes_to_authenticated_gateway_contract(monkeypatch):
         "runtime": "http://avrone-runtime:8700"
     }))
     monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "avr_test_tenant_key")
     calls = []
 
     async def fake_request(target, method, path, body=None, idempotency_key=None):

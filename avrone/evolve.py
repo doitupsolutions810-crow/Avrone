@@ -10,7 +10,8 @@ Guardrails, by construction:
 
 Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_start / evolve_cancel (the same
        loop as a background task), evolve_status, evolve_diff, evolve_list, evolve_accept (branch only),
-       evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate).
+       evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate),
+       evolve_history (finished-loop summaries).
 Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; also checked between
      iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
      AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
@@ -406,6 +407,33 @@ def evolve_history(ctx: "AgentContext", limit: int | None = None) -> list[dict[s
     return rows
 
 
+DEFAULT_HISTORY_TOOL_ROWS = 10
+
+
+async def t_evolve_history(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """The evolve_history tool: newest finished-loop summaries, read-only, bounded 1..HISTORY_CAP."""
+    if _denied():
+        return DENIED_MSG
+    raw = args.get("limit") if isinstance(args, dict) else None
+    if raw is not None and (isinstance(raw, bool) or not isinstance(raw, (int, float, str))):
+        return f"ERROR: limit must be an integer 1..{HISTORY_CAP}"
+    try:
+        limit = DEFAULT_HISTORY_TOOL_ROWS if raw is None or str(raw).strip() == "" else int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return f"ERROR: limit must be an integer 1..{HISTORY_CAP}"
+    limit = max(1, min(HISTORY_CAP, limit))
+    rows = evolve_history(ctx, limit)
+    if not rows:
+        return f"no finished evolve loops yet (history keeps the newest {history_cap()})"
+    lines = [f"evolve history: {len(rows)} loop(s), oldest first (keeps newest {history_cap()})"]
+    for h in rows:
+        acc = f" accepted={h['accepted_pid']}" if h.get("accepted_pid") else ""
+        lines.append(f"  {h['loop_id']} [{h.get('status')}/{h.get('stopped')}] {str(h.get('goal') or '')[:60]} "
+                     f"iters={h.get('iterations')}/{h.get('max_iters')} "
+                     f"{float(h.get('duration_s') or 0):.1f}s{acc}")
+    return "\n".join(lines)
+
+
 # ---- background / resumable loops ------------------------------------------------------------
 MAX_BG_LOOPS_CAP = 4
 DEFAULT_MAX_BG_LOOPS = 2
@@ -762,6 +790,9 @@ EVOLVE_TOOLS = [
      t_evolve_list),
     ("evolve_status", "show an evolve loop (latest by default): each iteration's outcome and duration, "
      "accept/reject counts, and the budget used.", '{"loop_id"?: str}', t_evolve_status),
+    ("evolve_history", "list finished evolve loops (done, cancelled, crashed), newest kept, across restarts: "
+     "status, why it stopped, iterations, accepted proposal, duration.", '{"limit"?: int (1..200, default 10)}',
+     t_evolve_history),
     ("evolve_reset", "discard a proposal and its worktree.", '{"pid": str}', t_evolve_reset),
 ]
 

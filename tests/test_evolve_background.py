@@ -223,4 +223,4 @@ def test_start_tool_wrapper_and_registration(env):
         assert "background loop" not in await evolve.t_evolve_status(ctx, {"loop_id": lid})
     run(go())
     names = {n for n, *_ in evolve.EVOLVE_TOOLS}
-    assert {"evolve_start", "evolve_cancel", "evolve_status", "evolve_list"} <= names
+    assert {"evolve_start", "evolve_cancel", "evolve_status", "evolve_list", "evolve_history"} <= names

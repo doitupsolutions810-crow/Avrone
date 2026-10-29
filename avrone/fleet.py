@@ -89,6 +89,7 @@ integrity and auth, not confidentiality.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -473,6 +474,66 @@ class FleetManager:
             with _LAZY_LOCK_GUARD:
                 lk = self.__dict__.setdefault("_state_lock", threading.RLock())
         return lk
+
+    @contextlib.contextmanager
+    def _run_scope(self, hops: int, priv: str, netsquad: "tuple[list[str], int | None] | None" = None):
+        """Register one inbound run as live on the core for its duration and publish the core-wide
+        view of ALL live runs (one critical section per enter/exit):
+
+          core.fleet_hops        = the DEEPEST live run's hop count (never lower than any live run's),
+                                   back to its pre-fleet value once no run is live;
+          core.fleet_privileged  = the granted capability only while exactly one distinct privileged
+                                   capability is live; "" otherwise (none live, or priv:shell and
+                                   priv:admin overlapping = fail closed), and "" once none is live;
+          core.netsquad_path     = ordered union of every live netsquad run's route (cycle checks see
+                                   at least their own route; a too-long union is refused by the next
+                                   node = runs locally), core.netsquad_budget = the smallest live
+                                   budget; both back to their pre-fleet values once no netsquad run is live.
+
+        The old save/restore-per-run (prev = core.x; core.x = mine; finally core.x = prev) broke when
+        overlapping runs ended in crossed order (A starts, B starts, A ends, B ends): B restored A's
+        value, so a privileged run's core flag outlived every run, an unprivileged sibling wiped a live
+        privileged run's grant, and a shallow run lowered a deep run's hop count (hop-bound bypass)."""
+        c = self.core
+        entry = [int(hops), str(priv or ""), netsquad]
+        with self._lock:
+            live = self.__dict__.setdefault("_live_runs", [])
+            if not live:
+                self._idle_hops = getattr(c, "fleet_hops", 0)
+            if netsquad is not None and not any(e[2] is not None for e in live):
+                self._idle_netsquad = (getattr(c, "netsquad_path", None), getattr(c, "netsquad_budget", None))
+            live.append(entry)
+            self._publish_run_state()
+        try:
+            yield
+        finally:
+            with self._lock:
+                live = self.__dict__.setdefault("_live_runs", [])
+                for i, e in enumerate(live):
+                    if e is entry:
+                        del live[i]
+                        break
+                self._publish_run_state()
+
+    def _publish_run_state(self) -> None:
+        c = self.core
+        live = self.__dict__.get("_live_runs") or []
+        nets = [e[2] for e in live if e[2] is not None]
+        if nets:
+            route: list[str] = []
+            for p, _ in nets:
+                route += [x for x in p if x not in route]
+            budgets = [b for _, b in nets if isinstance(b, int) and not isinstance(b, bool)]
+            c.netsquad_path, c.netsquad_budget = route, (min(budgets) if budgets else None)
+        elif "_idle_netsquad" in self.__dict__:
+            c.netsquad_path, c.netsquad_budget = self.__dict__.pop("_idle_netsquad")
+        if not live:
+            c.fleet_hops = self.__dict__.get("_idle_hops", 0)
+            c.fleet_privileged = ""
+            return
+        c.fleet_hops = max(e[0] for e in live)
+        caps = {e[1] for e in live if e[1]}
+        c.fleet_privileged = next(iter(caps)) if len(caps) == 1 else ""
 
     @property
     def enabled(self) -> bool:
@@ -892,15 +953,12 @@ class FleetManager:
         origin_run = re.sub(r"[^A-Za-z0-9_-]", "", str(payload.get("origin_run") or ""))[:40]
         rid = f"net-{sender or path[-1]}-{origin_run}" if origin_run else None
         bridge_merge(c, payload.get("bridge"), sender or path[-1], run_id=rid)
-        prev = (getattr(c, "fleet_hops", 0), getattr(c, "netsquad_path", None), getattr(c, "netsquad_budget", None))
-        c.fleet_hops, c.netsquad_path, c.netsquad_budget = hops, list(path), budget
-        try:
+        # never privileged; hops / route / budget ref-counted with every live run (see _run_scope)
+        with self._run_scope(hops, "", netsquad=(list(path), budget)):
             if rid:
                 res = await (c.chat(prompt, run_id=rid) if mode == "chat" else c.squad(prompt, n, run_id=rid))
             else:
                 res = await (c.chat(prompt) if mode == "chat" else c.squad(prompt, n))
-        finally:
-            c.fleet_hops, c.netsquad_path, c.netsquad_budget = prev
         out = {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"),
                "answer": res.get("answer") or "", "netsquad": True}
         posts = bridge_export(c, run_id=rid or res.get("run_id"), only_origin=self.node_id)
@@ -1133,15 +1191,20 @@ class FleetManager:
         self._audit("agent.migrate", **ctx, files=res["files"], bytes=res["bytes"], home=res["home"])
         return {"ok": True, "node": self.node_id, **res}
 
+    def _busy_agent_ids(self) -> set[str]:
+        """Agent home ids with a live (working) agent on this core right now."""
+        from . import agentfs, memstore
+        return {agentfs.sanitize_agent_id(a.get("agent_id") or a.get("role") or memstore.agent_namespace(n))
+                for n, a in list(self.core.active.items()) if isinstance(a, dict) and a.get("status") == "working"}
+
     def idle_agents(self, now: float | None = None) -> list[str]:
         """Agent homes on this node that are not running and untouched for AVRONE_AGENT_IDLE_SECS."""
-        from . import agentcontainer, agentfs, agentpack, memstore
+        from . import agentcontainer, agentfs, agentpack
         now = time.time() if now is None else now
         root = agentfs.agents_root(self._workspace())
         if not root.is_dir() or root.is_symlink():
             return []
-        busy = {agentfs.sanitize_agent_id(a.get("agent_id") or a.get("role") or memstore.agent_namespace(n))
-                for n, a in list(self.core.active.items()) if isinstance(a, dict) and a.get("status") == "working"}
+        busy = self._busy_agent_ids()
         idx = agentpack.load_index(self.data_dir)
         out = []
         for d in sorted(root.iterdir()):
@@ -1171,6 +1234,17 @@ class FleetManager:
             return []
         out: list[dict[str, Any]] = []
         for aid in agents:
+            # `agents` is a snapshot and every migration awaits the network: an agent that started
+            # working while an earlier pack was in flight is busy NOW. Re-check right before the
+            # export (no await between this check and migrate_agent's synchronous export_pack).
+            try:
+                busy = aid in self._busy_agent_ids()
+            except Exception:  # noqa: BLE001 - unsure = treat as busy = leave it home
+                busy = True
+            if busy:
+                self._audit("agent.migrate_skipped", agent_id=aid[:64], reason="agent became busy")
+                out.append({"agent_id": aid, "ok": False, "error": "agent became busy; left in place"})
+                continue
             try:
                 res = await self.migrate_agent(aid, "auto")
                 out.append({"agent_id": aid, "ok": True, "target": res["target"]})
@@ -1375,14 +1449,12 @@ class FleetManager:
                 release()
                 raise
             ck = {"checkpoint": ck_path}
-        prev = getattr(c, "fleet_hops", 0)
-        prev_priv = getattr(c, "fleet_privileged", "")
-        c.fleet_hops = hops  # remote agents see how deep they are
-        c.fleet_privileged = priv  # granted elevated capability ("" = none); tools gate on it
         try:
-            # run-scoped half of the grant: tools spawned in THIS run's task tree see it, a run executing
-            # concurrently on the same core does not (priv tools require both halves to agree)
-            with priv_grant(priv):
+            # core-wide half (core.fleet_hops / core.fleet_privileged) is ref-counted across every run
+            # live on this core, see _run_scope; run-scoped half of the grant: tools spawned in THIS
+            # run's task tree see it, a run executing concurrently on the same core does not (priv
+            # tools require both halves to agree)
+            with self._run_scope(hops, priv), priv_grant(priv):
                 if mode == "chat":
                     res = await c.chat(prompt)
                 elif mode == "deep":
@@ -1394,8 +1466,6 @@ class FleetManager:
         finally:
             if release:
                 release()
-            c.fleet_hops = prev
-            c.fleet_privileged = prev_priv
         answer = res.get("answer") or res.get("report") or ""
         return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer,
                 **({"checkpoint_id": ck_id} if ck_id else {})}

@@ -74,11 +74,21 @@ async def test_grokbot_ask_caps_prompt_length(monkeypatch):
 @pytest.mark.asyncio
 async def test_grokbot_ask_caps_streamed_response_body(monkeypatch):
     monkeypatch.setenv("AVRONE_GROKBOT_URL", "http://grok-bot:3000")
-    body = b'{"answer":"' + (b"x" * (70 * 1024)) + b'"}'
+
+    class OversizedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            # Deliberately omit Content-Length so the streaming byte counter is exercised.
+            yield b'{"answer":"'
+            yield b"x" * (70 * 1024)
+            yield b'"}'
+
+        async def aclose(self):
+            return None
+
     monkeypatch.setattr(
         tools_extra,
         "HTTP_TRANSPORT",
-        httpx.MockTransport(lambda request: httpx.Response(200, content=body)),
+        httpx.MockTransport(lambda request: httpx.Response(200, stream=OversizedStream())),
     )
     result = await tools_extra.t_grokbot_ask(_ctx(), {"prompt": "Bound the response."})
     assert "64 KiB limit" in result

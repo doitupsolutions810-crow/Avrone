@@ -89,6 +89,7 @@ integrity and auth, not confidentiality.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -473,6 +474,51 @@ class FleetManager:
             with _LAZY_LOCK_GUARD:
                 lk = self.__dict__.setdefault("_state_lock", threading.RLock())
         return lk
+
+    @contextlib.contextmanager
+    def _run_scope(self, hops: int, priv: str):
+        """Register one inbound run as live on the core for its duration and publish the core-wide
+        view of ALL live runs (one critical section per enter/exit):
+
+          core.fleet_hops        = the DEEPEST live run's hop count (never lower than any live run's),
+                                   back to its pre-fleet value once no run is live;
+          core.fleet_privileged  = the granted capability only while exactly one distinct privileged
+                                   capability is live; "" otherwise (none live, or priv:shell and
+                                   priv:admin overlapping = fail closed), and "" once none is live.
+
+        The old save/restore-per-run (prev = core.x; core.x = mine; finally core.x = prev) broke when
+        overlapping runs ended in crossed order (A starts, B starts, A ends, B ends): B restored A's
+        value, so a privileged run's core flag outlived every run, an unprivileged sibling wiped a live
+        privileged run's grant, and a shallow run lowered a deep run's hop count (hop-bound bypass)."""
+        c = self.core
+        entry = [int(hops), str(priv or "")]
+        with self._lock:
+            live = self.__dict__.setdefault("_live_runs", [])
+            if not live:
+                self._idle_hops = getattr(c, "fleet_hops", 0)
+            live.append(entry)
+            self._publish_run_state()
+        try:
+            yield
+        finally:
+            with self._lock:
+                live = self.__dict__.setdefault("_live_runs", [])
+                for i, e in enumerate(live):
+                    if e is entry:
+                        del live[i]
+                        break
+                self._publish_run_state()
+
+    def _publish_run_state(self) -> None:
+        c = self.core
+        live = self.__dict__.get("_live_runs") or []
+        if not live:
+            c.fleet_hops = self.__dict__.get("_idle_hops", 0)
+            c.fleet_privileged = ""
+            return
+        c.fleet_hops = max(e[0] for e in live)
+        caps = {e[1] for e in live if e[1]}
+        c.fleet_privileged = next(iter(caps)) if len(caps) == 1 else ""
 
     @property
     def enabled(self) -> bool:
@@ -892,15 +938,16 @@ class FleetManager:
         origin_run = re.sub(r"[^A-Za-z0-9_-]", "", str(payload.get("origin_run") or ""))[:40]
         rid = f"net-{sender or path[-1]}-{origin_run}" if origin_run else None
         bridge_merge(c, payload.get("bridge"), sender or path[-1], run_id=rid)
-        prev = (getattr(c, "fleet_hops", 0), getattr(c, "netsquad_path", None), getattr(c, "netsquad_budget", None))
-        c.fleet_hops, c.netsquad_path, c.netsquad_budget = hops, list(path), budget
+        prev = (getattr(c, "netsquad_path", None), getattr(c, "netsquad_budget", None))
+        c.netsquad_path, c.netsquad_budget = list(path), budget
         try:
-            if rid:
-                res = await (c.chat(prompt, run_id=rid) if mode == "chat" else c.squad(prompt, n, run_id=rid))
-            else:
-                res = await (c.chat(prompt) if mode == "chat" else c.squad(prompt, n))
+            with self._run_scope(hops, ""):  # never privileged; hops ref-counted with every live run
+                if rid:
+                    res = await (c.chat(prompt, run_id=rid) if mode == "chat" else c.squad(prompt, n, run_id=rid))
+                else:
+                    res = await (c.chat(prompt) if mode == "chat" else c.squad(prompt, n))
         finally:
-            c.fleet_hops, c.netsquad_path, c.netsquad_budget = prev
+            c.netsquad_path, c.netsquad_budget = prev
         out = {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"),
                "answer": res.get("answer") or "", "netsquad": True}
         posts = bridge_export(c, run_id=rid or res.get("run_id"), only_origin=self.node_id)
@@ -1375,14 +1422,12 @@ class FleetManager:
                 release()
                 raise
             ck = {"checkpoint": ck_path}
-        prev = getattr(c, "fleet_hops", 0)
-        prev_priv = getattr(c, "fleet_privileged", "")
-        c.fleet_hops = hops  # remote agents see how deep they are
-        c.fleet_privileged = priv  # granted elevated capability ("" = none); tools gate on it
         try:
-            # run-scoped half of the grant: tools spawned in THIS run's task tree see it, a run executing
-            # concurrently on the same core does not (priv tools require both halves to agree)
-            with priv_grant(priv):
+            # core-wide half (core.fleet_hops / core.fleet_privileged) is ref-counted across every run
+            # live on this core, see _run_scope; run-scoped half of the grant: tools spawned in THIS
+            # run's task tree see it, a run executing concurrently on the same core does not (priv
+            # tools require both halves to agree)
+            with self._run_scope(hops, priv), priv_grant(priv):
                 if mode == "chat":
                     res = await c.chat(prompt)
                 elif mode == "deep":
@@ -1394,8 +1439,6 @@ class FleetManager:
         finally:
             if release:
                 release()
-            c.fleet_hops = prev
-            c.fleet_privileged = prev_priv
         answer = res.get("answer") or res.get("report") or ""
         return {"node": self.node_id, "path": [self.node_id], "run_id": res.get("run_id"), "answer": answer,
                 **({"checkpoint_id": ck_id} if ck_id else {})}

@@ -450,7 +450,7 @@ def _node_service_render(report: dict[str, Any], fmt: str) -> str:
         lines.append(f"scope: {report['scope']}")
     if report.get("message"):
         lines.append(f"detail: {report['message']}")
-    return _cap("\\n".join(lines), PREFLIGHT_MAX_CHARS)
+    return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
 
 
 # --------------------------------------------------------------------------- env_report

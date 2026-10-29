@@ -31,6 +31,7 @@ edgepack thermal migration of idle agent homes (FleetManager.thermal_migrate, AV
 from __future__ import annotations
 
 import glob
+import math
 import os
 import shutil
 import time
@@ -138,11 +139,18 @@ def _ramp_down(x: float, soft: float, hard: float) -> float:
     return max(0.0, min(1.0, f))
 
 
-def _env_float(name: str, default: float) -> float:
+def _finite(v: Any, default: float) -> float:
+    """float(v) when it is a finite number, else default ("nan"/"inf" thresholds disabled the
+    thermal guard: every comparison against NaN is False, so is_hot() could never fire)."""
     try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
+        f = float(v)
+    except (TypeError, ValueError):
         return default
+    return f if math.isfinite(f) else default
+
+
+def _env_float(name: str, default: float) -> float:
+    return _finite(os.environ.get(name, "") or default, default)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -163,7 +171,7 @@ class Governor:
         mp = _env_int("AVRONE_MIN_PARALLEL", 1) if min_parallel is None else int(min_parallel)
         self.floor = max(1, min(mp, self.max_parallel))
         self.thermal_max_c = (_env_float("AVRONE_THERMAL_MAX_C", DEFAULT_THERMAL_MAX_C)
-                              if thermal_max_c is None else float(thermal_max_c))
+                              if thermal_max_c is None else _finite(thermal_max_c, DEFAULT_THERMAL_MAX_C))
         self.enabled = enabled
         self.readers: dict[str, Reader] = {
             "load": read_load, "mem_pct": read_mem_pct,
@@ -192,7 +200,8 @@ class Governor:
     def read(self, fresh: bool = False) -> NodeHealth:
         """Current readings (cached for ttl_s). Never raises."""
         now = self.clock()
-        if not fresh and self._cache and now - self._cache[0] < self.ttl_s:
+        # 0 <= age: a clock that steps backwards must not pin a stale reading forever
+        if not fresh and self._cache and 0 <= now - self._cache[0] < self.ttl_s:
             return self._cache[1]
         h = NodeHealth(ts=time.time())
         for key, reader in self.readers.items():
@@ -200,7 +209,7 @@ class Governor:
                 v = reader()
                 if v is not None:
                     v = float(v)
-                    if v != v:  # NaN
+                    if v != v:  # NaN (+-inf is kept: it ramps to fully throttled / healthy as a real extreme)
                         raise ValueError("NaN reading")
                 setattr(h, key, v)
             except Exception as e:  # unreadable sensor: ignore it, remember why

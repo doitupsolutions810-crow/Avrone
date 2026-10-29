@@ -36,9 +36,11 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import stat as _st
 import tarfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,15 @@ INDEX_DIR = "agentpacks"
 
 class PackError(ValueError):
     """A pack that cannot be exported or imported safely."""
+
+
+_IMPORT_LOCKS: dict[str, threading.Lock] = {}
+_IMPORT_GUARD = threading.Lock()
+
+
+def _import_lock(target: Path) -> threading.Lock:
+    with _IMPORT_GUARD:
+        return _IMPORT_LOCKS.setdefault(str(target), threading.Lock())
 
 
 def _sha(data: bytes) -> str:
@@ -207,46 +218,60 @@ def _check_rel(rel: str) -> str:
     return rel
 
 
+def zlib_error() -> type[Exception]:
+    import zlib
+    return zlib.error
+
+
 def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, bytes]]:
     """Parse and fully verify a bundle in memory. Returns (manifest, memory records, {rel: bytes})."""
     quota = quota_bytes()
     if len(bundle) > quota + 1024 * 1024:
         raise PackError(f"bundle is {len(bundle)} bytes; over the quota")
-    try:
-        tf = tarfile.open(fileobj=io.BytesIO(bundle), mode="r:gz")
-        members = tf.getmembers()
-    except (tarfile.TarError, OSError, EOFError) as e:
-        raise PackError(f"not a valid agent pack: {e}") from None
-    if len(members) > MAX_MEMBERS:
-        raise PackError("too many members in pack")
     declared = 0
+    count = 0
     blobs: dict[str, bytes] = {}
     man = mem = None
-    for m in members:
-        if not m.isreg():
-            raise PackError(f"refusing non-regular member (link/device/dir) {m.name!r}")
-        declared += m.size
-        if declared > quota + 1024 * 1024:
-            raise PackError("pack contents exceed the quota")
-        f = tf.extractfile(m)
-        data = f.read() if f else b""
-        if m.name == MANIFEST:
-            man = data
-        elif m.name == MEMORY:
-            mem = data
-        elif m.name.startswith(HOME_PREFIX):
-            rel = _check_rel(m.name[len(HOME_PREFIX):])
-            if rel in blobs:
-                raise PackError(f"duplicate member {rel!r}")
-            blobs[rel] = data
-        else:
-            raise PackError(f"unexpected member {m.name!r}")
+    try:
+        tf = tarfile.open(fileobj=io.BytesIO(bundle), mode="r:gz")
+        # Walk members lazily, checking the count and declared bytes as each header is read: the
+        # old getmembers() first decompressed the whole stream (a gzip bomb within the bundle cap).
+        while True:
+            m = tf.next()
+            if m is None:
+                break
+            count += 1
+            if count > MAX_MEMBERS:
+                raise PackError("too many members in pack")
+            if not m.isreg():
+                raise PackError(f"refusing non-regular member (link/device/dir) {m.name!r}")
+            declared += m.size
+            if declared > quota + 1024 * 1024:
+                raise PackError("pack contents exceed the quota")
+            f = tf.extractfile(m)
+            data = f.read() if f else b""
+            if m.name in (MANIFEST, MEMORY):
+                if (man if m.name == MANIFEST else mem) is not None:  # was: the last copy silently won
+                    raise PackError(f"duplicate member {m.name!r}")
+                if m.name == MANIFEST:
+                    man = data
+                else:
+                    mem = data
+            elif m.name.startswith(HOME_PREFIX):
+                rel = _check_rel(m.name[len(HOME_PREFIX):])
+                if rel in blobs:
+                    raise PackError(f"duplicate member {rel!r}")
+                blobs[rel] = data
+            else:
+                raise PackError(f"unexpected member {m.name!r}")
+    except (tarfile.TarError, OSError, EOFError, zlib_error()) as e:
+        raise PackError(f"not a valid agent pack: {e}") from None
     if man is None or mem is None:
         raise PackError("pack has no manifest/memory")
     try:
         manifest = json.loads(man)
         memory = json.loads(mem)
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON
         raise PackError("manifest/memory is not JSON") from None
     if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
         raise PackError("unknown pack format")
@@ -256,16 +281,23 @@ def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict
     for k in ("origin", "home"):
         if not isinstance(manifest.get(k), str) or not re.match(r"^[a-z0-9][a-z0-9_-]{0,62}$", manifest[k]):
             raise PackError(f"bad {k} in manifest")
-    if not isinstance(manifest.get("created"), int):
+    if not isinstance(manifest.get("created"), int) or isinstance(manifest.get("created"), bool):
         raise PackError("bad created in manifest")
     files = manifest.get("files")
     if not isinstance(files, list):
         raise PackError("bad files list in manifest")
     listed = {}
     for e in files:
-        if not isinstance(e, dict):
+        if not isinstance(e, dict) or not isinstance(e.get("path"), str):
             raise PackError("bad file entry")
-        rel = _check_rel(str(e.get("path", "")))
+        rel = _check_rel(e["path"])
+        if rel in listed:
+            raise PackError(f"duplicate manifest entry {rel!r}")
+        if isinstance(e.get("size"), bool) or not isinstance(e.get("size"), int):
+            raise PackError(f"bad size for {rel!r}")
+        mt = e.get("mtime")
+        if mt is not None and (isinstance(mt, bool) or not isinstance(mt, int) or not -2**40 < mt < 2**40):
+            raise PackError(f"bad mtime for {rel!r}")
         listed[rel] = e
     if set(listed) != set(blobs):
         raise PackError("pack files do not match the manifest")
@@ -277,6 +309,13 @@ def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict
         total += len(data)
     if total > quota:
         raise PackError(f"pack holds {total} bytes; over the agent-fs quota of {quota} bytes")
+    for rel in blobs:  # a file may not also be a directory ("a" and "a/b")
+        parts = rel.split("/")
+        for i in range(1, len(parts)):
+            if "/".join(parts[:i]) in blobs:
+                raise PackError(f"path conflict in pack: {rel!r} is under a file")
+    if not 0 <= manifest["created"] < 2**40:
+        raise PackError("bad created in manifest")
     if _sha(mem) != (manifest.get("memory") or {}).get("sha256"):
         raise PackError("memory hash mismatch (tampered pack)")
     if not isinstance(memory, list):
@@ -294,6 +333,29 @@ def import_pack(workspace: Path, data_dir: Path, bundle: bytes, local_node: str,
     if expect_origin is not None and manifest["origin"] != expect_origin:
         raise PackError(f"pack origin {manifest['origin']!r} does not match sender {expect_origin!r}")
     root = agentfs.agents_root(workspace)
+    # One import per agent dir at a time: two concurrent imports of the same agent both passed
+    # the "strictly newer" check and raced the swap (and could collide on the temp dir name).
+    with _import_lock(root / aid):
+        try:
+            _install(root, workspace, data_dir, manifest, blobs, aid, local_node)
+        except OSError as e:  # e.g. a name too long for this filesystem: a refusal, not a 500
+            raise PackError(f"could not install agent pack: {type(e).__name__}: {e}"[:300]) from None
+    stats = {"merged": 0, "skipped": 0, "rejected": 0}
+    good = [r for r in memory if isinstance(r, dict)]
+    stats["rejected"] += len(memory) - len(good)
+    if good:
+        stats = {k: stats[k] + v for k, v in
+                 memstore.MemoryStore(_memory_path(data_dir)).merge(aid, good, source=manifest["origin"]).items()}
+    if manifest["home"] != local_node:
+        record(data_dir, aid, home=manifest["home"], origin=manifest["origin"], created=manifest["created"],
+               imported=int(time.time()))
+    return {"agent_id": aid, "origin": manifest["origin"], "home": manifest["home"],
+            "created": manifest["created"], "files": len(blobs), "bytes": manifest["total_bytes"],
+            "memory": stats}
+
+
+def _install(root: Path, workspace: Path, data_dir: Path, manifest: dict[str, Any],
+             blobs: dict[str, bytes], aid: str, local_node: str) -> None:
     if root.is_symlink():
         raise PackError("agents root must not be a symlink")
     root.mkdir(parents=True, exist_ok=True)
@@ -311,7 +373,7 @@ def import_pack(workspace: Path, data_dir: Path, bundle: bytes, local_node: str,
         if manifest["created"] <= stamp:
             raise PackError(f"pack (created {manifest['created']}) is not newer than the local home "
                             f"({stamp}); refusing to overwrite")
-    tmp = root / f".import-{aid}-{os.getpid()}-{int(time.time() * 1000)}"
+    tmp = root / f".import-{aid}-{os.getpid()}-{secrets.token_hex(6)}"
     old = None
     try:
         tmp.mkdir(mode=0o700)
@@ -325,7 +387,7 @@ def import_pack(workspace: Path, data_dir: Path, bundle: bytes, local_node: str,
             mt = int(by_path[rel].get("mtime") or manifest["created"])
             os.utime(dest, (mt, mt))
         if target.exists():
-            old = root / f".old-{aid}-{os.getpid()}-{int(time.time() * 1000)}"
+            old = root / f".old-{aid}-{os.getpid()}-{secrets.token_hex(6)}"
             os.replace(target, old)
         os.replace(tmp, target)
         os.chmod(target, 0o700)
@@ -337,15 +399,3 @@ def import_pack(workspace: Path, data_dir: Path, bundle: bytes, local_node: str,
         raise
     if old is not None:
         shutil.rmtree(old, ignore_errors=True)
-    stats = {"merged": 0, "skipped": 0, "rejected": 0}
-    good = [r for r in memory if isinstance(r, dict)]
-    stats["rejected"] += len(memory) - len(good)
-    if good:
-        stats = {k: stats[k] + v for k, v in
-                 memstore.MemoryStore(_memory_path(data_dir)).merge(aid, good, source=manifest["origin"]).items()}
-    if manifest["home"] != local_node:
-        record(data_dir, aid, home=manifest["home"], origin=manifest["origin"], created=manifest["created"],
-               imported=int(time.time()))
-    return {"agent_id": aid, "origin": manifest["origin"], "home": manifest["home"],
-            "created": manifest["created"], "files": len(blobs), "bytes": manifest["total_bytes"],
-            "memory": stats}

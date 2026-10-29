@@ -93,6 +93,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -116,6 +117,14 @@ if TYPE_CHECKING:
 log = logging.getLogger("avrone.fleet")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 WINDOW_S = 60
+# Signed-header shape (checked before the HMAC is computed, so junk never reaches the cache):
+# ts is 1-12 ASCII digits (int() alone also took "+5", " 5", "1_0" and non-ASCII digits like "٥");
+# a nonce is 1-128 chars of [A-Za-z0-9_-] (an unbounded nonce was stored verbatim in the replay cache).
+TS_RE = re.compile(r"^[0-9]{1,12}$")
+NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# Replay-cache bound: past this many live nonces new requests are refused (fail closed) rather than
+# evicting a live nonce, which would re-open replay of that request.
+NONCE_CACHE_MAX = 100_000
 
 # Tests may set this to an httpx transport (e.g. ASGITransport routing to in-process apps).
 HTTP_TRANSPORT: httpx.AsyncBaseTransport | None = None
@@ -359,7 +368,8 @@ class GatewayRefused(PermissionError):
     """A fleet request refused by the dispatch gateway. `code` is a stable machine-readable reason;
     `auth` is True for authentication failures (HTTP 401) and False for policy refusals (HTTP 403)."""
 
-    AUTH_CODES = {"no_token", "bad_timestamp", "bad_signature", "stale", "replay", "privileged_unsigned"}
+    AUTH_CODES = {"no_token", "bad_timestamp", "bad_nonce", "bad_signature", "stale", "replay",
+                  "privileged_unsigned"}
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -373,6 +383,21 @@ class GatewayRefused(PermissionError):
 def sender_node(frm: Any) -> str:
     """Node id part of a `from` field ("node" or "node/agent")."""
     return str(frm or "").split("/", 1)[0].strip()
+
+
+def _parse_hops(raw: Any) -> int | None:
+    """A hop count from a signed payload, or None when it is not a plain integer.
+    Refuses bools, non-integral/non-finite floats (int(Infinity) raised OverflowError -> 500, and
+    int(1.9) silently truncated) and strings that are not ASCII digits (int() took "٢", " 2")."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw) if math.isfinite(raw) and raw.is_integer() else None
+    if isinstance(raw, str) and re.fullmatch(r"-?[0-9]{1,6}", raw):
+        return int(raw)
+    return None
 
 
 def request_capability(kind: str, payload: dict[str, Any]) -> str:
@@ -427,6 +452,7 @@ class FleetManager:
         self.queue = None  # JobQueue, attached by start_queue()
         self.worker = None
         self.netsquad_counts: dict[str, int] = {}  # node id -> netsquad placements (telemetry)
+        self._migrating: set[str] = set()  # agent ids with an outbound migration in flight
         self._save()
 
     # ------------------------------------------------------------ state
@@ -503,20 +529,27 @@ class FleetManager:
             raise GatewayRefused("no_token", "fleet disabled: set AVRONE_FLEET_TOKEN")
         ts, nonce, sig = (headers.get("x-avrone-ts", ""), headers.get("x-avrone-nonce", ""),
                           headers.get("x-avrone-sig", ""))
-        try:
-            ts_i = int(ts)  # format check only; the window is enforced after the HMAC
-        except ValueError:
-            raise GatewayRefused("bad_timestamp", "bad timestamp") from None
+        if not isinstance(ts, str) or not TS_RE.fullmatch(ts):  # format check only; window enforced after HMAC
+            raise GatewayRefused("bad_timestamp", "bad timestamp")
+        ts_i = int(ts)
+        if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
+            raise GatewayRefused("bad_nonce", "bad nonce (1-128 chars of [A-Za-z0-9_-])")
         expect = sign(self.token, method, path, body, ts, nonce)["x-avrone-sig"]
-        if not (sig and nonce and hmac.compare_digest(expect, sig)):
+        if not (isinstance(sig, str) and sig.isascii() and hmac.compare_digest(expect, sig)):
             raise GatewayRefused("bad_signature", "bad signature")
         now = time.time()
         if abs(now - ts_i) > WINDOW_S:
             raise GatewayRefused("stale", "stale request (timestamp outside window)")
-        self._nonces = {k: v for k, v in self._nonces.items() if now - v < 2 * WINDOW_S}
+        # A nonce must outlive every instant its request is still inside the window (ts + WINDOW_S);
+        # keep it at least 2*WINDOW_S past first sight too, in case the clock steps backwards.
+        # (The old "now - seen < 2*WINDOW_S" prune dropped a future-skewed nonce at exactly the
+        # instant its request became valid again: replay at the window edge.)
+        self._nonces = {k: v for k, v in self._nonces.items() if now <= v}
         if nonce in self._nonces:
             raise GatewayRefused("replay", "replayed request (nonce already seen)")
-        self._nonces[nonce] = now
+        if len(self._nonces) >= NONCE_CACHE_MAX:
+            raise GatewayRefused("replay", "replay cache full; refusing new requests until nonces expire")
+        self._nonces[nonce] = max(ts_i + WINDOW_S, now + 2 * WINDOW_S)
 
     def allowed(self, node_id: str) -> bool:
         if not self.allow:
@@ -554,10 +587,9 @@ class FleetManager:
             # moving a whole agent home is never open to "any token holder": explicit allowlist only
             raise self._refuse("sender_not_allowed", f"agent migration from {sender or '?'} refused: sender must be "
                                "listed in a non-empty AVRONE_FLEET_ALLOW", **ctx)
-        try:
-            hops = int(payload.get("hops", 1))
-        except (TypeError, ValueError):
-            raise self._refuse("bad_hops", "bad hop count", **ctx) from None
+        hops = _parse_hops(payload.get("hops", 1))
+        if hops is None:
+            raise self._refuse("bad_hops", "bad hop count", **ctx)
         if hops < 0:
             raise self._refuse("bad_hops", "bad hop count (negative)", **ctx)
         if hops > self.max_hops:  # sender may only emit hops <= max_hops (it refuses at hops >= max before +1)
@@ -613,7 +645,7 @@ class FleetManager:
             raise self._refuse("privileged_unsigned", msg, kind=kind, privileged=True)
         try:
             payload = json.loads(body or b"{}")
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON (was a 500)
             raise self._refuse("bad_body", "body must be JSON", kind=kind) from None
         if not isinstance(payload, dict):
             raise self._refuse("bad_body", "body must be a JSON object", kind=kind)
@@ -948,33 +980,60 @@ class FleetManager:
                 raise RuntimeError(f"node {target} is not online")
             return n
         thermal_max = getattr(getattr(self.core, "governor", None), "thermal_max_c", None)
-        live = [n for n in self.nodes.values() if self.status_of(n) == "online" and self.allowed(n["node_id"])
+        live = [n for n in self.nodes.values() if self.status_of(n) == "online"
+                and ID_RE.match(str(n.get("node_id", ""))) and self.allowed(str(n["node_id"]))
                 and n["node_id"] != self.node_id]
         if not live:
             raise RuntimeError("no online nodes to migrate to")
 
         def h(n: dict[str, Any], k: str) -> float | None:
-            v = (n.get("health") or {}).get(k)
-            return float(v) if isinstance(v, (int, float)) else None
-        if isinstance(thermal_max, (int, float)):
-            cool = [n for n in live if h(n, "temp_c") is None or h(n, "temp_c") < thermal_max]
-            live = cool or live
+            v = (n.get("health") if isinstance(n.get("health"), dict) else {}).get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                return None
+            return float(v)
+        # Never pick a peer that is itself hot: one that reports state hot/throttled, or a temp at
+        # or over this node's thermal max. (The old code fell back to the hot peers when no cool
+        # one existed, bouncing agents from one overheating node to another.)
+        healthy = [n for n in live if self.node_state(n) not in EXCLUDED_STATES]
+        if isinstance(thermal_max, (int, float)) and not isinstance(thermal_max, bool) and math.isfinite(thermal_max):
+            healthy = [n for n in healthy if h(n, "temp_c") is None or h(n, "temp_c") < thermal_max]
+        if not healthy:
+            raise RuntimeError("no online nodes to migrate to (every online peer is hot or throttled)")
+        live = healthy
         measured = [n for n in live if h(n, "temp_c") is not None or h(n, "load") is not None]
+
+        def nload(n: dict[str, Any]) -> float:
+            v = n.get("load", 0)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 1e9
         if measured:
             return min(measured, key=lambda n: (h(n, "temp_c") if h(n, "temp_c") is not None else 0.0,
-                                                h(n, "load") or 0.0, n.get("load", 0), n["node_id"]))
-        return min(live, key=lambda n: (n.get("load", 0), n["node_id"]))
+                                                h(n, "load") or 0.0, nload(n), n["node_id"]))
+        return min(live, key=lambda n: (nload(n), n["node_id"]))
 
     async def migrate_agent(self, agent_id: str, target: str = "auto") -> dict[str, Any]:
         """Send one agent's home (dir + memory) to a peer over the signed gateway. Raises on
         refusal/failure (audited as agent.migrate_refused / agent.migrate_failed); the local home
         is never touched, so a failed migration leaves the agent where it is."""
-        from . import agentfs, agentpack
         aid = str(agent_id or "")
-        ctx = {"agent_id": aid, "target": target or "auto"}
+        inflight = self._migrating
+        if aid in inflight:
+            # a second concurrent migration of the same agent would export/post twice and race
+            # the two imports on the peer; refuse it (the first one is still in flight)
+            self._audit("agent.migrate_refused", reason="migration of this agent already in progress",
+                        agent_id=aid[:64], target=target or "auto")
+            raise PermissionError(f"migration of agent {aid[:64]!r} already in progress")
+        inflight.add(aid)
+        try:
+            return await self._migrate_agent(aid, target)
+        finally:
+            inflight.discard(aid)
+
+    async def _migrate_agent(self, aid: str, target: str) -> dict[str, Any]:
+        from . import agentfs, agentpack
+        ctx = {"agent_id": aid[:64], "target": target or "auto"}
         try:
             if agentfs.sanitize_agent_id(aid) != aid:
-                raise PermissionError(f"invalid agent id {aid!r}")
+                raise PermissionError(f"invalid agent id {aid[:64]!r}")
             if not migrate_enabled():
                 raise PermissionError("agent migration disabled (AVRONE_AGENT_MIGRATE != on)")
             first = target if target not in ("", "auto") else ""

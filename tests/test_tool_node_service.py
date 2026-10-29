@@ -39,6 +39,10 @@ def make_ctx(tmp_path, monkeypatch, runner_kind="docker", responses=None, agent_
     home.mkdir(parents=True)
     runner = FakeRunner(workspace, responses)
     runner.kind = runner_kind
+    # Represent an already-created persistent container for lifecycle probe tests.
+    runner.agent_pool = SimpleNamespace(
+        node="node-a", homes={"avrone-agent-node-a-alpha": object()}
+    )
     registry = ToolRegistry()
 
     async def fake_fs_write(ctx, args):
@@ -246,3 +250,16 @@ def test_start_is_idempotent_when_matching_service_is_already_running(tmp_path, 
     assert result["ok"] and result["status"] == "running"
     assert result["message"] == "already_running"
     assert [c[0] for c in env.runner.calls] == ["node --version", ti._NODE_START_COMMAND]
+
+
+
+@pytest.mark.parametrize("action", ["status", "stop"])
+def test_status_and_stop_do_not_create_an_untracked_agent_container(tmp_path, monkeypatch, action):
+    env = make_ctx(tmp_path, monkeypatch)
+    monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
+    env.runner.agent_pool.homes.clear()
+
+    result = as_json(call(env, action=action, format="json"))
+    assert result["ok"] and result["status"] == "not_running"
+    assert "no container was started" in result["message"]
+    assert env.runner.calls == []

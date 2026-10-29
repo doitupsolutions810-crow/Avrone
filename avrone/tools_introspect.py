@@ -393,6 +393,28 @@ async def t_node_service(ctx: "AgentContext", args: dict[str, Any]) -> str:
             report["message"] = "start/status/stop require AVRONE_RUNNER=docker and AVRONE_AGENT_CONTAINER=persistent"
             return _node_service_render(report, fmt)
 
+    # Status/stop must be observational: never create a lazy persistent container just
+    # to discover that its service is absent. Only start may trigger container creation.
+    if action in {"status", "stop"}:
+        pool = getattr(runner, "agent_pool", None)
+        homes = getattr(pool, "homes", None) if pool is not None else None
+        if not isinstance(homes, dict):
+            report.update(ok=True, status="not_running",
+                          message="No tracked persistent agent container; no container was started")
+            return _node_service_render(report, fmt)
+        try:
+            from . import agentcontainer, agentfs
+            node_id = getattr(pool, "node", None) or agentcontainer.local_node_id()
+            container = agentcontainer.container_name(
+                node_id, agentfs.sanitize_agent_id(getattr(ctx, "agent_id", None)))
+        except Exception:  # noqa: BLE001
+            report.update(status="error", message="Could not safely identify the agent container")
+            return _node_service_render(report, fmt)
+        if container not in homes:
+            report.update(ok=True, status="not_running",
+                          message="No tracked persistent agent container; no container was started")
+            return _node_service_render(report, fmt)
+
     if action == "scaffold":
         message, ok = await _node_service_scaffold(ctx, home)
         report.update(ok=ok, status="scaffolded" if ok else "refused", message=message)

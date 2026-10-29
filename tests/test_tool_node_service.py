@@ -86,6 +86,7 @@ def test_node_service_template_is_loopback_only_and_bounded():
     assert "0.0.0.0" not in source and "--privileged" not in source
     assert 'service: "avrone-agent-node"' in source
     assert "stopping: true" in source
+    assert 'b.includes("avrone-agent-node")' in ti._NODE_STOP_PROBE
 
 
 def test_scaffold_uses_fs_write_and_is_idempotent(tmp_path, monkeypatch):
@@ -214,3 +215,34 @@ def test_node_service_rejects_unknown_action_and_format(tmp_path, monkeypatch, a
     result = call(env, **args)
     assert result.startswith("ERROR:")
     assert env.runner.calls == []
+
+
+
+@pytest.mark.parametrize("action,command", [
+    ("status", ti._NODE_HEALTH_PROBE),
+    ("stop", ti._NODE_STOP_PROBE),
+])
+def test_service_probe_timeout_reports_unknown_state(tmp_path, monkeypatch, action, command):
+    env = make_ctx(tmp_path, monkeypatch, responses={
+        command: SimpleNamespace(exit_code=-1, stdout="", stderr="", timed_out=True)
+    })
+    monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
+    result = as_json(call(env, action=action, format="json"))
+    assert not result["ok"] and result["status"] == "timeout"
+    assert "state is unknown" in result["message"]
+
+
+
+def test_start_is_idempotent_when_matching_service_is_already_running(tmp_path, monkeypatch):
+    responses = {
+        "node --version": SimpleNamespace(exit_code=0, stdout="v22.11.0\\n", stderr="", timed_out=False),
+        ti._NODE_START_COMMAND: SimpleNamespace(exit_code=0, stdout="already_running", stderr="", timed_out=False),
+    }
+    env = make_ctx(tmp_path, monkeypatch, responses=responses)
+    monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
+    (env.home / "node-server.js").write_text(ti.NODE_SERVER_SOURCE, encoding="utf-8")
+
+    result = as_json(call(env, action="start", format="json"))
+    assert result["ok"] and result["status"] == "running"
+    assert result["message"] == "already_running"
+    assert [c[0] for c in env.runner.calls] == ["node --version", ti._NODE_START_COMMAND]

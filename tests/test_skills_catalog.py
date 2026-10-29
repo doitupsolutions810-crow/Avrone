@@ -127,6 +127,8 @@ def test_node_agent_image_contains_python_and_node_runtime_checks():
     assert "FROM python:3.12-slim-bookworm" in dockerfile
     assert "node --version" in dockerfile and "npm --version" in dockerfile and "python --version" in dockerfile
     assert 'CMD ["sleep", "infinity"]' in dockerfile
+    assert "--privileged" not in dockerfile
+    assert "EXPOSE " not in dockerfile and " -p " not in dockerfile
 
 
 

@@ -9,7 +9,7 @@ COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
 COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates git \
+    && apt-get install -y --no-install-recommends bash ca-certificates git libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && python --version \
     && node --version \

@@ -425,18 +425,23 @@ async def t_node_service(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
     exit_code = int(getattr(result, "exit_code", 1))
     timed_out = bool(getattr(result, "timed_out", False))
-    if action == "status" and (timed_out or exit_code != 0):
+    if action in {"status", "stop"} and timed_out:
+        report.update(ok=False, status="timeout",
+                      message=f"Node service {action} probe timed out; current service state is unknown")
+    elif action == "status" and exit_code != 0:
         report.update(ok=True, status="not_running", message="No responding AVRONE Node health server at loopback port 8765")
-    elif action == "stop" and (timed_out or exit_code != 0):
+    elif action == "stop" and exit_code != 0:
         report.update(ok=True, status="not_running", message="No responding AVRONE Node health server to stop")
     elif timed_out or exit_code != 0:
         report.update(status="failed", message=f"Node service {action} failed; detailed stderr is not returned")
     else:
+        output = str(getattr(result, "stdout", "") or "").strip()[:200]
+        if action == "start" and output == "already_running":
+            success_status = "running"
         report.update(ok=True, status=success_status,
                       url="http://127.0.0.1:8765" if action in {"start", "status"} else None,
                       scope=NODE_SERVICE_SCOPE,
-                      message=(str(getattr(result, "stdout", "") or "").strip()[:200]
-                               or f"Node service {success_status}"))
+                      message=output or f"Node service {success_status}")
     return _node_service_render(report, fmt)
 
 

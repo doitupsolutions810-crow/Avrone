@@ -331,6 +331,52 @@ async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return f"edited {name} (1 replacement)"
 
 
+# --------------------------------------------------------------------------- grokbot bridge
+
+async def t_grokbot_ask(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Call the fixed Grok Bot research agent; never accept a caller-supplied URL."""
+    base = os.getenv("AVRONE_GROKBOT_URL", "").strip().rstrip("/")
+    if not base:
+        return "ERROR: AVRONE_GROKBOT_URL is not set; the Grok Bot bridge is disabled."
+    parsed = urlparse(base)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.query or parsed.fragment):
+        return "ERROR: AVRONE_GROKBOT_URL must be an HTTP(S) origin without credentials, path, query, or fragment."
+    prompt = str(args.get("prompt", "")).strip()
+    if not prompt:
+        return "ERROR: prompt is required."
+    if len(prompt) > 8000:
+        return "ERROR: prompt exceeds the 8000-character limit."
+
+    # Fixed low-privilege agent + chat mode prevents recursive AVRONE ↔ Grok
+    # delegation and does not expose Grok Bot's terminal-enabled main agent.
+    payload = {"agentId": "grok-researcher", "mode": "chat", "message": prompt}
+    kw: dict[str, Any] = {"timeout": httpx.Timeout(180.0, connect=5.0), "follow_redirects": False}
+    if HTTP_TRANSPORT is not None:
+        kw["transport"] = HTTP_TRANSPORT
+    try:
+        async with httpx.AsyncClient(**kw) as client:
+            response = await client.post(f"{base}/api/chat", json=payload)
+        if 300 <= response.status_code < 400:
+            _emit(ctx, "grokbot.bridge", ok=False, status=response.status_code, reason="redirect blocked")
+            return f"ERROR: Grok Bot returned HTTP {response.status_code}; redirects are blocked."
+        if not response.is_success:
+            _emit(ctx, "grokbot.bridge", ok=False, status=response.status_code)
+            return f"ERROR: Grok Bot returned HTTP {response.status_code}: {response.text[:300]}"
+        data = response.json()
+        answer = data.get("answer") if isinstance(data, dict) else None
+        if not isinstance(answer, str) or not answer.strip():
+            _emit(ctx, "grokbot.bridge", ok=False, reason="empty answer")
+            return "ERROR: Grok Bot returned no textual answer."
+        _emit(ctx, "grokbot.bridge", ok=True, agent="grok-researcher", answer_chars=len(answer))
+        return json.dumps({"ok": True, "agent": "grok-researcher", "answer": answer},
+                          ensure_ascii=False)[:9000]
+    except (httpx.HTTPError, ValueError) as exc:
+        _emit(ctx, "grokbot.bridge", ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+        return f"ERROR: Grok Bot bridge request failed: {type(exc).__name__}: {str(exc)[:200]}"
+
+
 # --------------------------------------------------------------------------- http_request
 
 _KEY_HEADERS = ("content-type", "content-length", "location", "etag", "last-modified",
@@ -1155,6 +1201,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"pattern": str, "path"?: str}', t_search_files),
     ("edit_file", "replace one exact, unique occurrence of `old` with `new` in a file (own agent dir by default, `shared/...` for the shared workspace; quota applies in your dir).",
      '{"path": str, "old": str, "new": str}', t_edit_file),
+    ("grokbot.ask", "Ask Grok Bot's low-privilege research agent over the configured private bridge; no arbitrary URL, shell, or recursive AVRONE delegation.",
+     '{"prompt": str}', t_grokbot_ask),
     ("http_request", "make an HTTP request (any method) and return status, key headers and body.",
      '{"method": str, "url": str, "headers"?: dict, "body"?: str|dict}', t_http_request),
     ("git", "run a git command in the workspace, e.g. {\"args\": \"status\"} (force push refused).",

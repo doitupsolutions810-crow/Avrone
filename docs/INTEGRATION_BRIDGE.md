@@ -38,7 +38,7 @@ Supported resources:
 | cyclekernel | status, metrics |
 | capability_plane | openapi |
 
-Only targets present in AVRONE_PLATFORM_TARGETS_JSON can be contacted. Base URLs are operator configuration, not agent input. Redirects are disabled; response output is capped; per-target bearer tokens can be supplied through AVRONE_BRIDGE_<TARGET>_TOKEN. Do not put tokens in this repository. For public/non-local targets, use HTTPS when sending bearer tokens.
+Only targets present in AVRONE_PLATFORM_TARGETS_JSON can be contacted. Base URLs are operator configuration, not agent input. Redirects are disabled; response output is capped; per-target bearer tokens can be supplied through AVRONE_BRIDGE_<TARGET>_TOKEN. Do not put tokens in this repository. For public/non-local targets, use HTTPS when sending bearer tokens. Control704's optional tenant is taken only from AVRONE_BRIDGE_CONTROL704_TENANT_ID; the agent cannot choose it. Runtime task capabilities requested by the agent must be a subset of AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON, which defaults to an empty list.
 
 ## Configure a private, internal deployment
 
@@ -66,7 +66,7 @@ If a target requires bearer authentication, supply the token as an environment s
 
 ## Verification and remaining gaps
 
-tests/test_platform_bridge.py checks tool registration, unknown target/resource rejection, fixed paths, URL validation, default write denial, Control704 job payload shape, Runtime mission routing/idempotency, mission status identifier validation, sequential mission-task-swarm creation, nested Runtime response normalization, and input bounds. Repository CI is configured to run the test suite on pull requests; this document does not claim the CI has passed until GitHub reports a green result.
+tests/test_platform_bridge.py covers tool registration, unknown target/resource rejection, fixed paths, URL validation, default write denial, Control704 tenant binding, Runtime mission routing/idempotency, mission status identifier validation, sequential mission-task-swarm record creation, nested Runtime response normalization, capability allowlist enforcement, and input bounds. Repository CI is configured to run the test suite on pull requests; this document does not claim the CI has passed until GitHub reports a green result.
 
 The next integration increments should be separate and contract-driven:
 

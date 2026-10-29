@@ -1212,3 +1212,5 @@ def register_extra_tools(registry) -> None:
     register_introspect_tools(registry)
     from .tools_codexstats import register_codex_stats_tools
     register_codex_stats_tools(registry)
+    from .tools_mempeek import register_mempeek_tools
+    register_mempeek_tools(registry)

@@ -61,6 +61,11 @@ class PackError(ValueError):
 
 _IMPORT_LOCKS: dict[str, threading.Lock] = {}
 _IMPORT_GUARD = threading.Lock()
+# index.json holds EVERY agent's record, but imports only hold their own per-agent lock: two imports
+# (or an import and a migrate_agent record) of different agents read-modify-wrote the index
+# concurrently and the later os.replace dropped the other agent's home record (which then made a
+# later import of that agent refuse with "belongs to another agent"). They also shared one temp name.
+_INDEX_LOCK = threading.Lock()
 
 
 def _import_lock(target: Path) -> threading.Lock:
@@ -95,15 +100,16 @@ def load_index(data_dir: Path) -> dict[str, dict[str, Any]]:
 def _save_index(data_dir: Path, idx: dict[str, Any]) -> None:
     p = _index_path(data_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f".index.{os.getpid()}.tmp")
+    tmp = p.with_name(f".index.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp")
     tmp.write_text(json.dumps(idx, indent=2, sort_keys=True))
     os.replace(tmp, p)
 
 
 def record(data_dir: Path, agent_id: str, **kw: Any) -> None:
-    idx = load_index(data_dir)
-    idx.setdefault(agent_id, {}).update(kw)
-    _save_index(data_dir, idx)
+    with _INDEX_LOCK:
+        idx = load_index(data_dir)
+        idx.setdefault(agent_id, {}).update(kw)
+        _save_index(data_dir, idx)
 
 
 def home_node(data_dir: Path, agent_id: str, local_node: str) -> str:

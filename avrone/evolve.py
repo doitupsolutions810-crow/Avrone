@@ -1028,7 +1028,7 @@ EVOLVE_TOOLS = [
      '{"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}', t_evolve_propose),
     ("evolve_loop", "bounded self-evolution loop: try candidate edit sets one by one (each in its own throwaway "
      "copy, each needing a full test pass) and stop at the first that passes or when the iteration/time budget "
-     "runs out (hard caps: 10 iterations, 1800s; 50 / 7200s only if the operator set AVRONE_EVOLVE_LONG=allow). Returns every attempt's verdict and failing test output.",
+     "runs out (hard caps: 10 iterations, 1800s; 100 / 43200s (12 hours) only if the operator set AVRONE_EVOLVE_LONG=allow). Returns every attempt's verdict and failing test output.",
      '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
      '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_loop),
     ("evolve_start", "evolve_loop in the BACKGROUND: returns a loop_id at once and keeps iterating (same guardrails "

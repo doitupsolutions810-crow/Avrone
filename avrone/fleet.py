@@ -452,6 +452,7 @@ class FleetManager:
         self.queue = None  # JobQueue, attached by start_queue()
         self.worker = None
         self.netsquad_counts: dict[str, int] = {}  # node id -> netsquad placements (telemetry)
+        self._migrating: set[str] = set()  # agent ids with an outbound migration in flight
         self._save()
 
     # ------------------------------------------------------------ state
@@ -979,33 +980,60 @@ class FleetManager:
                 raise RuntimeError(f"node {target} is not online")
             return n
         thermal_max = getattr(getattr(self.core, "governor", None), "thermal_max_c", None)
-        live = [n for n in self.nodes.values() if self.status_of(n) == "online" and self.allowed(n["node_id"])
+        live = [n for n in self.nodes.values() if self.status_of(n) == "online"
+                and ID_RE.match(str(n.get("node_id", ""))) and self.allowed(str(n["node_id"]))
                 and n["node_id"] != self.node_id]
         if not live:
             raise RuntimeError("no online nodes to migrate to")
 
         def h(n: dict[str, Any], k: str) -> float | None:
-            v = (n.get("health") or {}).get(k)
-            return float(v) if isinstance(v, (int, float)) else None
-        if isinstance(thermal_max, (int, float)):
-            cool = [n for n in live if h(n, "temp_c") is None or h(n, "temp_c") < thermal_max]
-            live = cool or live
+            v = (n.get("health") if isinstance(n.get("health"), dict) else {}).get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                return None
+            return float(v)
+        # Never pick a peer that is itself hot: one that reports state hot/throttled, or a temp at
+        # or over this node's thermal max. (The old code fell back to the hot peers when no cool
+        # one existed, bouncing agents from one overheating node to another.)
+        healthy = [n for n in live if self.node_state(n) not in EXCLUDED_STATES]
+        if isinstance(thermal_max, (int, float)) and not isinstance(thermal_max, bool) and math.isfinite(thermal_max):
+            healthy = [n for n in healthy if h(n, "temp_c") is None or h(n, "temp_c") < thermal_max]
+        if not healthy:
+            raise RuntimeError("no online nodes to migrate to (every online peer is hot or throttled)")
+        live = healthy
         measured = [n for n in live if h(n, "temp_c") is not None or h(n, "load") is not None]
+
+        def nload(n: dict[str, Any]) -> float:
+            v = n.get("load", 0)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 1e9
         if measured:
             return min(measured, key=lambda n: (h(n, "temp_c") if h(n, "temp_c") is not None else 0.0,
-                                                h(n, "load") or 0.0, n.get("load", 0), n["node_id"]))
-        return min(live, key=lambda n: (n.get("load", 0), n["node_id"]))
+                                                h(n, "load") or 0.0, nload(n), n["node_id"]))
+        return min(live, key=lambda n: (nload(n), n["node_id"]))
 
     async def migrate_agent(self, agent_id: str, target: str = "auto") -> dict[str, Any]:
         """Send one agent's home (dir + memory) to a peer over the signed gateway. Raises on
         refusal/failure (audited as agent.migrate_refused / agent.migrate_failed); the local home
         is never touched, so a failed migration leaves the agent where it is."""
-        from . import agentfs, agentpack
         aid = str(agent_id or "")
-        ctx = {"agent_id": aid, "target": target or "auto"}
+        inflight = self._migrating
+        if aid in inflight:
+            # a second concurrent migration of the same agent would export/post twice and race
+            # the two imports on the peer; refuse it (the first one is still in flight)
+            self._audit("agent.migrate_refused", reason="migration of this agent already in progress",
+                        agent_id=aid[:64], target=target or "auto")
+            raise PermissionError(f"migration of agent {aid[:64]!r} already in progress")
+        inflight.add(aid)
+        try:
+            return await self._migrate_agent(aid, target)
+        finally:
+            inflight.discard(aid)
+
+    async def _migrate_agent(self, aid: str, target: str) -> dict[str, Any]:
+        from . import agentfs, agentpack
+        ctx = {"agent_id": aid[:64], "target": target or "auto"}
         try:
             if agentfs.sanitize_agent_id(aid) != aid:
-                raise PermissionError(f"invalid agent id {aid!r}")
+                raise PermissionError(f"invalid agent id {aid[:64]!r}")
             if not migrate_enabled():
                 raise PermissionError("agent migration disabled (AVRONE_AGENT_MIGRATE != on)")
             first = target if target not in ("", "auto") else ""

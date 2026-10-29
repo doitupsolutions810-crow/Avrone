@@ -31,6 +31,7 @@ so a crash mid-write leaves either the old or the new file, never a torn one.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -47,6 +48,19 @@ except ImportError:  # pragma: no cover
 NS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 REMOTE_PREFIX = "fleet:"
 MAX_KEY = 200
+# merged (foreign) entries are clamped to at most this far into the future: a peer with a skewed
+# or hostile clock would otherwise pin its value forever under last-writer-wins
+MAX_FUTURE_SKEW_S = 3600.0
+
+
+def _ts(v: Any) -> float:
+    """A record's ts as a finite float; anything else (str, bool, NaN, inf, null) reads as 0.0.
+    A single corrupt ts used to poison the whole store: eviction/compaction sort and min() over
+    mixed str/float raised TypeError on every later save."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0.0
+    f = float(v)
+    return f if math.isfinite(f) else 0.0
 
 DEFAULT_MAX_ENTRIES, HARD_MAX_ENTRIES = 500, 5000
 DEFAULT_MAX_VALUE, HARD_MAX_VALUE = 8192, 65536
@@ -122,13 +136,17 @@ class MemoryStore:
             return []
         out = []
         for line in self.path.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
             try:
                 rec = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):  # torn/corrupt line, or absurdly nested JSON
                 continue
             if isinstance(rec, dict) and "key" in rec:
                 if not isinstance(rec.get("ns"), str) or not rec["ns"]:
                     rec["ns"] = agent_namespace(rec.get("agent"))
+                if "ts" in rec:
+                    rec["ts"] = _ts(rec["ts"])
                 out.append(rec)
         return out
 
@@ -236,9 +254,15 @@ class MemoryStore:
             for e in entries:
                 key, value = str(e.get("key", "")).strip(), str(e.get("value", ""))
                 try:
-                    ts = float(e.get("ts", 0))
+                    raw_ts = e.get("ts", 0)
+                    if isinstance(raw_ts, bool):
+                        raise TypeError("bool ts")
+                    ts = float(raw_ts)
+                    if not math.isfinite(ts):  # NaN always "won" LWW; inf pinned the key forever
+                        raise ValueError("ts not finite")
+                    ts = min(ts, time.time() + MAX_FUTURE_SKEW_S)  # clamp far-future claims
                     self._check(ns, key, value)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     stats["rejected"] += 1
                     continue
                 have = spaces.get(ns, {}).get(key)

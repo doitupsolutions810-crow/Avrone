@@ -18,6 +18,7 @@ CodeX as agentfs.* events with the agent id, path, bytes and dir usage.
 """
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import threading
@@ -143,13 +144,33 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
         # re-check after mkdir: an intermediate symlinked dir must not lead out
         if not p.parent.resolve().is_relative_to(root):
             raise AgentFSError("path escapes your agent dir")
-        if append:
-            with p.open("ab") as f:
-                f.write(data)
-        else:
-            tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{threading.get_ident()}")
-            tmp.write_bytes(data)
-            os.replace(tmp, p)
+        # Never follow a symlink at the leaf: one planted (e.g. by the agent's own shell) between
+        # the checks above and the write, or at the predictable temp name, used to redirect the
+        # write outside the agent dir. O_NOFOLLOW refuses a symlinked leaf; O_EXCL a planted tmp.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            if append:
+                fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow, 0o600)
+                with os.fdopen(fd, "ab") as f:
+                    f.write(data)
+            else:
+                tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{threading.get_ident()}-{os.urandom(4).hex()}")
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(data)
+                    os.replace(tmp, p)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+        except OSError as e:
+            if p.is_symlink() or e.errno == errno.ELOOP:
+                _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="symlink")
+                raise AgentFSError(f"{_rel(root, p)} is not a regular file (symlink)") from None
+            raise
     _audit(ctx, "agentfs.write", path=_rel(root, p), bytes=new_size, append=append,
            usage=projected, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
     return new_size, projected, quota

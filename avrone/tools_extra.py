@@ -1208,3 +1208,5 @@ def register_extra_tools(registry) -> None:
     register_agentpack_tools(registry)
     from .bridge import register_bridge_tools
     register_bridge_tools(registry)
+    from .tools_introspect import register_introspect_tools
+    register_introspect_tools(registry)

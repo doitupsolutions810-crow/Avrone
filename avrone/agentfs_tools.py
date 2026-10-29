@@ -56,7 +56,7 @@ def _mb_env(name: str, default: int, hard: int) -> int:
         v = float(raw) if raw.strip() else float(default)
     except ValueError:
         v = float(default)
-    if v <= 0:
+    if v != v or v <= 0:  # NaN (e.g. "nan") is junk too: int(nan) would crash every fs tool
         v = float(default)
     return int(min(v, hard) * MB)
 

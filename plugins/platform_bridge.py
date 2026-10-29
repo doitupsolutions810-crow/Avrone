@@ -239,13 +239,15 @@ def register(registry, settings=None):
         priority = args.get("priority", 0)
         if isinstance(priority, bool) or not isinstance(priority, int) or not -10 <= priority <= 100:
             return "ERROR: priority must be an integer from -10 to 100."
-        tenant_id = args.get("tenant_id")
-        if tenant_id is not None:
-            if not isinstance(tenant_id, str) or not tenant_id.strip() or len(tenant_id) > 128:
-                return "ERROR: tenant_id must be a non-empty string of at most 128 characters."
+        # Never accept tenant identity from the agent's request. Control704's
+        # current API accepts tenant_id in the payload, so bind it only to an
+        # operator-owned deployment setting or omit it.
+        tenant_id = os.getenv("AVRONE_BRIDGE_CONTROL704_TENANT_ID", "").strip()
         payload = {"goal": goal.strip(), "priority": priority, "source": "avrone-platform-bridge"}
-        if tenant_id is not None:
-            payload["tenant_id"] = tenant_id.strip()
+        if tenant_id:
+            if len(tenant_id) > 128:
+                return "ERROR: configured Control704 tenant ID exceeds 128 characters."
+            payload["tenant_id"] = tenant_id
         return await _request("control704", "POST", "/jobs", payload)
 
     async def create_runtime_mission(ctx, args):
@@ -284,7 +286,7 @@ def register(registry, settings=None):
 
     async def create_runtime_swarm(ctx, args):
         if not _writes_enabled():
-            return "ERROR: Runtime swarm launch is disabled. Set AVRONE_PLATFORM_WRITE_ENABLED=true only after securing the runtime target."
+            return "ERROR: Runtime swarm record creation is disabled. Set AVRONE_PLATFORM_WRITE_ENABLED=true only after securing the runtime target."
         if "runtime" not in _targets():
             return "ERROR: runtime is not configured in AVRONE_PLATFORM_TARGETS_JSON."
         if not os.getenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "").strip():
@@ -309,6 +311,12 @@ def register(registry, settings=None):
             for item in capabilities
         ):
             return "ERROR: capabilities must be a list of at most 20 non-empty strings (max 128 characters each)."
+        allowed_capabilities = _runtime_capability_allowlist()
+        if allowed_capabilities is None:
+            return "ERROR: AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON is invalid; configure a JSON array of allowed capability names."
+        requested_capabilities = [item.strip() for item in capabilities]
+        if not set(requested_capabilities).issubset(set(allowed_capabilities)):
+            return "ERROR: one or more requested Runtime capabilities are not present in the operator-configured allowlist."
         if (not isinstance(idem_key, str) or not idem_key.strip()
                 or idem_key != idem_key.strip() or len(idem_key) > 190
                 or any(ord(ch) < 33 or ord(ch) == 127 for ch in idem_key)):
@@ -386,6 +394,19 @@ def register(registry, settings=None):
     def _writes_enabled():
         return os.getenv("AVRONE_PLATFORM_WRITE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
+    def _runtime_capability_allowlist():
+        raw = os.getenv("AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON", "[]")
+        try:
+            value = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() or len(item.strip()) > 128
+            for item in value
+        ):
+            return None
+        return list(dict.fromkeys(item.strip() for item in value))
+
     registry.register(Tool(
         "platform_bridge_inventory",
         "List configured sibling platforms and fixed read-only resources available to the bridge.",
@@ -402,10 +423,10 @@ def register(registry, settings=None):
     ))
     registry.register(Tool(
         "platform_bridge_submit_job",
-        "Create a Control704 job through its documented /jobs API. This write is disabled unless the operator explicitly enables it. Target URL is configuration-only.",
-        '{"goal": str, "priority"?: int, "tenant_id"?: str}',
+        "Create a Control704 job through its documented /jobs API. This write is disabled unless the operator explicitly enables it. Any tenant_id is bound from operator configuration, never from agent arguments.",
+        '{"goal": str, "priority"?: int}',
         submit_control704_job,
-        schema={"required": {"goal": "str"}, "optional": {"priority": "int", "tenant_id": "str"}},
+        schema={"required": {"goal": "str"}, "optional": {"priority": "int"}},
     ))
     registry.register(Tool(
         "platform_bridge_create_mission",

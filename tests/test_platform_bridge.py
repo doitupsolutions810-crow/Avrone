@@ -75,20 +75,21 @@ def test_job_submission_only_targets_control704_jobs(monkeypatch):
     registry, module = _load_bridge()
     monkeypatch.setenv("AVRONE_PLATFORM_TARGETS_JSON", json.dumps({"control704": "http://control704:9100"}))
     monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
+    monkeypatch.setenv("AVRONE_BRIDGE_CONTROL704_TENANT_ID", "tenant-configured")
     calls = []
     async def fake_request(target, method, path, body=None):
         calls.append((target, method, path, body))
         return json.dumps({"ok": True, "job_id": "fixture-job"})
     monkeypatch.setattr(module, "_request", fake_request)
     result = _call(registry, "platform_bridge_submit_job", {
-        "goal": "Analyze integration gaps", "priority": 5, "tenant_id": "tenant-demo"
+        "goal": "Analyze integration gaps", "priority": 5, "tenant_id": "tenant-injected"
     })
     assert json.loads(result)["job_id"] == "fixture-job"
     assert calls == [("control704", "POST", "/jobs", {
         "goal": "Analyze integration gaps",
         "priority": 5,
         "source": "avrone-platform-bridge",
-        "tenant_id": "tenant-demo",
+        "tenant_id": "tenant-configured",
     })]
 
 
@@ -165,6 +166,7 @@ def test_runtime_mission_routes_to_authenticated_gateway_contract(monkeypatch):
     }))
     monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
     monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "avr_test_tenant_key")
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON", '["research", "verify"]')
     calls = []
 
     async def fake_request(target, method, path, body=None, idempotency_key=None):

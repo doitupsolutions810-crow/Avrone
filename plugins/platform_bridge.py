@@ -236,6 +236,8 @@ def register(registry, settings=None):
             return "ERROR: Runtime mission creation is disabled. Set AVRONE_PLATFORM_WRITE_ENABLED=true only after securing the runtime target."
         if "runtime" not in _targets():
             return "ERROR: runtime is not configured in AVRONE_PLATFORM_TARGETS_JSON."
+        if not os.getenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "").strip():
+            return "ERROR: AVRONE_BRIDGE_RUNTIME_TOKEN must contain a tenant-scoped Runtime API key."
         name, objective, idem_key = args.get("name"), args.get("objective"), args.get("idempotency_key")
         if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200:
             return "ERROR: mission name must contain 1–200 characters."

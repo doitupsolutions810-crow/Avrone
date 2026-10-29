@@ -81,6 +81,16 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.20: Squad round 6 — coverage, introspection tools, edge skills + evolve history, gateway/home hardening — 1948 tests, coverage 96%
+
+- **Coverage lane**: mcp_server.py 82% → 99%, plugins.py 81% → 100%, evolve.py 88% → 97%, gateway.py 91% → 100% (49 new offline tests).
+- **New tools** (`avrone/tools_introspect.py`): `inspect_tool` (one tool's description, args, schema and source, or a bounded search; unknown names get close matches) and `env_report` (every Settings value + `AVRONE_*` env, with secret names shown only as set/unset and token-shaped values masked whatever the variable is called).
+- **New skills**: `edge-node-health` (governor health, healthy-node picks, when to fall back locally) and `checkpoint-resume` (long squad/deep runs by checkpoint id). Tests check every env var and tool they name exists.
+- **Evolve history**: finished, cancelled and crashed loops are summarised to `data/evolve/loops/history.jsonl` and readable after restarts. `AVRONE_EVOLVE_HISTORY` (default 50, can only lower; hard cap 200). Loop caps unchanged.
+- **Gateway hardening** (stricter only; privileged tier unchanged and deny-by-default): strict ASCII timestamps, nonce format/length with a new `bad_nonce` code, non-ASCII signatures → 401 not 500, nonces kept until `max(ts+60s, now+120s)` (closed a replay at the window edge and on clock step-back), replay cache bounded at 100,000, deep-nested JSON → `bad_body`, strict `hops` parsing.
+- **Thermal + homes**: thermal migration never auto-targets a hot/throttled peer, single-flight `migrate_agent` and `import_pack`, NaN/inf thermal limits fall back to 85°C, stream-checked pack size limits, duplicate pack members refused, `O_NOFOLLOW` appends + random exclusive temp files in agent-fs quota writes, memstore tolerates bad timestamps and caps far-future peer clocks at +1h.
+- **Lead fixes**: removed a stray download-wrapper first line from pyproject.toml, README.md and avrone/__init__.py (broke `pip install` outside CI); agent-pack import now keeps its memory merge + home record under the per-agent lock (concurrent imports refused ~6% of the time as "belongs to another agent").
+
 ## v0.19: Full-enablement release — upgraded stack + `deploy/full.env` final-product profile
 
 - **Software stack upgraded to current:** FastAPI 0.162, uvicorn 0.54, httpx 0.28.1 (floors raised in `pyproject.toml`); vision extras now `zxing-cpp>=2.3`. Python >= 3.11 unchanged. The offline suite (1680 tests) still gates every push in CI on 3.11 + 3.12.

@@ -1210,3 +1210,5 @@ def register_extra_tools(registry) -> None:
     register_bridge_tools(registry)
     from .tools_introspect import register_introspect_tools
     register_introspect_tools(registry)
+    from .tools_codexstats import register_codex_stats_tools
+    register_codex_stats_tools(registry)

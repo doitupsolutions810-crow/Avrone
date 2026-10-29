@@ -61,7 +61,7 @@ def test_text_report_fields(env):
     assert f"workspace: {env.s.workspace}" in out and "(writable=True)" in out
     assert f"cwd: {env.tmp}" in out
     assert "runner: local (configured=local) docker_available=False" in out
-    for frag in ("AVRONE_RECON=allow", "AVRONE_RECON_ALLOWLIST=(any)", "AVRONE_ALLOW_NETWORK=False",
+    for frag in ("AVRONE_RECON=allow", "AVRONE_RECON_ALLOWLIST=(none: default-deny)", "AVRONE_ALLOW_NETWORK=False",
                  "AVRONE_AGENTS_CAN_SHELL=False", "AVRONE_SELF_EVOLVE=allow", "AVRONE_SELF_CHANGES=allow",
                  "admin_token=off"):
         assert frag in out

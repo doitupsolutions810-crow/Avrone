@@ -23,7 +23,7 @@ def run(c):
 @pytest.fixture(autouse=True)
 def _allow(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.21: recon is default-deny; "*" = any public host
     # connect-time resolution guard: answer with a public documentation-free address, no real DNS
     monkeypatch.setattr(recon, "_resolve_ips", lambda host: ["93.184.216.34"])
 

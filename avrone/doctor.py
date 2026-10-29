@@ -203,11 +203,13 @@ def run_doctor(settings: Any = None, *, env: Mapping[str, str] | None = None,
     recon_raw = (env.get("AVRONE_RECON") or "allow").strip().lower()
     recon_on = recon_raw in {"allow", "on", "true", "yes", "1"}
     allowlist = [h for h in (env.get("AVRONE_RECON_ALLOWLIST") or "").split(",") if h.strip()]
+    recon_any = (env.get("AVRONE_RECON_ALLOWLIST") or "").strip() == "*"
     fleet_allow = [h for h in (env.get("AVRONE_FLEET_ALLOW") or "").split(",") if h.strip()]
     fleet_tok = token_state(env.get("AVRONE_FLEET_TOKEN"))
     toggles = {
         "recon": recon_raw if recon_raw in _TRUE | _FALSE else f"{recon_raw[:40]} (unrecognised: fails closed)",
-        "recon_allowlist": f"{len(allowlist)} entr{'y' if len(allowlist) == 1 else 'ies'}" if allowlist else "(any host)",
+        "recon_allowlist": f"{len(allowlist)} entr{'y' if len(allowlist) == 1 else 'ies'}" if allowlist and not recon_any
+                           else ("* (any public host)" if recon_any else "(none: default-deny)"),
         "network": "on" if settings.allow_network else "off",
         "shell": "on" if settings.agents_can_shell else "off",
         "self_evolve": (env.get("AVRONE_SELF_EVOLVE") or "allow").lower(),
@@ -258,6 +260,7 @@ def _insecure_combos(settings: Any, env: Mapping[str, str], toggles: dict[str, s
                      recon_on: bool, allowlist: list[str], fleet_allow: list[str],
                      effective_local: bool) -> list[Check]:
     out: list[Check] = []
+    recon_any = (env.get("AVRONE_RECON_ALLOWLIST") or "").strip() == "*"
     host = env.get("AVRONE_HOST") or "127.0.0.1"
     exposed = not _is_loopback_host(host)
     admin, fleet = tokens["AVRONE_ADMIN_TOKEN"], tokens["AVRONE_FLEET_TOKEN"]
@@ -325,9 +328,12 @@ def _insecure_combos(settings: Any, env: Mapping[str, str], toggles: dict[str, s
     elif settings.allow_network and not effective_local:
         out.append(Check("security.network", INFO, "sandbox containers have network access",
                          "AVRONE_ALLOW_NETWORK=false runs them with --network none"))
-    if recon_on and not allowlist and settings.allow_network:
-        out.append(Check("security.recon", WARN, "recon is on with no AVRONE_RECON_ALLOWLIST (any host)",
-                         "set AVRONE_RECON_ALLOWLIST, or AVRONE_RECON=deny"))
+    if recon_on and recon_any and settings.allow_network:
+        out.append(Check("security.recon", WARN, "recon allowlist is \"*\" (any public host)",
+                         "list only the domains you own or are authorized on in AVRONE_RECON_ALLOWLIST"))
+    elif recon_on and not allowlist:
+        out.append(Check("security.recon", INFO, "recon is default-deny (no AVRONE_RECON_ALLOWLIST): every target refused",
+                         "set AVRONE_RECON_ALLOWLIST to your own/authorized domains to use recon"))
     evolve_on = toggles["self_evolve"] != "deny"
     if evolve_on and toggles["self_changes"] == "allow" and settings.agents_can_shell and exposed:
         out.append(Check("security.self_modify", WARN, "network-exposed node lets agents rewrite AVRONE and "

@@ -120,7 +120,7 @@ def _fake_net(monkeypatch, fail=False):
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.21: recon is default-deny; "*" = any public host
 
 
 def refusals(events):
@@ -185,7 +185,7 @@ def test_set_but_empty_allowlist_refuses_everything(monkeypatch, registry, name)
                                     "10.0.0.1", "[::1]", "fd00::1", "nas.local", "192.168.1.1.nip.io"])
 @pytest.mark.parametrize("name", TOOL_NAMES)
 def test_private_targets_refused_and_audited(monkeypatch, registry, name, target):
-    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "")  # no allowlist: private refusal must still hold
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # any-public allowlist: private refusal must still hold
     _no_net(monkeypatch)
     out, events = call(registry, name, {"host": target})
     assert out.startswith("ERROR"), out

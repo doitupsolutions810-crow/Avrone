@@ -66,7 +66,7 @@ If a target requires bearer authentication, supply the token as an environment s
 
 ## Verification and remaining gaps
 
-tests/test_platform_bridge.py checks tool registration, unknown target/resource rejection, fixed paths, URL validation, default write denial, Control704 job payload shape, Runtime mission routing/idempotency, and input bounds. Repository CI is configured to run the test suite on pull requests; this document does not claim the CI has passed until GitHub reports a green result.
+tests/test_platform_bridge.py checks tool registration, unknown target/resource rejection, fixed paths, URL validation, default write denial, Control704 job payload shape, Runtime mission routing/idempotency, mission status identifier validation, sequential mission-task-swarm creation, nested Runtime response normalization, and input bounds. Repository CI is configured to run the test suite on pull requests; this document does not claim the CI has passed until GitHub reports a green result.
 
 The next integration increments should be separate and contract-driven:
 

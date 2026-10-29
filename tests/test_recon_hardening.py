@@ -31,7 +31,7 @@ class NetworkTouched(AssertionError):
 def _offline(monkeypatch):
     """Any attempt to reach the network fails the test loudly."""
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.21: recon is default-deny; "*" = any public host
 
     def no_net(*a, **k):
         raise NetworkTouched(f"network touched: {a!r}")
@@ -155,14 +155,33 @@ def test_deny_checked_before_target_parsing(monkeypatch):
 
 
 @pytest.mark.parametrize("raw", ["", "   "])
-def test_blank_allowlist_means_any_public_host(monkeypatch, raw):
+def test_blank_allowlist_is_default_deny(monkeypatch, raw):
+    # v0.21: unset/blank allows nothing; the operator must name their own/authorized domains
     monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", raw)
-    assert recon._host_arg({"host": "example.com"}) == ("example.com", None)
-    # ...but never a private one
+    host, err = recon._host_arg({"host": "example.com"})
+    assert err and "default-deny" in err and "AVRONE_RECON_ALLOWLIST" in err
     assert recon._host_arg({"host": "localhost"})[1]
 
 
-@pytest.mark.parametrize("raw", [",", " , , ", "*", "*, *.", ".", "..,"])
+def test_unset_allowlist_is_default_deny(monkeypatch):
+    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    assert recon._host_arg({"host": "example.com"})[1]
+
+
+def test_star_allowlist_means_any_public_host_but_never_private(monkeypatch):
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", " * ")
+    assert recon._host_arg({"host": "example.com"}) == ("example.com", None)
+    for t in ("localhost", "10.0.0.1", "169.254.169.254", "nas.local"):
+        assert recon._host_arg({"host": t})[1]
+
+
+def test_named_allowlist_still_exact_or_true_subdomain(monkeypatch):
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "mysite.com")
+    assert recon._host_arg({"host": "api.mysite.com"})[1] is None
+    assert recon._host_arg({"host": "evilmysite.com"})[1]
+
+
+@pytest.mark.parametrize("raw", [",", " , , ", "*, *.", "*,", ".", "..,"])
 def test_set_but_unparseable_allowlist_fails_closed(monkeypatch, raw):
     monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", raw)
     host, err = recon._host_arg({"host": "example.com"})

@@ -845,7 +845,7 @@ def self_inventory(ctx: "AgentContext") -> dict[str, Any]:
                    "docker_available": bool(shutil.which("docker"))},
         "toggles": {
             "AVRONE_RECON": os.getenv("AVRONE_RECON", "allow").lower(),
-            "AVRONE_RECON_ALLOWLIST": ",".join(allowlist)[:300] or "(any)",
+            "AVRONE_RECON_ALLOWLIST": ",".join(allowlist)[:300] or "(none: default-deny)",
             "AVRONE_ALLOW_NETWORK": bool(_setting(ctx, "allow_network", True)),
             "AVRONE_AGENTS_CAN_SHELL": bool(_setting(ctx, "agents_can_shell", True)),
             "AVRONE_SELF_EVOLVE": os.getenv("AVRONE_SELF_EVOLVE", "allow").lower(),
@@ -1214,3 +1214,5 @@ def register_extra_tools(registry) -> None:
     register_codex_stats_tools(registry)
     from .tools_mempeek import register_mempeek_tools
     register_mempeek_tools(registry)
+    from .greatscale import register_greatscale_tools
+    register_greatscale_tools(registry)

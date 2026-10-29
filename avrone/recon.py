@@ -11,7 +11,7 @@ Scope and honesty:
   * Every call is logged to the Codex action log.
 
 Tools: tls_inspect, http_fingerprint, port_scan, cert_transparency, dns_enum.
-Env: AVRONE_RECON=allow|deny (default allow), AVRONE_RECON_ALLOWLIST (comma hosts/suffixes; empty = any).
+Env: AVRONE_RECON=allow|deny (default allow), AVRONE_RECON_ALLOWLIST (comma hosts/suffixes; unset/empty = deny all, "*" = any public host).
 
 AUDIT NOTE (v0.13 hardening) -- the guardrails, in the order every tool applies them:
   1. Kill switch. AVRONE_RECON unset/empty or allow|on|true|yes|1 = enabled; deny|off|
@@ -25,8 +25,9 @@ AUDIT NOTE (v0.13 hardening) -- the guardrails, in the order every tool applies 
      (169.254.169.254, metadata.google.internal, ...), internal-only suffixes (.local,
      .internal, .localdomain, .home.arpa, .lan, ...) and private IPs embedded in a name
      (10.0.0.1.nip.io). Applies with or without an allowlist.
-  4. Allowlist. AVRONE_RECON_ALLOWLIST exact host or true subdomain. Blank = any public
-     host; set-but-unparseable (e.g. ", ,") fails CLOSED (nothing allowed).
+  4. Allowlist. AVRONE_RECON_ALLOWLIST exact host or true subdomain. Default-deny since
+     v0.21: unset/blank allows NOTHING; the operator must list their own/authorized domains,
+     or set "*" to explicitly allow any public host. Unparseable (", ,") fails CLOSED.
   5. Connect-time re-check. Tools that connect to the target (tls_inspect, port_scan,
      http_fingerprint) resolve the name first and refuse if ANY address is non-public,
      then connect to the vetted address; http_fingerprint re-checks every redirect hop.
@@ -90,10 +91,13 @@ def _denied() -> str | None:
 
 
 def _allowlist() -> list[str] | None:
-    """None = no allowlist configured (any public host). [] = configured but empty -> deny all."""
+    """Default-deny (v0.21). None = explicit "*" (any public host). [] = unset/blank or
+    unparseable -> deny all. Otherwise the exact hosts / true-subdomain suffixes listed."""
     raw = os.getenv("AVRONE_RECON_ALLOWLIST", "")
-    if not raw.strip():
+    if raw.strip() == "*":
         return None
+    if not raw.strip():
+        return []
     return [a for a in (h.strip().lower().strip(".") for h in raw.split(",")) if a and "*" not in a]
 
 
@@ -240,7 +244,8 @@ def _host_arg(args: dict[str, Any]) -> tuple[str, str | None]:
     if (err := _reject_private(host)):  # re-check after IDNA normalisation
         return host, err
     if not _allowed_host(host):
-        return host, f"ERROR: {host} is not in AVRONE_RECON_ALLOWLIST"
+        return host, (f"ERROR: {host} is not in AVRONE_RECON_ALLOWLIST" + ("" if _allowlist() else
+                      " (recon is default-deny: list the domains you own or are authorized on, or \"*\" for any public host)"))
     return host, None
 
 

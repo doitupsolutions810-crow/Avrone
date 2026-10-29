@@ -110,8 +110,8 @@ _SECRET_QUERY_RE = re.compile(
     r"[a-z0-9_\-]*)=)[^&#\s]*")
 # Values that look like credentials no matter what the variable is called.
 _TOKENISH_RE = re.compile(
-    r"(?i)(?:\bbearer\s+\S+|\b(?:sk|pk|rk|xai|ghp|gho|ghu|ghs|ghr|github_pat|glpat|xox[abprs])"
-    r"[-_][A-Za-z0-9_\-]{12,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----|\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})")
+    r"(?i)(?:\bbearer\s+\S+|(?:sk|pk|rk|xai|ghp|gho|ghu|ghs|ghr|github_pat|glpat|xox[abprs])"
+    r"[-_][A-Za-z0-9_\-]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})")
 
 
 def env_secret_name(name: str) -> bool:

@@ -26,7 +26,7 @@ def test_domain_allowlist(monkeypatch):
 
 def test_domain_aggregates_sections(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.21: recon is default-deny; "*" = any public host
     async def fake_dns(c, a): return "DNS ok"
     async def fake_tls(c, a): return "TLS ok"
     async def fake_http(c, a): return "HTTP ok"

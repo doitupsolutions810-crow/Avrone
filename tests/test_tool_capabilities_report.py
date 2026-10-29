@@ -51,7 +51,7 @@ def test_registered(env):
 def test_defaults_text(env):
     out = call(env)
     assert out.startswith("capabilities_report for node-x")
-    for frag in ("- shell: enabled", "- outbound network: enabled", "- recon: allow (allowlist=(any))",
+    for frag in ("- shell: enabled", "- outbound network: enabled", "- recon: allow (allowlist=(none: default-deny))",
                  "- self-evolve: allow", "- self-changes: allow", "- workspace write: enabled",
                  "- admin API: off", "- docker: unavailable (no docker binary on this host)", "- runner: local"):
         assert frag in out

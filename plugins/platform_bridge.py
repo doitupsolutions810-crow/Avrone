@@ -344,6 +344,10 @@ def register(registry, settings=None):
         if error:
             return json.dumps(error)
         mission_id = mission.get("mission_id")
+        # Runtime gateway currently wraps some core snapshots under the ID key
+        # because core create_mission/create_swarm return snapshots, not strings.
+        if isinstance(mission_id, dict):
+            mission_id = mission_id.get("mission_id")
         if not isinstance(mission_id, str) or not mission_id:
             return json.dumps({"ok": False, "phase": "mission", "error": "Runtime did not return a mission_id."})
 
@@ -366,6 +370,8 @@ def register(registry, settings=None):
         if error:
             return json.dumps({**error, "partial": True, "mission_id": mission_id, "task_id": task_id})
         swarm_id = swarm.get("swarm_id")
+        if isinstance(swarm_id, dict):
+            swarm_id = swarm_id.get("swarm_id")
         if not isinstance(swarm_id, str) or not swarm_id:
             return json.dumps({
                 "ok": False, "phase": "swarm", "partial": True, "mission_id": mission_id, "task_id": task_id,

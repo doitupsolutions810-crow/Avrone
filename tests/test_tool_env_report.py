@@ -117,3 +117,12 @@ def test_control_chars_and_no_settings(monkeypatch):
     ctx = SimpleNamespace(core=SimpleNamespace(), run_id="r", name="A", depth=0)
     out = run(reg.call(ctx, "env_report", {}))
     assert "settings in effect:\n  (none)" in out
+
+
+
+@pytest.mark.parametrize("key", ["access_token", "client_secret", "api-key", "X-Auth-Token", "signature"])
+def test_redacts_secret_query_key_variants_without_hiding_neighbors(key):
+    value = f"https://example.test/callback?keep=yes&{key}=NEVER-LEAK-THIS&tail=ok"
+    out = ti.redact_value("AVRONE_CALLBACK_URL", value)
+    assert f"{key}=NEVER-LEAK-THIS" not in out
+    assert "keep=yes" in out and "tail=ok" in out

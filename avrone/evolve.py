@@ -99,8 +99,11 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
 
 
 def _in_repo(wt: Path, rel: str) -> Path:
-    p = (wt / rel).resolve()
-    if not str(p).startswith(str(wt.resolve())):
+    root = wt.resolve()
+    p = (root / rel).resolve()
+    # String-prefix checks accept sibling paths such as /work/wt-escape for /work/wt.
+    # Path.is_relative_to compares path components and also catches symlink escapes.
+    if not p.is_relative_to(root):
         raise ValueError(f"path escapes repo: {rel}")
     return p
 

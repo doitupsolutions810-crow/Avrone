@@ -15,10 +15,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import platform
 import re
+import shutil
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .tools import Tool
+from .tools import Tool, runner_accepts_cwd
 
 if TYPE_CHECKING:
     from .trinity import AgentContext
@@ -94,6 +98,160 @@ async def t_inspect_tool(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if len(hits) > INSPECT_MAX_MATCHES:
         lines.append(f"...[{len(hits) - INSPECT_MAX_MATCHES} more; narrow the query]")
     return _cap("\n".join(lines))
+
+
+# ---------------------------------------------------------------------- runtime_preflight
+def _agent_container_preflight(ctx: "AgentContext", runner: Any, runner_kind: str) -> dict[str, Any]:
+    """Describe per-agent container mode without exposing a path or spawning a process."""
+    try:
+        from . import agentcontainer, agentfs
+        mode = agentcontainer.container_mode()
+        agent_id = getattr(ctx, "agent_id", None)
+        pool = getattr(runner, "agent_pool", None)
+        homes = getattr(pool, "homes", None) if pool is not None else None
+        node = getattr(pool, "node", None) if pool is not None else None
+        live = False
+        if agent_id and isinstance(homes, dict):
+            node_name = node if isinstance(node, str) and node else agentcontainer.local_node_id()
+            home_name = agentcontainer.container_name(node_name, agentfs.sanitize_agent_id(agent_id))
+            live = home_name in homes
+        return {
+            "mode": mode,
+            "persistent_configured": mode == "persistent" and runner_kind == "docker",
+            "agent_id_present": bool(agent_id),
+            "live_container_for_agent": live,
+        }
+    except Exception:  # noqa: BLE001 - diagnostics must never break the main run
+        return {"mode": "unknown", "hosted_for_agent": False,
+                "agent_id_present": bool(getattr(ctx, "agent_id", None)),
+                "live_container_for_agent": False}
+
+
+
+PREFLIGHT_MAX_CHARS = 4000
+
+
+def runtime_preflight(ctx: "AgentContext") -> dict[str, Any]:
+    """Return a bounded, read-only snapshot of local execution prerequisites."""
+    core = getattr(ctx, "core", None)
+    settings = getattr(core, "settings", None)
+    runner = getattr(core, "runner", None)
+    raw_workspace = getattr(runner, "workspace", None)
+    if raw_workspace is None:
+        raw_workspace = getattr(settings, "workspace", None)
+
+    configured = raw_workspace is not None
+    exists = False
+    writable = False
+    if configured:
+        try:
+            workspace = Path(str(raw_workspace)).expanduser()
+            exists = workspace.is_dir()
+            writable = exists and os.access(workspace, os.W_OK)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            exists = writable = False
+
+    kind = str(getattr(runner, "kind", "unknown") or "unknown").lower()
+    docker_available = bool(shutil.which("docker"))
+    python_ok = sys.version_info >= (3, 11)
+    checks = {
+        "python_311_plus": python_ok,
+        "workspace_exists": exists,
+        "workspace_writable": writable,
+        "runner_known": kind in {"local", "docker"},
+        "docker_available": docker_available if kind == "docker" else None,
+    }
+    ready = bool(python_ok and exists and writable and checks["runner_known"]
+                 and (kind != "docker" or docker_available))
+    return {
+        "ready": ready,
+        "python": platform.python_version(),
+        "runner": kind,
+        "workspace": {"configured": configured, "exists": exists, "writable": writable},
+        "docker": {"available": docker_available},
+        "model": {
+            "provider": str(getattr(settings, "provider", "unknown")),
+            "mode": str(getattr(settings, "llm_mode", "unknown")),
+            "base_url_set": bool(getattr(settings, "llm_base_url", "")),
+            "api_key_set": bool(getattr(settings, "llm_api_key", "")),
+        },
+        "admin": {"enabled": bool(getattr(settings, "admin_token", ""))},
+        "agent_container": _agent_container_preflight(ctx, runner, kind),
+        "checks": checks,
+    }
+
+
+async def t_runtime_preflight(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    fmt = str(args.get("format", "text")).lower()
+    if fmt not in {"text", "json"}:
+        return 'ERROR: format must be "text" or "json"'
+    rep = runtime_preflight(ctx)
+    if fmt == "json":
+        return _cap(json.dumps(rep, indent=2, sort_keys=True), PREFLIGHT_MAX_CHARS)
+    lines = [
+        f"runtime_preflight (read-only; ready={'yes' if rep['ready'] else 'no'})",
+        f"python: {rep['python']}",
+        f"runner: {rep['runner']}",
+        "workspace: " + ("configured" if rep["workspace"]["configured"] else "not configured")
+        + f"; exists={'yes' if rep['workspace']['exists'] else 'no'}"
+        + f"; writable={'yes' if rep['workspace']['writable'] else 'no'}",
+        f"docker available: {'yes' if rep['docker']['available'] else 'no'}",
+        f"model: provider={rep['model']['provider']} mode={rep['model']['mode']}"
+        + f" base_url={'set' if rep['model']['base_url_set'] else 'unset'}"
+        + f" api_key={'set' if rep['model']['api_key_set'] else 'unset'}",
+        f"admin: {'enabled' if rep['admin']['enabled'] else 'disabled'}",
+    ]
+    return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
+
+
+async def t_node_runtime(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Probe Node.js and npm in the current execution environment using fixed version commands only."""
+    fmt = str(args.get("format", "text")).lower()
+    if fmt not in {"text", "json"}:
+        return 'ERROR: format must be "text" or "json"'
+    runner = getattr(getattr(ctx, "core", None), "runner", None)
+    if runner is None or not callable(getattr(runner, "run", None)):
+        return "ERROR: execution runner is not available"
+    agent_dir = getattr(ctx, "agent_dir", None)
+    use_agent_cwd = bool(agent_dir is not None and runner_accepts_cwd(runner))
+    report: dict[str, Any] = {
+        "runner": str(getattr(runner, "kind", "unknown") or "unknown"),
+        "agent_home_context": use_agent_cwd,
+        "node": {"available": False, "version": None, "status": "not_checked"},
+        "npm": {"available": False, "version": None, "status": "not_checked"},
+    }
+    for key, command in (("node", "node --version"), ("npm", "npm --version")):
+        try:
+            call_args: dict[str, Any] = {"timeout": 5}
+            if use_agent_cwd:
+                call_args["cwd"] = agent_dir
+            result = await runner.run(command, **call_args)
+            if bool(getattr(result, "timed_out", False)):
+                report[key]["status"] = "timeout"
+                continue
+            if int(getattr(result, "exit_code", 1)) == 0:
+                # Shell startup hooks can print arbitrary text before the version; keep only
+                # a conventional numeric version token rather than returning a banner.
+                out = str(getattr(result, "stdout", "") or "").strip().splitlines()
+                version_re = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?$")
+                versions = [line.strip() for line in out if version_re.fullmatch(line.strip())]
+                version = versions[0] if versions else "available (version not parsed)"
+                report[key].update(available=True, version=version, status="available")
+            else:
+                # Don't echo stderr: it can contain paths, shell startup messages or injected text.
+                report[key]["status"] = "missing_or_unavailable"
+        except Exception as exc:  # noqa: BLE001 - report only the exception class
+            report[key]["status"] = "error"
+            report[key]["error_type"] = type(exc).__name__
+    if fmt == "json":
+        return _cap(json.dumps(report, indent=2, sort_keys=True), PREFLIGHT_MAX_CHARS)
+    lines = [
+        f"node_runtime (bounded probe; runner={report['runner']}; per_agent_home={'yes' if use_agent_cwd else 'no'})",
+    ]
+    for key in ("node", "npm"):
+        item = report[key]
+        lines.append(f"{key}: {item['version'] if item['available'] else item['status']}")
+    return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
 
 
 # --------------------------------------------------------------------------- env_report
@@ -180,6 +338,14 @@ INTROSPECT_TOOLS: list[Tool] = [
          "names show set/unset only; URL credentials and token-shaped values masked); optional prefix filter.",
          '{"prefix"?: str, "format"?: "text"|"json"}', t_env_report, source="builtin",
          schema={"optional": {"prefix": "str", "format": "str"}}),
+    Tool("runtime_preflight",
+         "read-only: inspect local Python, runner, workspace access, Docker availability and redacted model/admin readiness; no commands, writes or network probes.",
+         '{"format"?: "text"|"json"}', t_runtime_preflight, source="builtin",
+         schema={"optional": {"format": "str"}}),
+    Tool("node_runtime",
+         "bounded: check Node.js and npm versions in the active runner (and your per-agent cwd when available); executes only fixed version probes, never installs packages or starts a server.",
+         '{"format"?: "text"|"json"}', t_node_runtime, source="builtin",
+         schema={"optional": {"format": "str"}}),
 ]
 
 

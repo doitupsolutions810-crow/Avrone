@@ -82,3 +82,28 @@ def test_loader_lists_shipped_skills(monkeypatch):
                           run_id="r", name="A", depth=0)
     out = asyncio.run(agentkit.t_skill_list(ctx, {}))
     assert "- incident-triage: Triage a failed" in out and "- test-coverage-sweep: Find AVRONE" in out
+
+
+
+def test_coverage_skill_requires_measured_output():
+    skill = (SKILLS / "test-coverage-sweep" / "SKILL.md").read_text(encoding="utf-8")
+    _, body = agentkit.parse_skill(skill)
+    assert "--cov=avrone" in body and "coverage.json" in body
+    assert "Never infer coverage from a commit message" in body
+
+
+
+def test_node_runtime_skill_is_present_and_respects_agent_boundaries():
+    path = SKILLS / "agent-node-runtime" / "SKILL.md"
+    fm, body = agentkit.parse_skill(path.read_text(encoding="utf-8"))
+    assert fm["name"] == "agent-node-runtime"
+    for tool in ("runtime_preflight", "node_runtime", "agent_home", "fs_write", "agent_pack_export"):
+        assert tool in body
+    assert "externally reachable" in body
+
+
+def test_evolve_skill_keeps_long_missions_bounded_and_resumable():
+    skill = (SKILLS / "evolve-loop-operations" / "SKILL.md").read_text(encoding="utf-8")
+    assert "disable all timeouts" in skill
+    assert "900 seconds" in skill
+    assert "resume only an interrupted loop" in skill

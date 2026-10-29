@@ -1218,3 +1218,5 @@ def register_extra_tools(registry) -> None:
     register_greatscale_tools(registry)
     from .tools_fleetstatus import register_fleetstatus_tools
     register_fleetstatus_tools(registry)
+    from .tools_flakeprobe import register_flakeprobe_tools
+    register_flakeprobe_tools(registry)

@@ -356,49 +356,57 @@ async def t_grokbot_ask(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if HTTP_TRANSPORT is not None:
         kw["transport"] = HTTP_TRANSPORT
 
+    max_response_bytes = 64 * 1024
     try:
         async with httpx.AsyncClient(**kw) as client:
             async with client.stream("POST", base + "/api/chat", json=payload) as response:
                 if 300 <= response.status_code < 400:
                     _emit(ctx, "grokbot.bridge", ok=False, status=response.status_code, reason="redirect blocked")
-                    return "ERROR: Grok Bot returned HTTP " + str(response.status_code) + "; redirects are blocked."
+                    return f"ERROR: Grok Bot returned HTTP {response.status_code}; redirects are blocked."
                 if not response.is_success:
-                    # Do not retain remote error bodies: they can echo secrets or internal topology.
                     _emit(ctx, "grokbot.bridge", ok=False, status=response.status_code)
-                    return "ERROR: Grok Bot returned HTTP " + str(response.status_code) + "."
+                    return f"ERROR: Grok Bot returned HTTP {response.status_code}."
 
-                response_limit = 64 * 1024
+                declared = response.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > max_response_bytes:
+                    _emit(ctx, "grokbot.bridge", ok=False, reason="response exceeds limit")
+                    return "ERROR: Grok Bot response exceeded the 64 KiB limit."
+
                 chunks: list[bytes] = []
                 total = 0
                 async for chunk in response.aiter_bytes():
                     total += len(chunk)
-                    if total > response_limit:
-                        _emit(ctx, "grokbot.bridge", ok=False, reason="response size limit")
+                    if total > max_response_bytes:
+                        _emit(ctx, "grokbot.bridge", ok=False, reason="response exceeds limit")
                         return "ERROR: Grok Bot response exceeded the 64 KiB limit."
                     chunks.append(chunk)
+                raw = b"".join(chunks)
+    except Exception as exc:
+        # Do not echo upstream URLs, response bodies, or exception messages into
+        # agent memory/CodeX; exception class is enough to diagnose the category.
+        name = type(exc).__name__
+        _emit(ctx, "grokbot.bridge", ok=False, error=name)
+        return f"ERROR: Grok Bot bridge request failed: {name}."
 
-        try:
-            data = json.loads(b"".join(chunks).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            _emit(ctx, "grokbot.bridge", ok=False, reason="invalid JSON")
-            return "ERROR: Grok Bot returned invalid JSON."
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        _emit(ctx, "grokbot.bridge", ok=False, reason="invalid JSON")
+        return "ERROR: Grok Bot returned invalid JSON."
 
-        answer = data.get("answer") if isinstance(data, dict) else None
-        if not isinstance(answer, str) or not answer.strip():
-            _emit(ctx, "grokbot.bridge", ok=False, reason="empty answer")
-            return "ERROR: Grok Bot returned no textual answer."
-        _emit(ctx, "grokbot.bridge", ok=True, agent="grok-researcher", answer_chars=len(answer))
-        result = {"ok": True, "agent": "grok-researcher", "answer": answer}
+    answer = data.get("answer") if isinstance(data, dict) else None
+    if not isinstance(answer, str) or not answer.strip():
+        _emit(ctx, "grokbot.bridge", ok=False, reason="empty answer")
+        return "ERROR: Grok Bot returned no textual answer."
+
+    _emit(ctx, "grokbot.bridge", ok=True, agent="grok-researcher", answer_chars=len(answer))
+    result = {"ok": True, "agent": "grok-researcher", "answer": answer}
+    encoded = json.dumps(result, ensure_ascii=False)
+    if len(encoded) > 9000:
+        result["answer"] = answer[:8000]
+        result["truncated"] = True
         encoded = json.dumps(result, ensure_ascii=False)
-        if len(encoded) > 9000:
-            result["answer"] = answer[:8000]
-            result["truncated"] = True
-            encoded = json.dumps(result, ensure_ascii=False)
-        return encoded
-    except (httpx.HTTPError, ValueError) as exc:
-        # Only emit the exception type, never its message, URL, headers or body.
-        _emit(ctx, "grokbot.bridge", ok=False, error=type(exc).__name__)
-        return "ERROR: Grok Bot bridge request failed (" + type(exc).__name__ + ")."
+    return encoded
 
 
 # --------------------------------------------------------------------------- http_request

@@ -335,20 +335,22 @@ def import_pack(workspace: Path, data_dir: Path, bundle: bytes, local_node: str,
     root = agentfs.agents_root(workspace)
     # One import per agent dir at a time: two concurrent imports of the same agent both passed
     # the "strictly newer" check and raced the swap (and could collide on the temp dir name).
+    # The memory merge and home record stay inside the lock too: a second importer that ran between
+    # the swap and record() saw the files but no home record and refused with "belongs to another agent".
     with _import_lock(root / aid):
         try:
             _install(root, workspace, data_dir, manifest, blobs, aid, local_node)
         except OSError as e:  # e.g. a name too long for this filesystem: a refusal, not a 500
             raise PackError(f"could not install agent pack: {type(e).__name__}: {e}"[:300]) from None
-    stats = {"merged": 0, "skipped": 0, "rejected": 0}
-    good = [r for r in memory if isinstance(r, dict)]
-    stats["rejected"] += len(memory) - len(good)
-    if good:
-        stats = {k: stats[k] + v for k, v in
-                 memstore.MemoryStore(_memory_path(data_dir)).merge(aid, good, source=manifest["origin"]).items()}
-    if manifest["home"] != local_node:
-        record(data_dir, aid, home=manifest["home"], origin=manifest["origin"], created=manifest["created"],
-               imported=int(time.time()))
+        stats = {"merged": 0, "skipped": 0, "rejected": 0}
+        good = [r for r in memory if isinstance(r, dict)]
+        stats["rejected"] += len(memory) - len(good)
+        if good:
+            stats = {k: stats[k] + v for k, v in
+                     memstore.MemoryStore(_memory_path(data_dir)).merge(aid, good, source=manifest["origin"]).items()}
+        if manifest["home"] != local_node:
+            record(data_dir, aid, home=manifest["home"], origin=manifest["origin"], created=manifest["created"],
+                   imported=int(time.time()))
     return {"agent_id": aid, "origin": manifest["origin"], "home": manifest["home"],
             "created": manifest["created"], "files": len(blobs), "bytes": manifest["total_bytes"],
             "memory": stats}

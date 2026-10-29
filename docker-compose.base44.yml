@@ -1,0 +1,53 @@
+# Base44 development environment for AVRONE.
+#
+# Runs the FastAPI server straight from the cloned source: the repo is bind
+# mounted and uvicorn runs with --reload, so edits show up in the preview
+# without a rebuild. This is NOT the project's production image (see Dockerfile).
+#
+#   docker compose -f docker-compose.base44.yml up -d --build
+#   open http://localhost:3000/
+#
+services:
+  avrone:
+    image: python:3.12-slim
+    labels:
+      base44.project: AVRONE
+      base44.kind: web
+      base44.port: "3000"
+    working_dir: /app
+    # Dependencies are installed from the mounted manifest on every start (the
+    # pip cache volume keeps it fast), then the live-reloading dev server runs.
+    command:
+      - sh
+      - -ec
+      - |
+        python -m pip install --disable-pip-version-check -e ".[dev]"
+        exec python -m uvicorn avrone.server:app --host 0.0.0.0 --port 8710 --reload --reload-dir /app/avrone
+    ports:
+      - "3000:8710"     # preview entry point -> AVRONE UI/API
+    env_file:
+      - ./.env.base44-defaults   # sandbox placeholders (mock model, local runner)
+      - /run/base44/app.env      # dashboard credentials - LAST, so they always win
+    environment:
+      AVRONE_HOST: 0.0.0.0
+      AVRONE_PORT: "8710"
+      AVRONE_WORKSPACE: /app/workspace     # agent sandbox (bind-mounted, gitignored)
+      AVRONE_DATA_DIR: /app/data           # runs, memory, checkpoints (gitignored)
+      AVRONE_PLUGINS_DIR: /app/plugins
+      AVRONE_MCP_CONFIG: /app/mcp.json
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      BASE44_PREVIEW_MODE:                 # passed through; unset outside the sandbox
+    volumes:
+      - ./:/app
+      - avrone-pip-cache:/root/.cache/pip
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8710/api/status', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s      # first start also installs dependencies
+    restart: on-failure
+
+volumes:
+  avrone-pip-cache:

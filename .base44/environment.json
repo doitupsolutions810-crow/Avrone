@@ -1,0 +1,22 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/api/status",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "XAI_API_KEY",
+      "description": "xAI Grok API key from https://console.x.ai - used when AVRONE_PROVIDER=xai and AVRONE_LLM_MODE=live are set in the dashboard.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "OPENAI_API_KEY",
+      "description": "OpenAI API key from https://platform.openai.com/api-keys - used when AVRONE_PROVIDER=openai and AVRONE_LLM_MODE=live are set in the dashboard.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "OPENROUTER_API_KEY",
+      "description": "OpenRouter API key from https://openrouter.ai/keys - used when AVRONE_PROVIDER=openrouter and AVRONE_LLM_MODE=live are set in the dashboard.",
+      "requiredAtBoot": false
+    }
+  ]
+}

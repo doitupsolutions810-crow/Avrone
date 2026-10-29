@@ -20,7 +20,7 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; 
      AVRONE_EVOLVE_HISTORY (finished-loop summaries kept in loops/history.jsonl; default 50, can only
      lower it; hard cap 200). evolve_history() reads it back, across restarts.
      AVRONE_EVOLVE_LONG=allow (default off): explicit operator opt-in that raises the loop hard caps
-     from 10 / 1800s to LONG_MAX_ITERS_CAP / LONG_TIME_BUDGET_CAP_S (50 / 7200s). It changes no
+     from 10 / 1800s to LONG_MAX_ITERS_CAP / LONG_TIME_BUDGET_CAP_S (100 / 43200s = 12 hours). It changes no
      default; AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (or a tool argument) still pick the
      actual size, and nothing can exceed the long ceilings.
 Restarts: a "running" loop whose owning process is gone is never resumed automatically. The first
@@ -211,8 +211,8 @@ TIME_BUDGET_CAP_S = 1800
 DEFAULT_MAX_ITERS = 3
 DEFAULT_TIME_BUDGET_S = 600
 # Opt-in long loops (AVRONE_EVOLVE_LONG=allow) may rise to these, and never past them.
-LONG_MAX_ITERS_CAP = 50
-LONG_TIME_BUDGET_CAP_S = 7200
+LONG_MAX_ITERS_CAP = 100
+LONG_TIME_BUDGET_CAP_S = 43200
 
 
 def long_loops_allowed() -> bool:
@@ -243,7 +243,7 @@ def loop_limits(max_iters: Any = None, time_budget_s: Any = None) -> tuple[int, 
 
     AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET set the node's default AND its ceiling
     (an agent can ask for less, never more); the hard caps bound everything, env included. The hard
-    caps are 10 / 1800s unless AVRONE_EVOLVE_LONG=allow raises them to 50 / 7200s.
+    caps are 10 / 1800s unless AVRONE_EVOLVE_LONG=allow raises them to 100 / 43200s (12 hours).
     """
     hard_iters, hard_budget = hard_caps()
     env_iters, env_budget = _env_num("AVRONE_EVOLVE_MAX_ITERS"), _env_num("AVRONE_EVOLVE_TIME_BUDGET")

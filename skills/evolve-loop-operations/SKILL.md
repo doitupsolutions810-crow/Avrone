@@ -16,8 +16,8 @@ description: Run, monitor, cancel and restart AVRONE's bounded self-evolve loops
 4. Respect the caps: by default a loop runs at most 10 iterations and 1800 seconds. AVRONE_EVOLVE_MAX_ITERS and
    AVRONE_EVOLVE_TIME_BUDGET set the node default and can only LOWER those caps; asking for more is clamped.
    AVRONE_EVOLVE_TEST_CMD changes the gate command for every proposal. Only an operator can allow longer
-   loops, by setting AVRONE_EVOLVE_LONG=allow on the node: the ceilings then rise to 50 iterations and 7200
-   seconds (defaults stay 3 and 600; ask for more explicitly). Never set it yourself, and each gate run is
+   loops, by setting AVRONE_EVOLVE_LONG=allow on the node: the ceilings then rise to 100 iterations and 43200
+   seconds (12 hours; defaults stay 3 and 600; ask for more explicitly). Never set it yourself, and each gate run is
    still capped at 900 seconds.
 5. Long missions may be split across checkpointed loops, but there is no safe "disable all timeouts" mode. Keep the per-command gate ceiling (900 seconds), runner command limits and node resource bounds enabled. For a mission that needs hours, use `evolve_start`, record its loop_id, and resume only an interrupted loop under the same or lower caps; never turn an unresponsive command into an unbounded process.
 6. Monitor a background loop with `evolve_status` and its loop_id (latest loop if omitted): status, iterations

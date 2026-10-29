@@ -54,6 +54,7 @@ CORE_SCHEMAS: dict[str, dict[str, dict[str, str]]] = {
                                                        "share_dir": "bool"}},
     "list_files": {"optional": {"path": "str", "depth": "int"}},
     "search_files": {"required": {"pattern": "str"}, "optional": {"path": "str"}},
+    "grokbot.ask": {"required": {"prompt": "str"}},
     "http_request": {"required": {"method": "str", "url": "str"},
                      "optional": {"headers": "dict", "body": "str|dict"}},
     "git": {"required": {"args": "str"}},

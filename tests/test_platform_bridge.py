@@ -203,7 +203,7 @@ def test_runtime_mission_bounds_inputs_before_network(monkeypatch):
 
 
 
-def test_runtime_swarm_launch_is_idempotent_and_normalizes_gateway_snapshots(monkeypatch):
+def test_runtime_swarm_create_is_idempotent_and_normalizes_gateway_snapshots(monkeypatch):
     registry, module = _load_bridge()
     monkeypatch.setenv("AVRONE_PLATFORM_TARGETS_JSON", json.dumps({
         "runtime": "http://avrone-runtime:8700"
@@ -230,7 +230,7 @@ def test_runtime_swarm_launch_is_idempotent_and_normalizes_gateway_snapshots(mon
         "capabilities": ["research", "verify"],
         "idempotency_key": "integration-20261029",
     }
-    result = json.loads(_call(registry, "platform_bridge_launch_runtime_swarm", args))
+    result = json.loads(_call(registry, "platform_bridge_create_runtime_swarm", args))
     assert result == {
         "ok": True,
         "target": "runtime",
@@ -252,7 +252,7 @@ def test_runtime_swarm_launch_is_idempotent_and_normalizes_gateway_snapshots(mon
     }
 
 
-def test_runtime_swarm_launch_blocks_untrusted_ids_and_missing_token(monkeypatch):
+def test_runtime_swarm_create_blocks_untrusted_ids_and_missing_token(monkeypatch):
     registry, module = _load_bridge()
     monkeypatch.setenv("AVRONE_PLATFORM_TARGETS_JSON", json.dumps({
         "runtime": "http://avrone-runtime:8700"
@@ -266,7 +266,7 @@ def test_runtime_swarm_launch_blocks_untrusted_ids_and_missing_token(monkeypatch
         "mission_name": "M", "objective": "O", "swarm_name": "S",
         "idempotency_key": "safe-key",
     }
-    assert "tenant-scoped Runtime API key" in _call(registry, "platform_bridge_launch_runtime_swarm", args)
+    assert "tenant-scoped Runtime API key" in _call(registry, "platform_bridge_create_runtime_swarm", args)
 
 
 def test_runtime_mission_status_validates_id_before_network(monkeypatch):

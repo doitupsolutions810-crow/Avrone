@@ -81,6 +81,18 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.22: Squad round 8 — root-gateway linking pipeline proven end to end, crossed-order run-scope fix, resumable evolve loops, agent homes — 2366 tests, coverage 98%
+
+- **Root-enabled gateway pipeline** (`tests/test_robust_v022_pipeline.py`, 50 tests): a real signed request goes gateway → `handle_run` → `TrinityCore.chat` → tool call → `priv_shell`/`priv_admin` → runner, offline. With every condition met the allow-listed command runs once and is audited; removing any single condition refuses with its own code and nothing executes.
+- **Fixed: crossed-order run scope** (`FleetManager._run_scope`). Overlapping runs ending A-start, B-start, A-end, B-end left `fleet_privileged` set after all runs ended, let an unprivileged run wipe a live grant, and let a shallow run lower a deep run's hop count. Live runs are now tracked under the state lock (5/5 → 0/5). Overlapping `priv:shell` + `priv:admin` runs now block both tools until one ends.
+- **Fixed: netsquad route/budget** restored in crossed order (same mechanism, 5/5 → 0/5) and **`thermal_migrate`** exporting an agent that became busy mid-loop (50/50 → 0/50).
+- **Asyncio hammer tests** (`tests/test_robust_v022_async.py`): same-checkpoint chats, `AVRONE_EVOLVE_MAX_BG`, same-node register/heartbeat, memory_sync merges — all held.
+- **New tools:** `fleet_status` (this node's fleet view, on/off settings only, no tokens or URLs), `flake_probe` (runs one read-only perception tool 1–50× and reports nondeterminism as a Great Scale snapshot), `agent_home` (the calling agent's own home: quota, counts, container hosting, home node, last pack).
+- **Evolve reach:** loops checkpoint each iteration; `evolve_start(resume_loop_id=...)` resumes an interrupted loop from its last completed iteration. Resumed work counts toward the same caps; current env/hard caps are re-applied.
+- **Skill:** `skills/agent-home-resilience` (quota, symlinks, pack export/import, thermal migration). `evolve-loop-operations` documents resume.
+- **Coverage:** tools_codexstats, tools_mempeek, agentfs, ctxspawn, tools_extra, agentpack → 100%; server 99%. Total 98%.
+- **Test fix:** the v0.21 single-flight migration test counted successes and flaked (~1/3 alone) when a late thread migrated after the first had finished; it now measures true overlap (max concurrent = 1).
+
 ## v0.21: Squad round 7 — TOCTOU sweep, Great Scale bridge, recon default-deny, long evolve loops — 2150 tests, coverage 97%
 
 - **Robust lane — 10 check-then-act races fixed** (Barrier hammer tests, before → after): agentpack shared index 170/200 → 0, container reaper re-adopting a container mid-`rm` 200/200 → 0, evolve history 148/200 → 0, fleet nonce double-accept 125/200 → 0 and dropped nonces 126/200 → 0, fleet registry readers 199/200 → 0, jobqueue double-claim across processes 69/100 → 0 (`BEGIN IMMEDIATE`), checkpoint lost steps 25/200 → 0, register two-URL 3/200 → 0, migrate guard 1/200 → 0. `fleet.json` now written atomically. Privileged tier unchanged; a signed concurrent burst is all refused `privileged_disabled`.

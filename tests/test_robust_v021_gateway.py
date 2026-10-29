@@ -157,10 +157,17 @@ def test_register_while_readers_iterate_nodes(core, tmp_path):
 def test_one_migration_in_flight_per_agent_across_threads(core, tmp_path):
     fm = FleetManager(core, tmp_path)
     inside = []
+    live = {"now": 0, "max": 0}
+    guard = threading.Lock()
 
     async def fake(aid, target):
         inside.append(aid)
+        with guard:
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
         await asyncio.sleep(0.005)
+        with guard:
+            live["now"] -= 1
         return {"ok": True, "agent_id": aid}
     fm._migrate_agent = fake
     for it in range(40):
@@ -170,9 +177,9 @@ def test_one_migration_in_flight_per_agent_across_threads(core, tmp_path):
         assert len(ok) >= 1 and len(inside) == len(ok)
         assert all(isinstance(r, PermissionError) for r in res if not isinstance(r, dict))
         assert fm._migrating == set()
-        # never two at the same time: with every attempt released together and each holding the
-        # slot for 5 ms, a successful second migration would have overlapped the first
-        assert len(ok) == 1, f"iteration {it}: {len(ok)} concurrent migrations of one agent"
+    # never two at the same time. Counting successes was flaky: a thread whose event loop started
+    # after the first migration finished may legitimately migrate again (sequential, not concurrent).
+    assert live["max"] == 1, f"{live['max']} concurrent migrations of one agent"
 
 
 # ------------------------------------------------------------------ agent home containers

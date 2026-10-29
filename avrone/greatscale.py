@@ -17,6 +17,12 @@ one run exposes a defect of rate p is p itself, and N runs expose it with probab
 1 - (1 - p)^N, so detecting it with confidence 1 - alpha needs N >= ln(alpha) / ln(1 - p).
 This is why AVRONE's robustness lanes use repeated-iteration hammer tests rather than one run.
 
+Two corollaries from the v0.21 measurements. (1) Heat is orientation-blind: heat(p) = heat(1 - p), so a
+check that ALWAYS fails also sits on the cone floor (the container-reaper race was 200/200). As in the
+upstream QGT descents, the local scalar cannot carry the sign; the snapshot adds a separate
+`orientation` channel (pass / fail / mixed). (2) The rarest defects carry the least heat and cost the
+most runs: p = 1/200 gives S ~ 0.005 (Psi within 0.005 of the floor) yet needs 598 runs for 95%.
+
 Like the upstream repository, this is a mathematical embedding of measured evidence, not a
 physical or empirical claim.
 """
@@ -105,6 +111,9 @@ def evidence_snapshot(failures: int, runs: int, alpha: float = 0.05) -> dict[str
         "failures": failures, "runs": runs, "p": p,
         "S": s, "variance": s, "logCoord": log_coordinate(s), "psi": psi(s), "cone": CONE,
         "coneOk": cone_compliant(s), "onConeFloor": s == 0.0,
+        # heat is orientation-blind (heat(p) == heat(1-p)): an always-failing check sits on the cone
+        # floor like an always-passing one, so correctness rides a separate signed channel.
+        "orientation": "pass" if failures == 0 else ("fail" if failures == runs else "mixed"),
         "n": residual_count(s), "lambda": cascade_lambda(residual_count(s)),
         "singleRunDetect": p, "detectInRuns": 1 - (1 - p) ** runs,
         "runsFor95": runs_to_detect(p, alpha),
@@ -117,7 +126,8 @@ def _fmt(snap: dict[str, Any]) -> str:
         f"great_scale evidence: {snap['failures']}/{snap['runs']} failed  p={snap['p']:.6g}",
         f"S = heat(p) = p(1-p) = {snap['S']:.6g}   (Bernoulli outcome variance)",
         f"4S = {snap['logCoord']:.6g}   Psi = CONE + S = {snap['psi']:.6g}   CONE = phi^-2 = {CONE:.6f}",
-        f"cone floor: {'yes (deterministic)' if snap['onConeFloor'] else 'no (residual heat present)'}",
+        f"cone floor: {'yes (deterministic ' + snap['orientation'] + ')' if snap['onConeFloor'] else 'no (residual heat present)'}"
+        f"   orientation: {snap['orientation']}",
         f"one run exposes it with prob {snap['singleRunDetect']:.4g}; these {snap['runs']} runs: "
         f"{snap['detectInRuns']:.4g}; runs for 95%: {'n/a' if n95 is None else n95}",
     ])

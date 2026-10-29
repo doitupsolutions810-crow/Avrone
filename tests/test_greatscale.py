@@ -113,3 +113,15 @@ def test_registered_with_extra_tools():
     names = set(reg.names())
     assert "great_scale" in names
     assert math.isclose(gs.psi(0), gs.CONE)
+
+
+def test_orientation_channel_separates_always_fail_from_always_pass():
+    ok, bad = gs.evidence_snapshot(0, 200), gs.evidence_snapshot(200, 200)
+    assert ok["S"] == bad["S"] == 0 and ok["psi"] == bad["psi"] == gs.CONE  # heat is orientation-blind
+    assert (ok["orientation"], bad["orientation"], gs.evidence_snapshot(1, 200)["orientation"]) == ("pass", "fail", "mixed")
+    assert "deterministic fail" in run({"failures": 200, "runs": 200})
+
+
+def test_rare_defects_carry_least_heat_and_cost_most_runs():
+    rare, common = gs.evidence_snapshot(1, 200), gs.evidence_snapshot(125, 200)
+    assert rare["S"] < common["S"] and rare["runsFor95"] == 598 and common["runsFor95"] == 4

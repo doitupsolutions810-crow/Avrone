@@ -81,6 +81,16 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.21: Squad round 7 — TOCTOU sweep, Great Scale bridge, recon default-deny, long evolve loops — 2150 tests, coverage 97%
+
+- **Robust lane — 10 check-then-act races fixed** (Barrier hammer tests, before → after): agentpack shared index 170/200 → 0, container reaper re-adopting a container mid-`rm` 200/200 → 0, evolve history 148/200 → 0, fleet nonce double-accept 125/200 → 0 and dropped nonces 126/200 → 0, fleet registry readers 199/200 → 0, jobqueue double-claim across processes 69/100 → 0 (`BEGIN IMMEDIATE`), checkpoint lost steps 25/200 → 0, register two-URL 3/200 → 0, migrate guard 1/200 → 0. `fleet.json` now written atomically. Privileged tier unchanged; a signed concurrent burst is all refused `privileged_disabled`.
+- **Coverage lane**: config, agentfs_tools, codex, agentpack_tools, osint → 100%.
+- **New tools**: `codex_stats` (payload-free aggregate of the agent's own run log) and `memory_peek` (bounded, redacted view of the agent's own memory namespace).
+- **Evolve**: `evolve_history` is now an agent tool; new `evolve-loop-operations` skill; opt-in long loops `AVRONE_EVOLVE_LONG=allow` (hard ceiling 50 iterations / 7200s, default off); background loops left "running" by a restart are marked `interrupted` with a resume hint and recorded.
+- **Great Scale bridge** (`avrone/greatscale.py`, tool `great_scale`): exact port of great-scale `public/residual.cjs` (node parity test). Evidence channel: `S = heat(p) = p(1−p)` is the Bernoulli variance of a check's failure rate, `Ψ = φ⁻² + S`, runs to detect `N ≥ ln α / ln(1−p)`, plus a signed `orientation` channel because heat is orientation-blind (an always-failing check also sits on the cone floor). A mathematical embedding of measured evidence, not a physical claim.
+- **Recon is default-deny**: unset/blank `AVRONE_RECON_ALLOWLIST` refuses every target; list your own/authorized domains, or set `*` to allow any public host explicitly. Private/metadata refusal still always applies.
+- **Lead fixes**: env_report redacts tokens glued to other text.
+
 ## v0.20: Squad round 6 — coverage, introspection tools, edge skills + evolve history, gateway/home hardening — 1948 tests, coverage 96%
 
 - **Coverage lane**: mcp_server.py 82% → 99%, plugins.py 81% → 100%, evolve.py 88% → 97%, gateway.py 91% → 100% (49 new offline tests).

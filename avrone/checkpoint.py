@@ -27,6 +27,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -34,12 +35,29 @@ from typing import Any
 
 VERSION = 1
 
+# One re-entrant lock per checkpoint file (resolved path), shared by every _Store on it. A put()
+# used to mutate the shared dict and serialise/os.replace it with no lock: two threads could
+# serialise in one order and os.replace in the other, so the file on disk lost a finished step
+# (a resume then re-ran it), and two _Stores on one file lost each other's keys outright.
+_FILE_LOCKS: dict[str, threading.RLock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _file_lock(path: Path) -> threading.RLock:
+    try:
+        k = str(Path(path).resolve())
+    except OSError:
+        k = str(path)
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(k, threading.RLock())
+
 
 class _Store:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.data: dict[str, Any] = {"version": VERSION, "steps": {}}
         self.write_errors = 0
+        self.lock = _file_lock(self.path)
         self.load()
 
     def load(self) -> None:
@@ -51,6 +69,10 @@ class _Store:
             pass
 
     def save(self) -> bool:
+        with self.lock:
+            return self._save_locked()
+
+    def _save_locked(self) -> bool:
         self.data["updated"] = time.time()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,37 +122,42 @@ class Checkpoint:
         return self._store.data["steps"].get(self.prefix + key, default)
 
     def put(self, key: str, value: Any) -> None:
-        self._store.data["steps"][self.prefix + key] = value
-        self._store.save()
+        with self._store.lock:  # mutate + serialise + replace as one critical section
+            self._store.data["steps"][self.prefix + key] = value
+            self._store.save()
 
     def keys(self) -> list[str]:
         n = len(self.prefix)
-        return [k[n:] for k in self._store.data["steps"] if k.startswith(self.prefix)]
+        with self._store.lock:
+            return [k[n:] for k in list(self._store.data["steps"]) if k.startswith(self.prefix)]
 
     def clear(self) -> None:
         """Drop every key in this scope (other scopes in the file are kept)."""
-        steps = self._store.data["steps"]
-        for k in [k for k in steps if k.startswith(self.prefix)]:
-            del steps[k]
-        self._store.save()
+        with self._store.lock:
+            steps = self._store.data["steps"]
+            for k in [k for k in steps if k.startswith(self.prefix)]:
+                del steps[k]
+            self._store.save()
 
     # ------------------------------------------------------------ run binding
     def resume_point(self, task: str, mode: str, **extra: Any) -> dict[str, Any] | None:
         """The stored meta if this scope holds a run of the same task/mode/extra, else None.
 
         A scope holding a different run is cleared so stale results can never leak in."""
-        meta = self.get("meta")
-        want = {"task": task, "mode": mode, **extra}
-        if isinstance(meta, dict) and all(meta.get(k) == v for k, v in want.items()):
-            return meta
-        if self.keys():
-            self.clear()
-        return None
+        with self._store.lock:
+            meta = self.get("meta")
+            want = {"task": task, "mode": mode, **extra}
+            if isinstance(meta, dict) and all(meta.get(k) == v for k, v in want.items()):
+                return meta
+            if self.keys():
+                self.clear()
+            return None
 
     def begin(self, task: str, mode: str, run_id: str, **extra: Any) -> None:
-        meta = self.get("meta")
-        if not (isinstance(meta, dict) and meta.get("run_id") == run_id and meta.get("task") == task):
-            self.put("meta", {"task": task, "mode": mode, "run_id": run_id, "started": time.time(), **extra})
+        with self._store.lock:
+            meta = self.get("meta")
+            if not (isinstance(meta, dict) and meta.get("run_id") == run_id and meta.get("task") == task):
+                self.put("meta", {"task": task, "mode": mode, "run_id": run_id, "started": time.time(), **extra})
 
     def summary(self) -> dict[str, Any]:
         keys = self.keys()
@@ -148,6 +175,7 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
 FLEET_PREFIX = "fleet-"
 CKPT_MODES = ("squad", "deep")
 _active: set[str] = set()  # resolved paths of checkpoints a run in this process is using
+_active_lock = threading.Lock()  # claim's "in use?" check and its add are one critical section
 
 
 class CheckpointError(ValueError):
@@ -229,12 +257,13 @@ def check_compatible(path: str | Path, task: str, mode: str, owner: str | None =
 def stamp_owner(path: str | Path, owner: str) -> None:
     """Record who owns a fleet checkpoint before its run starts writing it."""
     path = Path(path)
-    data = _read(path) or {"version": VERSION, "steps": {}}
-    if data.get("owner") == owner:
-        return
-    store = _Store(path)
-    store.data = {**data, "owner": owner}
-    store.save()
+    with _file_lock(path):  # read-modify-write of the file: never interleave with a put()/save()
+        data = _read(path) or {"version": VERSION, "steps": {}}
+        if data.get("owner") == owner:
+            return
+        store = _Store(path)
+        store.data = {**data, "owner": owner}
+        store.save()
 
 
 def is_busy(path: str | Path) -> bool:
@@ -244,10 +273,15 @@ def is_busy(path: str | Path) -> bool:
 def claim(path: str | Path) -> Any:
     """Mark the checkpoint in use; returns a release() callable. CheckpointConflict when taken."""
     k = str(Path(path).resolve())
-    if k in _active:
-        raise CheckpointConflict(f"checkpoint {Path(path).stem!r} is in use by a running job")
-    _active.add(k)
-    return lambda: _active.discard(k)
+    with _active_lock:
+        if k in _active:
+            raise CheckpointConflict(f"checkpoint {Path(path).stem!r} is in use by a running job")
+        _active.add(k)
+
+    def release() -> None:
+        with _active_lock:
+            _active.discard(k)
+    return release
 
 
 @contextmanager

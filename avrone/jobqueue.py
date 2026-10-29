@@ -32,6 +32,9 @@ class JobQueue:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lease_s = lease_s
         self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
+        # Several JobQueue instances (processes) may share one file: wait for the write lock
+        # instead of failing with "database is locked".
+        self._db.execute("PRAGMA busy_timeout=10000")
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
         self._lock = asyncio.Lock()
@@ -41,6 +44,21 @@ class JobQueue:
         # Worker down mid-claim could segfault the process.
         self._tlock = threading.Lock()
         self._closed = False
+
+    def _txn(self, fn: Callable[[], Any]) -> Any:
+        """Run fn inside BEGIN IMMEDIATE ... COMMIT: the write lock is taken BEFORE the read, so a
+        read-then-write (claim's SELECT+UPDATE, fail's attempts check+UPDATE) is atomic across every
+        connection on the file, not just within this instance's asyncio lock. Without it two
+        queues on one file (two worker processes) both SELECTed the same queued row and ran the
+        job twice."""
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            out = fn()
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._db.execute("COMMIT")
+        return out
 
     async def _run(self, fn: Callable[[], Any]) -> Any:
         def guarded() -> Any:
@@ -60,7 +78,7 @@ class JobQueue:
         return jid
 
     async def claim(self) -> dict[str, Any] | None:
-        def _claim() -> dict[str, Any] | None:
+        def _claim() -> Any:
             now = time.time()
             cur = self._db.execute(
                 "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) OR (status='running' AND lease_until<?) "
@@ -70,8 +88,12 @@ class JobQueue:
                 return None
             self._db.execute("UPDATE jobs SET status='running', attempts=attempts+1, lease_until=?, updated=? WHERE id=?",
                              (now + self.lease_s, now, row[0]))
-            return {"id": row[0], "kind": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
-        return await self._run(_claim)
+            return row
+        row = await self._run(lambda: self._txn(_claim))
+        if row is None:
+            return None
+        # parsed after COMMIT, as before: a corrupt payload still leaves the job leased, not re-claimable
+        return {"id": row[0], "kind": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
 
     async def complete(self, jid: str, result: Any) -> None:
         await self._run(lambda: self._db.execute("UPDATE jobs SET status='done', result=?, updated=? WHERE id=?",
@@ -88,7 +110,7 @@ class JobQueue:
             self._db.execute("UPDATE jobs SET status='queued', error=?, lease_until=?, updated=? WHERE id=?",
                              (error[:4000], now + backoff, now, jid))
             return "requeued"
-        return await self._run(_fail)
+        return await self._run(lambda: self._txn(_fail))
 
     async def get(self, jid: str) -> dict[str, Any] | None:
         def _g() -> dict[str, Any] | None:

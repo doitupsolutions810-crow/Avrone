@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -417,8 +418,15 @@ def _history_row(m: dict[str, Any]) -> dict[str, Any]:
             "max_iters": m.get("max_iters"), "time_budget_s": m.get("time_budget_s"), "ended": time.time()}
 
 
+# record_history is a read-modify-write of one shared file. Two loops finishing at once (loops in
+# different threads / event loops of one process) each read the old rows, and the later os.replace
+# dropped the other's row; both also wrote the same ".jsonl.tmp", so one replace could fail outright.
+_HISTORY_LOCK = threading.Lock()
+
+
 def record_history(ctx: "AgentContext", loop_meta: dict[str, Any]) -> None:
     """Append one finished loop's summary (replacing any earlier row for the same loop_id) and trim."""
+    tmp = None
     try:
         _record_history_at(_history_path(ctx), loop_meta)
     except Exception:  # noqa: BLE001 - history is best effort
@@ -429,13 +437,19 @@ def _record_history_at(path: Path, loop_meta: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         row = _history_row(loop_meta)
-        rows = [r for r in _read_history(path) if r.get("loop_id") != row["loop_id"]]
-        rows = (rows + [row])[-history_cap():]
-        tmp = path.with_suffix(".jsonl.tmp")
-        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-        os.replace(tmp, path)
+        with _HISTORY_LOCK:
+            rows = [r for r in _read_history(path) if r.get("loop_id") != row["loop_id"]]
+            rows = (rows + [row])[-history_cap():]
+            tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            os.replace(tmp, path)
+            tmp = None
     except Exception:  # noqa: BLE001 - history is best effort
-        pass
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def evolve_history(ctx: "AgentContext", limit: int | None = None) -> list[dict[str, Any]]:

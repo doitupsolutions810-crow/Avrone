@@ -186,27 +186,31 @@ class AgentContainerPool:
         """Remove every home container idle for longer than AVRONE_AGENT_IDLE_SECS."""
         now = self.clock() if now is None else now
         limit = self.idle_after
+        # The stale decision and the `docker rm` are one critical section. The rm used to run after
+        # the lock was released: a concurrent ensure() for that same agent then found no home
+        # record, inspected the still-running container, re-registered and handed it out, and the
+        # reaper's rm -f killed it under the agent (its next exec failed / its state was lost).
         async with self._lock:
             stale = [h for n, h in self.homes.items() if n != skip and now - h.last_used >= limit]
             for h in stale:
                 del self.homes[h.name]
-        for h in stale:
-            try:
-                await self._exec(rm_argv(h.name), 30)
-                self.reaped += 1
-            except Exception:  # noqa: BLE001 - a failed rm never breaks a command
-                pass
+            for h in stale:
+                try:
+                    await self._exec(rm_argv(h.name), 30)
+                    self.reaped += 1
+                except Exception:  # noqa: BLE001 - a failed rm never breaks a command
+                    pass
         return [h.name for h in stale]
 
     async def close(self) -> None:
-        async with self._lock:
+        async with self._lock:  # same as reap_idle: no ensure() can re-adopt a home mid-removal
             names = list(self.homes)
             self.homes.clear()
-        for n in names:
-            try:
-                await self._exec(rm_argv(n), 30)
-            except Exception:  # noqa: BLE001
-                pass
+            for n in names:
+                try:
+                    await self._exec(rm_argv(n), 30)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def state(self) -> dict[str, Any]:
         now = self.clock()

@@ -98,6 +98,7 @@ import os
 import re
 import secrets
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -416,6 +417,9 @@ def sign(token: str, method: str, path: str, body: bytes, ts: str | None = None,
     return {"x-avrone-ts": ts, "x-avrone-nonce": nonce, "x-avrone-sig": sig}
 
 
+_LAZY_LOCK_GUARD = threading.Lock()
+
+
 class FleetManager:
     def __init__(self, core: "TrinityCore", data_dir: Path):
         self.core = core
@@ -453,15 +457,42 @@ class FleetManager:
         self.worker = None
         self.netsquad_counts: dict[str, int] = {}  # node id -> netsquad placements (telemetry)
         self._migrating: set[str] = set()  # agent ids with an outbound migration in flight
+        # Guards every check-then-act on shared gateway state (nonce cache, node registry, the
+        # in-flight migration set, fleet.json). verify() is sync and may run on several threads
+        # (sync handlers, to_thread callers): its "nonce seen?" check and the insert, and the
+        # rebinding prune, used to interleave so a replayed request was accepted twice.
+        self.__dict__.setdefault("_state_lock", threading.RLock())
         self._save()
 
     # ------------------------------------------------------------ state
+    @property
+    def _lock(self) -> threading.RLock:
+        """The state lock (created on first use for instances built without __init__)."""
+        lk = self.__dict__.get("_state_lock")
+        if lk is None:
+            with _LAZY_LOCK_GUARD:
+                lk = self.__dict__.setdefault("_state_lock", threading.RLock())
+        return lk
+
     @property
     def enabled(self) -> bool:
         return bool(self.token)
 
     def _save(self) -> None:
-        self.path.write_text(json.dumps({"node_id": self.node_id, "nodes": self.nodes}, indent=2))
+        # temp file + os.replace: a concurrent or interrupted save never leaves a torn fleet.json
+        # (a torn file made the next FleetManager() raise at startup)
+        with self._lock:
+            text = json.dumps({"node_id": self.node_id, "nodes": self.nodes}, indent=2)
+            tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                tmp.write_text(text)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
 
     def status_of(self, n: dict[str, Any]) -> str:
         age = time.time() - n.get("last_seen", 0)
@@ -544,12 +575,13 @@ class FleetManager:
         # keep it at least 2*WINDOW_S past first sight too, in case the clock steps backwards.
         # (The old "now - seen < 2*WINDOW_S" prune dropped a future-skewed nonce at exactly the
         # instant its request became valid again: replay at the window edge.)
-        self._nonces = {k: v for k, v in self._nonces.items() if now <= v}
-        if nonce in self._nonces:
-            raise GatewayRefused("replay", "replayed request (nonce already seen)")
-        if len(self._nonces) >= NONCE_CACHE_MAX:
-            raise GatewayRefused("replay", "replay cache full; refusing new requests until nonces expire")
-        self._nonces[nonce] = max(ts_i + WINDOW_S, now + 2 * WINDOW_S)
+        with self._lock:  # prune + "seen?" + insert are ONE step: a nonce is accepted at most once
+            self._nonces = {k: v for k, v in self._nonces.items() if now <= v}
+            if nonce in self._nonces:
+                raise GatewayRefused("replay", "replayed request (nonce already seen)")
+            if len(self._nonces) >= NONCE_CACHE_MAX:
+                raise GatewayRefused("replay", "replay cache full; refusing new requests until nonces expire")
+            self._nonces[nonce] = max(ts_i + WINDOW_S, now + 2 * WINDOW_S)
 
     def allowed(self, node_id: str) -> bool:
         if not self.allow:
@@ -888,16 +920,21 @@ class FleetManager:
             raise PermissionError(f"node {nid} not in AVRONE_FLEET_ALLOW")
         if not url.startswith(("http://", "https://")):
             raise ValueError("url must be http(s)")
-        existing = self.nodes.get(nid)
-        if existing and existing.get("url") != url and self.status_of(existing) == "online":
-            raise ValueError(f"node_id {nid} already online at another url")
-        self.nodes[nid] = {"node_id": nid, "url": url, "last_seen": time.time(),
-                           "capabilities": payload.get("capabilities", {}),
-                           "children": payload.get("children", []),
-                           "load": payload.get("load", 0),
-                           "presence": payload.get("presence"),
-                           "health": sanitize_health(payload.get("health"))}
-        self._save()
+        rec = {"node_id": nid, "url": url, "last_seen": time.time(),
+               "capabilities": payload.get("capabilities", {}),
+               "children": payload.get("children", []),
+               "load": payload.get("load", 0),
+               "presence": payload.get("presence"),
+               "health": sanitize_health(payload.get("health"))}
+        with self._lock:
+            # the "already online at another url" check and the write are one step: two racing
+            # registrations of one id from different urls could otherwise both be accepted
+            existing = self.nodes.get(nid)
+            if existing and existing.get("url") != url and self.status_of(existing) == "online":
+                raise ValueError(f"node_id {nid} already online at another url")
+            # copy-on-write: readers iterating self.nodes.values() never see it change size mid-loop
+            self.nodes = {**self.nodes, nid: rec}
+            self._save()
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)
         return {"ok": True, "parent": self.node_id}
 
@@ -1016,17 +1053,21 @@ class FleetManager:
         is never touched, so a failed migration leaves the agent where it is."""
         aid = str(agent_id or "")
         inflight = self._migrating
-        if aid in inflight:
+        with self._lock:  # "in flight?" + add as one step, even across threads/event loops
+            busy = aid in inflight
+            if not busy:
+                inflight.add(aid)
+        if busy:
             # a second concurrent migration of the same agent would export/post twice and race
             # the two imports on the peer; refuse it (the first one is still in flight)
             self._audit("agent.migrate_refused", reason="migration of this agent already in progress",
                         agent_id=aid[:64], target=target or "auto")
             raise PermissionError(f"migration of agent {aid[:64]!r} already in progress")
-        inflight.add(aid)
         try:
             return await self._migrate_agent(aid, target)
         finally:
-            inflight.discard(aid)
+            with self._lock:
+                inflight.discard(aid)
 
     async def _migrate_agent(self, aid: str, target: str) -> dict[str, Any]:
         from . import agentfs, agentpack

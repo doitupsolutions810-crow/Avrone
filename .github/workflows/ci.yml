@@ -39,3 +39,19 @@ jobs:
             exit 1
           }
         env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }
+
+      - name: Collect test diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          cp /tmp/pip.log diagnostics/pip.log 2>/dev/null || true
+          cp /tmp/pytest.log diagnostics/pytest.log 2>/dev/null || true
+          python -V > diagnostics/python-version.txt 2>&1 || true
+          git status --short > diagnostics/git-status.txt 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: avrone-ci-diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7

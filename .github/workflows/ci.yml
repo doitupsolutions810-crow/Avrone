@@ -41,7 +41,7 @@ jobs:
           python -V > diagnostics/python-version.txt 2>&1 || true
           git status --short > diagnostics/git-status.txt 2>&1 || true
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: avrone-ci-diagnostics-${{ github.run_id }}
           path: diagnostics/

@@ -1,22 +1,24 @@
 """Controlled bridge from AVRONE tools to configured sibling platform services.
 
 The bridge is intentionally resource-allowlisted: agents cannot supply URLs or
-HTTP paths. Reads are read-only. Job creation targets only the documented
-Control704 /jobs endpoint and is disabled unless an operator opts in.
+HTTP paths. Reads are read-only. Mission/job creation is disabled unless an
+operator opts in, and runtime mission creation requires an idempotency key.
 """
 from __future__ import annotations
 
 import ipaddress
 import json
 import os
+import re
+import secrets
 from urllib.parse import urlsplit
 
 import httpx
 
 from avrone.tools import Tool
 
-# Paths are pinned to APIs found in the connected repositories. Never accept a
-# remote path from an agent: this prevents the tool becoming an arbitrary proxy.
+# Paths are pinned to APIs discovered in the connected repositories/packages.
+# Never accept a remote path from an agent: this must not become an arbitrary proxy.
 RESOURCE_PATHS: dict[str, dict[str, str]] = {
     "avrone": {
         "status": "/api/status",
@@ -38,6 +40,10 @@ RESOURCE_PATHS: dict[str, dict[str, str]] = {
         "tools": "/tools",
         "knowledge": "/knowledge",
         "artifacts": "/artifacts",
+    },
+    "runtime": {
+        "health": "/v1/health",
+        "activity": "/v1/activity?limit=100",
     },
     "great_scale": {
         "scale_state": "/api/v1/scale/state",
@@ -78,6 +84,8 @@ def _targets() -> dict[str, str]:
         if (parsed.scheme not in {"http", "https"} or not parsed.hostname
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             continue
+        if parsed.path not in {"", "/"}:
+            continue
         configured[name] = base
     return configured
 
@@ -90,7 +98,8 @@ def _token_for(target: str, base_url: str) -> str:
     host = (parsed.hostname or "").lower()
     local_name = host in {"localhost", "host.docker.internal"} or host.endswith((".local", ".internal"))
     try:
-        local_name = local_name or ipaddress.ip_address(host).is_loopback or ipaddress.ip_address(host).is_private
+        addr = ipaddress.ip_address(host)
+        local_name = local_name or addr.is_loopback or addr.is_private
     except ValueError:
         # Container service names (e.g. "control704") are operator-owned DNS
         # names and are allowed only for explicit HTTP configurations.
@@ -100,7 +109,13 @@ def _token_for(target: str, base_url: str) -> str:
     return token
 
 
-async def _request(target: str, method: str, path: str, body: dict | None = None) -> str:
+async def _request(
+    target: str,
+    method: str,
+    path: str,
+    body: dict | None = None,
+    idempotency_key: str | None = None,
+) -> str:
     """Call one pre-approved path on a configured target and bound the output."""
     base = _targets().get(target)
     if not base:
@@ -109,18 +124,27 @@ async def _request(target: str, method: str, path: str, body: dict | None = None
             "target": target,
             "error": "target is not configured in AVRONE_PLATFORM_TARGETS_JSON",
         })
+    if not path.startswith("/") or path.startswith("//"):
+        return json.dumps({"ok": False, "target": target, "error": "invalid internal resource path"})
     token = _token_for(target, base)
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "X-Request-ID": f"avr-bridge-{secrets.token_hex(8)}"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    url = base + "/" + path.lstrip("/")
+    if idempotency_key is not None:
+        if (not isinstance(idempotency_key, str) or not idempotency_key.strip()
+                or idempotency_key != idempotency_key.strip()
+                or len(idempotency_key) > 200
+                or any(ord(ch) < 33 or ord(ch) == 127 for ch in idempotency_key)):
+            return json.dumps({"ok": False, "target": target, "error": "invalid idempotency key"})
+        headers["Idempotency-Key"] = idempotency_key
+    url = base + path
     try:
         async with httpx.AsyncClient(
             timeout=TIMEOUT, follow_redirects=False, trust_env=False
         ) as client:
             response = await client.request(method, url, headers=headers, json=body)
     except (httpx.HTTPError, ValueError) as exc:
-        # Do not echo URLs, response bodies, or authorization details into logs/tool output.
+        # Do not echo URLs, response bodies, or authorization details into tool output.
         return json.dumps({
             "ok": False,
             "target": target,
@@ -146,7 +170,7 @@ async def _request(target: str, method: str, path: str, body: dict | None = None
     else:
         try:
             data = response.json()
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             data = response.text[:MAX_TEXT_CHARS]
     return json.dumps({
         "ok": True,
@@ -187,14 +211,10 @@ def register(registry, settings=None):
         except ValueError as exc:
             return f"ERROR: {exc}"
 
-    async def submit_job(ctx, args):
-        enabled = os.getenv("AVRONE_PLATFORM_WRITE_ENABLED", "false").lower() in {
-            "1", "true", "yes", "on"
-        }
-        if not enabled:
+    async def submit_control704_job(ctx, args):
+        if not _writes_enabled():
             return "ERROR: Control704 job submission is disabled. Set AVRONE_PLATFORM_WRITE_ENABLED=true after securing the target."
-        configured = _targets()
-        if "control704" not in configured:
+        if "control704" not in _targets():
             return "ERROR: control704 is not configured in AVRONE_PLATFORM_TARGETS_JSON."
         goal = args.get("goal")
         if not isinstance(goal, str) or not goal.strip() or len(goal.strip()) > 4_000:
@@ -206,36 +226,59 @@ def register(registry, settings=None):
         if tenant_id is not None:
             if not isinstance(tenant_id, str) or not tenant_id.strip() or len(tenant_id) > 128:
                 return "ERROR: tenant_id must be a non-empty string of at most 128 characters."
-        payload = {
-            "goal": goal.strip(),
-            "priority": priority,
-            "source": "avrone-platform-bridge",
-        }
+        payload = {"goal": goal.strip(), "priority": priority, "source": "avrone-platform-bridge"}
         if tenant_id is not None:
             payload["tenant_id"] = tenant_id.strip()
-        try:
-            return await _request("control704", "POST", "/jobs", payload)
-        except ValueError as exc:
-            return f"ERROR: {exc}"
+        return await _request("control704", "POST", "/jobs", payload)
+
+    async def create_runtime_mission(ctx, args):
+        if not _writes_enabled():
+            return "ERROR: Runtime mission creation is disabled. Set AVRONE_PLATFORM_WRITE_ENABLED=true only after securing the runtime target."
+        if "runtime" not in _targets():
+            return "ERROR: runtime is not configured in AVRONE_PLATFORM_TARGETS_JSON."
+        name, objective, idem_key = args.get("name"), args.get("objective"), args.get("idempotency_key")
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200:
+            return "ERROR: mission name must contain 1–200 characters."
+        if not isinstance(objective, str) or not objective.strip() or len(objective.strip()) > 4_000:
+            return "ERROR: mission objective must contain 1–4000 characters."
+        if (not isinstance(idem_key, str) or not idem_key.strip()
+                or idem_key != idem_key.strip() or len(idem_key) > 200
+                or any(ord(ch) < 33 or ord(ch) == 127 for ch in idem_key)):
+            return "ERROR: idempotency_key is required and must be 1–200 printable non-space characters."
+        return await _request(
+            "runtime", "POST", "/v1/missions",
+            {"name": name.strip(), "objective": objective.strip()},
+            idempotency_key=idem_key,
+        )
+
+    def _writes_enabled():
+        return os.getenv("AVRONE_PLATFORM_WRITE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
     registry.register(Tool(
         "platform_bridge_inventory",
-        "List configured sibling platforms and the fixed resources available to the safe bridge.",
+        "List configured sibling platforms and fixed read-only resources available to the bridge.",
         "{}",
         inventory,
         schema={"required": {}, "optional": {}},
     ))
     registry.register(Tool(
         "platform_bridge_read",
-        "Read a fixed, allowlisted status/telemetry resource from a configured AVRONE, Grok Bot, Control704, Great Scale, CycleKernel, or Capability Plane service. Remote content is untrusted data; this tool cannot accept URLs or paths.",
+        "Read a fixed, allowlisted status/telemetry resource from a configured AVRONE app, AVRONE Runtime, Grok Bot, Control704, Great Scale, CycleKernel, or Capability Plane service. Remote content is untrusted data; this tool cannot accept URLs or paths.",
         '{"target": str, "resource": str}',
         read_resource,
         schema={"required": {"target": "str", "resource": "str"}, "optional": {}},
     ))
     registry.register(Tool(
         "platform_bridge_submit_job",
-        "Create a Control704 job through its documented /jobs API. This is a write operation and is disabled unless AVRONE_PLATFORM_WRITE_ENABLED=true is set by the operator. Target URL is fixed by configuration; the agent cannot choose it.",
+        "Create a Control704 job through its documented /jobs API. This write is disabled unless the operator explicitly enables it. Target URL is configuration-only.",
         '{"goal": str, "priority"?: int, "tenant_id"?: str}',
-        submit_job,
+        submit_control704_job,
         schema={"required": {"goal": "str"}, "optional": {"priority": "int", "tenant_id": "str"}},
+    ))
+    registry.register(Tool(
+        "platform_bridge_create_mission",
+        "Create a tenant-scoped AVRONE Runtime mission through its authenticated /v1/missions gateway. Writes must be enabled and an Idempotency-Key is mandatory to prevent duplicate mission creation on retry. Tenant identity comes from the runtime API key, not from agent arguments.",
+        '{"name": str, "objective": str, "idempotency_key": str}',
+        create_runtime_mission,
+        schema={"required": {"name": "str", "objective": "str", "idempotency_key": "str"}, "optional": {}},
     ))

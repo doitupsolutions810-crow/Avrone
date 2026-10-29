@@ -61,6 +61,15 @@ async def t_osint_domain(ctx: "AgentContext", args: dict[str, Any]) -> str:
             f"\n[Subdomains] {sub_count or ct[:200]}")
 
 
+def _event(line: str) -> dict[str, Any] | None:
+    """One JSONL event object, or None for a blank, corrupt, too-deep or non-object line."""
+    try:
+        ev = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    return ev if isinstance(ev, dict) else None
+
+
 async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
     """Roll up recon/OSINT activity from the Codex run logs: tool counts and top targets."""
     data_dir = Path(ctx.core.settings.data_dir)
@@ -71,20 +80,27 @@ async def t_osint_metrics(ctx: "AgentContext", args: dict[str, Any]) -> str:
     runs = 0
     if log_dir.exists():
         for p in log_dir.glob("*.jsonl"):
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:  # vanished or not a regular file: skip it, never sink the rollup
+                continue
             runs += 1
-            for line in p.read_text().splitlines():
-                try:
-                    ev = json.loads(line)
-                except ValueError:
+            for line in text.splitlines():
+                ev = _event(line)
+                if ev is None:
                     continue
                 k = ev.get("kind", "")
+                if not isinstance(k, str):
+                    continue
+                data = ev.get("data")
+                data = data if isinstance(data, dict) else {}
                 if k == recon.REFUSED_KIND:  # refusals are audited, not probes
-                    refused[(ev.get("data") or {}).get("tool", "?")] += 1
+                    refused[str(data.get("tool", "?"))] += 1
                     continue
                 if k.startswith(("recon.", "osint.")):
                     kinds[k] += 1
-                    h = (ev.get("data") or {}).get("host")
-                    if h:
+                    h = data.get("host")
+                    if h and isinstance(h, str):
                         hosts[h] += 1
     if not kinds and not refused:
         return "no recon/OSINT activity recorded yet"

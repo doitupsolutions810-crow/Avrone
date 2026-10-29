@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import agentcontainer, agentfs
+from . import agentcontainer, agentfs, shellguard
 from .config import Settings
 
 
@@ -81,6 +81,10 @@ class LocalRunner(Runner):
         self.workspace.mkdir(parents=True, exist_ok=True)
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
+        hit = shellguard.check(cmd)
+        if hit:
+            return CommandResult(cmd, 126, "", f"refused by AVRONE_SHELL_GUARD (matched {hit!r}); "
+                                 "run it yourself if intended or use AVRONE_RUNNER=docker")
         agent_cwd = self._agent_cwd(cwd)
         if agent_cwd is None:  # non-agent command: unchanged, runs at the workspace root
             return await self._exec(["bash", "-lc", cmd], cmd, timeout or self.s.command_timeout, cwd=self.workspace)

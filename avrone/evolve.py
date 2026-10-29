@@ -15,7 +15,9 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; 
      iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
      AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
      AVRONE_EVOLVE_MAX_BG (concurrent background loops per process; default 2, hard cap 4),
-     AVRONE_EVOLVE_SKILL_MAX_BYTES (proposed skill size ceiling; default/hard cap 16384).
+     AVRONE_EVOLVE_SKILL_MAX_BYTES (proposed skill size ceiling; default/hard cap 16384),
+     AVRONE_EVOLVE_HISTORY (finished-loop summaries kept in loops/history.jsonl; default 50, can only
+     lower it; hard cap 200). evolve_history() reads it back, across restarts.
 """
 from __future__ import annotations
 
@@ -326,12 +328,82 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
             break
     loop_meta.update(status="cancelled" if stopped == "cancelled" else "done", stopped=stopped, accepted=accepted)
     save()
+    record_history(ctx, loop_meta)
     _cancel_path(ctx, loop_id).unlink(missing_ok=True)
     _emit(ctx, "evolve.loop", loop_id=loop_id, iterations=len(attempts), stopped=stopped,
           accepted=accepted and accepted["pid"], duration_s=loop_meta["duration_s"])
     return {"loop_id": loop_id, "goal": goal, "max_iters": n, "time_budget_s": budget,
             "attempts": attempts, "accepted": accepted, "stopped": stopped,
             "duration_s": loop_meta["duration_s"], "status": loop_meta["status"]}
+
+
+# ---- bounded finished-loop history -----------------------------------------------------------
+# One summary line per finished loop, newest last, trimmed to history_cap() lines. It survives
+# restarts (unlike _BG) and stays bounded however many loops a node runs. Best effort: a failed
+# history write never breaks a loop.
+HISTORY_CAP = 200
+DEFAULT_HISTORY = 50
+HISTORY_GOAL_CHARS = 200
+
+
+def history_cap() -> int:
+    """Entries kept: AVRONE_EVOLVE_HISTORY may only LOWER the default; HISTORY_CAP bounds everything."""
+    env = _env_num("AVRONE_EVOLVE_HISTORY")
+    return int(max(1, min(HISTORY_CAP, DEFAULT_HISTORY, env if env else DEFAULT_HISTORY)))
+
+
+def _history_path(ctx: "AgentContext") -> Path:
+    # .jsonl, so list_loops' "*.json" glob never mistakes it for a loop.
+    return _loops_dir(ctx) / "history.jsonl"
+
+
+def _read_history(path: Path) -> list[dict[str, Any]]:
+    out = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return out
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # a torn or corrupt line is skipped, not fatal
+        if isinstance(row, dict) and row.get("loop_id"):
+            out.append(row)
+    return out
+
+
+def _history_row(m: dict[str, Any]) -> dict[str, Any]:
+    its = m.get("iterations") or []
+    acc = m.get("accepted") if isinstance(m.get("accepted"), dict) else None
+    return {"loop_id": str(m.get("loop_id")), "goal": str(m.get("goal") or "")[:HISTORY_GOAL_CHARS],
+            "status": m.get("status"), "stopped": m.get("stopped"), "mode": m.get("mode"),
+            "iterations": len(its), "accepted_count": sum(1 for i in its if i.get("outcome") == "accepted"),
+            "accepted_pid": acc and acc.get("pid"), "duration_s": m.get("duration_s"),
+            "max_iters": m.get("max_iters"), "time_budget_s": m.get("time_budget_s"), "ended": time.time()}
+
+
+def record_history(ctx: "AgentContext", loop_meta: dict[str, Any]) -> None:
+    """Append one finished loop's summary (replacing any earlier row for the same loop_id) and trim."""
+    try:
+        path = _history_path(ctx)
+        row = _history_row(loop_meta)
+        rows = [r for r in _read_history(path) if r.get("loop_id") != row["loop_id"]]
+        rows = (rows + [row])[-history_cap():]
+        tmp = path.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - history is best effort
+        pass
+
+
+def evolve_history(ctx: "AgentContext", limit: int | None = None) -> list[dict[str, Any]]:
+    """Finished-loop summaries, oldest first (at most `limit`, newest kept)."""
+    rows = _read_history(_history_path(ctx))[-history_cap():]
+    if limit is not None:
+        n = int(_clamp(limit, history_cap(), history_cap()))
+        rows = rows[-n:]
+    return rows
 
 
 # ---- background / resumable loops ------------------------------------------------------------
@@ -400,6 +472,7 @@ def _finish_abnormally(ctx: "AgentContext", loop_id: str, status: str, stopped: 
     m.update(status=status, stopped=stopped)
     p.write_text(json.dumps(m))
     _cancel_path(ctx, loop_id).unlink(missing_ok=True)
+    record_history(ctx, m)
 
 
 async def evolve_wait(loop_id: str, timeout: float | None = None) -> dict[str, Any] | None:

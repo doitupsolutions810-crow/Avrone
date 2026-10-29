@@ -69,3 +69,58 @@ async def test_grokbot_ask_caps_prompt_length(monkeypatch):
     monkeypatch.setenv("AVRONE_GROKBOT_URL", "http://grok-bot:3000")
     result = await tools_extra.t_grokbot_ask(_ctx(), {"prompt": "x" * 8001})
     assert "8000-character limit" in result
+
+
+@pytest.mark.asyncio
+async def test_grokbot_ask_caps_streamed_response_body(monkeypatch):
+    monkeypatch.setenv("AVRONE_GROKBOT_URL", "http://grok-bot:3000")
+    body = b'{"answer":"' + (b"x" * (70 * 1024)) + b'"}'
+    monkeypatch.setattr(
+        tools_extra,
+        "HTTP_TRANSPORT",
+        httpx.MockTransport(lambda request: httpx.Response(200, content=body)),
+    )
+    result = await tools_extra.t_grokbot_ask(_ctx(), {"prompt": "Bound the response."})
+    assert "64 KiB limit" in result
+    assert len(result) < 200
+
+
+@pytest.mark.asyncio
+async def test_grokbot_ask_does_not_echo_remote_error_body(monkeypatch):
+    monkeypatch.setenv("AVRONE_GROKBOT_URL", "http://grok-bot:3000")
+    monkeypatch.setattr(
+        tools_extra,
+        "HTTP_TRANSPORT",
+        httpx.MockTransport(
+            lambda request: httpx.Response(503, content="internal-route-secret-123")
+        ),
+    )
+    result = await tools_extra.t_grokbot_ask(_ctx(), {"prompt": "Check health."})
+    assert "HTTP 503" in result
+    assert "internal-route-secret-123" not in result
+
+
+@pytest.mark.asyncio
+async def test_grokbot_ask_does_not_echo_transport_exception_details(monkeypatch):
+    monkeypatch.setenv("AVRONE_GROKBOT_URL", "http://grok-bot:3000")
+
+    def handler(request):
+        raise httpx.ConnectError("secret.internal/token=private-value", request=request)
+
+    monkeypatch.setattr(tools_extra, "HTTP_TRANSPORT", httpx.MockTransport(handler))
+    result = await tools_extra.t_grokbot_ask(_ctx(), {"prompt": "Check health."})
+    assert "ConnectError" in result
+    assert "secret.internal" not in result
+    assert "private-value" not in result
+
+
+@pytest.mark.asyncio
+async def test_grokbot_ask_rejects_invalid_json_success_response(monkeypatch):
+    monkeypatch.setenv("AVRONE_GROKBOT_URL", "http://grok-bot:3000")
+    monkeypatch.setattr(
+        tools_extra,
+        "HTTP_TRANSPORT",
+        httpx.MockTransport(lambda request: httpx.Response(200, content=b"not-json")),
+    )
+    result = await tools_extra.t_grokbot_ask(_ctx(), {"prompt": "Check health."})
+    assert "invalid JSON" in result

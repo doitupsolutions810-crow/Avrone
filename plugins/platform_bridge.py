@@ -282,7 +282,7 @@ def register(registry, settings=None):
             return "ERROR: mission_id must be a safe 1–128 character identifier."
         return await _request("runtime", "GET", f"/v1/missions/{mission_id}")
 
-    async def launch_runtime_swarm(ctx, args):
+    async def create_runtime_swarm(ctx, args):
         if not _writes_enabled():
             return "ERROR: Runtime swarm launch is disabled. Set AVRONE_PLATFORM_WRITE_ENABLED=true only after securing the runtime target."
         if "runtime" not in _targets():
@@ -423,9 +423,9 @@ def register(registry, settings=None):
         schema={"required": {"mission_id": "str"}, "optional": {}},
     ))
     registry.register(Tool(
-        "platform_bridge_launch_runtime_swarm",
-        "Create an AVRONE Runtime mission, root task, and swarm in sequence using tenant-scoped authorization. This mutating workflow is disabled by default, requires the runtime bearer key and an idempotency_key, and reuses derived idempotency keys per phase so the same payload can be safely retried. Runtime worker admission and capability authorization remain authoritative.",
+        "platform_bridge_create_runtime_swarm",
+        "Create AVRONE Runtime mission, task, and swarm records in sequence using tenant-scoped authorization. This does not start the mission or attach agent members; those lifecycle APIs are not exposed by the current gateway contract. Writes are disabled by default, require the runtime bearer key and an idempotency_key, and use derived idempotency keys per phase. Runtime worker admission and capability authorization remain authoritative.",
         '{"mission_name": str, "objective": str, "swarm_name": str, "idempotency_key": str, "project_id"?: str, "capabilities"?: list}',
-        launch_runtime_swarm,
+        create_runtime_swarm,
         schema={"required": {"mission_name": "str", "objective": "str", "swarm_name": "str", "idempotency_key": "str"}, "optional": {"project_id": "str", "capabilities": "list"}},
     ))

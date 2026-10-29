@@ -252,7 +252,7 @@ def test_osint_metrics_refusals_only(tmp_path):
 
 def test_osint_domain_survives_codex_failure_and_empty_ct(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.21 recon default-deny
 
     async def sec(c, a):
         return "ok"
@@ -275,7 +275,7 @@ def test_osint_domain_survives_codex_failure_and_empty_ct(monkeypatch):
 
 def test_osint_domain_ct_without_count_is_clipped(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.21 recon default-deny
 
     async def sec(c, a):
         return "ok"

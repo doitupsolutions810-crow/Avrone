@@ -81,6 +81,17 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.31: Squad round 17: bomb-proof agent packs, validated peer urls. 2838 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | **a 290 KB agent pack drove the importer to ~1.2 GB RAM**: quota checks used header-declared sizes, but tarfile buffers PAX/GNU extended headers first; a 50 MB bundle (under the cap) would ask for hundreds of GB | decompressed stream itself is capped (`_CappedStream`, tar read in stream mode); PackError "expands past the quota" | `test_robust_v031_packbomb.py` (tracemalloc peak < 8 MB); live RSS 1160 MB -> 87 MB |
+| robust | **a token holder could register `http://169.254.169.254` as its url** and this node would POST to it and echo the reply into dispatch errors; credentials/CRLF urls stored too | `check_node_url`: http(s), host, no userinfo/query/fragment/control chars/port 0, never metadata/link-local/multicast/unspecified (incl. v4-mapped); LAN + loopback still fine; every outgoing `_post` re-checks saved urls | 33 cases; live register: v0.30 metadata url **200**, v0.31 **400**, LAN url 200 |
+| tools | (none) | `pack_list`: verifies every pack in memory, OK or the exact import refusal, symlinks flagged | `test_tool_packpeer.py` |
+| tools | old fleet.json may hold bad peer urls | `peer_audit`: each peer vs current url rules + status, never prints urls | same |
+| skills | (none) | `agent-pack-hygiene`, `peer-onboarding` | grounding + claim tests |
+| coverage | (none) | `cov17_a`, `cov17_b` | 18 statements missed of 11,086 |
+
 ## v0.30: Squad round 16: replay-safe restarts, leak-free event stream. 2780 tests, coverage 99%
 
 | Lane | Finding (heat) | Mapping | Verification |

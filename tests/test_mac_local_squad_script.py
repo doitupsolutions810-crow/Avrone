@@ -46,3 +46,23 @@ def test_mac_local_squad_enforces_two_accepted_proposals_per_lane():
     assert 'AVRONE_DATA_DIR="$lane_data"' in script
     assert 'exit 1' in script
     assert "python -m avrone.cli evolve list" not in script
+
+
+
+def test_mac_local_squad_rejects_duplicate_lane_names():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    assert 'seen_lanes=" "' in script
+    assert 'Duplicate lane: $selected_lane' in script
+
+
+def test_mac_local_squad_counts_only_current_run_proposals():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    assert 'RUN_STARTED_EPOCH="$(python -c' in script
+    assert 'r["ts"] >= started' in script
+    assert 'accepted_count -lt 2' in script
+
+
+def test_mac_local_squad_bounds_brew_install_stages():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    assert "timeout 900 brew install coreutils" in script
+    assert "timeout 1800 brew install ollama" in script

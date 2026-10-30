@@ -30,11 +30,17 @@ esac
 }
 [ -n "$MODEL" ] || { echo "MODEL must not be empty"; exit 1; }
 lane_count=0
+seen_lanes=" "
 for selected_lane in $LANES; do
   case "$selected_lane" in
-    deepcov|newmods|tools|robust) lane_count=$((lane_count + 1)) ;;
+    deepcov|newmods|tools|robust) ;;
     *) echo "Unknown lane: $selected_lane"; exit 1 ;;
   esac
+  case "$seen_lanes" in
+    *" $selected_lane "*) echo "Duplicate lane: $selected_lane"; exit 1 ;;
+  esac
+  seen_lanes="${seen_lanes}${selected_lane} "
+  lane_count=$((lane_count + 1))
 done
 [ "$lane_count" -gt 0 ] || { echo "Select at least one lane in LANES"; exit 1; }
 OUT="$DRIVE/avrone-runs/round5-$(date +%Y%m%d-%H%M%S)-$$"
@@ -46,7 +52,7 @@ log(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$OUT/squad.log"; }
 # Use a real timeout command for every long-running install, baseline and agent lane.
 if ! command -v timeout >/dev/null 2>&1; then
   command -v brew >/dev/null || { log "timeout is unavailable and Homebrew is missing"; exit 1; }
-  brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded execution"; exit 1; }
+  timeout 900 brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded execution"; exit 1; }
   command -v gtimeout >/dev/null 2>&1 || { log "gtimeout was not installed"; exit 1; }
   timeout() { command gtimeout "$@"; }
 fi
@@ -55,7 +61,7 @@ fi
 if ! command -v ollama >/dev/null; then
   command -v brew >/dev/null || { echo "Install Homebrew first: https://brew.sh"; exit 1; }
   log "installing ollama"
-  brew install ollama || { log "Ollama installation failed"; exit 1; }
+  timeout 1800 brew install ollama || { log "Ollama installation failed"; exit 1; }
 fi
 launchctl setenv OLLAMA_MODELS "$OLLAMA_MODELS" 2>/dev/null || true
 if ! curl -s -m 3 http://127.0.0.1:11434/api/version >/dev/null; then
@@ -106,6 +112,13 @@ if [ "${SKIP_GATE:-0}" != "1" ]; then
   fi
   log "baseline: $(tail -1 "$OUT/baseline.txt")"
 fi
+
+# Snapshot the beginning of this squad so persisted proposals from earlier
+# runs cannot satisfy this run's per-lane acceptance threshold.
+RUN_STARTED_EPOCH="$(python -c 'import time; print(repr(time.time()))')" || {
+  log "could not establish a squad start timestamp"
+  exit 1
+}
 
 # 5. Lanes
 export AVRONE_PROVIDER=ollama AVRONE_LLM_BASE_URL=http://127.0.0.1:11434/v1
@@ -162,7 +175,7 @@ for selected_lane in $LANES; do
   log "checking accepted proposals for lane $selected_lane"
   if AVRONE_DATA_DIR="$lane_data" python -m avrone.cli evolve --json "$proposal_report" > "$proposal_tmp" 2> "$OUT/$selected_lane.evolve.err"; then
     if mv "$proposal_tmp" "$proposal_report"; then
-      accepted_count=$(python -c 'import json,sys; rows=json.load(open(sys.argv[1])); print(len(rows) if isinstance(rows,list) else -1)' "$proposal_report" 2>/dev/null)
+      accepted_count=$(python -c 'import json,sys; rows=json.load(open(sys.argv[1])); started=float(sys.argv[2]); fresh=[r for r in rows if isinstance(r.get("ts"), (int,float)) and not isinstance(r.get("ts"), bool) and r["ts"] >= started]; print(len(fresh))' "$proposal_report" "$RUN_STARTED_EPOCH" 2>/dev/null)
       case "$accepted_count" in
         ''|*[!0-9]*) log "lane $selected_lane proposal report is invalid"; proposal_status=1 ;;
         *)

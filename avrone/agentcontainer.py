@@ -26,6 +26,7 @@ throwaway container per command with AVRONE_AGENT_DOCKER_ISOLATE=1).
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import socket
@@ -83,13 +84,25 @@ def container_name(node: str, agent_id: str) -> str:
     return f"{NAME_PREFIX}-{n}-{agentfs.sanitize_agent_id(agent_id)}"
 
 
+def _bounded_number(value: Any, default: float, lo: float, hi: float) -> float:
+    """Clamp explicit as well as environment-provided container resource limits."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError, OverflowError):
+        n = float(default)
+    if not math.isfinite(n) or n <= 0:
+        n = float(default)
+    return max(float(lo), min(float(hi), n))
+
+
 def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | None = None) -> list[str]:
-    """Flags every agent home container runs with (no capabilities, no privilege escalation,
-    bounded memory/cpu/pids, no network unless allowed)."""
+    """Build resource-bounded flags; explicit overrides are clamped as well."""
+    memory = mem_mb() if mem is None else int(_bounded_number(mem, DEFAULT_MEM_MB, MIN_MEM_MB, MAX_MEM_MB))
+    cores = cpus() if cpu is None else round(_bounded_number(cpu, DEFAULT_CPUS, MIN_CPUS, MAX_CPUS), 2)
     args = ["--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--pids-limit", str(PIDS_LIMIT),
-            "--memory", f"{mem_mb() if mem is None else int(mem)}m",
-            "--cpus", str(cpus() if cpu is None else cpu)]
+            "--memory", f"{memory}m",
+            "--cpus", str(cores)]
     if not allow_network:
         args += ["--network", "none"]
     return args

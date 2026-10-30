@@ -2,6 +2,8 @@
 local-runner edges. No real network: outbound HTTP is faked with httpx.MockTransport."""
 import asyncio
 import json
+import os
+import shlex
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from avrone.fleet import sign
+from avrone.sovereign import LocalRunner
 
 ADMIN = {"x-admin-token": "test-token"}
 
@@ -448,3 +451,34 @@ def test_establish_health_check_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(sovereign.LocalRunner, "run", failing)
     with pytest.raises(RuntimeError, match="health check failed"):
         run(sovereign.establish(rsettings(tmp_path)))
+
+
+
+# ---------------------------------------------------------------- subprocess cleanup
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
+def test_local_runner_timeout_kills_descendant_processes(tmp_path):
+    marker = tmp_path / "timeout-child-survived"
+    runner = LocalRunner(SimpleNamespace(workspace=tmp_path, command_timeout=120))
+    cmd = f"(sleep 0.35; touch {shlex.quote(str(marker))}) &"
+    result = asyncio.run(runner.run(cmd, timeout=0.05))
+    assert result.timed_out
+    time.sleep(0.45)
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
+def test_local_runner_cancellation_kills_descendant_processes(tmp_path):
+    marker = tmp_path / "cancel-child-survived"
+    runner = LocalRunner(SimpleNamespace(workspace=tmp_path, command_timeout=120))
+    cmd = f"(sleep 0.35; touch {shlex.quote(str(marker))}) &"
+
+    async def exercise():
+        task = asyncio.create_task(runner.run(cmd, timeout=5))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.45)
+
+    asyncio.run(exercise())
+    assert not marker.exists()

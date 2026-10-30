@@ -84,6 +84,26 @@ def test_sanitize_health_drops_junk():
     assert h == {"headroom": 1.0, "temp_c": 150.0, "active_agents": 0}
 
 
+def test_sanitize_health_clamps_arbitrary_size_integer_fields():
+    huge = 10 ** 10000
+    health = sanitize_health({
+        "load": huge,
+        "mem_pct": -huge,
+        "disk_free_pct": huge,
+        "temp_c": -huge,
+        "headroom": huge,
+        "active_agents": huge,
+    })
+    assert health == {
+        "load": 1000.0,
+        "mem_pct": 0.0,
+        "disk_free_pct": 100.0,
+        "temp_c": -40.0,
+        "headroom": 1.0,
+        "active_agents": 10_000,
+    }
+
+
 def test_register_and_heartbeat_carry_health(fm, core, monkeypatch):
     fm.register({"node_id": "kid", "url": "http://kid.test", "health": {**COOL, "junk": "x"}})
     assert fm.nodes["kid"]["health"] == {k: v for k, v in COOL.items()}

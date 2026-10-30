@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = ["fastapi>=0.162", "uvicorn[standard]>=0.54", "httpx>=0.28.1"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio", "pillow>=10"]
+dev = ["pytest>=8", "pytest-asyncio", "pytest-cov>=5", "pillow>=10"]
 vision = ["pillow>=10", "zxing-cpp>=2.3"]
 
 [project.scripts]

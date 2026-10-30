@@ -9,6 +9,8 @@ import pytest
 from avrone.claude_agent_node import (
     ClaudeAgentNodeError,
     ClaudeVMLease,
+    _lease_from_guest_environment,
+    _parse_guest_request,
     execute_claude_agent_node,
     validate_lease,
 )
@@ -143,3 +145,40 @@ async def test_worker_rejects_unbounded_budget(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_CLAUDE_MAX_BUDGET_USD", "100")
     with pytest.raises(ClaudeAgentNodeError, match="budget"):
         await execute_claude_agent_node(lease(tmp_path), **task_kwargs())
+
+
+def test_guest_request_parser_rejects_extra_fields_and_oversize():
+    import json
+    valid = {
+        "task_id": "task-1",
+        "correlation_id": "corr-1",
+        "objective": "Inspect source.",
+        "source_repository": "owner/repo",
+        "source_commit_sha": "a" * 40,
+    }
+    assert _parse_guest_request(json.dumps(valid).encode()) == valid
+    with pytest.raises(ClaudeAgentNodeError, match="shape"):
+        _parse_guest_request(json.dumps({**valid, "api_key": "never"}).encode())
+    with pytest.raises(ClaudeAgentNodeError, match="24 KiB"):
+        _parse_guest_request(b"x" * (24 * 1024 + 1))
+
+
+def test_guest_lease_environment_requires_explicit_security_flags(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_VM_LEASE_ID", "lease-1")
+    monkeypatch.setenv("AVRONE_VM_WORKER_ID", "worker-1")
+    monkeypatch.setenv("AVRONE_VM_WORKSPACE", str(tmp_path))
+    for name in (
+        "AVRONE_VM_DISPOSABLE",
+        "AVRONE_VM_NETWORK_EGRESS_DENIED",
+        "AVRONE_VM_DOCKER_SOCKET_MOUNTED",
+        "AVRONE_VM_GITHUB_CREDENTIALS_MOUNTED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ClaudeAgentNodeError, match="explicitly set"):
+        _lease_from_guest_environment()
+
+    monkeypatch.setenv("AVRONE_VM_DISPOSABLE", "1")
+    monkeypatch.setenv("AVRONE_VM_NETWORK_EGRESS_DENIED", "1")
+    monkeypatch.setenv("AVRONE_VM_DOCKER_SOCKET_MOUNTED", "0")
+    monkeypatch.setenv("AVRONE_VM_GITHUB_CREDENTIALS_MOUNTED", "0")
+    assert validate_lease(_lease_from_guest_environment()) == tmp_path.resolve()

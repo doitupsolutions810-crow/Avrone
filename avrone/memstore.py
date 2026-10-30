@@ -281,6 +281,17 @@ class MemoryStore:
             self._commit(records, spaces, pending, evicted)
         return stats
 
+    def delete(self, ns: str, key: str) -> bool:
+        """Remove one key from `ns` (atomic rewrite). False when it was not there."""
+        with self._locked():
+            spaces = self._fold(self._records())
+            space = spaces.get(ns, {})
+            if key not in space:
+                return False
+            del space[key]
+            self._rewrite(spaces)
+        return True
+
     def trim(self, ns: str, keep: int) -> int:
         """Drop the oldest keys of `ns` until at most `keep` remain (atomic rewrite).
         Returns how many keys were evicted."""

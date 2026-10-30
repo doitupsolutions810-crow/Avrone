@@ -1228,3 +1228,5 @@ def register_extra_tools(registry) -> None:
     register_researchnote_tools(registry)
     from .tools_lessonrecall import register_lessonrecall_tools
     register_lessonrecall_tools(registry)
+    from .tools_lessonforget import register_lessonforget_tools
+    register_lessonforget_tools(registry)

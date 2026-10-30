@@ -285,6 +285,32 @@ def parse_action(text: str) -> dict[str, Any] | None:
     return None
 
 
+# Small local models often flatten args onto the action ({"tool":"shell","cmd":...}) or use a
+# near-synonym key ("command" for "cmd"). Repair only when the declared schema says so.
+ARG_ALIASES = {"command": "cmd", "cmdline": "cmd", "script": "cmd", "file": "path", "file_path": "path",
+               "filename": "path", "filepath": "path", "text": "content", "data": "content",
+               "body": "content", "code": "content"}
+
+
+def coerce_args(registry: Any, tool: str, action: dict[str, Any], args: Any) -> Any:
+    """Return args repaired for flattened/aliased keys; unchanged when nothing applies."""
+    t = registry.get(tool) if registry is not None else None
+    schema = getattr(t, "schema", None) if t is not None else None
+    if not isinstance(args, dict) or not isinstance(schema, dict):
+        return args
+    known = set(schema.get("required", {})) | set(schema.get("optional", {}))
+    if not known:
+        return args
+    out = dict(args)
+    if not out:  # flattened: pull known keys from the action itself
+        out = {k: v for k, v in action.items() if k not in ("tool", "args")}
+    for k in list(out):
+        a = ARG_ALIASES.get(k)
+        if k not in known and a in known and a not in out:
+            out[a] = out.pop(k)
+    return out if out != {} else args
+
+
 DEFAULT_MAX_CALLS_PER_TURN = 4
 HARD_MAX_CALLS_PER_TURN = 8
 # After this many consecutive ARG ERRORs from one agent, stop blocking its calls on the
@@ -542,6 +568,7 @@ class TrinityCore:
             else:
                 tool, args = str(c.get("tool")), c.get("args")
                 args = {} if args is None else args
+                args = coerce_args(self.tools, tool, c, args)
                 problem = self.tools.check(tool, args)
             if problem and problem[0] == "bad_args" and budget["spent"] and isinstance(c, dict):
                 problem = None  # budget spent: stop nudging, let the tool handle its args

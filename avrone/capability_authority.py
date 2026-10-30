@@ -85,6 +85,7 @@ def _issue_sync(envelope: Mapping[str, Any], base_url: str, timeout: float) -> d
 
     expected_issuer = os.environ.get("AVRONE_PLANE_ISSUER", "spiffe://prod/broker")
     expected_domain = os.environ.get("AVRONE_PLANE_TRUST_DOMAIN", "prod")
+    expected_audience = os.environ.get("AVRONE_PLANE_AUDIENCE", "")
     rights = capability.get("rights")
     expires = capability.get("expires_at")
     if (

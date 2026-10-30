@@ -81,6 +81,28 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.27: Squad round 13 — agent and run routes are local-only by default — 2676 tests, coverage 99%
+
+**Breaking (safe direction):** `POST /api/chat`, `/api/runs*`, `/api/telemetry`, `/api/map`, `/api/evolve`,
+`/api/osint/metrics` and `/ws/events` now answer only loopback callers or callers with `X-Admin-Token`
+(the events socket also takes `?token=`). `AVRONE_PUBLIC_ACCESS`:
+
+| value | who gets in |
+|---|---|
+| `loopback` (default; any unknown value) | 127.0.0.1 / ::1, or anyone with the admin token |
+| `admin` | the admin token only, even from loopback |
+| `all` | anyone who reaches the port (pre-v0.27). Compose uses this because it publishes on 127.0.0.1 and every in-container caller comes from the bridge network; set `admin` when `AVRONE_PUBLISH_ADDR` is not 127.0.0.1 |
+
+Live probe (server bound 0.0.0.0): `/api/runs` loopback 200, remote 403, remote+token 200; remote `POST /api/chat` 403; `/api/status` stays 200.
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | anyone reaching the port could start agents (shell) and stream every run | loopback/admin guard on 9 routes; admin token compared in constant time | `test_robust_v027_access.py` |
+| robust | doctor warned on every exposed bind; UI couldn't reach guarded routes remotely | doctor warns only for `all` on an exposed bind (info otherwise); UI sends the token; compose documents its default | `test_doctor.py` |
+| tools | api_surface had no notion of guarded routes | `[local]` class + policy; new `exposure_check` (bind, policy, token strength never values, remote-open routes; LOCAL/GUARDED/AT RISK) | `test_tool_exposure.py` |
+| skills | — | `exposure-hardening`, `deploy-readiness` (go/no-go for VPS/Fly/Railway) | AT RISK → GUARDED test |
+| coverage | — | `cov13_a` (evolve), `cov13_b` (policy, bridge, checkpoint) | 37 statements missed of 10,521 |
+
 ## v0.26: Squad round 12 — HTTP surface fuzz, no orphaned children, host view tools — 2641 tests, coverage 99%
 
 Great Scale form (heat → mapping → verification; Ψ = CONE).

@@ -81,6 +81,21 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.25: Squad round 11 — whole-registry fuzz, corrupt state can't stop a node, schemas everywhere — 2593 tests, coverage 99%
+
+Great Scale form (heat → mapping → verification; Ψ = CONE).
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | Fuzzing all 77 tools with 8 junk arg shapes leaked **141** internal `AttributeError`/`KeyError`s to the model (list/str/None args, missing `path`, `task_board` op=add with no title) | `ToolRegistry.call` refuses non-object args and coerces non-str returns; kit tool schemas; task_board validates ops | `test_robust_v025_args.py`: 141 → 0 |
+| robust | A torn/hand-edited `fleet.json` made `FleetManager()` raise → **node could not boot**; task_board/evolve files likewise | corrupt file moved aside as `fleet.json.corrupt-<ts>`, junk fields dropped; task_board + `_finish_abnormally` atomic, `list_accepted` tolerant | `test_robust_v025_state.py` 8/10 fail → 0 |
+| tools | No way to see durable-state damage | `state_health` (per-area unreadable/torn/set-aside counts, paths only, never contents) | 7 tests |
+| tools | 48 builtins had no arg schema (no pre-call ARG ERROR) | `infer_schema` from args_doc (required scalars only; optionals stay lenient) + `registry_audit` (by source, acting vs read-only, schema-less list) | 48 → 1 (great_scale, alternative shapes) |
+| skills | — | `state-recovery`, `toolset-hardening` (registry_audit → failing test → gated evolve proposal) | grounding + end-to-end recovery test |
+| coverage | — | `test_cov11_a.py`, `test_cov11_b.py` (+ `_resume_start` non-object loop file fix) | 66 statements missed of 10,311 |
+
+What an agent sees on a fresh node: 79 tools (31 acting, 48 read-only), 1 without a schema, state HEALTHY.
+
 ## v0.24: Squad round 10 — evolve traversal closed, local models reachable behind proxies, lesson pruning — 2536 tests, coverage 99%
 
 Great Scale form (heat → mapping → verification; Ψ = CONE: every residual closed).

@@ -81,6 +81,17 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.29: Squad round 15: load caps, run-log retention. 2750 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | **`/api/chat` accepted unlimited background runs** (each holds a task, run state and a log) and messages of any size went into every agent prompt | 429 past `AVRONE_MAX_BACKGROUND_RUNS` (default 32, hard 1024) in flight; 413 past `AVRONE_MAX_MESSAGE_CHARS` (default 200k, hard 5M), also on `first_answer` | `test_robust_v029_limits.py`; live server with cap 2: burst of 4 got `200, 200, 429, 429`; 1,001 chars got 413 |
+| robust | one MCP batch of N `avrone_squad` calls started N squads at once | `AVRONE_MCP_MAX_INFLIGHT` (default 4, hard 64), then an `isError` busy result; counter released on failure; task-size cap applies | `test_robust_v029_mcp_limits.py` (peak concurrency = cap) |
+| tools | no single place showing which cap refused you | `limits_status`: every cap, value, env/default, and live usage (model calls in use, background runs, agents working, agents per run) | `test_tool_limits.py` |
+| tools | run logs are append-only and never rotated | `run_logs`: usage report; `prune` deletes logs older than N days, always keeping the newest `keep` (min 10) and active runs (acting) | prune test keeps current + active runs |
+| skills | (none) | `load-limits` (429/413/busy to its cap; size `AVRONE_MAX_PARALLEL` for CPU vs GPU), `log-retention` (measure, `secret_scan`, prune, verify) | grounding + defaults-match-code tests |
+| coverage | (none) | `cov15_a` (run_logs stat error, evolve symlink loop, privileged allow-list), `cov15_b` (agent out-of-turns, Lead retry on thin merge) | 26 statements missed of 10,841 |
+
 ## v0.28: Squad round 14 — MCP JSON-RPC hardening, secrets out of run logs — 2712 tests, coverage 99%
 
 | Lane | Finding (heat) | Mapping | Verification |

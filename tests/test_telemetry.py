@@ -37,3 +37,71 @@ def test_cli_map(tmp_path):
     assert "flowchart LR" in out and "Trinity Core" in out
     out = subprocess.run([sys.executable, "-m", "avrone.cli", "telemetry"], env=env, check=True, capture_output=True, text=True).stdout
     assert '"completed": 1' in out
+
+
+
+def test_telemetry_skips_oversized_line_and_keeps_later_valid_event(tmp_path, monkeypatch):
+    from avrone import telemetry as telemetry_module
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_LINE_BYTES", 128)
+    monkeypatch.setattr(telemetry_module, "_TELEMETRY_READ_CHUNK_BYTES", 32)
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_FILE_BYTES", 4096)
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_TOTAL_BYTES", 4096)
+    valid = {"kind": "run.start", "agent": "worker", "run_id": "after-large",
+             "data": {"mode": "test"}, "ts": 10}
+    (log_dir / "events.jsonl").write_bytes(
+        (b"x" * 1000) + b"\n" + __import__("json").dumps(valid).encode() + b"\n"
+    )
+
+    events = list(telemetry_module._iter_events(log_dir, since=0))
+
+    assert events == [valid]
+
+
+def test_telemetry_tail_discards_partial_prefix_and_keeps_newest_record(tmp_path, monkeypatch):
+    from avrone import telemetry as telemetry_module
+    import json
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_FILE_BYTES", 256)
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_TOTAL_BYTES", 256)
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_LINE_BYTES", 128)
+    monkeypatch.setattr(telemetry_module, "_TELEMETRY_READ_CHUNK_BYTES", 32)
+    valid = {"kind": "run.start", "agent": "worker", "run_id": "tail",
+             "data": {"mode": "tail"}, "ts": 11}
+    (log_dir / "large.jsonl").write_bytes(
+        (b"old-prefix-" * 100) + b"\n" + json.dumps(valid).encode() + b"\n"
+    )
+
+    events = list(telemetry_module._iter_events(log_dir, since=0))
+
+    assert events == [valid]
+
+
+def test_newer_symlink_cannot_displace_real_log_from_file_cap(tmp_path, monkeypatch):
+    from avrone import telemetry as telemetry_module
+    import json
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    real_event = {"kind": "run.start", "agent": "worker", "run_id": "real",
+                  "data": {"mode": "real"}, "ts": 12}
+    linked_event = {"kind": "run.start", "agent": "worker", "run_id": "linked",
+                    "data": {"mode": "linked"}, "ts": 13}
+    real_log = log_dir / "real.jsonl"
+    target = tmp_path / "outside.jsonl"
+    real_log.write_text(json.dumps(real_event) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(linked_event) + "\n", encoding="utf-8")
+    link = log_dir / "newest.jsonl"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_FILES", 1)
+
+    events = list(telemetry_module._iter_events(log_dir, since=0))
+
+    assert events == [real_event]

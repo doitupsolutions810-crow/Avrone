@@ -335,3 +335,44 @@ def test_telemetry_ignores_symlinked_event_files(tmp_path):
             "run_id": "inside", "data": {"tool": "shell"}}
     (log_dir / "good.jsonl").write_text(json.dumps(good) + "\n", encoding="utf-8")
     assert list(telemetry._iter_events(log_dir, now - 5)) == [good]
+
+
+
+def test_telemetry_skips_deeply_nested_json_and_keeps_following_events(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    deeply_nested = (
+        '{"ts":' + str(now) + ',"kind":"tool.call","agent":"A","run_id":"nested","data":{"x":'
+        + "[" * 1200 + "0" + "]" * 1200 + "}}"
+    )
+    valid = {"ts": now, "kind": "tool.call", "agent": "A",
+             "run_id": "valid-after-nesting", "data": {"tool": "shell"}}
+    (log_dir / "events.jsonl").write_text(
+        deeply_nested + "\n" + json.dumps(valid) + "\n", encoding="utf-8"
+    )
+    assert list(telemetry._iter_events(log_dir, now - 5)) == [valid]
+
+
+def test_telemetry_skips_overlarge_integer_run_id_and_keeps_following_events(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    overlarge_id = '{"ts":' + str(now) + ',"kind":"run.start","agent":"A","run_id":' + ("9" * 5000) + ',"data":{"mode":"bad"}}'
+    valid = {"ts": now, "kind": "run.start", "agent": "A",
+             "run_id": "valid-after-large-id", "data": {"mode": "chat"}}
+    (log_dir / "events.jsonl").write_text(
+        overlarge_id + "\n" + json.dumps(valid) + "\n", encoding="utf-8"
+    )
+    assert list(telemetry._iter_events(log_dir, now - 5)) == [valid]
+
+
+def test_telemetry_rejects_unreasonably_large_integer_run_id(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    too_large = 1 << 100
+    valid = {"ts": now, "kind": "run.start", "agent": "A",
+             "run_id": too_large, "data": {"mode": "chat"}}
+    (log_dir / "events.jsonl").write_text(json.dumps(valid) + "\n", encoding="utf-8")
+    assert list(telemetry._iter_events(log_dir, now - 5)) == []

@@ -115,7 +115,9 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
 
                     try:
                         event = json.loads(raw.decode("utf-8"))
-                    except (json.JSONDecodeError, UnicodeError):
+                    except (ValueError, UnicodeError, RecursionError):
+                        # Deep nesting and oversized integer tokens are malformed for
+                        # telemetry purposes too; skip only this record.
                         continue
                     if not isinstance(event, dict):
                         continue
@@ -134,6 +136,8 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
                     ):
                         continue
                     if isinstance(run_id, float) and not math.isfinite(run_id):
+                        continue
+                    if isinstance(run_id, int) and run_id.bit_length() > 63:
                         continue
                     data = event.get("data", {})
                     if not isinstance(data, dict):

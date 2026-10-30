@@ -1,8 +1,8 @@
 {
-  "branch": "thermo-descent-v2",
-  "proposals": ["A-E", "F", "G", "H"],
-  "invariants": ["efail <= idle_fraction", "gen0 > drain", "threshold = d_star + noise", "kg_floor 0.5", "es in [0.5, 1.0]"],
-  "primary_readouts": ["es", "net_flow", "regime_fractions"],
-  "cosmetic": ["debt_oscillation"],
+  "branch": "es-descent",
+  "prior": "thermo-descent-v2 (aa67410e)",
+  "finding": "es is endogenous - fixed point of its own map; 0.5 is the invariant boundary across three layers",
+  "invariants": ["es in [0.5, 1.0]", "0.5 = idle_fraction_budget = efail_cap = kg_norm_center = ES_floor", "land_rate(es) linear slope 0.14"],
+  "mitigation": "derive 0.5 from runtime idle fraction; es as live sensor; wake threshold fires on es collapse",
   "updated": "2026-10-29"
 }

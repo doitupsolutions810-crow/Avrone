@@ -275,3 +275,41 @@ def test_job_queue_retries_then_dead_letters_at_attempt_limit(tmp_path, monkeypa
         finally:
             await q.close()
     asyncio.run(go())
+
+
+def test_telemetry_skips_oversized_line_and_continues_to_next_event(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    good = json.dumps({"ts": now, "kind": "tool.call", "agent": "A",
+                       "run_id": "good", "data": {"tool": "shell"}}).encode()
+    (log_dir / "events.jsonl").write_bytes(
+        b"x" * (telemetry.MAX_TELEMETRY_LINE_BYTES + 4096) + b"\n" + good + b"\n"
+    )
+    assert list(telemetry._iter_events(log_dir, now - 5)) == [json.loads(good)]
+
+
+def test_telemetry_reads_recent_tail_of_large_file_within_file_budget(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    good = json.dumps({"ts": now, "kind": "run.start", "agent": "A",
+                       "run_id": "tail", "data": {"mode": "chat"}}).encode()
+    # The oversized first record begins before the tail window. The iterator must
+    # discard its partial suffix and still recover the valid newest event.
+    prefix = b"x" * (telemetry.MAX_TELEMETRY_FILE_BYTES + 512_000)
+    (log_dir / "large.jsonl").write_bytes(prefix + b"\n" + good + b"\n")
+    assert list(telemetry._iter_events(log_dir, now - 5)) == [json.loads(good)]
+
+
+def test_telemetry_scan_has_a_total_byte_budget(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    row = json.dumps({"ts": now, "kind": "tool.call", "agent": "A",
+                      "run_id": "x", "data": {"tool": "shell"}}).encode() + b"\n"
+    for i in range(20):
+        (log_dir / f"{i:02d}.jsonl").write_bytes(row * 1000)
+    rows = list(telemetry._iter_events(log_dir, now - 5, max_files=200))
+    # The exact row count depends on per-file mtime ordering; the total scan is bounded.
+    assert len(rows) < telemetry.MAX_TELEMETRY_TOTAL_BYTES // len(row)

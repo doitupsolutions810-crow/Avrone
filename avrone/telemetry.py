@@ -18,11 +18,23 @@ if TYPE_CHECKING:
     from .trinity import TrinityCore
 
 
-def _iter_events(log_dir: Path, since: float, max_files: int = 200):
-    """Yield recent event objects while treating log files as untrusted input.
+# Telemetry reads a bounded tail of the newest event logs. This prevents a damaged
+# or unexpectedly large Codex file from turning a read-only endpoint into an
+# unbounded memory allocation.
+MAX_TELEMETRY_FILES = 200
+MAX_TELEMETRY_FILE_BYTES = 2 * 1024 * 1024
+MAX_TELEMETRY_TOTAL_BYTES = 16 * 1024 * 1024
+MAX_TELEMETRY_LINE_BYTES = 256 * 1024
+_TELEMETRY_READ_CHUNK_BYTES = 64 * 1024
 
-    A damaged JSONL line or partially-written/replaced file must not take the whole
-    telemetry endpoint down. Bound the scan even if a caller supplies a huge limit.
+
+def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FILES):
+    """Yield validated events from a bounded tail of recent JSONL files.
+
+    Files are read in binary chunks, not with read_text(): each file and the whole
+    scan have byte budgets, and a single oversized line is drained without being
+    allocated as one unbounded string. For large append-only files, retain the newest
+    tail and discard its first partial line.
     """
     try:
         since = float(since)
@@ -31,7 +43,7 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
     if not math.isfinite(since):
         return
 
-    limit = max(0, min(200, max_files)) if isinstance(max_files, int) and not isinstance(max_files, bool) else 200
+    limit = max(0, min(MAX_TELEMETRY_FILES, max_files)) if isinstance(max_files, int) and not isinstance(max_files, bool) else MAX_TELEMETRY_FILES
 
     def mtime(path: Path) -> float:
         try:
@@ -44,48 +56,94 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
         files = sorted(log_dir.glob("*.jsonl"), key=mtime, reverse=True)[:limit]
     except OSError:
         return
-    for p in files:
+
+    total_remaining = MAX_TELEMETRY_TOTAL_BYTES
+    for path in files:
+        if total_remaining <= 0:
+            break
+        consumed = 0
         try:
-            if p.stat().st_mtime < since:
+            stat = path.stat()
+            if stat.st_mtime < since:
                 continue
-            contents = p.read_text(encoding="utf-8")
+            file_budget = min(MAX_TELEMETRY_FILE_BYTES, total_remaining)
+            start_offset = max(0, stat.st_size - file_budget)
+            with path.open("rb") as stream:
+                if start_offset:
+                    # Tail may begin in the middle of a record. If so, drain only
+                    # that partial line; count every byte against the file budget.
+                    stream.seek(start_offset - 1)
+                    previous = stream.read(1)
+                    stream.seek(start_offset)
+                    if previous != b"\\n":
+                        while consumed < file_budget:
+                            chunk = stream.readline(min(_TELEMETRY_READ_CHUNK_BYTES,
+                                                        file_budget - consumed))
+                            if not chunk:
+                                break
+                            consumed += len(chunk)
+                            if chunk.endswith(b"\\n"):
+                                break
+
+                while consumed < file_budget:
+                    raw = stream.readline(min(MAX_TELEMETRY_LINE_BYTES + 1,
+                                               file_budget - consumed))
+                    if not raw:
+                        break
+                    consumed += len(raw)
+
+                    if len(raw) > MAX_TELEMETRY_LINE_BYTES:
+                        # A single huge event must not starve the rest of this file.
+                        while not raw.endswith(b"\\n") and consumed < file_budget:
+                            chunk = stream.readline(min(_TELEMETRY_READ_CHUNK_BYTES,
+                                                        file_budget - consumed))
+                            if not chunk:
+                                break
+                            consumed += len(chunk)
+                            raw = chunk
+                        continue
+
+                    try:
+                        event = json.loads(raw.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeError):
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    # Validate each envelope independently: one corrupt record must
+                    # not poison the other events in the same log.
+                    kind = event.get("kind")
+                    if not isinstance(kind, str) or not kind:
+                        continue
+                    agent = event.get("agent", "")
+                    if not isinstance(agent, str):
+                        continue
+                    run_id = event.get("run_id")
+                    if run_id is not None and (
+                        isinstance(run_id, bool)
+                        or not isinstance(run_id, (str, int, float))
+                    ):
+                        continue
+                    if isinstance(run_id, float) and not math.isfinite(run_id):
+                        continue
+                    data = event.get("data", {})
+                    if not isinstance(data, dict):
+                        continue
+                    timestamp = event.get("ts", 0)
+                    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                        continue
+                    try:
+                        finite_timestamp = math.isfinite(timestamp)
+                    except (OverflowError, TypeError, ValueError):
+                        continue
+                    if not finite_timestamp:
+                        continue
+                    if timestamp >= since:
+                        yield event
         except (OSError, UnicodeError):
-            # Ignore one unreadable file rather than failing every telemetry consumer.
+            # Ignore one unreadable/replaced file instead of failing all telemetry.
             continue
-        for line in contents.splitlines():
-            try:
-                ev = json.loads(line)
-            except (json.JSONDecodeError, UnicodeError):
-                continue
-            if not isinstance(ev, dict):
-                continue
-            # The event file is append-only but may still be truncated, manually edited,
-            # or written by an older version. Ignore malformed event envelopes independently.
-            kind = ev.get("kind")
-            if not isinstance(kind, str) or not kind:
-                continue
-            agent = ev.get("agent", "")
-            if not isinstance(agent, str):
-                continue
-            rid = ev.get("run_id")
-            if rid is not None and (isinstance(rid, bool) or not isinstance(rid, (str, int, float))):
-                continue
-            if isinstance(rid, float) and not math.isfinite(rid):
-                continue
-            data = ev.get("data", {})
-            if not isinstance(data, dict):
-                continue
-            ts = ev.get("ts", 0)
-            if isinstance(ts, bool) or not isinstance(ts, (int, float)):
-                continue
-            try:
-                finite_timestamp = math.isfinite(ts)
-            except (OverflowError, TypeError, ValueError):
-                continue
-            if not finite_timestamp:
-                continue
-            if ts >= since:
-                yield ev
+        finally:
+            total_remaining -= consumed
 
 
 def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:

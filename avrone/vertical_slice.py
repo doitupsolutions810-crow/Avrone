@@ -15,6 +15,7 @@ from .task_contract import EnvelopeError, validate_envelope
 
 Authorize = Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]
 Runner = Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]
+ArtifactVerifier = Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[bool]]
 
 
 async def execute_vertical_slice(
@@ -23,6 +24,7 @@ async def execute_vertical_slice(
     allowed_capabilities: set[str] | frozenset[str],
     authorize: Authorize,
     run_isolated: Runner,
+    verify_artifacts: ArtifactVerifier,
     policy_timeout_seconds: float = 5.0,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -68,8 +70,14 @@ async def execute_vertical_slice(
     if not isinstance(digests, list):
         return {"state": "VERIFICATION_FAILED", "reason": "invalid_artifact_manifest", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"]}
     state = transition(state, "COMPLETED")
-    # Runner output is not trusted to assert verification. Independently check
-    # only the manifest's digest syntax here; artifact bytes require a verifier.
+    # Do not call a task VERIFIED until an independent verifier confirms the
+    # staged bytes against the declared manifest. The runner cannot self-attest.
+    try:
+        verified = await asyncio.wait_for(verify_artifacts(validated, result), timeout=policy_timeout_seconds)
+    except Exception:
+        verified = False
+    if verified is not True:
+        return {"state": "VERIFICATION_FAILED", "reason": "artifact_verification_failed", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"]}
     try:
         receipt = make_receipt(
             correlation_id=validated["correlation_id"],
@@ -81,7 +89,7 @@ async def execute_vertical_slice(
             worker_id=str(result.get("worker_id", "")) or None,
             outcome="VERIFIED",
             artifact_digests=digests,
-            verifier_version="manifest-syntax-only-v1",
+            verifier_version="injected-artifact-verifier-v1",
         )
     except (TypeError, ValueError):
         return {"state": "VERIFICATION_FAILED", "reason": "receipt_validation_failed", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"]}

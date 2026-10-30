@@ -1,0 +1,8 @@
+{
+  "branch": "thermo-descent-v2",
+  "proposals": ["A-E", "F", "G", "H"],
+  "invariants": ["efail <= idle_fraction", "gen0 > drain", "threshold = d_star + noise", "kg_floor 0.5", "es in [0.5, 1.0]"],
+  "primary_readouts": ["es", "net_flow", "regime_fractions"],
+  "cosmetic": ["debt_oscillation"],
+  "updated": "2026-10-29"
+}

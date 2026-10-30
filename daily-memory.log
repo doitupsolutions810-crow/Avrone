@@ -1,0 +1,1 @@
+- [2026-10-29] thermo-descent v2: steepness->1.0 kills period-2; es confirmed primary throughput dial (47% swing); gate threshold = equilibrium+noise; kg evolve-yield governor; gen0>drain invariant; es telemetry promoted to ledger sensor; regime fractions replace debt as gauge input

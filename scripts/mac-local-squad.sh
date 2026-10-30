@@ -37,7 +37,7 @@ for selected_lane in $LANES; do
   esac
 done
 [ "$lane_count" -gt 0 ] || { echo "Select at least one lane in LANES"; exit 1; }
-OUT="$DRIVE/avrone-runs/round5-$(date +%Y%m%d-%H%M%S)-$"
+OUT="$DRIVE/avrone-runs/round5-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$DRIVE/ollama-models" "$OUT"
 export OLLAMA_MODELS="$DRIVE/ollama-models"
 
@@ -118,7 +118,12 @@ lane(){
   log "lane $1 failed rc=$rc; inspect $OUT/$1.err and $OUT/$1.txt"
   return 1
 }
-command -v timeout >/dev/null || { brew install coreutils >/dev/null 2>&1; alias timeout=gtimeout; command -v timeout >/dev/null || timeout(){ gtimeout "$@"; }; }
+if ! command -v timeout >/dev/null 2>&1; then
+  command -v brew >/dev/null || { log "timeout is unavailable and Homebrew is missing"; exit 1; }
+  brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded lane execution"; exit 1; }
+  command -v gtimeout >/dev/null 2>&1 || { log "gtimeout was not installed"; exit 1; }
+  timeout() { command gtimeout "$@"; }
+fi
 
 lane deepcov "DEEP COVERAGE: avrone/trinity.py, avrone/evolve.py, avrone/gateway.py uncovered error/edge branches. New files like tests/test_trinity_deep_r5.py. Land TWO accepted." &
 pids=("$!")

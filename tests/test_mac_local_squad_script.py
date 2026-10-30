@@ -19,3 +19,11 @@ def test_mac_local_squad_propagates_every_lane_failure():
     assert 'wait "$pid"' in script
     assert 'if [ "$lane_status" -ne 0 ]; then' in script
     assert 'exit "$lane_status"' in script
+
+
+
+def test_mac_local_squad_uses_unique_run_directory_and_real_timeout_wrapper():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    assert 'OUT="$DRIVE/avrone-runs/round5-$(date +%Y%m%d-%H%M%S)-$$"' in script
+    assert 'timeout() { command gtimeout "$@"; }' in script
+    assert "alias timeout=gtimeout" not in script

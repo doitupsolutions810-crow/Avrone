@@ -365,9 +365,17 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
     out: dict[str, Any] = {}
     for k, (lo, hi) in _HEALTH_NUM.items():
         v = raw.get(k)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
             continue
-        out[k] = max(lo, min(hi, float(v)))
+        if isinstance(v, int):
+            # Clamp arbitrary-size JSON integers before converting to float: float(10**10000)
+            # raises OverflowError even though the peer field is otherwise just out of range.
+            bounded = hi if v > hi else lo if v < lo else v
+            out[k] = float(bounded)
+            continue
+        if not math.isfinite(v):
+            continue
+        out[k] = max(lo, min(hi, v))
     st = raw.get("state")
     if st in HEALTH_STATES:
         out["state"] = st

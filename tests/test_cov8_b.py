@@ -557,6 +557,8 @@ def test_events_websocket_disconnect_unsubscribes(monkeypatch):
             state["unsub"] = q
 
     class FakeWS:
+        headers, query_params, client = {}, {}, SimpleNamespace(host="127.0.0.1")
+
         async def accept(self):
             state["accepted"] = True
 

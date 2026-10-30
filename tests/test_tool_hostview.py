@@ -82,10 +82,10 @@ def test_children_tree_from_fake_proc(monkeypatch, tmp_path):
 def test_api_surface():
     out = run(hv.t_api_surface(None, {}))
     assert "POST /api/fleet/run [fleet-signed]" in out and "POST /api/fleet/register [fleet-signed]" in out
-    assert "POST /api/terminal [admin]" in out and "GET /api/status [public]" in out
+    assert "POST /api/terminal [admin]" in out and "GET /api/status [public]" in out and "GET /api/runs [local]" in out
     assert "/openapi" not in out and "WS /ws/events" in out
     a = hv.api_surface()
-    assert {r["auth"] for r in a["routes"]} <= {"public", "admin", "fleet-signed", "unknown"}
+    assert {r["auth"] for r in a["routes"]} <= {"public", "admin", "fleet-signed", "local", "unknown"}
     assert hv._auth_class(len) == "unknown"
 
 

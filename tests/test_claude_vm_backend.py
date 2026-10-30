@@ -139,3 +139,16 @@ async def test_collection_identity_mismatch_is_not_accepted():
     with pytest.raises(VMRunnerError, match="identity"):
         await runner(task())
     assert provider.events == ["provision", "execute", "collect", "destroy"]
+
+
+@pytest.mark.asyncio
+async def test_boolean_exit_code_is_not_a_success_status():
+    provider = Provider(exit_code=False)
+    backend = ClaudeSDKVMBackend(
+        provider, objective_resolver=lambda _task: "Do not treat booleans as process exit codes.",
+        enabled=True,
+    )
+    runner = DisposableVMRunner(backend)
+    with pytest.raises(VMRunnerError, match="non-zero"):
+        await runner(task())
+    assert provider.events == ["provision", "execute", "destroy"]

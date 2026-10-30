@@ -2,6 +2,7 @@
 import asyncio
 import json
 import math
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -314,3 +315,23 @@ def test_telemetry_scan_has_a_total_byte_budget(tmp_path, monkeypatch):
         (log_dir / f"{i:02d}.jsonl").write_bytes(row * 20)
     rows = list(telemetry._iter_events(log_dir, now - 5, max_files=200))
     assert len(rows) <= 7
+
+
+
+def test_telemetry_ignores_symlinked_event_files(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    outside = tmp_path / "outside.jsonl"
+    now = time.time()
+    secret_event = {"ts": now, "kind": "tool.call", "agent": "A",
+                    "run_id": "outside", "data": {"tool": "should-not-be-read"}}
+    outside.write_text(json.dumps(secret_event) + "\n", encoding="utf-8")
+    link = log_dir / "linked.jsonl"
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+    good = {"ts": now, "kind": "tool.call", "agent": "A",
+            "run_id": "inside", "data": {"tool": "shell"}}
+    (log_dir / "good.jsonl").write_text(json.dumps(good) + "\n", encoding="utf-8")
+    assert list(telemetry._iter_events(log_dir, now - 5)) == [good]

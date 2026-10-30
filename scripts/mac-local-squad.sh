@@ -49,7 +49,11 @@ log "warming $MODEL"; ollama run "$MODEL" "say ready" </dev/null | head -1 | tee
 cd "$REPO"
 [ -d .venv ] || python3 -m venv .venv
 source .venv/bin/activate
-pip install -q -e ".[dev]"
+if ! pip install -q -e ".[dev]" > "$OUT/install.log" 2>&1; then
+  log "editable install failed; tail:"
+  tail -25 "$OUT/install.log"
+  exit 1
+fi
 
 # 4. Check the tests pass before any lane runs
 if [ "${SKIP_GATE:-0}" != "1" ]; then
@@ -80,10 +84,26 @@ lane(){
 command -v timeout >/dev/null || { brew install coreutils >/dev/null 2>&1; alias timeout=gtimeout; command -v timeout >/dev/null || timeout(){ gtimeout "$@"; }; }
 
 lane deepcov "DEEP COVERAGE: avrone/trinity.py, avrone/evolve.py, avrone/gateway.py uncovered error/edge branches. New files like tests/test_trinity_deep_r5.py. Land TWO accepted." &
+pids=("$!")
 lane newmods "COVERAGE for newest modules: avrone/governor.py, greatscale.py, checkpoint.py, memstore.py, agentfs.py, fsunify.py, bridge.py. New files tests/test_*_r5.py. Land TWO accepted." &
+pids+=("$!")
 lane tools "NEW TOOLS: read plugins/calculator.py; add plugins/agent_memory.py and plugins/hash_tool.py, each with its own focused test file. Land TWO accepted." &
+pids+=("$!")
 lane robust "ROBUSTNESS: avrone/recon.py (default-deny allowlist), osint.py, fleet.py, jobqueue.py edge cases offline. Land TWO accepted." &
-wait
+pids+=("$!")
+
+lane_status=0
+for pid in "${pids[@]}"; do
+  if wait "$pid"; then
+    :
+  else
+    lane_status=1
+  fi
+done
+if [ "$lane_status" -ne 0 ]; then
+  log "one or more lanes failed or timed out; inspect each lane .err/.txt before review"
+  exit "$lane_status"
+fi
 
 log "lanes finished. Accepted proposals:"
 python -m avrone.cli evolve list 2>/dev/null | tee -a "$OUT/squad.log" || true

@@ -7,8 +7,10 @@ Eternal CodeX event logs. Nothing here probes external networks.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import math
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -53,7 +55,9 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
             return 0.0
 
     try:
-        files = sorted(log_dir.glob("*.jsonl"), key=mtime, reverse=True)[:limit]
+        # Keep only the newest bounded set in memory even if the directory contains
+        # a very large number of rotated event files.
+        files = heapq.nlargest(limit, log_dir.glob("*.jsonl"), key=mtime)
     except OSError:
         return
 
@@ -63,12 +67,18 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
             break
         consumed = 0
         try:
+            # A log-directory symlink must not redirect a read outside Codex storage.
+            if path.is_symlink():
+                continue
             stat = path.stat()
             if stat.st_mtime < since:
                 continue
             file_budget = min(MAX_TELEMETRY_FILE_BYTES, total_remaining)
             start_offset = max(0, stat.st_size - file_budget)
-            with path.open("rb") as stream:
+            # O_NOFOLLOW closes the check/open race if a regular log is replaced
+            # with a symlink after is_symlink() but before open().
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as stream:
                 if start_offset:
                     # Tail may begin in the middle of a record. If so, drain only
                     # that partial line; count every byte against the file budget.

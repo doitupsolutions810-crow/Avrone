@@ -42,7 +42,8 @@ def tool_refs(body: str) -> set[str]:
 
 def test_skills_present():
     names = {f.parent.name for f in SKILL_FILES}
-    assert {"test-coverage-sweep", "incident-triage", "self-heal-environment"} <= names
+    assert {"test-coverage-sweep", "incident-triage", "self-heal-environment",
+            "privileged-dispatch-gateway"} <= names
 
 
 @pytest.mark.parametrize("path", SKILL_FILES, ids=lambda p: p.parent.name)
@@ -137,3 +138,13 @@ def test_node_agent_runtime_documentation_describes_no_host_port_and_privilege_e
     assert "127.0.0.1:8765" in doc
     assert "does **not** publish the port to the host" in doc
     assert "does not enable privileged mode" in doc
+
+
+def test_privileged_dispatch_skill_requires_pairwise_keys_and_keeps_root_scoped():
+    skill = (SKILLS / "privileged-dispatch-gateway" / "SKILL.md").read_text(encoding="utf-8")
+    _, body = agentkit.parse_skill(skill)
+    assert "AVRONE_PRIVILEGED_PEER_KEYS" in body
+    assert "AVRONE_PRIVILEGED_NODES" in body
+    assert "32 UTF-8 bytes" in body
+    assert "not automatically host root" in body
+    assert "secret manager" in body

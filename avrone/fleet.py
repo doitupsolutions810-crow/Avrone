@@ -168,6 +168,7 @@ def parse_privileged_peer_keys(raw: str, shared_token: str = "") -> dict[str, st
     if not isinstance(parsed, dict) or len(parsed) > 128:
         return {}
     out: dict[str, str] = {}
+    used_secrets: set[str] = set()
     for peer, value in parsed.items():
         if not isinstance(peer, str) or not ID_RE.fullmatch(peer) or not isinstance(value, str):
             continue
@@ -176,9 +177,10 @@ def parse_privileged_peer_keys(raw: str, shared_token: str = "") -> dict[str, st
             size = len(secret.encode("utf-8"))
         except UnicodeError:
             continue
-        if size < 32 or size > 4096 or not secret or secret == shared_token:
+        if size < 32 or size > 4096 or not secret or secret == shared_token or secret in used_secrets:
             continue
         out[peer] = secret
+        used_secrets.add(secret)
     return out
 
 

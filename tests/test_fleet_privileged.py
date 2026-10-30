@@ -355,6 +355,7 @@ def test_peer_key_parser_rejects_short_shared_and_invalid_peer_keys(core, tmp_pa
             "bad/peer": "x" * 40,
             "same": "shared-token",
             "valid-peer": "v" * 40,
+            "duplicate-peer": "v" * 40,
             "non-string": 42,
         }),
     )
@@ -376,3 +377,15 @@ def test_outbound_privileged_requires_peer_key_before_network(core, tmp_path, mo
     with pytest.raises(GatewayRefused) as ei:
         run(fm.dispatch(["edge"], "chat", "x", 0, privileged="priv:shell"))
     assert ei.value.code == "privileged_peer_key_missing"
+
+
+def test_privileged_pairwise_signature_binds_exact_request_body(core, tmp_path, monkeypatch):
+    fm = node(core, tmp_path, monkeypatch, toggle="allow", listed="router")
+    body, headers = signed(priv_payload(), pairwise_key=PAIR_KEY)
+    # A holder of the shared token can re-sign a modified body, but cannot re-create
+    # the peer-specific MAC for that changed body.
+    changed = body.replace(b"uptime", b"altered")
+    forged = sign("tok", "POST", PATH, changed, headers["x-avrone-ts"], headers["x-avrone-nonce"])
+    forged[PRIVILEGED_SIGNATURE_HEADER] = headers[PRIVILEGED_SIGNATURE_HEADER]
+    e = refused(fm, body=changed, headers=forged)
+    assert e.code == "privileged_peer_signature" and e.auth

@@ -28,4 +28,4 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
       - name: Run vertical-slice contract tests
-        run: python -m pytest -q tests/test_task_contract.py tests/test_execution_state.py tests/test_vertical_slice.py tests/test_capability_authority_adapter.py
+        run: python -m pytest -q tests/test_task_contract.py tests/test_execution_state.py tests/test_vertical_slice.py tests/test_capability_authority_adapter.py tests/test_artifact_verifier.py

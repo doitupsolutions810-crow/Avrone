@@ -2,8 +2,10 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix: { python: ["3.11", "3.12"] }
     steps:
       - uses: actions/checkout@v4

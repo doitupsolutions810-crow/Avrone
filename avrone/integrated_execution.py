@@ -6,6 +6,8 @@ supply a runner adapter that provisions, bounds, and destroys an isolated job VM
 """
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -27,7 +29,7 @@ async def execute_with_capability_authority(
     policy_timeout_seconds: float = 5.0,
     receipt_signer_url: str | None = None,
 ) -> dict[str, Any]:
-    """Run AVRONE's real signed-authority client and independent byte verifier.
+    """Run AVRONE's signed-authority client and independent byte verifier.
 
     Authorization fails closed in the authority adapter. Artifact bytes are
     reopened and SHA-256 recomputed by AVRONE after the runner returns.

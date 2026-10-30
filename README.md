@@ -81,7 +81,7 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
-## v0.23: Squad round 9 — conclude-bridge hardening, long-horizon learning loop, router bridge view — 2449 tests, coverage 99%
+## v0.23: Squad round 9 — conclude-bridge hardening, long-horizon learning loop, router bridge view — 2449 tests (2468 after merging origin), coverage 99%
 
 Great Scale form (each finding: heat → mapping → verification; Ψ = CONE when every residual closes).
 

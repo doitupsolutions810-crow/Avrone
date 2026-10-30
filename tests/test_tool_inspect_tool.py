@@ -5,7 +5,7 @@ import pytest
 
 from avrone import tools_extra as tx
 from avrone import tools_introspect as ti
-from avrone.tools import Tool, ToolRegistry, builtin_registry
+from avrone.tools import Tool, ToolRegistry, builtin_registry, validate_args
 
 
 def run(coro):
@@ -101,3 +101,12 @@ def test_no_registry():
     ti.register_introspect_tools(reg)
     ctx = SimpleNamespace(core=SimpleNamespace(), run_id="r", name="A", depth=0)
     assert run(reg.call(ctx, "inspect_tool", {"name": "shell"})) == "ERROR: the tool registry is not available"
+
+
+
+@pytest.mark.parametrize("value", [True, False])
+@pytest.mark.parametrize("spec", ["int", "float"])
+def test_boolean_values_are_not_accepted_as_numeric_tool_args(value, spec):
+    # bool subclasses int in Python, but tool schemas intentionally distinguish them.
+    errors = validate_args({"required": {"value": spec}}, {"value": value})
+    assert errors and "must be " + spec in errors[0]

@@ -27,6 +27,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_LLM_BASE_URL", "https://user:hunter2pass@llm.example/v1?api_key=abc123&x=1")
     monkeypatch.setenv("AVRONE_SQUAD_SIZE", "5")
     monkeypatch.setenv("AVRONE_FLEET_PARENT", "https://parent.example:7777")
+    monkeypatch.setenv("AVRONE_PRIVILEGED_PEER_KEYS", json.dumps({"edge-1": SECRET}))
     monkeypatch.setenv("AVRONE_WEIRD_NOTE", "bearer abcdefghijklmnop")  # token-shaped under a harmless name
     monkeypatch.setenv("NOT_AVRONE_SECRET", "outside-prefix")
     monkeypatch.setenv("AVRONE_PROVIDER", "custom")
@@ -56,6 +57,8 @@ def test_text_report_redacts_everything_secret(env):
     assert "admin_token = ***set***" in out and "llm_api_key = ***set***" in out
     assert "https://***@llm.example/v1?api_key=***&x=1" in out
     assert "AVRONE_WEIRD_NOTE = ***redacted (token-shaped value)***" in out
+    assert "AVRONE_PRIVILEGED_PEER_KEYS = ***set***" in out
+    assert SECRET not in out
     assert "AVRONE_SQUAD_SIZE = 5" in out and "squad_size = 5" in out
     assert "AVRONE_FLEET_PARENT = https://parent.example:7777" in out
     assert "NOT_AVRONE_SECRET" not in out and "outside-prefix" not in out
@@ -65,6 +68,9 @@ def test_json_and_prefix(env):
     d = json.loads(call(env, format="json", prefix="llm"))
     assert d["prefix"] == "AVRONE_LLM"
     assert set(d["env"]) == {"AVRONE_LLM_API_KEY", "AVRONE_LLM_BASE_URL"}
+    peer = json.loads(call(env, format="json", prefix="PRIVILEGED_PEER"))
+    assert peer["env"] == {"AVRONE_PRIVILEGED_PEER_KEYS": "***set***"}
+    assert SECRET not in json.dumps(peer)
     assert d["settings"] and all(k.startswith("llm") for k in d["settings"])
     assert d["settings"]["llm_api_key"] == "***set***"
     assert SECRET not in json.dumps(d)
@@ -117,3 +123,12 @@ def test_control_chars_and_no_settings(monkeypatch):
     ctx = SimpleNamespace(core=SimpleNamespace(), run_id="r", name="A", depth=0)
     out = run(reg.call(ctx, "env_report", {}))
     assert "settings in effect:\n  (none)" in out
+
+
+
+@pytest.mark.parametrize("key", ["access_token", "client_secret", "api-key", "X-Auth-Token", "signature"])
+def test_redacts_secret_query_key_variants_without_hiding_neighbors(key):
+    value = f"https://example.test/callback?keep=yes&{key}=NEVER-LEAK-THIS&tail=ok"
+    out = ti.redact_value("AVRONE_CALLBACK_URL", value)
+    assert f"{key}=NEVER-LEAK-THIS" not in out
+    assert "keep=yes" in out and "tail=ok" in out

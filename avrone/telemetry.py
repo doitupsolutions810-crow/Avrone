@@ -8,6 +8,7 @@ Eternal CodeX event logs. Nothing here probes external networks.
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -18,16 +19,70 @@ if TYPE_CHECKING:
 
 
 def _iter_events(log_dir: Path, since: float, max_files: int = 200):
-    files = sorted(log_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+    """Yield recent event objects while treating log files as untrusted input.
+
+    A damaged JSONL line or partially-written/replaced file must not take the whole
+    telemetry endpoint down. Bound the scan even if a caller supplies a huge limit.
+    """
+    try:
+        since = float(since)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(since):
+        return
+
+    limit = max(0, min(200, max_files)) if isinstance(max_files, int) and not isinstance(max_files, bool) else 200
+
+    def mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            # Files can disappear between globbing and sorting during log rotation.
+            return 0.0
+
+    try:
+        files = sorted(log_dir.glob("*.jsonl"), key=mtime, reverse=True)[:limit]
+    except OSError:
+        return
     for p in files:
-        if p.stat().st_mtime < since:
+        try:
+            if p.stat().st_mtime < since:
+                continue
+            contents = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            # Ignore one unreadable file rather than failing every telemetry consumer.
             continue
-        for line in p.read_text().splitlines():
+        for line in contents.splitlines():
             try:
                 ev = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeError):
                 continue
-            if ev.get("ts", 0) >= since:
+            if not isinstance(ev, dict):
+                continue
+            # The event file is append-only but may still be truncated, manually edited,
+            # or written by an older version. Ignore malformed event envelopes independently.
+            kind = ev.get("kind")
+            if not isinstance(kind, str) or not kind:
+                continue
+            agent = ev.get("agent", "")
+            if not isinstance(agent, str):
+                continue
+            rid = ev.get("run_id")
+            if rid is not None and (isinstance(rid, bool) or not isinstance(rid, (str, int, float))):
+                continue
+            data = ev.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            ts = ev.get("ts", 0)
+            if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                continue
+            try:
+                finite_timestamp = math.isfinite(ts)
+            except (OverflowError, TypeError, ValueError):
+                continue
+            if not finite_timestamp:
+                continue
+            if ts >= since:
                 yield ev
 
 

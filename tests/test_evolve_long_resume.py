@@ -26,7 +26,7 @@ def _clean(monkeypatch):
 # ---------------------------------------------------------------- long loops
 def test_ceilings_are_constants():
     assert (evolve.MAX_ITERS_CAP, evolve.TIME_BUDGET_CAP_S) == (10, 1800)
-    assert (evolve.LONG_MAX_ITERS_CAP, evolve.LONG_TIME_BUDGET_CAP_S) == (50, 7200)
+    assert (evolve.LONG_MAX_ITERS_CAP, evolve.LONG_TIME_BUDGET_CAP_S) == (100, 43200)
     assert (evolve.DEFAULT_MAX_ITERS, evolve.DEFAULT_TIME_BUDGET_S) == (3, 600)
 
 
@@ -50,10 +50,10 @@ def test_only_exact_allow_opts_in(monkeypatch, val):
 @pytest.mark.parametrize("val", ["allow", "ALLOW", " Allow "])
 def test_long_raises_ceiling_not_defaults(monkeypatch, val):
     monkeypatch.setenv("AVRONE_EVOLVE_LONG", val)
-    assert evolve.hard_caps() == (50, 7200)
+    assert evolve.hard_caps() == (100, 43200)
     assert evolve.loop_limits() == (3, 600)                    # defaults unchanged
     assert evolve.loop_limits(30, 4000) == (30, 4000)          # can now ask for more
-    assert evolve.loop_limits(10 ** 6, float("inf")) == (50, 7200)   # but never past the long ceiling
+    assert evolve.loop_limits(10 ** 6, float("inf")) == (100, 43200)   # but never past the long ceiling
 
 
 def test_long_with_env_still_only_lowers(monkeypatch):
@@ -64,7 +64,7 @@ def test_long_with_env_still_only_lowers(monkeypatch):
     assert evolve.loop_limits(45, 7000) == (20, 3000)
     monkeypatch.setenv("AVRONE_EVOLVE_MAX_ITERS", "1e9")
     monkeypatch.setenv("AVRONE_EVOLVE_TIME_BUDGET", "1e12")
-    assert evolve.loop_limits(10 ** 6, 10 ** 9) == (50, 7200)
+    assert evolve.loop_limits(10 ** 6, 10 ** 9) == (100, 43200)
 
 
 def test_long_loop_actually_runs_past_ten_iterations(env, monkeypatch):
@@ -82,13 +82,13 @@ def test_without_opt_in_same_loop_stops_at_ten(env):
 
 def test_long_time_budget_enforced(env, monkeypatch):
     monkeypatch.setenv("AVRONE_EVOLVE_LONG", "allow")
-    runner = FakeRunner(clock=env.clock, step=3000)
+    runner = FakeRunner(clock=env.clock, step=15000)
     monkeypatch.setattr(evolve, "_now", env.clock)
     ctx = mkctx(env.tmp, runner)
     r = run(evolve.evolve_loop(ctx, "g", candidates=[BAD] * 10, max_iters=10, time_budget_s=10 ** 6,
                                test_cmd=GATE))
-    assert r["time_budget_s"] == 7200 and r["stopped"] == "time_budget"
-    assert len(r["attempts"]) == 3      # 3000s each: stops once 7200s are spent
+    assert r["time_budget_s"] == 43200 and r["stopped"] == "time_budget"
+    assert len(r["attempts"]) == 3      # 15000s each: stops after crossing 12 hours
     # the per-iteration gate timeout never exceeds 900s however long the budget is
     assert all(t is not None and t <= 900 for c, t in runner.cmds if "PYTHONPATH=" in c)
 

@@ -49,8 +49,14 @@ audited as `fleet.privileged.accept` and run with core.fleet_privileged set to t
 AND the run-scoped tools_extra.PRIV_GRANT context set to it; the priv_shell / priv_admin tools require
 both to agree (so a concurrent unrelated run never inherits it). The originating node also needs its
 own toggle on to send one.
-The sender id is asserted inside the HMAC-signed body: it is tamper-proof in transit, but any
-holder of the shared token can claim any id, so the allowlist limits blast radius, not trust.
+The sender id is asserted inside the shared-token HMAC body, but that token alone cannot establish
+which peer sent a privileged request. Privileged requests therefore require a SECOND HMAC signature
+over the same method/path/timestamp/nonce/body, using a unique per-peer secret configured in
+AVRONE_PRIVILEGED_PEER_KEYS (JSON object keyed by peer node id). The sender maps the direct target id
+to the secret; the receiver maps the sender id to the same secret. Secrets must be at least 32 UTF-8
+bytes, must differ from the shared fleet token, stay in a secret manager, and are never logged or
+persisted in fleet.json. Missing or invalid second signatures fail closed. Ordinary fleet requests
+continue to use the existing shared-token HMAC and are unchanged.
 Other env:
   AVRONE_NODE_ID        stable id for this server (default: hostname-derived, persisted)
   AVRONE_PUBLIC_URL     URL others use to reach this node (sent when registering)
@@ -143,6 +149,41 @@ SPAWN_MODES = ("squad", "chat", "deep")
 # elevated capabilities: only on the run endpoint, only through the privileged gate
 PRIVILEGED_CAPABILITIES = {"priv:shell", "priv:admin"}
 PRIVILEGED_HEADER = "x-avrone-privileged"
+PRIVILEGED_SIGNATURE_HEADER = "x-avrone-privileged-signature"
+PRIVILEGED_PEER_KEYS_ENV = "AVRONE_PRIVILEGED_PEER_KEYS"
+
+
+def parse_privileged_peer_keys(raw: str, shared_token: str = "") -> dict[str, str]:
+    """Parse bounded per-peer second-factor secrets without exposing invalid values.
+
+    Values must be unique from the shared fleet token and at least 32 UTF-8 bytes.
+    The object is deliberately kept in memory only; it is never written to fleet.json.
+    """
+    if not isinstance(raw, str) or len(raw) > 65536:
+        return {}
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict) or len(parsed) > 128:
+        return {}
+    out: dict[str, str] = {}
+    used_secrets: set[str] = set()
+    for peer, value in parsed.items():
+        if not isinstance(peer, str) or not ID_RE.fullmatch(peer) or not isinstance(value, str):
+            continue
+        secret = value.strip()
+        try:
+            size = len(secret.encode("utf-8"))
+        except UnicodeError:
+            continue
+        if size < 32 or size > 4096 or not secret or secret == shared_token or secret in used_secrets:
+            continue
+        out[peer] = secret
+        used_secrets.add(secret)
+    return out
+
+
 # non-spawn capabilities, kept apart from the (minimal) spawn/message table above
 SYNC_CAPABILITIES: dict[str, set[str]] = {"memory": {"memory:sync"}, "agentpack": {"agent:migrate"}}
 # netsquad: a squad subtask placed on this node (runs as a sub-squad/chat here, may recurse further down)
@@ -371,7 +412,7 @@ class GatewayRefused(PermissionError):
     `auth` is True for authentication failures (HTTP 401) and False for policy refusals (HTTP 403)."""
 
     AUTH_CODES = {"no_token", "bad_timestamp", "bad_nonce", "bad_signature", "stale", "replay",
-                  "privileged_unsigned"}
+                  "privileged_unsigned", "privileged_peer_signature"}
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -430,6 +471,7 @@ class FleetManager:
         self.require_allow = _env("AVRONE_FLEET_REQUIRE_ALLOW").lower() in TRUTHY
         self.privileged = _env("AVRONE_FLEET_PRIVILEGED").lower() == "allow"  # deny unless exactly "allow"
         self.privileged_nodes = {a.strip() for a in _env("AVRONE_PRIVILEGED_NODES").split(",") if a.strip()}
+        self.privileged_peer_keys = parse_privileged_peer_keys(_env(PRIVILEGED_PEER_KEYS_ENV), self.token)
         try:
             ph = int(_env("AVRONE_FLEET_PRIVILEGED_MAX_HOPS", "1") or 1)
         except ValueError:
@@ -743,6 +785,28 @@ class FleetManager:
         if not isinstance(payload, dict):
             raise self._refuse("bad_body", "body must be a JSON object", kind=kind)
         decision = self.check_policy(kind, payload)
+        if decision.get("privileged"):
+            sender = str(decision.get("sender") or "")
+            pair_key = self.privileged_peer_keys.get(sender)
+            if not pair_key:
+                raise self._privileged_refuse(
+                    "privileged_peer_key_missing",
+                    f"no pairwise privileged key configured for sender {sender or '?'}",
+                    kind=kind, sender=sender or None, capability=decision.get("capability"),
+                    hops=decision.get("hops"),
+                )
+            normalized = {str(k).lower(): str(v) for k, v in headers.items()}
+            ts = normalized.get("x-avrone-ts", "")
+            nonce = normalized.get("x-avrone-nonce", "")
+            supplied = normalized.get(PRIVILEGED_SIGNATURE_HEADER, "")
+            expected = sign(pair_key, method, path, body, ts, nonce)["x-avrone-sig"]
+            if not (supplied.isascii() and hmac.compare_digest(expected, supplied)):
+                raise self._privileged_refuse(
+                    "privileged_peer_signature",
+                    "missing or invalid per-peer privileged signature",
+                    kind=kind, sender=sender, capability=decision.get("capability"),
+                    hops=decision.get("hops"),
+                )
         self._audit("fleet.dispatch", path=path, **decision)
         if decision.get("privileged"):
             self._audit("fleet.privileged.accept", path=path, **decision)
@@ -771,6 +835,12 @@ class FleetManager:
                 raise self._privileged_refuse("privileged_target", "privileged requests need an explicit node", **pctx)
             if not self.allowed(first_hop):
                 raise self._refuse("target_not_allowed", f"node {first_hop} not in AVRONE_FLEET_ALLOW", **ctx)
+            if first_hop not in self.privileged_peer_keys:
+                raise self._privileged_refuse(
+                    "privileged_peer_key_missing",
+                    f"no pairwise privileged key configured for target {first_hop}",
+                    **pctx,
+                )
             return
         if capability not in kind_capabilities(kind):
             raise self._refuse("capability", f"capability {capability!r} not permitted for {kind}",
@@ -1003,9 +1073,21 @@ class FleetManager:
             kw["transport"] = HTTP_TRANSPORT
         return httpx.AsyncClient(**kw)
 
-    async def _post(self, base: str, path: str, payload: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
+    async def _post(self, base: str, path: str, payload: dict[str, Any], timeout: float = 30,
+                    privileged_peer: str = "") -> dict[str, Any]:
         body = json.dumps(payload).encode()
         headers = {"content-type": "application/json", **sign(self.token, "POST", path, body)}
+        if privileged_peer:
+            pair_key = self.privileged_peer_keys.get(privileged_peer)
+            if not pair_key:
+                raise GatewayRefused(
+                    "privileged_peer_key_missing",
+                    f"no pairwise privileged key configured for target {privileged_peer}",
+                )
+            headers[PRIVILEGED_SIGNATURE_HEADER] = sign(
+                pair_key, "POST", path, body,
+                headers["x-avrone-ts"], headers["x-avrone-nonce"],
+            )["x-avrone-sig"]
         async with self._client(timeout) as c:
             r = await c.post(base + path, content=body, headers=headers)
         if r.status_code >= 400:
@@ -1349,7 +1431,10 @@ class FleetManager:
             payload["checkpoint_id"] = sanitize_ckpt_id(checkpoint_id)
         node["load"] = node.get("load", 0) + 1
         try:
-            return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
+            return await self._post(
+                node["url"], "/api/fleet/run", payload, timeout=900,
+                privileged_peer=node["node_id"] if privileged else "",
+            )
         finally:
             node["load"] = max(0, node.get("load", 1) - 1)
 

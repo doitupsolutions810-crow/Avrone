@@ -1224,3 +1224,5 @@ def register_extra_tools(registry) -> None:
     register_flakeprobe_tools(registry)
     from .tools_researchnote import register_researchnote_tools
     register_researchnote_tools(registry)
+    from .tools_lessonrecall import register_lessonrecall_tools
+    register_lessonrecall_tools(registry)

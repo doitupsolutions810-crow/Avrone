@@ -105,3 +105,30 @@ def test_newer_symlink_cannot_displace_real_log_from_file_cap(tmp_path, monkeypa
     events = list(telemetry_module._iter_events(log_dir, since=0))
 
     assert events == [real_event]
+
+
+
+def test_telemetry_enforces_one_total_byte_budget_across_files(tmp_path, monkeypatch):
+    from avrone import telemetry as telemetry_module
+    import json
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    older = log_dir / "older.jsonl"
+    newer = log_dir / "newer.jsonl"
+    older_event = {"kind": "run.start", "agent": "worker", "run_id": "older",
+                   "data": {"mode": "older"}, "ts": 14}
+    newer_event = {"kind": "run.start", "agent": "worker", "run_id": "newer",
+                   "data": {"mode": "newer"}, "ts": 15}
+    older.write_text(json.dumps(older_event) + "\n", encoding="utf-8")
+    newer.write_text(json.dumps(newer_event) + "\n", encoding="utf-8")
+    import os
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_FILES", 10)
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_FILE_BYTES", 256)
+    monkeypatch.setattr(telemetry_module, "MAX_TELEMETRY_TOTAL_BYTES", 120)
+
+    events = list(telemetry_module._iter_events(log_dir, since=0))
+
+    assert events == [newer_event]

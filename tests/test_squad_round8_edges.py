@@ -302,14 +302,15 @@ def test_telemetry_reads_recent_tail_of_large_file_within_file_budget(tmp_path):
     assert list(telemetry._iter_events(log_dir, now - 5)) == [json.loads(good)]
 
 
-def test_telemetry_scan_has_a_total_byte_budget(tmp_path):
+def test_telemetry_scan_has_a_total_byte_budget(tmp_path, monkeypatch):
     log_dir = tmp_path / "events"
     log_dir.mkdir()
     now = time.time()
     row = json.dumps({"ts": now, "kind": "tool.call", "agent": "A",
                       "run_id": "x", "data": {"tool": "shell"}}).encode() + b"\n"
-    for i in range(20):
-        (log_dir / f"{i:02d}.jsonl").write_bytes(row * 1000)
+    monkeypatch.setattr(telemetry, "MAX_TELEMETRY_FILE_BYTES", len(row) * 5)
+    monkeypatch.setattr(telemetry, "MAX_TELEMETRY_TOTAL_BYTES", len(row) * 7)
+    for i in range(3):
+        (log_dir / f"{i:02d}.jsonl").write_bytes(row * 20)
     rows = list(telemetry._iter_events(log_dir, now - 5, max_files=200))
-    # The exact row count depends on per-file mtime ordering; the total scan is bounded.
-    assert len(rows) < telemetry.MAX_TELEMETRY_TOTAL_BYTES // len(row)
+    assert len(rows) <= 7

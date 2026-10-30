@@ -75,14 +75,14 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
                     stream.seek(start_offset - 1)
                     previous = stream.read(1)
                     stream.seek(start_offset)
-                    if previous != b"\\n":
+                    if previous != b"\n":
                         while consumed < file_budget:
                             chunk = stream.readline(min(_TELEMETRY_READ_CHUNK_BYTES,
                                                         file_budget - consumed))
                             if not chunk:
                                 break
                             consumed += len(chunk)
-                            if chunk.endswith(b"\\n"):
+                            if chunk.endswith(b"\n"):
                                 break
 
                 while consumed < file_budget:
@@ -94,7 +94,7 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
 
                     if len(raw) > MAX_TELEMETRY_LINE_BYTES:
                         # A single huge event must not starve the rest of this file.
-                        while not raw.endswith(b"\\n") and consumed < file_budget:
+                        while not raw.endswith(b"\n") and consumed < file_budget:
                             chunk = stream.readline(min(_TELEMETRY_READ_CHUNK_BYTES,
                                                         file_budget - consumed))
                             if not chunk:

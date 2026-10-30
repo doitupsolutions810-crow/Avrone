@@ -66,7 +66,10 @@ def _issue_sync(envelope: Mapping[str, Any], base_url: str, timeout: float) -> d
         with urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 raise AuthorityUnavailable(f"authority HTTP status {response.status}")
-            payload = json.loads(response.read(64 * 1024 + 1))
+            raw_payload = response.read(64 * 1024 + 1)
+            if len(raw_payload) > 64 * 1024:
+                raise AuthorityUnavailable("authority response exceeds size limit")
+            payload = json.loads(raw_payload)
     except (URLError, TimeoutError, OSError, ValueError) as exc:
         raise AuthorityUnavailable("capability authority unavailable") from exc
 

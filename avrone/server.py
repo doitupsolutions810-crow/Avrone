@@ -1,6 +1,8 @@
 """Ghost Shell: the surface users and admins touch (web UI, REST, WebSocket HUD)."""
 from __future__ import annotations
 
+import hmac
+
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
@@ -47,8 +49,39 @@ def core() -> TrinityCore:
 def require_admin(token: str | None) -> None:
     if not settings.admin_token:
         raise HTTPException(403, "Admin access is off. Set AVRONE_ADMIN_TOKEN to enable it.")
-    if token != settings.admin_token:
+    if token is None or not hmac.compare_digest(str(token), settings.admin_token):
         raise HTTPException(401, "Bad admin token")
+
+
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+ACCESS_POLICIES = ("loopback", "admin", "all")
+
+
+def access_policy() -> str:
+    """AVRONE_PUBLIC_ACCESS decides who may use the routes that run agents or read run history:
+    loopback (default) - callers on 127.0.0.1/::1, or anyone with the admin token;
+    admin - the admin token only, even from loopback; all - anyone who can reach the port
+    (the pre-v0.27 behaviour; use it only behind a port bound to 127.0.0.1 or an auth proxy).
+    Unknown values fall back to loopback, never to all."""
+    import os
+    v = (os.getenv("AVRONE_PUBLIC_ACCESS") or "loopback").strip().lower()
+    return v if v in ACCESS_POLICIES else "loopback"
+
+
+def caller_allowed(host: str | None, token: str | None) -> bool:
+    policy = access_policy()
+    if policy == "all":
+        return True
+    if settings.admin_token and token is not None and hmac.compare_digest(str(token), settings.admin_token):
+        return True
+    return policy == "loopback" and (host or "") in LOOPBACK_HOSTS
+
+
+def require_local(request: Request, token: str | None) -> None:
+    host = request.client.host if request.client else None
+    if not caller_allowed(host, token):
+        raise HTTPException(403, "This route is local-only: call from 127.0.0.1 or send X-Admin-Token "
+                                 "(AVRONE_PUBLIC_ACCESS=loopback|admin|all).")
 
 
 class ChatIn(BaseModel):
@@ -110,7 +143,8 @@ def _open_checkpoint(cid_raw: str, task: str, mode: str):
 
 
 @app.post("/api/chat")
-async def chat(body: ChatIn):
+async def chat(body: ChatIn, request: Request, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     c = core()
     if body.mode not in ("squad", "chat", "deep"):
         raise HTTPException(400, f"Unknown mode {body.mode!r}. Use squad, chat or deep.")
@@ -366,13 +400,15 @@ async def gateway_status():
 
 
 @app.get("/api/evolve")
-async def api_evolve():
+async def api_evolve(request: Request, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     from .evolve import list_accepted
     return {"accepted": list_accepted(core().settings)}
 
 
 @app.get("/api/osint/metrics")
-async def api_osint_metrics():
+async def api_osint_metrics(request: Request, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     from types import SimpleNamespace
     from .osint import t_osint_metrics
     c = core()
@@ -381,13 +417,15 @@ async def api_osint_metrics():
 
 
 @app.get("/api/telemetry")
-async def api_telemetry(hours: float = 24):
+async def api_telemetry(request: Request, hours: float = 24, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     from .telemetry import telemetry
     return telemetry(core(), hours * 3600)
 
 
 @app.get("/api/map")
-async def api_map(hours: float = 24, format: str = "json"):
+async def api_map(request: Request, hours: float = 24, format: str = "json", x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     from fastapi.responses import PlainTextResponse
     from .telemetry import system_map, to_mermaid
     g = system_map(core(), hours * 3600)
@@ -395,12 +433,14 @@ async def api_map(hours: float = 24, format: str = "json"):
 
 
 @app.get("/api/runs")
-async def runs():
+async def runs(request: Request, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     return core().codex.runs()
 
 
 @app.get("/api/runs/{run_id}")
-async def run_log(run_id: str):
+async def run_log(run_id: str, request: Request, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     events = core().codex.replay(run_id)
     if not events:
         raise HTTPException(404, f"no run {run_id!r}")
@@ -408,7 +448,8 @@ async def run_log(run_id: str):
 
 
 @app.get("/api/runs/{run_id}/bridge")
-async def run_bridge(run_id: str):
+async def run_bridge(run_id: str, request: Request, x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
     """The learning bridge of a run: every post agents shared with each other, oldest first."""
     from .bridge import bridge_run_id, load_posts, safe_run_id
     if safe_run_id(run_id) != run_id:
@@ -433,6 +474,10 @@ async def terminal(body: TerminalIn, x_admin_token: str | None = Header(default=
 
 @app.websocket("/ws/events")
 async def events(ws: WebSocket):
+    token = ws.headers.get("x-admin-token") or ws.query_params.get("token")
+    if not caller_allowed(ws.client.host if ws.client else None, token):
+        await ws.close(code=1008)  # policy violation: the live codex stream shows every run
+        return
     await ws.accept()
     q = core().codex.subscribe()
     try:

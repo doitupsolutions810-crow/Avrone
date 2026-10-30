@@ -133,7 +133,8 @@ class ClaudeSDKVMBackend:
             )
         except Exception as exc:
             raise VMRunnerError("Claude SDK guest invocation failed") from exc
-        if not isinstance(guest, Mapping) or guest.get("exit_code") != 0:
+        if (not isinstance(guest, Mapping) or type(guest.get("exit_code")) is not int
+                or guest.get("exit_code") != 0):
             raise VMRunnerError("Claude SDK guest returned a non-zero exit status")
         stdout = guest.get("stdout")
         if isinstance(stdout, bytes):

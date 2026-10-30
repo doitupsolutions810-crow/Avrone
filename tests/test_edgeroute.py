@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 import avrone.fleet as fleet_mod
-from avrone.fleet import FleetManager, health_score, local_health, sanitize_health
+from avrone.fleet import FleetManager, health_score, local_health, sanitize_health, sanitize_peer_load
 from avrone.governor import Governor
 
 
@@ -82,6 +82,67 @@ def test_sanitize_health_drops_junk():
     h = sanitize_health({"state": "evil", "headroom": 7, "load": float("nan"), "mem_pct": True,
                          "temp_c": 900, "active_agents": -3, "x": 1, "disk_free_pct": "9"})
     assert h == {"headroom": 1.0, "temp_c": 150.0, "active_agents": 0}
+
+
+def test_sanitize_health_clamps_arbitrary_size_integer_fields():
+    huge = 10 ** 10000
+    health = sanitize_health({
+        "load": huge,
+        "mem_pct": -huge,
+        "disk_free_pct": huge,
+        "temp_c": -huge,
+        "headroom": huge,
+        "active_agents": huge,
+    })
+    assert health == {
+        "load": 1000.0,
+        "mem_pct": 0.0,
+        "disk_free_pct": 100.0,
+        "temp_c": -40.0,
+        "headroom": 1.0,
+        "active_agents": 10_000,
+    }
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (10 ** 10000, 10_000),
+    (-(10 ** 10000), 0),
+    (float("inf"), 0),
+    (float("-inf"), 0),
+    (float("nan"), 0),
+    (True, 0),
+    ("huge", 0),
+    (-5, 0),
+    (5, 5),
+])
+def test_sanitize_peer_load_is_finite_and_bounded(raw, expected):
+    assert sanitize_peer_load(raw) == expected
+
+
+def test_registration_and_health_score_handle_extreme_peer_load(fm):
+    fm.register({"node_id": "extreme", "url": "http://extreme.test",
+                 "load": 10 ** 10000, "health": COOL})
+    node = fm.nodes["extreme"]
+    assert node["load"] == 10_000
+    assert health_score(node) >= 0
+    node["load"] = float("inf")  # protects routing against older/corrupt persisted records
+    assert health_score(node) >= 0
+    assert fm.health_table()[0]["load"] >= 0
+
+
+def test_peer_load_decrement_sanitizes_before_arithmetic():
+    assert max(0, sanitize_peer_load("corrupt") - 1) == 0
+    assert max(0, sanitize_peer_load(float("inf")) - 1) == 0
+    assert max(0, sanitize_peer_load(9) - 1) == 8
+
+
+def test_pick_migration_target_sanitizes_legacy_peer_metrics(fm):
+    # Simulate a fleet.json record written before peer-health/load normalization.
+    add(fm, "legacy", load=10 ** 10000, health={
+        "state": "ok", "headroom": 10 ** 10000, "load": 10 ** 10000,
+        "temp_c": 10 ** 10000, "active_agents": 10 ** 10000,
+    })
+    assert fm.pick_migration_target("auto")["node_id"] == "legacy"
 
 
 def test_register_and_heartbeat_carry_health(fm, core, monkeypatch):

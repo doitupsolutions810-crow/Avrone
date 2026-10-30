@@ -168,3 +168,47 @@ def test_compaction_keeps_latest(data):
     lines = (data / "memory.jsonl").read_text().splitlines()
     assert len(lines) < 300  # superseded records were compacted away
     assert st.load("builder")["same"]["value"] == "v299"
+
+
+
+def test_reload_skips_corrupt_rows_and_normalizes_timestamps(data):
+    data.mkdir(parents=True, exist_ok=True)
+    path = data / "memory.jsonl"
+    good = {"ns": "builder", "key": "kept", "value": "value", "ts": "not-a-number", "agent": "Builder-1"}
+    path.write_text("{broken json\n[]\nnull\n" + json.dumps(good) + "\n")
+
+    st = memstore.MemoryStore(path)
+    row = st.load("builder")["kept"]
+    assert row["value"] == "value" and row["ts"] == 0.0
+    st.save("builder", "next", "works")
+    assert st.load("builder")["next"]["value"] == "works"
+
+
+def test_append_after_torn_last_record_keeps_next_record_separate(data):
+    data.mkdir(parents=True, exist_ok=True)
+    path = data / "memory.jsonl"
+    path.write_bytes(b'{"ns":"builder","key":"torn"')
+
+    st = memstore.MemoryStore(path)
+    st.save("builder", "recovered", "readable")
+    lines = path.read_text().splitlines()
+    assert len(lines) == 2
+    assert lines[0] == '{"ns":"builder","key":"torn"'
+    assert json.loads(lines[1])["key"] == "recovered"
+    assert st.load("builder")["recovered"]["value"] == "readable"
+
+
+def test_merge_rejects_non_object_and_non_finite_rows_without_aborting_batch(data):
+    data.mkdir(parents=True, exist_ok=True)
+    st = memstore.MemoryStore(data / "memory.jsonl")
+    ns = "fleet:edge/researcher"
+    stats = st.merge(ns, [
+        None,
+        "not-an-object",
+        42,
+        {"key": "valid", "value": "kept", "ts": 10},
+        {"key": "nan-ts", "value": "refuse", "ts": "nan"},
+    ])
+    assert stats == {"merged": 1, "skipped": 0, "rejected": 4}
+    assert st.load(ns)["valid"]["value"] == "kept"
+    assert "nan-ts" not in st.load(ns)

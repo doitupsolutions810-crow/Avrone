@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,18 +61,43 @@ class Runner:
         return {"AVRONE_AGENT_DIR": in_container or str(agent_cwd),
                 "AVRONE_SHARED_WORKSPACE": agentfs.CONTAINER_WORKSPACE if in_container else str(self.workspace.resolve())}
 
+    @staticmethod
+    def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+        """Stop the command and its children, not just the shell waiting for them."""
+        try:
+            if os.name == "posix":
+                # Do not return early when the shell has exited: background children can
+                # still hold inherited pipes open after the group leader's returncode is set.
+                os.killpg(proc.pid, signal.SIGKILL)
+            elif proc.returncode is None:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # Best-effort fallback if the process group could not be signalled.
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+
     async def _exec(self, argv: list[str], cmd: str, timeout: int, cwd: Path | None = None,
                     env: dict[str, str] | None = None) -> CommandResult:
+        spawn_options = {"start_new_session": True} if os.name == "posix" else {}
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=str(cwd) if cwd else None, env={**os.environ, **env} if env else None,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **spawn_options)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return CommandResult(cmd, proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace"))
         except asyncio.TimeoutError:
-            proc.kill()
+            self._kill_process_group(proc)
             await proc.wait()
             return CommandResult(cmd, -1, "", "command timed out", timed_out=True)
+        except asyncio.CancelledError:
+            self._kill_process_group(proc)
+            await proc.wait()
+            raise
 
 
 class LocalRunner(Runner):

@@ -3,8 +3,9 @@ name: test-coverage-sweep
 description: Find AVRONE's weakest-covered modules with pytest --cov, write offline tests for them, pass the gate, and propose them via evolve_propose.
 ---
 1. task_board add one card per phase (measure, write, gate, propose) so other agents see what you are doing.
-2. shell `python -m pytest -q -m "not integration" --cov=avrone --cov-report=term-missing` from the repo root.
-   If it says "unrecognized arguments: --cov", env_install pytest-cov (pip) and re-run. Note the TOTAL percentage.
+2. shell `python -m pytest -q -m "not integration" --cov=avrone --cov-report=term-missing --cov-report=json:coverage.json` from the repo root.
+   If it says "unrecognized arguments: --cov", env_install pytest-cov (pip) and re-run. Record the measured TOTAL and module rows.
+   Never infer coverage from a commit message, a previous revision, or test-count claims; confirm it from the current run output.
 3. think: rank modules by missed statements (not just percent). Pick the 2-3 with the most missed lines that hold
    pure logic: parsers, validators, path/arg checks, error branches. Skip code that only wraps a live network or Docker call.
 4. read_file each chosen module and search_files tests/ for the module name so you extend, not duplicate, what exists.

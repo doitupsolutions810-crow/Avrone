@@ -37,3 +37,9 @@ description: Check your own agent home (path, quota use, container hosting, home
 9. memory_peek to confirm your memories came across with the home (your own namespace only).
 10. Report: your home path, usage against quota, whether it is container-hosted, your home node, and the
     pack name and sha256 of your newest export.
+
+11. Thermal and migration uncertainty: if a temperature reading is missing, stale, or contradictory,
+    pause heavy parallel work, preserve a checkpoint and report the value as unknown. Never disable CPU,
+    memory, thermal, or container limits to keep reconnaissance running.
+12. Before resuming on another node, verify the pack hash, home quota, memory namespace, and last migration
+    record. If any verification fails, stop and report the mismatch rather than continuing with partial state.

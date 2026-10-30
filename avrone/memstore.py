@@ -252,6 +252,11 @@ class MemoryStore:
             pending: list[dict[str, Any]] = []
             evicted = False
             for e in entries:
+                # Malformed rows from a peer must not abort a mixed batch and discard valid
+                # entries before/after them. JSON arrays can contain scalars or null.
+                if not isinstance(e, dict):
+                    stats["rejected"] += 1
+                    continue
                 key, value = str(e.get("key", "")).strip(), str(e.get("value", ""))
                 try:
                     raw_ts = e.get("ts", 0)

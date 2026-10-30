@@ -62,3 +62,8 @@ def test_empty_artifact_result_is_valid_when_explicitly_staged(tmp_path):
     assert verify_staged_artifacts(
         task(), {"artifact_digests": [], "artifacts": []}, root=tmp_path
     )
+
+
+def test_rejects_unhashable_malformed_digest_values(tmp_path):
+    result = {"artifact_digests": [{}], "artifacts": [{}]}
+    assert not verify_staged_artifacts(task(), result, root=tmp_path)

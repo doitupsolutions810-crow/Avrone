@@ -376,3 +376,47 @@ def test_telemetry_rejects_unreasonably_large_integer_run_id(tmp_path):
              "run_id": too_large, "data": {"mode": "chat"}}
     (log_dir / "events.jsonl").write_text(json.dumps(valid) + "\n", encoding="utf-8")
     assert list(telemetry._iter_events(log_dir, now - 5)) == []
+
+
+
+def test_system_map_ignores_non_string_spawn_parent(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    event = {
+        "ts": now, "kind": "agent.spawn", "agent": "lead-1", "run_id": "bad-parent",
+        "data": {"role": "researcher", "parent": {"unexpected": "object"}},
+    }
+    (log_dir / "events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+    core = SimpleNamespace(
+        settings=SimpleNamespace(llm_model="worker", llm_base_url="http://local", lead_model="lead"),
+        codex=SimpleNamespace(log_dir=log_dir),
+        runner=SimpleNamespace(kind="local", workspace=tmp_path),
+        tools=SimpleNamespace(list=lambda: []),
+        fleet=None,
+    )
+    graph = telemetry.system_map(core, window_s=60)
+    assert any(node["id"] == "role:researcher" for node in graph["nodes"])
+    assert any(edge["from"] == "core" and edge["to"] == "role:researcher"
+               for edge in graph["edges"])
+
+
+def test_telemetry_symlinks_do_not_consume_the_recent_file_limit(tmp_path, monkeypatch):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    outside = tmp_path / "outside.jsonl"
+    outside_event = {"ts": now, "kind": "tool.call", "agent": "A",
+                     "run_id": "outside", "data": {"tool": "must-not-be-read"}}
+    outside.write_text(json.dumps(outside_event) + "\n", encoding="utf-8")
+    good = {"ts": now, "kind": "tool.call", "agent": "A",
+            "run_id": "inside", "data": {"tool": "shell"}}
+    good_path = log_dir / "good.jsonl"
+    good_path.write_text(json.dumps(good) + "\n", encoding="utf-8")
+    # The symlink points to a newer file and would win the old stat()-based cap.
+    os.utime(outside, (now + 10, now + 10))
+    try:
+        os.symlink(outside, log_dir / "newer-link.jsonl")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+    assert list(telemetry._iter_events(log_dir, now - 5, max_files=1)) == [good]

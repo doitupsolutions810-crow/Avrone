@@ -47,17 +47,25 @@ def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FIL
 
     limit = max(0, min(MAX_TELEMETRY_FILES, max_files)) if isinstance(max_files, int) and not isinstance(max_files, bool) else MAX_TELEMETRY_FILES
 
+    def is_regular_log(path: Path) -> bool:
+        try:
+            return not path.is_symlink() and path.is_file()
+        except OSError:
+            return False
+
     def mtime(path: Path) -> float:
         try:
-            return path.stat().st_mtime
+            return path.lstat().st_mtime
         except OSError:
             # Files can disappear between globbing and sorting during log rotation.
             return 0.0
 
     try:
-        # Keep only the newest bounded set in memory even if the directory contains
-        # a very large number of rotated event files.
-        files = heapq.nlargest(limit, log_dir.glob("*.jsonl"), key=mtime)
+        # Filter symlinks before selecting the newest capped set. Otherwise a large
+        # number of fresh symlinks can occupy the cap and starve real event files.
+        files = heapq.nlargest(
+            limit, (p for p in log_dir.glob("*.jsonl") if is_regular_log(p)), key=mtime
+        )
     except OSError:
         return
 
@@ -329,7 +337,9 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
             role = str(data.get("role", "Agent"))
             node(f"role:{role}", "agent", role)
             parent = data.get("parent")
-            edges[(f"role:{parent.rsplit('-', 1)[0]}" if parent else "core", f"role:{role}")] += 1
+            parent_text = parent.strip()[:128] if isinstance(parent, str) else ""
+            parent_node = f"role:{parent_text.rsplit('-', 1)[0]}" if parent_text else "core"
+            edges[(parent_node, f"role:{role}")] += 1
             edges[(f"role:{role}", "model:worker")] += 1
         elif kind == "tool.call":
             tool = str(data.get("tool"))

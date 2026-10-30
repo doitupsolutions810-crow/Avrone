@@ -27,7 +27,7 @@ MAX_FILES_PER_AREA = 2000
 MAX_PROBLEMS_SHOWN = 15
 MAX_JSONL_BYTES = 8 * 1024 * 1024
 # tools that change something outside the agent's own reply (files, processes, network, other nodes)
-ACTING = {"shell", "python", "git", "write_file", "edit_file", "fs_write", "fs_delete", "env_install", "docker_run",
+ACTING = {"secret_scan", "shell", "python", "git", "write_file", "edit_file", "fs_write", "fs_delete", "env_install", "docker_run",
           "spawn", "spawn_agent", "spawn_squad", "remote_spawn", "remote_spawn_many", "priv_shell", "priv_admin",
           "evolve_propose", "evolve_skill_propose", "evolve_start", "evolve_loop", "evolve_reset", "evolve_cancel",
           "memory_save", "memory_sync", "agent_migrate", "agent_pack_export", "agent_pack_import", "artifact_save",

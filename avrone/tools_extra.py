@@ -1234,3 +1234,5 @@ def register_extra_tools(registry) -> None:
     register_statehealth_tools(registry)
     from .tools_hostview import register_hostview_tools
     register_hostview_tools(registry)
+    from .tools_secrets import register_secret_tools
+    register_secret_tools(registry)

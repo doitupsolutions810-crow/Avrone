@@ -81,6 +81,17 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.30: Squad round 16: replay-safe restarts, leak-free event stream. 2780 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | **a captured signed fleet request was accepted again after the node restarted** (nonce cache was memory-only; anything still inside the 60 s window replayed, including `/api/fleet/run`) | replay cache persisted atomically to `data_dir/fleet_nonces.json`, expired/junk entries dropped on load; if it is unreadable, a boot guard refuses anything signed before this boot for 2 windows; a failed write never refuses a valid request | `test_robust_v030_replay.py`; live: v0.29 replay after restart **200**, v0.30 **401 replayed** |
+| robust | **every dropped `/ws/events` client leaked its 1000-slot queue and handler on a quiet node** (only noticed on the next failed send); a non-`WebSocketDisconnect` send error escaped | anyio task group: event pump + disconnect watcher, first to finish cancels the other, subscriber always released | real-uvicorn integration test fails on v0.29 and passes now |
+| tools | (none) | `replay_guard`: live nonces vs cap, persisted + readable, boot-guard time left; OK/DEGRADED/OFF, never prints nonces | `test_tool_gatewayview.py` |
+| tools | slow dashboards lost events silently | codex counts `emitted`/`dropped`; `stream_status`: subscribers, queue depth vs limit, FULL/backed-up flags | same |
+| skills | (none) | `fleet-restart-safety` (data dir must persist, boot guard, rejoin check), `event-stream-health` (FULL subscribers, history via `codex_search`) | grounding + tool-output match tests |
+| coverage | (none) | `cov16_a` (stream transport errors, fleet.json save cleanup), `cov16_b` (checkpoint claim released on stamp failure, nonce tmp cleanup) | 21 statements missed of 10,956 |
+
 ## v0.29: Squad round 15: load caps, run-log retention. 2750 tests, coverage 99%
 
 | Lane | Finding (heat) | Mapping | Verification |

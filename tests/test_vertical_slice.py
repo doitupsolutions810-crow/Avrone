@@ -130,7 +130,7 @@ async def test_verification_failure_never_reports_verified():
 
 
 @pytest.mark.asyncio
-async def test_runner_timeout_is_not_success():
+async def test_runner_completes_then_requires_verification():
     async def authorize(task):
         return {"decision": "ALLOW", "policy_version": "policy-v1"}
 
@@ -146,6 +146,26 @@ async def test_runner_timeout_is_not_success():
         run_isolated=runner, verify_artifacts=verifier, policy_timeout_seconds=1,
         now=NOW,
     )
-    # The task timeout comes from the envelope; use a deliberately tiny envelope
-    # timeout in the dedicated timeout assertion below rather than assuming a CI speed.
     assert result["state"] == "VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_runner_timeout_is_not_success():
+    async def authorize(task):
+        return {"decision": "ALLOW", "policy_version": "policy-v1"}
+
+    async def runner(task):
+        await asyncio.sleep(1.1)
+        return {"status": "completed", "worker_id": "worker-1", "artifact_digests": []}
+
+    async def verifier(task, result):
+        return True
+
+    task = envelope()
+    task["resource_limits"]["timeout_seconds"] = 1
+    result = await execute_vertical_slice(
+        task, allowed_capabilities={"read_repository"}, authorize=authorize,
+        run_isolated=runner, verify_artifacts=verifier, now=NOW,
+    )
+    assert result["state"] == "TIMED_OUT"
+    assert "receipt" not in result

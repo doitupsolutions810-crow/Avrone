@@ -159,3 +159,73 @@ def test_skills_encode_thermal_resilience_and_bounded_recon_policy():
     assert "verify the pack hash" in home
     assert "timeout is an unknown result" in recon
     assert "Never request host-root" in recon
+
+
+@pytest.mark.parametrize("requested, expected", [
+    (0, 900.0),
+    (-1, 900.0),
+    (math.inf, 900.0),
+    (math.nan, 900.0),
+    (True, 900.0),
+    (10 ** 12, 7 * 86400.0),
+])
+def test_job_queue_lease_configuration_is_finite_and_bounded(requested, expected, tmp_path):
+    async def go():
+        q = jobqueue.JobQueue(tmp_path / "lease.db", lease_s=requested)
+        try:
+            assert q.lease_s == expected
+        finally:
+            await q.close()
+    asyncio.run(go())
+
+
+def test_job_queue_reclaims_running_job_at_exact_lease_boundary(tmp_path, monkeypatch):
+    async def go():
+        clock = [1000.0]
+        monkeypatch.setattr(jobqueue.time, "time", lambda: clock[0])
+        q = jobqueue.JobQueue(tmp_path / "lease-boundary.db", lease_s=10)
+        try:
+            jid = await q.enqueue("work", {"ok": True})
+            first = await q.claim()
+            assert first == {"id": jid, "kind": "work", "payload": {"ok": True}, "attempts": 1}
+            clock[0] += 10
+            second = await q.claim()
+            assert second == {"id": jid, "kind": "work", "payload": {"ok": True}, "attempts": 2}
+        finally:
+            await q.close()
+    asyncio.run(go())
+
+
+def test_job_queue_two_connections_never_claim_same_job(tmp_path):
+    async def go():
+        path = tmp_path / "shared.db"
+        q1, q2 = jobqueue.JobQueue(path), jobqueue.JobQueue(path)
+        try:
+            jid = await q1.enqueue("work", {"payload": 1})
+            a, b = await asyncio.gather(q1.claim(), q2.claim())
+            claimed = [x for x in (a, b) if x is not None]
+            assert len(claimed) == 1
+            assert claimed[0]["id"] == jid
+        finally:
+            await q1.close()
+            await q2.close()
+    asyncio.run(go())
+
+
+def test_job_queue_retries_then_dead_letters_at_attempt_limit(tmp_path, monkeypatch):
+    async def go():
+        clock = [1000.0]
+        monkeypatch.setattr(jobqueue.time, "time", lambda: clock[0])
+        q = jobqueue.JobQueue(tmp_path / "retry.db")
+        try:
+            jid = await q.enqueue("unstable", {"x": 1}, max_attempts=2)
+            assert (await q.claim())["attempts"] == 1
+            assert await q.fail(jid, "first") == "requeued"
+            clock[0] += 10
+            assert (await q.claim())["attempts"] == 2
+            assert await q.fail(jid, "second") == "dead"
+            assert (await q.get(jid))["status"] == "dead"
+            assert await q.claim() is None
+        finally:
+            await q.close()
+    asyncio.run(go())

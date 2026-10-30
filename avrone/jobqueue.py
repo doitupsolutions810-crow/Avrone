@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -30,7 +31,15 @@ class JobQueue:
     def __init__(self, path: Path, lease_s: float = 900):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.lease_s = lease_s
+        try:
+            parsed_lease = float(lease_s)
+        except (TypeError, ValueError, OverflowError):
+            parsed_lease = 900.0
+        if isinstance(lease_s, bool) or not math.isfinite(parsed_lease) or parsed_lease <= 0:
+            parsed_lease = 900.0
+        # Avoid immediate reclaim loops from non-positive leases and keep the maximum
+        # retry window bounded even when a misconfigured caller supplies a huge value.
+        self.lease_s = max(0.1, min(7 * 86400.0, parsed_lease))
         self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         # Several JobQueue instances (processes) may share one file: wait for the write lock
         # instead of failing with "database is locked".
@@ -87,7 +96,7 @@ class JobQueue:
             now = time.time()
             while True:
                 cur = self._db.execute(
-                    "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) OR (status='running' AND lease_until<?) "
+                    "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) OR (status='running' AND lease_until<=?) "
                     "ORDER BY priority DESC, created LIMIT 1", (now, now))
                 row = cur.fetchone()
                 if not row:

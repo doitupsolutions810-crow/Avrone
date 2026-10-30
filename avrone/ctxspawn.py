@@ -79,7 +79,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
                 r"(?:(bearer|basic|token)\s+)?[^\s,;\"']+"),
      lambda m: f"{m.group(1)}{m.group(2)}{(m.group(3) + ' ') if m.group(3) else ''}{REDACTED}"),  # type: ignore[list-item]
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), f"Bearer {REDACTED}"),
-    (re.compile(r"(?i)([\"']?\b[\w.-]*" + _SECRET_WORD + r"[\w.-]*[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)"),
+    (re.compile(r"(?i)([\"']?\b[\w.-]*" + _SECRET_WORD + r"[\w.-]*[\"']?\s*[:=]\s*)(?!\[REDACTED\])(\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)"),
      lambda m: m.group(1) + REDACTED),  # type: ignore[list-item]
     (re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}"), REDACTED),
     (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"), REDACTED),

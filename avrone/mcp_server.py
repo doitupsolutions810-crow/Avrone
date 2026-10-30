@@ -143,7 +143,14 @@ class AvroneMCPServer:
         self._out = out
         self.warm()
         while True:
-            raw = await reader.readline()
+            try:
+                raw = await reader.readline()
+            except (asyncio.LimitOverrunError, ValueError):
+                # one oversized request must not kill the server. StreamReader.readline already dropped
+                # the oversized bytes (the whole line when its newline had arrived), so just say so
+                await self.send({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600, "message": "Invalid Request: line exceeds the size limit"}})
+                continue
             if not raw:
                 break
             line = raw.decode(errors="replace").strip()
@@ -153,6 +160,10 @@ class AvroneMCPServer:
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 await self.send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+                continue
+            if msg == []:
+                await self.send({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600, "message": "Invalid Request: empty batch"}})
                 continue
             for m in (msg if isinstance(msg, list) else [msg]):
                 t = asyncio.create_task(self._handle_safe(m))
@@ -179,7 +190,14 @@ class AvroneMCPServer:
         rid = m.get("id")
         is_request = "id" in m
         try:
-            result = await self.handle(m["method"], m.get("params") or {})
+            if not isinstance(m["method"], str):
+                raise _RPCError(-32600, "Invalid Request: method must be a string")
+            params = m.get("params")
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                raise _RPCError(-32602, "Invalid params: params must be an object")
+            result = await self.handle(m["method"], params)
             if is_request:
                 await self.send({"jsonrpc": "2.0", "id": rid, "result": result})
         except _RPCError as e:
@@ -208,13 +226,19 @@ class AvroneMCPServer:
         if method == "tools/list":
             return {"tools": TOOLS}
         if method == "tools/call":
-            return await self.call_tool(str(params.get("name", "")), params.get("arguments") or {})
+            args = params.get("arguments")
+            return await self.call_tool(str(params.get("name", "")), {} if args is None else args)
         raise _RPCError(-32601, f"Method not found: {method}")
 
     async def call_tool(self, name: str, args: dict) -> dict:
         if name not in {t["name"] for t in TOOLS}:
-            raise _RPCError(-32602, f"Unknown tool: {name}")
-        task = str(args.get("task", "")).strip()
+            raise _RPCError(-32602, f"Unknown tool: {name[:100]}")
+        if not isinstance(args, dict):
+            raise _RPCError(-32602, "Invalid params: arguments must be an object")
+        raw_task = args.get("task", "")
+        if not isinstance(raw_task, str):
+            return _err("'task' must be a string")
+        task = raw_task.strip()
         try:
             core = await self.core()
             if name == "avrone_tools":

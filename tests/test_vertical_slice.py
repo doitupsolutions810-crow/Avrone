@@ -37,6 +37,7 @@ async def test_happy_path_requires_policy_allow_and_independent_verifier():
 
     async def runner(task):
         calls.append(("runner", task["task_id"]))
+        assert task["_authorization"]["decision"] == "ALLOW"
         return {"status": "completed", "worker_id": "disposable-test-worker", "artifact_digests": ["b" * 64]}
 
     async def verifier(task, result):
@@ -169,3 +170,28 @@ async def test_runner_timeout_is_not_success():
     )
     assert result["state"] == "TIMED_OUT"
     assert "receipt" not in result
+
+
+
+@pytest.mark.asyncio
+async def test_malformed_worker_digest_is_rejected_before_verification():
+    verifier_called = False
+
+    async def authorize(task):
+        return {"decision": "ALLOW", "policy_version": "policy-v1"}
+
+    async def runner(task):
+        return {"status": "completed", "worker_id": "worker-1", "artifact_digests": ["not-a-digest"]}
+
+    async def verifier(task, result):
+        nonlocal verifier_called
+        verifier_called = True
+        return True
+
+    result = await execute_vertical_slice(
+        envelope(), allowed_capabilities={"read_repository"}, authorize=authorize,
+        run_isolated=runner, verify_artifacts=verifier, now=NOW,
+    )
+    assert result["state"] == "VERIFICATION_FAILED"
+    assert result["reason"] == "invalid_artifact_manifest"
+    assert verifier_called is False

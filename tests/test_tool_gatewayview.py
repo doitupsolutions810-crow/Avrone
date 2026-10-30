@@ -8,6 +8,7 @@ import pytest
 
 from avrone import fleet as fleet_mod
 from avrone import tools_gatewayview as gv
+from avrone.codex import Codex
 from avrone.tools import builtin_registry
 from avrone.tools_extra import register_extra_tools
 
@@ -32,7 +33,7 @@ def test_registered_read_only():
     r = builtin_registry()
     register_extra_tools(r)
     from avrone.tools_statehealth import ACTING
-    for n in ("replay_guard",):
+    for n in ("replay_guard", "stream_status"):
         assert r.get(n) and n not in ACTING
 
 
@@ -61,3 +62,28 @@ def test_replay_guard_memory_only_and_off():
     assert "DEGRADED" in out and "memory-only" in out and "0/" in out
     assert "OFF" in run(gv.t_replay_guard(S(core=S(fleet=None)), {}))
     assert "OFF" in run(gv.t_replay_guard(S(core=None), {}))
+
+
+def test_stream_status(tmp_path):
+    cx = Codex(tmp_path)
+    q1 = cx.subscribe()
+    q2 = asyncio.Queue(maxsize=2)
+    cx._subscribers.add(q2)
+    for i in range(3):
+        cx.emit("r", "k", "a", i=i)
+    out = run(gv.t_stream_status(S(core=S(codex=cx)), {}))
+    assert "2 subscriber(s); 3 event(s) emitted since start, 1 dropped" in out
+    assert "2/2 queued FULL - dropping" in out and "3/1000 queued" in out and "codex_search" in out
+    assert q1.qsize() == 3
+    assert run(gv.t_stream_status(S(core=None), {})).startswith("stream_status: no event bus")
+
+
+def test_stream_backed_up_and_unbounded(tmp_path):
+    cx = Codex(tmp_path)
+    cx._subscribers.add(asyncio.Queue())
+    q = asyncio.Queue(maxsize=5)
+    cx._subscribers.add(q)
+    for i in range(4):
+        cx.emit("r", "k", "a")
+    out = run(gv.t_stream_status(S(core=S(codex=cx)), {}))
+    assert "4/5 queued backed up" in out and "4/unbounded queued" in out and "dropped" in out

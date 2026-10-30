@@ -54,6 +54,8 @@ class Codex:
         # emit() is called from the event loop and from worker threads (runner, fleet);
         # one lock keeps each JSONL record a single whole line.
         self._write_lock = threading.Lock()
+        self.dropped = 0  # events a full subscriber queue could not take (slow dashboard)
+        self.emitted = 0
 
     def subscribe(self) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
@@ -70,11 +72,12 @@ class Codex:
         line = json.dumps(asdict(ev), default=str) + "\n"
         with self._write_lock, (self.log_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
             f.write(line)
+        self.emitted += 1
         for q in list(self._subscribers):
             try:
                 q.put_nowait(ev)
             except asyncio.QueueFull:
-                pass
+                self.dropped += 1
         return ev
 
     @staticmethod

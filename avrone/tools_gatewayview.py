@@ -63,9 +63,27 @@ async def t_replay_guard(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def t_stream_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    cx = getattr(getattr(ctx, "core", None), "codex", None)
+    if cx is None or not hasattr(cx, "_subscribers"):
+        return "stream_status: no event bus on this core"
+    subs = list(cx._subscribers)
+    depths = sorted((q.qsize(), q.maxsize) for q in subs)
+    emitted, dropped = getattr(cx, "emitted", 0), getattr(cx, "dropped", 0)
+    lines = [f"stream_status: {len(subs)} subscriber(s); {emitted} event(s) emitted since start, {dropped} dropped"]
+    for i, (d, m) in enumerate(depths, 1):
+        flag = " FULL - dropping" if m and d >= m else (" backed up" if m and d >= m * 0.8 else "")
+        lines.append(f"- subscriber {i}: {d}/{m or 'unbounded'} queued{flag}")
+    if dropped:
+        lines.append("a slow dashboard missed events; the run logs still hold every one (codex_search)")
+    return "\n".join(lines)
+
+
 GATEWAYVIEW_TOOLS = [
     Tool("replay_guard", "read-only: fleet replay protection state (live nonces vs cap, persisted cache, boot "
          "guard). Never prints nonces.", "{}", t_replay_guard, source="builtin", schema={}),
+    Tool("stream_status", "read-only: live event stream subscribers, queue depths, events emitted and dropped.",
+         "{}", t_stream_status, source="builtin", schema={}),
 ]
 
 

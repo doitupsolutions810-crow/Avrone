@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python }}\u0022 }
+        with: { python-version: "${{ matrix.python }}" }
       - name: Install avrone (dev)
         run: |
           set -o pipefail
@@ -43,7 +43,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: avrone-coverage-python-${{ matrix.python }}\u0022
+          name: "avrone-coverage-python-${{ matrix.python }}"
           path: |
             coverage.xml
             coverage.json

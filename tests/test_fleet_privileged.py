@@ -13,12 +13,17 @@ import httpx
 import pytest
 
 from avrone import fleet as fleet_mod
-from avrone.fleet import FleetManager, GatewayRefused, PRIVILEGED_CAPABILITIES, sign
+from avrone.fleet import (
+    FleetManager, GatewayRefused, PRIVILEGED_CAPABILITIES,
+    PRIVILEGED_SIGNATURE_HEADER, sign,
+)
 
 PATH = "/api/fleet/run"
+PAIR_KEY = "test-only-pairwise-secret-not-for-deployment-0001"
 ENV = ("AVRONE_FLEET_TOKEN", "AVRONE_FLEET_MAX_HOPS", "AVRONE_FLEET_ALLOW", "AVRONE_FLEET_PARENT",
        "AVRONE_PUBLIC_URL", "AVRONE_FLEET_HEARTBEAT", "AVRONE_NODE_ID", "AVRONE_FLEET_REQUIRE_ALLOW",
-       "AVRONE_FLEET_PRIVILEGED", "AVRONE_PRIVILEGED_NODES", "AVRONE_FLEET_PRIVILEGED_MAX_HOPS")
+       "AVRONE_FLEET_PRIVILEGED", "AVRONE_PRIVILEGED_NODES", "AVRONE_FLEET_PRIVILEGED_MAX_HOPS",
+       "AVRONE_PRIVILEGED_PEER_KEYS")
 
 
 def run(coro):
@@ -57,6 +62,14 @@ def node(core, tmp_path, monkeypatch, nid="edge", toggle=None, listed=None, **ex
         monkeypatch.setenv("AVRONE_FLEET_PRIVILEGED", toggle)
     if listed is not None:
         monkeypatch.setenv("AVRONE_PRIVILEGED_NODES", listed)
+    # Receiver maps each authorized sender to its pairwise key; the router test node
+    # also maps its direct "edge" destination to the same test-only key.
+    peer_keys = {}
+    if listed:
+        peer_keys.update({x.strip(): PAIR_KEY for x in listed.split(",") if x.strip()})
+    if nid == "router":
+        peer_keys.setdefault("edge", PAIR_KEY)
+    monkeypatch.setenv("AVRONE_PRIVILEGED_PEER_KEYS", json.dumps(peer_keys))
     for k, v in extra.items():
         monkeypatch.setenv(k, v)
     d = tmp_path / nid
@@ -69,14 +82,21 @@ def priv_payload(**over):
             "privileged": True, "capability": "priv:shell", **over}
 
 
-def signed(payload, token="tok"):
+def signed(payload, token="tok", pairwise_key=None):
     body = json.dumps(payload).encode()
-    return body, sign(token, "POST", PATH, body)
+    headers = sign(token, "POST", PATH, body)
+    if pairwise_key:
+        headers[PRIVILEGED_SIGNATURE_HEADER] = sign(
+            pairwise_key, "POST", PATH, body, headers["x-avrone-ts"], headers["x-avrone-nonce"]
+        )["x-avrone-sig"]
+    return body, headers
 
 
 def gate(fm, payload=None, body=None, headers=None):
     if body is None:
-        body, headers = signed(payload)
+        sender = str((payload or {}).get("from", "")).split("/", 1)[0]
+        pair_key = fm.privileged_peer_keys.get(sender) if (payload or {}).get("privileged") else None
+        body, headers = signed(payload, pairwise_key=pair_key)
     return fm.dispatch_gateway("run", "POST", PATH, body, headers)
 
 
@@ -305,3 +325,54 @@ def test_server_privileged_refusal_is_403(core, tmp_path, monkeypatch):
             return r1.status_code, r1.json()["detail"], r2.status_code
     s1, detail, s2 = run(go())
     assert s1 == 403 and "privileged tier disabled" in detail and s2 == 401
+
+
+# ---------------------------------------------------------------- per-peer second factor
+def test_privileged_request_requires_pairwise_signature_even_with_shared_hmac(core, tmp_path, monkeypatch):
+    fm = node(core, tmp_path, monkeypatch, toggle="allow", listed="router")
+    body, headers = signed(priv_payload())  # valid shared token, deliberately no peer signature
+    e = refused(fm, body=body, headers=headers)
+    assert e.code == "privileged_peer_signature" and e.auth
+    assert ev(core, "fleet.privileged.refused")[-1].kwargs["code"] == "privileged_peer_signature"
+    assert not ev(core, "fleet.privileged.accept")
+
+
+def test_privileged_request_rejects_signature_from_wrong_peer_key(core, tmp_path, monkeypatch):
+    fm = node(core, tmp_path, monkeypatch, toggle="allow", listed="router")
+    body, headers = signed(priv_payload(), pairwise_key="different-peer-secret-not-the-configured-one-000")
+    e = refused(fm, body=body, headers=headers)
+    assert e.code == "privileged_peer_signature" and e.auth
+    assert not ev(core, "fleet.dispatch")
+
+
+def test_peer_key_parser_rejects_short_shared_and_invalid_peer_keys(core, tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_FLEET_TOKEN", "shared-token")
+    monkeypatch.setenv("AVRONE_NODE_ID", "edge")
+    monkeypatch.setenv(
+        "AVRONE_PRIVILEGED_PEER_KEYS",
+        json.dumps({
+            "router": "short",
+            "bad/peer": "x" * 40,
+            "same": "shared-token",
+            "valid-peer": "v" * 40,
+            "non-string": 42,
+        }),
+    )
+    fm = FleetManager(core, tmp_path / "peer-parser")
+    assert fm.privileged_peer_keys == {"valid-peer": "v" * 40}
+    assert "v" * 40 not in json.dumps(fm.info())
+
+
+def test_outbound_privileged_requires_peer_key_before_network(core, tmp_path, monkeypatch):
+    fm = node(
+        core, tmp_path, monkeypatch, nid="router", toggle="allow",
+        AVRONE_PRIVILEGED_PEER_KEYS="{}",
+    )
+    add_node(fm, "edge", "http://edge.test")
+    monkeypatch.setattr(
+        fleet_mod, "HTTP_TRANSPORT",
+        httpx.MockTransport(lambda r: pytest.fail("request must not reach the network")),
+    )
+    with pytest.raises(GatewayRefused) as ei:
+        run(fm.dispatch(["edge"], "chat", "x", 0, privileged="priv:shell"))
+    assert ei.value.code == "privileged_peer_key_missing"

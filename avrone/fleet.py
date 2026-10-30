@@ -664,7 +664,7 @@ class FleetManager:
             rows.append({"node_id": n.get("node_id"), "status": st, "state": hs,
                          "score": health_score(n) if st == "online" else None,
                          "eligible": st == "online" and hs not in EXCLUDED_STATES and self.allowed(str(n.get("node_id"))),
-                         "load": sanitize_peer_load(n.get("load", 0)), "health": sanitize_health(n.get("health")) ,
+                         "load": sanitize_peer_load(n.get("load", 0)), "health": sanitize_health(n.get("health")),
                          "netsquad": self.netsquad_counts.get(str(n.get("node_id")), 0)})
         return rows
 

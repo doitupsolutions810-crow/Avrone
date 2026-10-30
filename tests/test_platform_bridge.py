@@ -327,3 +327,12 @@ def test_runtime_capability_allowlist_rejects_invalid_operator_config(monkeypatc
     })
     assert result.startswith("ERROR:")
     assert "is invalid" in result
+
+
+
+def test_great_scale_has_no_unverified_live_resource():
+    _registry, module = _load_bridge()
+    # The public Great Scale Vercel project inspected for this PR serves static
+    # assets and has no serverless route for /api/v1/scale/state. A README claim
+    # is not enough to advertise a callable endpoint.
+    assert module.RESOURCE_PATHS["great_scale"] == {}

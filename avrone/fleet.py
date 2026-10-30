@@ -132,6 +132,52 @@ NONCE_CACHE_MAX = 100_000
 HTTP_TRANSPORT: httpx.AsyncBaseTransport | None = None
 
 
+# Cloud instance-metadata endpoints: never a fleet peer. A token holder registering one of these as
+# its url made this node POST to it and echo the reply (up to 400 chars) back in dispatch errors.
+_METADATA_HOSTS = {"169.254.169.254", "fd00:ec2::254", "metadata.google.internal", "metadata",
+                   "100.100.100.200", "metadata.azure.com"}
+
+
+def check_node_url(url: Any) -> str:
+    """A peer url: http(s), a host, optional port and path; no credentials, query, fragment, control
+    chars or whitespace; not link-local / a cloud metadata endpoint. Private and loopback hosts stay
+    allowed (LAN and single-host fleets are normal). Returns the url without a trailing slash."""
+    import ipaddress
+    from urllib.parse import urlsplit
+    if not isinstance(url, str) or not url or len(url) > 512:
+        raise ValueError("url must be an http(s) url of 1-512 chars")
+    if any(ord(c) < 33 or ord(c) == 127 for c in url) or not url.isascii():
+        raise ValueError("url has whitespace, control or non-ASCII characters")
+    try:
+        u = urlsplit(url)
+        port = u.port
+    except ValueError:
+        raise ValueError("url is malformed") from None
+    if u.scheme not in ("http", "https"):
+        raise ValueError("url must be http(s)")
+    if not u.hostname:
+        raise ValueError("url has no host")
+    if u.username is not None or u.password is not None or "@" in u.netloc:
+        raise ValueError("url must not carry credentials")
+    if u.query or u.fragment or "?" in url or "#" in url:
+        raise ValueError("url must not carry a query or fragment")
+    if port == 0:
+        raise ValueError("url port must be 1-65535")
+    host = u.hostname.rstrip(".").lower()
+    if host in _METADATA_HOSTS:
+        raise ValueError("url points at a cloud metadata endpoint")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        if ip.is_link_local or ip.is_multicast or ip.is_unspecified or str(ip) in _METADATA_HOSTS:
+            raise ValueError("url points at a link-local, multicast or unspecified address")
+    return url.rstrip("/")
+
+
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
@@ -1038,15 +1084,14 @@ class FleetManager:
     # ------------------------------------------------------------ registry (server side)
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
         nid = str(payload.get("node_id", ""))
-        url = str(payload.get("url", "")).rstrip("/")
+        url_raw = payload.get("url", "")
         if not ID_RE.match(nid):
             raise ValueError("invalid node_id")
         if nid == self.node_id:
             raise ValueError("node_id collides with this server")
         if not self.allowed(nid):
             raise PermissionError(f"node {nid} not in AVRONE_FLEET_ALLOW")
-        if not url.startswith(("http://", "https://")):
-            raise ValueError("url must be http(s)")
+        url = check_node_url(url_raw)
         rec = {"node_id": nid, "url": url, "last_seen": time.time(),
                "capabilities": payload.get("capabilities", {}),
                "children": payload.get("children", []),
@@ -1073,6 +1118,10 @@ class FleetManager:
         return httpx.AsyncClient(**kw)
 
     async def _post(self, base: str, path: str, payload: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
+        try:  # a peer saved before v0.31 (or a hand-edited fleet.json) may hold a url we must not call
+            check_node_url(base)
+        except ValueError as e:
+            raise RuntimeError(f"refusing to call peer url: {e}") from None
         body = json.dumps(payload).encode()
         headers = {"content-type": "application/json", **sign(self.token, "POST", path, body)}
         async with self._client(timeout) as c:

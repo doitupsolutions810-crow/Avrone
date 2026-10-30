@@ -229,6 +229,30 @@ def zlib_error() -> type[Exception]:
     return zlib.error
 
 
+class _CappedStream(io.RawIOBase):
+    """Decompressed view of the bundle that refuses to yield more than ``cap`` bytes in total.
+    The per-member quota checks run on header-declared sizes, but tarfile reads some headers
+    (PAX extended headers, GNU long names) into memory before any member is returned: a 290 KB
+    bundle carrying a 300 MB PAX header used ~1.7 GB of RAM. Capping the stream itself bounds
+    every read, whatever tarfile does with it."""
+
+    def __init__(self, src: Any, cap: int):
+        self._src, self._cap, self.total = src, cap, 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        want = min(len(b), self._cap - self.total + 1)
+        data = self._src.read(want) if want > 0 else self._src.read(1)
+        if data and self.total + len(data) > self._cap:
+            raise PackError("pack expands past the quota (decompression bomb?)")
+        n = len(data)
+        b[:n] = data
+        self.total += n
+        return n
+
+
 def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, bytes]]:
     """Parse and fully verify a bundle in memory. Returns (manifest, memory records, {rel: bytes})."""
     quota = quota_bytes()
@@ -239,7 +263,12 @@ def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict
     blobs: dict[str, bytes] = {}
     man = mem = None
     try:
-        tf = tarfile.open(fileobj=io.BytesIO(bundle), mode="r:gz")
+        import gzip
+        # stream mode ("r|"): no seeking, so every byte tarfile sees passes through the cap; tar
+        # framing (512-byte headers + padding per member) gets generous headroom on top of the quota
+        cap = quota + 1024 * 1024 + 1024 * (MAX_MEMBERS + 4)
+        capped = io.BufferedReader(_CappedStream(gzip.GzipFile(fileobj=io.BytesIO(bundle)), cap))
+        tf = tarfile.open(fileobj=capped, mode="r|")
         # Walk members lazily, checking the count and declared bytes as each header is read: the
         # old getmembers() first decompressed the whole stream (a gzip bomb within the bundle cap).
         while True:

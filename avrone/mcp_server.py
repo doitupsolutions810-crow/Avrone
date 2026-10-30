@@ -120,6 +120,7 @@ class AvroneMCPServer:
         self._out = None
         self._write_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
+        self._inflight = 0  # agent-running tool calls in progress (avrone_squad/chat/deep)
 
     # ---------------------------------------------------------------- core
     async def core(self):
@@ -245,12 +246,25 @@ class AvroneMCPServer:
                 return _ok(json.dumps(core.tools.list(), indent=2), {"tools": core.tools.list()})
             if not task:
                 return _err("'task' is required")
-            ck, release = _checkpoint(core, name, task, args.get("checkpoint_id"))
+            from .server import max_message_chars
+            limit = max_message_chars()
+            first = args.get("first_answer")
+            if len(task) > limit or (isinstance(first, str) and len(first) > limit):
+                return _err(f"task too long (max {limit} characters; AVRONE_MAX_MESSAGE_CHARS)")
+            cap = max_inflight()
+            if self._inflight >= cap:
+                return _err(f"busy: {cap} AVRONE run(s) already in progress (AVRONE_MCP_MAX_INFLIGHT); "
+                            "retry when one finishes")
+            self._inflight += 1
             try:
-                res = await self._run(core, name, task, args, ck)
+                ck, release = _checkpoint(core, name, task, args.get("checkpoint_id"))
+                try:
+                    res = await self._run(core, name, task, args, ck)
+                finally:
+                    if release:
+                        release()
             finally:
-                if release:
-                    release()
+                self._inflight -= 1
         except Exception as e:
             log.exception("tool %s failed", name)
             return _err(f"{type(e).__name__}: {e}")
@@ -288,6 +302,19 @@ def _checkpoint(core: Any, name: str, task: str, ck_id: Any) -> tuple[dict, Any]
     path = managed_path(core.settings.data_dir, sanitize_client_id(ck_id))
     check_compatible(path, task, "squad" if name == "avrone_squad" else "deep")
     return {"checkpoint": path}, claim(path)
+
+
+DEFAULT_MCP_INFLIGHT = 4
+HARD_MCP_INFLIGHT = 64
+
+
+def max_inflight() -> int:
+    """Concurrent agent-running tool calls one MCP client may hold (AVRONE_MCP_MAX_INFLIGHT, 1..64)."""
+    try:
+        n = int(str(os.environ.get("AVRONE_MCP_MAX_INFLIGHT", "")).strip() or DEFAULT_MCP_INFLIGHT)
+    except (TypeError, ValueError):
+        n = DEFAULT_MCP_INFLIGHT
+    return max(1, min(HARD_MCP_INFLIGHT, n))
 
 
 def _clamp_size(size: Any) -> int | None:

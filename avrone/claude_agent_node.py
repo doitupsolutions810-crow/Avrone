@@ -19,7 +19,7 @@ _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _MAX_OBJECTIVE_CHARS = 16_000
 _MAX_TIMEOUT_SECONDS = 900
-_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Task"]
+_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Agent"]
 _DENIED_TOOLS = ["Bash", "WebFetch", "WebSearch", "Computer"]
 
 

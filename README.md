@@ -81,6 +81,30 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.23: Squad round 9 — conclude-bridge hardening, long-horizon learning loop, router bridge view — 2449 tests, coverage 99%
+
+Great Scale form (each finding: heat → mapping → verification; Ψ = CONE when every residual closes).
+
+**Robust lane: the agent ↔ sub-agent conclude Bridge** (`tests/test_robust_v023_bridge.py`, 15 tests). Seven suspected bugs, six reproduced, all six fixed:
+
+| Finding | Before | After |
+|---|---|---|
+| Torn last line (crash mid-write) swallowed the next post on reload | 5/5 fail | 0/20 |
+| `merge_remote` raised on a circular relayed post instead of rejecting it | 5/5 | 0/20 |
+| Evicted posts resurrected by a two-node relay cycle, churning the ring | 5/5 | 0/20 |
+| Eviction memory lost across restart (now a `{"tombstones": [...]}` header, ignored by old readers) | 5/5 | 0/20 |
+| NaN / ±inf / bool timestamps accepted from remote nodes | 5/5 | 0/20 |
+| Two Bridge instances on one file dropped each other's posts at compaction (compaction now re-reads the file under the shared lock) | 1/1 | 0/20 |
+| `distill_lessons` not atomic: concurrent runs both reported the same lesson as new (per-data_dir `lessons_lock`) | 1/5 | 0/20 |
+
+Spoofed-local-origin rejection (7th) left out: no failing case, would be a policy change.
+
+**Tools lane: recursive learning loop, long-horizon.** `research_note` posts a finding/conclusion/question to the run bridge and, for findings and conclusions, stores a deduped lesson under the same key `distill_lessons` uses (says *newly learned* vs *already known*; secrets masked). `lesson_recall` is the read half: topic-ranked recall of what earlier runs concluded, redacted and bounded.
+
+**Skills lane: router bridge + comms docs.** `router_status` shows the model router (primary + `AVRONE_LLM_FALLBACKS` chain, each upstream's circuit closed/open/half-open with cooldown); API keys *and* base URLs are masked (a URL leak via `last_route` was caught by its test and fixed). Skill `agent-comms-and-conclude` documents bridge posting, replies with refs, spawn, conclusion → lessons → next run, and cross-node relay; its test drives a real `run_agent` where a Researcher posts a finding, spawns a Verifier that replies with a conclusion referencing it, and the conclusion distills into a recallable lesson.
+
+**Coverage lane.** `tools_agenthome`, `recon`, `doctor`, `jobqueue`, `agentcontainer`, `research_note`, `lesson_recall`, `router_status` 100%; `bridge`, `presence` 99%. Total 98% → 99%.
+
 ## v0.22: Squad round 8 — root-gateway linking pipeline proven end to end, crossed-order run-scope fix, resumable evolve loops, agent homes — 2366 tests, coverage 98%
 
 - **Root-enabled gateway pipeline** (`tests/test_robust_v022_pipeline.py`, 50 tests): a real signed request goes gateway → `handle_run` → `TrinityCore.chat` → tool call → `priv_shell`/`priv_admin` → runner, offline. With every condition met the allow-listed command runs once and is audited; removing any single condition refuses with its own code and nothing executes.

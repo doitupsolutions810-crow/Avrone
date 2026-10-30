@@ -225,6 +225,33 @@ def test_pick_auto_uses_health(fm):
     assert fm.pick("hot")["node_id"] == "hot"  # explicit target still allowed
 
 
+def test_health_table_sanitizes_legacy_raw_peer_health(fm):
+    # Older/corrupt fleet.json records may predate registration sanitization.
+    huge = 10 ** 10000
+    fm.nodes["legacy-corrupt"] = {
+        "node_id": "legacy-corrupt",
+        "url": "http://legacy-corrupt.test",
+        "last_seen": time.time(),
+        "load": float("inf"),
+        "health": {
+            "headroom": huge,
+            "temp_c": huge,
+            "state": "hot",
+            "active_agents": huge,
+            "private_payload": {"must_not_escape": True},
+        },
+    }
+    row = next(r for r in fm.health_table() if r["node_id"] == "legacy-corrupt")
+    assert row["load"] == 0
+    assert row["health"] == {
+        "headroom": 1.0,
+        "temp_c": 150.0,
+        "state": "hot",
+        "active_agents": 10_000,
+    }
+    assert "private_payload" not in row["health"]
+
+
 def test_health_table_and_tool_and_telemetry(fm, core):
     add(fm, "cool", health=COOL)
     add(fm, "hot", health=HOT)

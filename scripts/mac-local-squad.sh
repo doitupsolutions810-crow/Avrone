@@ -152,6 +152,39 @@ if [ "$lane_status" -ne 0 ]; then
   exit "$lane_status"
 fi
 
-log "lanes finished. Accepted proposals:"
-python -m avrone.cli evolve list 2>/dev/null | tee -a "$OUT/squad.log" || true
-log "results in $OUT  -  review with: python -m avrone.cli evolve diff <id>"
+# Read accepted proposals from each lane's own data directory. The CLI emits
+# JSON for --json; require at least two all-green proposals per selected lane.
+proposal_status=0
+for selected_lane in $LANES; do
+  lane_data="$DRIVE/avrone-data/$selected_lane"
+  proposal_report="$OUT/$selected_lane.accepted.json"
+  proposal_tmp="$proposal_report.tmp"
+  log "checking accepted proposals for lane $selected_lane"
+  if AVRONE_DATA_DIR="$lane_data" python -m avrone.cli evolve --json "$proposal_report" > "$proposal_tmp" 2> "$OUT/$selected_lane.evolve.err"; then
+    if mv "$proposal_tmp" "$proposal_report"; then
+      accepted_count=$(python -c 'import json,sys; rows=json.load(open(sys.argv[1])); print(len(rows) if isinstance(rows,list) else -1)' "$proposal_report" 2>/dev/null)
+      case "$accepted_count" in
+        ''|*[!0-9]*) log "lane $selected_lane proposal report is invalid"; proposal_status=1 ;;
+        *)
+          log "lane $selected_lane accepted proposals=$accepted_count"
+          if [ "$accepted_count" -lt 2 ]; then
+            log "lane $selected_lane did not meet the two-accepted-change requirement"
+            proposal_status=1
+          fi
+          ;;
+      esac
+    else
+      log "could not save lane $selected_lane proposal report"
+      proposal_status=1
+    fi
+  else
+    log "could not list accepted proposals for lane $selected_lane; see $OUT/$selected_lane.evolve.err"
+    proposal_status=1
+  fi
+done
+if [ "$proposal_status" -ne 0 ]; then
+  log "squad did not meet the acceptance threshold; review lane reports before integrating"
+  exit 1
+fi
+log "all selected lanes have at least two accepted proposals"
+log "results in $OUT  -  review with: python -m avrone.cli evolve --json <path>"

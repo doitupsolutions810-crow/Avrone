@@ -36,3 +36,13 @@ def test_mac_local_squad_bounds_setup_and_baseline_stages():
     assert "timeout 900 ollama run" in script
     assert 'timeout 1800 pip install' in script
     assert 'timeout "$LANE_TIMEOUT" python -m pytest' in script
+
+
+
+def test_mac_local_squad_enforces_two_accepted_proposals_per_lane():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    assert 'python -m avrone.cli evolve --json "$proposal_report"' in script
+    assert 'accepted_count -lt 2' in script
+    assert 'AVRONE_DATA_DIR="$lane_data"' in script
+    assert 'exit 1' in script
+    assert "python -m avrone.cli evolve list" not in script

@@ -31,6 +31,25 @@ def test_telemetry_skips_non_event_json_bad_timestamps_and_bad_lines(tmp_path):
     assert got == [{"ts": now, "kind": "run.start", "run_id": "good"}]
 
 
+def test_telemetry_skips_timestamp_when_finiteness_check_overflows(tmp_path, monkeypatch):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    (log_dir / "events.jsonl").write_text(
+        json.dumps({"ts": int(now), "kind": "run.start", "run_id": "overflow"}) + "\n",
+        encoding="utf-8",
+    )
+    original = telemetry.math.isfinite
+
+    def finite_or_overflow(value):
+        if isinstance(value, int):
+            raise OverflowError("timestamp cannot be represented as finite float")
+        return original(value)
+
+    monkeypatch.setattr(telemetry.math, "isfinite", finite_or_overflow)
+    assert list(telemetry._iter_events(log_dir, now - 5)) == []
+
+
 def test_telemetry_skips_one_bad_encoding_file_without_losing_good_events(tmp_path):
     log_dir = tmp_path / "events"
     log_dir.mkdir()

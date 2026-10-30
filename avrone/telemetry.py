@@ -60,7 +60,13 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
             if not isinstance(ev, dict):
                 continue
             ts = ev.get("ts", 0)
-            if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
+            if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                continue
+            try:
+                finite_timestamp = math.isfinite(ts)
+            except (OverflowError, TypeError, ValueError):
+                continue
+            if not finite_timestamp:
                 continue
             if ts >= since:
                 yield ev

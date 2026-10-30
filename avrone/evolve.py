@@ -660,6 +660,8 @@ def _resume_start(ctx: "AgentContext", loop_id: str, candidates: list | None, ed
     try:
         raw = json.loads(p.read_text())
     except (OSError, ValueError):
+        raw = None
+    if not isinstance(raw, dict):
         return {"error": f"ERROR: loop {loop_id} file is unreadable; cannot resume", "loop_id": None}
     rows = [r for r in (raw.get("iterations") or []) if isinstance(r, dict)]
     if raw.get("accepted") or any(r.get("outcome") == "accepted" or r.get("passed") is True for r in rows):

@@ -26,6 +26,7 @@ reviewers read what the first wave concluded.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -99,6 +100,14 @@ def _refs(refs: Any) -> list[str]:
     return out
 
 
+def _remote_ts(ts: Any) -> float:
+    """A relayed post's ts: finite, non-bool number, else now."""
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return time.time()
+    ts = float(ts)
+    return ts if math.isfinite(ts) and ts > 0 else time.time()
+
+
 class BridgeError(ValueError):
     """A post refused (bad kind, empty text, unknown refs)."""
 
@@ -119,6 +128,7 @@ class Bridge:
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(key, threading.RLock())
         self._posts: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._evicted: "OrderedDict[str, None]" = OrderedDict()  # tombstones: ids the ring dropped
         self._lines = 0
         self._load()
 
@@ -131,14 +141,46 @@ class Bridge:
                 text = self.path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 return
-            for line in text.splitlines():
-                rec = self._parse(line)
-                if rec is None:
-                    continue
-                self._lines += 1
-                self._posts.pop(rec["id"], None)
-                self._posts[rec["id"]] = rec
-            self._trim()
+            self._replay(text)
+
+    def _replay(self, text: str) -> None:
+        """Rebuild the ring from file text (call with the lock held)."""
+        self._posts.clear()
+        self._lines = 0
+        for line in text.splitlines():
+            tomb = self._parse_tombstones(line)
+            if tomb is not None:
+                for t in tomb:
+                    self._tomb(t)
+                continue
+            rec = self._parse(line)
+            if rec is None:
+                continue
+            self._lines += 1
+            if rec["id"] in self._evicted:
+                continue
+            self._posts.pop(rec["id"], None)
+            self._posts[rec["id"]] = rec
+        self._trim()
+
+    @staticmethod
+    def _parse_tombstones(line: str) -> list[str] | None:
+        if '"tombstones"' not in line:
+            return None
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, RecursionError):
+            return None
+        if not isinstance(rec, dict) or set(rec) != {"tombstones"} or not isinstance(rec["tombstones"], list):
+            return None
+        return [t for t in rec["tombstones"] if isinstance(t, str) and _ID_RE.match(t)]
+
+    def _tomb(self, post_id: str) -> None:
+        self._evicted.pop(post_id, None)
+        self._evicted[post_id] = None
+        cap = max(64, 4 * self.limit)
+        while len(self._evicted) > cap:
+            self._evicted.popitem(last=False)
 
     @staticmethod
     def _parse(line: str) -> dict[str, Any] | None:
@@ -161,22 +203,31 @@ class Bridge:
         if self.path is None or not recs:
             return
         try:
-            if self._lines + len(recs) > 2 * self.limit:  # compact: rewrite the live posts
+            with self.path.open("a+b") as f:
+                f.seek(0, os.SEEK_END)
+                lead = b""
+                if f.tell() > 0:  # a torn last line (crash mid-write) must not swallow this post
+                    f.seek(-1, os.SEEK_END)
+                    if f.read(1) != b"\n":
+                        lead = b"\n"
+                f.seek(0, os.SEEK_END)
+                f.write(lead + "".join(json.dumps(r, default=str) + "\n" for r in recs).encode("utf-8"))
+            self._lines += len(recs)
+            if self._lines > 2 * self.limit:  # compact from the FILE, so other instances' posts survive
+                self._replay(self.path.read_text(encoding="utf-8", errors="replace"))
                 tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                head = json.dumps({"tombstones": list(self._evicted)}) + "\n" if self._evicted else ""
                 with tmp.open("w", encoding="utf-8") as f:
-                    f.write("".join(json.dumps(r, default=str) + "\n" for r in self._posts.values()))
+                    f.write(head + "".join(json.dumps(r, default=str) + "\n" for r in self._posts.values()))
                 os.replace(tmp, self.path)
                 self._lines = len(self._posts)
-            else:
-                with self.path.open("a", encoding="utf-8") as f:
-                    f.write("".join(json.dumps(r, default=str) + "\n" for r in recs))
-                self._lines += len(recs)
         except OSError:
             pass  # the in-memory bridge still works; persistence is best effort
 
     def _trim(self) -> None:
         while len(self._posts) > self.limit:
-            self._posts.popitem(last=False)
+            pid, _ = self._posts.popitem(last=False)
+            self._tomb(pid)
 
     # ------------------------------------------------------------ writes
     def post(self, agent: str, kind: str, text: str, refs: Iterable[str] | None = None,
@@ -220,17 +271,19 @@ class Bridge:
         fresh: list[dict[str, Any]] = []
         with self._lock:
             for p in posts if isinstance(posts, list) else []:
-                rec = self._parse(json.dumps(p, default=str)) if isinstance(p, dict) else None
+                try:
+                    rec = self._parse(json.dumps(p, default=str)) if isinstance(p, dict) else None
+                except (ValueError, TypeError, RecursionError):  # circular / absurdly nested
+                    rec = None
                 if rec is None:
                     stats["rejected"] += 1
                     continue
-                if rec["id"] in self._posts:
+                if rec["id"] in self._posts or rec["id"] in self._evicted:
                     stats["skipped"] += 1
                     continue
                 rec = {"id": rec["id"], "run_id": self.run_id, "agent": str(rec.get("agent") or "agent")[:80],
                        "role": str(rec.get("role") or "")[:60], "kind": rec["kind"], "text": rec["text"],
-                       "refs": rec["refs"], "ts": float(rec.get("ts") or time.time())
-                       if isinstance(rec.get("ts"), (int, float)) else time.time(),
+                       "refs": rec["refs"], "ts": _remote_ts(rec.get("ts")),
                        "origin_node": str(rec.get("origin_node") or origin)[:80]}
                 self._posts[rec["id"]] = rec
                 fresh.append(rec)
@@ -478,6 +531,16 @@ def _words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(text).lower()) if w not in _STOP}
 
 
+_LESSON_LOCKS: dict[str, threading.RLock] = {}
+
+
+def lessons_lock(data_dir: Path | str) -> threading.RLock:
+    """One lock per data_dir guarding lesson load-check-save (shared by research_note)."""
+    key = str(Path(data_dir).resolve())
+    with _LOCKS_GUARD:
+        return _LESSON_LOCKS.setdefault(key, threading.RLock())
+
+
 def _store(data_dir: Path | str):
     from .memstore import MemoryStore
     return MemoryStore(Path(data_dir) / "memory.jsonl")
@@ -502,17 +565,18 @@ def distill_lessons(data_dir: Path | str, bridge: "Bridge", task: str = "", k: i
             break
     if not picks:
         return []
-    store = _store(data_dir)
-    have = store.load(LESSONS_NS)
-    saved: list[str] = []
-    for t in picks:
-        key = lesson_key(t)
-        if key in have or key in saved:
-            continue
-        store.save(LESSONS_NS, key, t, run_id=bridge.run_id, task=str(task)[:200])
-        saved.append(key)
-    if saved:
-        store.trim(LESSONS_NS, lessons_max())
+    with lessons_lock(data_dir):  # load-check-save is one step, so concurrent runs never both "learn" a key
+        store = _store(data_dir)
+        have = store.load(LESSONS_NS)
+        saved: list[str] = []
+        for t in picks:
+            key = lesson_key(t)
+            if key in have or key in saved:
+                continue
+            store.save(LESSONS_NS, key, t, run_id=bridge.run_id, task=str(task)[:200])
+            saved.append(key)
+        if saved:
+            store.trim(LESSONS_NS, lessons_max())
     return saved
 
 

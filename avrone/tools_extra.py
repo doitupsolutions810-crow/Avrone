@@ -1222,3 +1222,9 @@ def register_extra_tools(registry) -> None:
     register_fleetstatus_tools(registry)
     from .tools_flakeprobe import register_flakeprobe_tools
     register_flakeprobe_tools(registry)
+    from .tools_routerstatus import register_routerstatus_tools
+    register_routerstatus_tools(registry)
+    from .tools_researchnote import register_researchnote_tools
+    register_researchnote_tools(registry)
+    from .tools_lessonrecall import register_lessonrecall_tools
+    register_lessonrecall_tools(registry)

@@ -389,3 +389,14 @@ def test_privileged_pairwise_signature_binds_exact_request_body(core, tmp_path, 
     forged[PRIVILEGED_SIGNATURE_HEADER] = headers[PRIVILEGED_SIGNATURE_HEADER]
     e = refused(fm, body=changed, headers=forged)
     assert e.code == "privileged_peer_signature" and e.auth
+
+
+def test_receiver_without_pairwise_peer_key_refuses_privileged_request(core, tmp_path, monkeypatch):
+    fm = node(
+        core, tmp_path, monkeypatch, toggle="allow", listed="router",
+        AVRONE_PRIVILEGED_PEER_KEYS="{}",
+    )
+    body, headers = signed(priv_payload())
+    e = refused(fm, body=body, headers=headers)
+    assert e.code == "privileged_peer_key_missing" and not e.auth
+    assert ev(core, "fleet.privileged.refused")[-1].kwargs["code"] == "privileged_peer_key_missing"

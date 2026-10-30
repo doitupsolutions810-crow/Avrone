@@ -201,6 +201,7 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
         log.exception("fleet failed")
 
     ext["tool_sources"] = _sources(registry)
+    apply_tool_focus(registry)
     return core, cleanups
 
 
@@ -213,3 +214,22 @@ async def run_cleanups(cleanups: list[Cleanup]) -> None:
                 await res
         except Exception:
             log.exception("cleanup failed")
+
+
+
+def apply_tool_focus(registry, spec: str | None = None) -> list[str]:
+    """Trim the registry to a comma-separated allowlist (AVRONE_TOOLS_ONLY).
+
+    Small local models have short context windows; 75 tool docs (~5k tokens)
+    crowd out the task. Unknown names are ignored; an empty/unset spec keeps all.
+    Returns the names that were removed.
+    """
+    import os
+    spec = os.environ.get("AVRONE_TOOLS_ONLY", "") if spec is None else spec
+    keep = {s.strip() for s in spec.split(",") if s.strip()}
+    if not keep:
+        return []
+    removed = [n for n in registry.names() if n not in keep]
+    for n in removed:
+        registry.unregister(n)
+    return removed

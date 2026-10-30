@@ -341,8 +341,7 @@ def test_task_board_edges(tmp_path):
     n_events = len([e for e in events if e[0][1] == "task.board"])
     run(agentkit.t_task_board(c, {"op": "list"}))
     assert len([e for e in events if e[0][1] == "task.board"]) == n_events  # list doesn't emit
-    with pytest.raises(KeyError):
-        run(agentkit.t_task_board(c, {"op": "add"}))
+    assert run(agentkit.t_task_board(c, {"op": "add"})) == "ERROR: op=add needs a title"
 
 
 def test_task_board_empty_run_id(tmp_path):

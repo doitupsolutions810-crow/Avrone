@@ -441,15 +441,18 @@ class FleetManager:
         self.data_dir = Path(data_dir)
         self.path = Path(data_dir) / "fleet.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        saved = json.loads(self.path.read_text()) if self.path.exists() else {}
-        nid = _env("AVRONE_NODE_ID") or saved.get("node_id")
+        saved = self._load_saved()
+        nid = _env("AVRONE_NODE_ID") or (saved.get("node_id") if isinstance(saved.get("node_id"), str) else None)
         if not nid:
             base = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().lower()).strip("-")[:40]
             nid = f"{base or 'node'}-{secrets.token_hex(3)}"
         if not ID_RE.match(nid):
             raise ValueError(f"AVRONE_NODE_ID {nid!r} must match {ID_RE.pattern}")
         self.node_id = nid
-        self.nodes: dict[str, dict[str, Any]] = saved.get("nodes", {})
+        raw_nodes = saved.get("nodes")
+        self.nodes: dict[str, dict[str, Any]] = (
+            {k: v for k, v in raw_nodes.items() if isinstance(k, str) and isinstance(v, dict)}
+            if isinstance(raw_nodes, dict) else {})
         self._nonces: dict[str, float] = {}
         self._task: asyncio.Task | None = None
         self._thermal_task: asyncio.Task | None = None
@@ -538,6 +541,25 @@ class FleetManager:
     @property
     def enabled(self) -> bool:
         return bool(self.token)
+
+    def _load_saved(self) -> dict[str, Any]:
+        """fleet.json, or {} when missing. A corrupt file (disk error, manual edit) must not stop the
+        node from booting: it is moved aside as fleet.json.corrupt-<ts> and the node starts fresh."""
+        if not self.path.exists():
+            return {}
+        try:
+            saved = json.loads(self.path.read_text())
+        except (OSError, ValueError, UnicodeDecodeError):
+            saved = None
+        if isinstance(saved, dict):
+            return saved
+        aside = self.path.with_name(f"{self.path.name}.corrupt-{int(time.time())}")
+        try:
+            os.replace(self.path, aside)
+        except OSError:
+            pass
+        log.warning("fleet.json was unreadable; moved to %s and starting with an empty registry", aside.name)
+        return {}
 
     def _save(self) -> None:
         # temp file + os.replace: a concurrent or interrupted save never leaves a torn fleet.json

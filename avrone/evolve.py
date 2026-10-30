@@ -660,6 +660,8 @@ def _resume_start(ctx: "AgentContext", loop_id: str, candidates: list | None, ed
     try:
         raw = json.loads(p.read_text())
     except (OSError, ValueError):
+        raw = None
+    if not isinstance(raw, dict):
         return {"error": f"ERROR: loop {loop_id} file is unreadable; cannot resume", "loop_id": None}
     rows = [r for r in (raw.get("iterations") or []) if isinstance(r, dict)]
     if raw.get("accepted") or any(r.get("outcome") == "accepted" or r.get("passed") is True for r in rows):
@@ -719,8 +721,15 @@ def _finish_abnormally(ctx: "AgentContext", loop_id: str, status: str, stopped: 
         m = json.loads(p.read_text())
     except (OSError, ValueError):
         m = {"loop_id": loop_id, "iterations": []}
+    if not isinstance(m, dict):
+        m = {"loop_id": loop_id, "iterations": []}
     m.update(status=status, stopped=stopped)
-    p.write_text(json.dumps(m))
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(m))
+        os.replace(tmp, p)  # atomic: a crash here never leaves the loop file torn
+    except OSError:
+        tmp.unlink(missing_ok=True)
     _cancel_path(ctx, loop_id).unlink(missing_ok=True)
     record_history(ctx, m)
 
@@ -1107,8 +1116,8 @@ def list_accepted(settings) -> list[dict[str, Any]]:
         for f in sorted(d.glob("*.json")):
             try:
                 m = json.loads(f.read_text())
-            except ValueError:
+            except (OSError, ValueError):
                 continue
-            if m.get("passed"):
-                out.append({k: m[k] for k in ("pid", "goal", "branch", "files", "by", "ts")})
+            if isinstance(m, dict) and m.get("passed") and isinstance(m.get("pid"), str):
+                out.append({k: m.get(k) for k in ("pid", "goal", "branch", "files", "by", "ts")})
     return out

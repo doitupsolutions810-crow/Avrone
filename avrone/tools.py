@@ -73,12 +73,40 @@ def _type_ok(value: Any, spec: str) -> bool:
     return False
 
 
+_DOC_KEY_RE = re.compile(r'"([A-Za-z_][A-Za-z0-9_]*)"(\?)?\s*:\s*(str|int|float|bool)\b(?!\s*\|)')
+
+
+def infer_schema(args_doc: str) -> dict[str, dict[str, str]] | None:
+    """A conservative schema from a builtin tool's args_doc: only top-level REQUIRED keys of a plain
+    scalar type become required (so a missing "host" is an ARG ERROR before the tool runs). Optional
+    keys are left to the tool body (models often send "5" for an int). Nothing to require gives {}
+    (an object is still required); docs with alternatives ("... or {...}") give None (no pre-check)."""
+    doc = str(args_doc or "").strip()
+    if not doc.startswith("{") or " or {" in doc:
+        return None
+    depth, top = 0, []
+    for ch in doc:  # keep only depth-1 text so nested {"path": str} inside lists is ignored
+        if ch in "{[":
+            depth += 1
+            top.append(" " if depth > 1 else ch)
+            continue
+        if ch in "}]":
+            depth -= 1
+            top.append(" ")
+            continue
+        top.append(ch if depth == 1 else " ")
+    req = {k: t for k, opt, t in _DOC_KEY_RE.findall("".join(top)) if not opt}
+    return {"required": req} if req else {}
+
+
 def validate_args(schema: dict[str, dict[str, str]] | None, args: Any) -> list[str]:
     """Problems with `args` against `schema` (empty list = fine)."""
+    if schema is None:
+        return []
+    if not isinstance(args, dict):  # {} still means "an object, any keys"
+        return [f"args must be a JSON object, got {type(args).__name__}"]
     if not schema:
         return []
-    if not isinstance(args, dict):
-        return [f"args must be a JSON object, got {type(args).__name__}"]
     problems: list[str] = []
     for key, spec in (schema.get("required") or {}).items():
         if key not in args or args[key] is None:
@@ -100,6 +128,8 @@ class ToolRegistry:
             raise ValueError(f"bad tool name: {tool.name!r}")
         if tool.schema is None and tool.source == "builtin" and tool.name in CORE_SCHEMAS:
             tool.schema = CORE_SCHEMAS[tool.name]
+        if tool.schema is None and tool.source == "builtin":
+            tool.schema = infer_schema(tool.args_doc)
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> None:
@@ -150,10 +180,19 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             return self.unknown_message(name)
+        if args is None:
+            args = {}
+        # Defense in depth for entry points that skip check() (MCP, fleet, admin, direct calls):
+        # a tool body never sees a list/str where it expects an object. (Typed per-field checks stay
+        # in check() and in each tool, which give the model their own, more specific messages.)
+        if not isinstance(args, dict):
+            return (f"ARG ERROR ({name}): args must be a JSON object, got {type(args).__name__}; "
+                    f"expected {tool.args_doc}. The tool did not run.")
         try:
-            return await tool.fn(ctx, args)
+            out = await tool.fn(ctx, args)
         except Exception as e:  # errors go back to the agent
             return f"ERROR: {type(e).__name__}: {e}"
+        return out if isinstance(out, str) else str(out)
 
 
 def _safe_path(root: Path, rel: str) -> Path:

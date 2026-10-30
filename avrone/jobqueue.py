@@ -27,6 +27,11 @@ CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, priority DESC, created);
 """
 
 
+def _reject_json_constant(value: str) -> None:
+    """Reject non-standard JSON constants such as NaN and Infinity in persisted state."""
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
 class JobQueue:
     def __init__(self, path: Path, lease_s: float = 900):
         self.path = Path(path)
@@ -102,7 +107,7 @@ class JobQueue:
                 if not row:
                     return None
                 try:
-                    payload = json.loads(row[2])
+                    payload = json.loads(row[2], parse_constant=_reject_json_constant)
                     if not isinstance(payload, dict):
                         raise ValueError("payload is not an object")
                 except (json.JSONDecodeError, TypeError, ValueError):
@@ -156,7 +161,7 @@ class JobQueue:
                     d[k] = None
                     continue
                 try:
-                    d[k] = json.loads(d[k])
+                    d[k] = json.loads(d[k], parse_constant=_reject_json_constant)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     # Keep status inspectable even if the database was modified or
                     # damaged outside this API. Preserve the raw bytes nowhere in output.

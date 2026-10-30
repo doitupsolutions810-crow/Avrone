@@ -108,7 +108,7 @@ def test_telemetry_skips_one_bad_encoding_file_without_losing_good_events(tmp_pa
     ]
 
 
-@pytest.mark.parametrize("raw_payload", ["{bad-json", "null", "[]", "42"])
+@pytest.mark.parametrize("raw_payload", ["{bad-json", "null", "[]", "42", '{"score":NaN}', '{"score":Infinity}', '{"score":-Infinity}'])
 def test_job_queue_quarantines_poison_payload_and_keeps_processing(raw_payload, tmp_path):
     async def go():
         q = jobqueue.JobQueue(tmp_path / "jobs.db")
@@ -127,6 +127,20 @@ def test_job_queue_quarantines_poison_payload_and_keeps_processing(raw_payload, 
             assert bad["payload"] is None
             assert "invalid persisted payload" in bad["error"]
             assert (await q.stats()).get("dead") == 1
+        finally:
+            await q.close()
+    asyncio.run(go())
+
+
+def test_job_queue_inspection_rejects_nonfinite_persisted_result(tmp_path):
+    async def go():
+        q = jobqueue.JobQueue(tmp_path / "result-poison.db")
+        try:
+            jid = await q.enqueue("result", {"ok": True})
+            q._db.execute("UPDATE jobs SET result=? WHERE id=?", ('{"score":NaN}', jid))
+            row = await q.get(jid)
+            assert row["status"] == "queued"
+            assert row["result"] is None
         finally:
             await q.close()
     asyncio.run(go())

@@ -117,3 +117,44 @@ async def test_missing_expected_audience_fails_closed(monkeypatch, envelope):
     monkeypatch.setattr(adapter, "urlopen", lambda *a, **k: FakeResponse(signed_payload(key)))
     with pytest.raises(adapter.AuthorityUnavailable, match="does not match requested authority"):
         await adapter.authorize_with_capability_authority(envelope)
+
+
+@pytest.mark.asyncio
+async def test_production_rejects_plain_http_authority(monkeypatch, envelope):
+    key = Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv("AVRONE_PLANE_PUBLIC_KEY_B64", base64.b64encode(pub).decode())
+    monkeypatch.setenv("PRODUCTION", "1")
+    monkeypatch.setattr(
+        adapter, "urlopen", lambda *a, **k: pytest.fail("plain HTTP must be rejected before network")
+    )
+
+    with pytest.raises(adapter.AuthorityUnavailable, match="must use HTTPS with mTLS"):
+        await adapter.authorize_with_capability_authority(
+            envelope, base_url="http://authority.example"
+        )
+
+
+@pytest.mark.asyncio
+async def test_nonproduction_rejects_nonloopback_plain_http(monkeypatch, envelope):
+    key = Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv("AVRONE_PLANE_PUBLIC_KEY_B64", base64.b64encode(pub).decode())
+    monkeypatch.delenv("PRODUCTION", raising=False)
+    monkeypatch.delenv("AVRONE_PRODUCTION", raising=False)
+    monkeypatch.delenv("PLANE_PRODUCTION", raising=False)
+    monkeypatch.delenv("SPIFFE_REQUIRED", raising=False)
+    monkeypatch.setattr(
+        adapter, "urlopen", lambda *a, **k: pytest.fail("remote HTTP must be rejected")
+    )
+
+    with pytest.raises(adapter.AuthorityUnavailable, match="restricted to loopback"):
+        await adapter.authorize_with_capability_authority(
+            envelope, base_url="http://authority.example"
+        )

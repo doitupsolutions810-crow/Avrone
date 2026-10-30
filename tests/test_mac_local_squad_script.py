@@ -27,3 +27,12 @@ def test_mac_local_squad_uses_unique_run_directory_and_real_timeout_wrapper():
     assert 'OUT="$DRIVE/avrone-runs/round5-$(date +%Y%m%d-%H%M%S)-$$"' in script
     assert 'timeout() { command gtimeout "$@"; }' in script
     assert "alias timeout=gtimeout" not in script
+
+
+
+def test_mac_local_squad_bounds_setup_and_baseline_stages():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    assert 'timeout "$LANE_TIMEOUT" ollama pull "$MODEL"' in script
+    assert "timeout 900 ollama run" in script
+    assert 'timeout 1800 pip install' in script
+    assert 'timeout "$LANE_TIMEOUT" python -m pytest' in script

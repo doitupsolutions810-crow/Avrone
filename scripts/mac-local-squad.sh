@@ -43,6 +43,14 @@ export OLLAMA_MODELS="$DRIVE/ollama-models"
 
 log(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$OUT/squad.log"; }
 
+# Use a real timeout command for every long-running install, baseline and agent lane.
+if ! command -v timeout >/dev/null 2>&1; then
+  command -v brew >/dev/null || { log "timeout is unavailable and Homebrew is missing"; exit 1; }
+  brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded execution"; exit 1; }
+  command -v gtimeout >/dev/null 2>&1 || { log "gtimeout was not installed"; exit 1; }
+  timeout() { command gtimeout "$@"; }
+fi
+
 # 1. Ollama
 if ! command -v ollama >/dev/null; then
   command -v brew >/dev/null || { echo "Install Homebrew first: https://brew.sh"; exit 1; }
@@ -59,10 +67,14 @@ curl -s -m 3 http://127.0.0.1:11434/api/version >/dev/null || { log "ollama did 
 
 # 2. Model
 if ! ollama list | awk '{print $1}' | grep -qx "$MODEL"; then
-  log "pulling $MODEL (large download, one time)"; ollama pull "$MODEL" || exit 1
+  log "pulling $MODEL (large download, one time)"
+  if ! timeout "$LANE_TIMEOUT" ollama pull "$MODEL"; then
+    log "model pull failed or exceeded LANE_TIMEOUT"
+    exit 1
+  fi
 fi
 log "warming $MODEL"
-if ! ollama run "$MODEL" "say ready" </dev/null > "$OUT/model-warmup.log" 2>&1; then
+if ! timeout 900 ollama run "$MODEL" "say ready" </dev/null > "$OUT/model-warmup.log" 2>&1; then
   log "model warmup failed; see $OUT/model-warmup.log"
   tail -20 "$OUT/model-warmup.log"
   exit 1
@@ -80,7 +92,7 @@ if [ ! -d .venv ]; then
 fi
 [ -f .venv/bin/activate ] || { log ".venv is incomplete; refusing to use ambient Python"; exit 1; }
 source .venv/bin/activate || { log "could not activate .venv"; exit 1; }
-if ! pip install -q -e ".[dev]" > "$OUT/install.log" 2>&1; then
+if ! timeout 1800 pip install -q -e ".[dev]" > "$OUT/install.log" 2>&1; then
   log "editable install failed; tail:"
   tail -25 "$OUT/install.log"
   exit 1
@@ -89,7 +101,7 @@ fi
 # 4. Check the tests pass before any lane runs
 if [ "${SKIP_GATE:-0}" != "1" ]; then
   log "running baseline gate"
-  if ! python -m pytest -q -m "not integration" -x > "$OUT/baseline.txt" 2>&1; then
+  if ! timeout "$LANE_TIMEOUT" python -m pytest -q -m "not integration" -x > "$OUT/baseline.txt" 2>&1; then
     log "baseline RED - fix main before evolving. tail:"; tail -15 "$OUT/baseline.txt"; exit 1
   fi
   log "baseline: $(tail -1 "$OUT/baseline.txt")"
@@ -118,13 +130,6 @@ lane(){
   log "lane $1 failed rc=$rc; inspect $OUT/$1.err and $OUT/$1.txt"
   return 1
 }
-if ! command -v timeout >/dev/null 2>&1; then
-  command -v brew >/dev/null || { log "timeout is unavailable and Homebrew is missing"; exit 1; }
-  brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded lane execution"; exit 1; }
-  command -v gtimeout >/dev/null 2>&1 || { log "gtimeout was not installed"; exit 1; }
-  timeout() { command gtimeout "$@"; }
-fi
-
 lane deepcov "DEEP COVERAGE: avrone/trinity.py, avrone/evolve.py, avrone/gateway.py uncovered error/edge branches. New files like tests/test_trinity_deep_r5.py. Land TWO accepted." &
 pids=("$!")
 lane newmods "COVERAGE for newest modules: avrone/governor.py, greatscale.py, checkpoint.py, memstore.py, agentfs.py, fsunify.py, bridge.py. New files tests/test_*_r5.py. Land TWO accepted." &

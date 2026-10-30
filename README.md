@@ -412,7 +412,7 @@ pip install -e '.[claude-agent]'
 The guest entry point is `avrone.claude_agent_node.execute_claude_agent_node`.
 It requires a provider-created `ClaudeVMLease`, a server-originated task
 objective, and explicit `AVRONE_CLAUDE_SDK_ENABLED=1`. The SDK worker exposes
-only Read/Write/Edit/Glob/Grep and the Task subagent tool; Bash, web, computer,
+only Read/Write/Edit/Glob/Grep and the Agent subagent tool; Bash, web, computer,
 Docker and ambient MCP/config sources are excluded. It uses bounded turns and
 a per-task USD ceiling. The agent summary is not an artifact receipt.
 

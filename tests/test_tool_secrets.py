@@ -19,9 +19,9 @@ def ctx(tmp_path):
 def test_registered_and_acting():
     r = builtin_registry()
     register_extra_tools(r)
-    assert r.get("secret_scan")
+    assert r.get("secret_scan") and r.get("mcp_selftest")
     from avrone.tools_statehealth import ACTING
-    assert "secret_scan" in ACTING
+    assert "secret_scan" in ACTING and "mcp_selftest" not in ACTING
     assert r.check("secret_scan", {"fix": "yes"})[0] == "bad_args"
 
 
@@ -71,3 +71,18 @@ def test_caps(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "MAX_SHOWN", 5)
     out = run(ts.t_secret_scan(ctx(tmp_path), {}))
     assert "(file cap reached)" in out and "... 35 more" in out
+
+
+def test_mcp_selftest_pass_and_fail(monkeypatch):
+    out = run(ts.t_mcp_selftest(None, {}))
+    assert out.startswith("mcp_selftest: PASS") and "avrone_squad" in out and "FAILED" not in out
+
+    async def boom():
+        raise RuntimeError("x")
+    monkeypatch.setattr(ts, "mcp_selftest", boom)
+    assert "FAIL - server raised RuntimeError" in run(ts.t_mcp_selftest(None, {}))
+
+    async def partial():
+        return {"protocol": "x", "server": {}, "tools": [], "checks": {"ping": False}}
+    monkeypatch.setattr(ts, "mcp_selftest", partial)
+    assert "ping: FAILED" in run(ts.t_mcp_selftest(None, {}))

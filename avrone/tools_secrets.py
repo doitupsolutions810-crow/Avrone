@@ -136,11 +136,65 @@ async def t_secret_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def mcp_selftest() -> dict[str, Any]:
+    from . import mcp_server
+    from .tools import builtin_registry
+
+    async def fac():
+        class _Core:
+            tools = builtin_registry()
+        return _Core(), {}
+
+    class _Out(io.BytesIO):
+        def flush(self) -> None:
+            pass
+    reqs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": [1]},
+            {"jsonrpc": "2.0", "id": 5, "method": 7},
+            {"jsonrpc": "2.0", "id": 6, "method": "no/such"}]
+    r = asyncio.StreamReader()
+    for q in reqs:
+        r.feed_data((json.dumps(q) + "\n").encode())
+    r.feed_eof()
+    out = _Out()
+    await mcp_server.AvroneMCPServer(fac).serve(r, out)
+    got = {m.get("id"): m for m in (json.loads(x) for x in out.getvalue().decode().splitlines())}
+    checks = {
+        "initialize": "result" in got.get(1, {}),
+        "ping": got.get(2, {}).get("result") == {},
+        "tools/list": bool(got.get(3, {}).get("result", {}).get("tools")),
+        "bad params -> -32602": got.get(4, {}).get("error", {}).get("code") == -32602,
+        "bad method -> -32600": got.get(5, {}).get("error", {}).get("code") == -32600,
+        "unknown method -> -32601": got.get(6, {}).get("error", {}).get("code") == -32601,
+    }
+    return {"protocol": got.get(1, {}).get("result", {}).get("protocolVersion"),
+            "server": got.get(1, {}).get("result", {}).get("serverInfo", {}),
+            "tools": [t.get("name") for t in got.get(3, {}).get("result", {}).get("tools", [])],
+            "checks": checks}
+
+
+async def t_mcp_selftest(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    try:
+        r = await mcp_selftest()
+    except Exception as e:  # noqa: BLE001
+        return f"mcp_selftest: FAIL - server raised {type(e).__name__}"
+    failed = [k for k, ok in r["checks"].items() if not ok]
+    srv = r["server"]
+    return "\n".join([f"mcp_selftest: {'PASS' if not failed else 'FAIL'} - protocol {r['protocol']}, "
+                      f"{srv.get('name', '?')} {srv.get('version', '?')}, {len(r['tools'])} tool(s): "
+                      + ", ".join(r["tools"])]
+                     + [f"- {k}: {'ok' if ok else 'FAILED'}" for k, ok in r["checks"].items()])
+
+
 SECRET_TOOLS = [
     Tool("secret_scan", "read-only by default: find secret-shaped strings in this node's run logs, data dir or "
          "workspace (path:line and kind, never the value); fix=true redacts run logs in place.",
          '{"scope"?: "runs"|"data"|"workspace", "fix"?: bool}', t_secret_scan, source="builtin",
          schema={"optional": {"scope": "str", "fix": "bool"}}),
+    Tool("mcp_selftest", "read-only: drive this node's MCP server in-process and check the protocol handshake, "
+         "tool list and error handling.", "{}", t_mcp_selftest, source="builtin", schema={}),
 ]
 
 

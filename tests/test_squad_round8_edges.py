@@ -80,9 +80,9 @@ def test_telemetry_aggregation_normalizes_untrusted_mode_and_rejects_nonfinite_r
          "data": {"mode": "chat"}},
     ]
     path = log_dir / "events.jsonl"
+    raw_bad_id = '{"ts":' + str(now) + ',"kind":"run.start","agent":"A","run_id":NaN,"data":{"mode":"bad-id"}}'
     path.write_text(
-        "\\n".join(json.dumps(row) for row in rows)
-        + '\\n{"ts":' + str(now) + ',"kind":"run.start","agent":"A","run_id":NaN,"data":{"mode":"bad-id"}}\\n',
+        "\n".join([*(json.dumps(row) for row in rows), raw_bad_id]) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(telemetry, "node_health", lambda core: {})

@@ -26,6 +26,26 @@ class Event:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 
+def _redact_on() -> bool:
+    import os
+    return (os.getenv("AVRONE_CODEX_REDACT") or "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def _scrub(v: Any, depth: int = 0) -> Any:
+    """Mask secrets (env secret values, tokens, keys, URL credentials) in every string an event carries,
+    before it is written to the run log or sent to /ws/events. Never raises; deep junk is stringified."""
+    from .ctxspawn import redact
+    if isinstance(v, str):
+        return redact(v) if len(v) >= 6 else v
+    if depth > 8:
+        return redact(v) if not isinstance(v, (int, float, bool, type(None))) else v
+    if isinstance(v, dict):
+        return {k: _scrub(x, depth + 1) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_scrub(x, depth + 1) for x in v]
+    return v
+
+
 class Codex:
     def __init__(self, data_dir: Path):
         self.log_dir = data_dir / "runs"
@@ -44,6 +64,8 @@ class Codex:
         self._subscribers.discard(q)
 
     def emit(self, run_id: str, kind: str, agent: str, **data: Any) -> Event:
+        if _redact_on():
+            data = _scrub(data)
         ev = Event(run_id=run_id, kind=kind, agent=agent, data=data)
         line = json.dumps(asdict(ev), default=str) + "\n"
         with self._write_lock, (self.log_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:

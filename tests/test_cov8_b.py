@@ -564,6 +564,9 @@ def test_events_websocket_disconnect_unsubscribes(monkeypatch):
 
         async def send_json(self, data):
             raise WebSocketDisconnect(1000)
+
+        async def receive(self):  # v0.30: the handler also watches for the client leaving
+            await asyncio.sleep(3600)
     fake_core = SimpleNamespace(codex=FakeCodex())
     monkeypatch.setattr(server, "core", lambda: fake_core)
     run(server.events(FakeWS()))

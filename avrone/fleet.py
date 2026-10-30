@@ -453,7 +453,12 @@ class FleetManager:
         self.nodes: dict[str, dict[str, Any]] = (
             {k: v for k, v in raw_nodes.items() if isinstance(k, str) and isinstance(v, dict)}
             if isinstance(raw_nodes, dict) else {})
-        self._nonces: dict[str, float] = {}
+        # The replay cache survives a restart: a request captured within its window must not run again
+        # just because the node rebooted. If the saved cache cannot be read, nothing signed before this
+        # boot is accepted (boot guard) - the same guarantee without the cache.
+        self._nonce_path = self.data_dir / "fleet_nonces.json"
+        self._boot_guard: float | None = None
+        self._nonces: dict[str, float] = self._load_nonces()
         self._task: asyncio.Task | None = None
         self._thermal_task: asyncio.Task | None = None
         self._bg: set[asyncio.Task] = set()
@@ -635,6 +640,40 @@ class FleetManager:
                 "children": len(self.nodes), "active_agents": sum(
                     1 for a in self.core.active.values() if a.get("status") == "working")}
 
+    # ------------------------------------------------------------ replay cache persistence
+    def _load_nonces(self) -> dict[str, float]:
+        p = self._nonce_path
+        if not p.exists():
+            return {}
+        now = time.time()
+        try:
+            raw = json.loads(p.read_text())
+            if not isinstance(raw, dict):
+                raise ValueError("not an object")
+            out = {k: float(v) for k, v in raw.items()
+                   if isinstance(k, str) and NONCE_RE.fullmatch(k) and isinstance(v, (int, float))
+                   and not isinstance(v, bool) and float(v) >= now}
+            return dict(list(out.items())[:NONCE_CACHE_MAX])
+        except (OSError, ValueError, TypeError, RecursionError):
+            self._boot_guard = now
+            log.warning("fleet_nonces.json unreadable; refusing requests signed before this boot")
+            return {}
+
+    def _save_nonces(self) -> None:
+        """Atomic, best effort: a failed write never refuses a valid request (the boot guard covers
+        the next restart if the file is then unreadable)."""
+        p = getattr(self, "_nonce_path", None)
+        if p is None:  # a bare instance (no data dir): memory-only cache
+            return
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(self._nonces, separators=(",", ":")))
+            os.replace(tmp, p)
+        except OSError as e:
+            log.debug("could not persist replay cache: %s", e)
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+
     # ------------------------------------------------------------ auth
     def verify(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> None:
         """Authenticate a fleet request: token present, HMAC, timestamp window, nonce (in that order).
@@ -658,6 +697,13 @@ class FleetManager:
         # keep it at least 2*WINDOW_S past first sight too, in case the clock steps backwards.
         # (The old "now - seen < 2*WINDOW_S" prune dropped a future-skewed nonce at exactly the
         # instant its request became valid again: replay at the window edge.)
+        guard = getattr(self, "_boot_guard", None)
+        if guard is not None:
+            if now - guard > 2 * WINDOW_S:
+                self._boot_guard = None  # every pre-boot request is outside the window by now
+            elif ts_i < guard:
+                raise GatewayRefused("replay", "request signed before this node restarted (replay cache "
+                                               "was lost); re-sign and retry")
         with self._lock:  # prune + "seen?" + insert are ONE step: a nonce is accepted at most once
             self._nonces = {k: v for k, v in self._nonces.items() if now <= v}
             if nonce in self._nonces:
@@ -665,6 +711,7 @@ class FleetManager:
             if len(self._nonces) >= NONCE_CACHE_MAX:
                 raise GatewayRefused("replay", "replay cache full; refusing new requests until nonces expire")
             self._nonces[nonce] = max(ts_i + WINDOW_S, now + 2 * WINDOW_S)
+            self._save_nonces()
 
     def allowed(self, node_id: str) -> bool:
         if not self.allow:

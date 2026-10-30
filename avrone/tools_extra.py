@@ -1238,3 +1238,5 @@ def register_extra_tools(registry) -> None:
     register_secret_tools(registry)
     from .tools_limits import register_limits_tools
     register_limits_tools(registry)
+    from .tools_gatewayview import register_gatewayview_tools
+    register_gatewayview_tools(registry)

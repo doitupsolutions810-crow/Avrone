@@ -129,3 +129,35 @@ collection, requires collection identity to match, and preserves the SDK
 summary separately from artifact digests. The existing vertical slice then
 reopens the collected artifact bytes, verifies SHA-256, and only then creates
 a receipt. Teardown remains in `DisposableVMRunner`'s finally path.
+
+
+### Composition example
+
+```python
+from avrone.claude_vm_backend import ClaudeSDKVMBackend
+from avrone.disposable_vm_runner import DisposableVMRunner
+from avrone.integrated_execution import execute_with_capability_authority
+
+# provider is an implementation supplied by the VM infrastructure team;
+# objective_store reads the authenticated, server-owned task description.
+vm_runner = DisposableVMRunner(
+    ClaudeSDKVMBackend(
+        provider,
+        objective_resolver=objective_store.get_for_task,
+    )
+)
+result = await execute_with_capability_authority(
+    validated_task_envelope,
+    allowed_capabilities={"read_repository"},
+    run_isolated=vm_runner,
+    authority_url=capability_authority_url,
+    artifact_root=task_artifact_root,
+    receipt_signer_url=receipt_signer_url,
+)
+```
+
+This composes the existing AVRONE control-plane path directly:
+validate task envelope → verify signed capability → provision disposable VM
+→ execute Claude SDK guest worker → collect artifacts → independently verify
+artifact bytes → request signed receipt → destroy VM. The injected
+`provider` is the sole infrastructure-specific piece still outstanding.

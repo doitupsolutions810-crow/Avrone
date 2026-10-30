@@ -65,7 +65,7 @@ def _issue_sync(envelope: Mapping[str, Any], base_url: str, timeout: float) -> d
         method="POST",
     )
     parsed_url = urlsplit(base_url)
-    production = os.environ.get("PRODUCTION", "0") == "1" or os.environ.get("AVRONE_PRODUCTION", "0") == "1"
+    production = any(os.environ.get(name, "0") == "1" for name in ("PRODUCTION", "AVRONE_PRODUCTION", "PLANE_PRODUCTION", "SPIFFE_REQUIRED"))
     context = None
     if parsed_url.scheme == "https":
         ca_file = os.environ.get("AVRONE_PLANE_CA_FILE")

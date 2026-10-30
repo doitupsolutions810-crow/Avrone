@@ -358,6 +358,20 @@ def local_health(core: Any) -> dict[str, Any] | None:
         return None
 
 
+MAX_PEER_LOAD = 10_000
+
+
+def sanitize_peer_load(raw: Any) -> int | float:
+    """Normalize peer-reported in-flight load to a finite, bounded number."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0
+    if isinstance(raw, int):
+        return max(0, min(raw, MAX_PEER_LOAD))
+    if not math.isfinite(raw):
+        return 0
+    return max(0.0, min(raw, float(MAX_PEER_LOAD)))
+
+
 def sanitize_health(raw: Any) -> dict[str, Any] | None:
     """Keep only well-typed, range-clamped fields of a peer's health block (it is peer-asserted)."""
     if not isinstance(raw, dict):
@@ -392,13 +406,11 @@ def health_score(n: dict[str, Any]) -> float:
     + 20 * (1 - min(load ratio, 2) / 2)            (unknown load ratio = 1.0)
     + 20 * (1 - min(busy, 10) / 10)  where busy = max(in-flight load, active agents)
     """
-    h = n.get("health") if isinstance(n.get("health"), dict) else {}
+    h = sanitize_health(n.get("health")) or {}
     headroom = float(h.get("headroom", 0.5))
     ratio = float(h.get("load", 1.0))
-    try:
-        busy = max(float(n.get("load", 0) or 0), float(h.get("active_agents", 0) or 0))
-    except (TypeError, ValueError):
-        busy = 10.0
+    busy = max(float(sanitize_peer_load(n.get("load", 0))),
+               float(h.get("active_agents", 0) or 0))
     return round(60 * headroom + 20 * (1 - min(max(ratio, 0.0), 2.0) / 2) + 20 * (1 - min(max(busy, 0.0), 10.0) / 10), 3)
 
 
@@ -641,7 +653,7 @@ class FleetManager:
             if self.node_state(n) in EXCLUDED_STATES:
                 continue
             cands.append(n)
-        cands.sort(key=lambda n: (-health_score(n), n.get("load", 0) or 0, str(n.get("node_id"))))
+        cands.sort(key=lambda n: (-health_score(n), sanitize_peer_load(n.get("load", 0)), str(n.get("node_id"))))
         return cands[:max(0, int(k))]
 
     def health_table(self) -> list[dict[str, Any]]:
@@ -652,7 +664,7 @@ class FleetManager:
             rows.append({"node_id": n.get("node_id"), "status": st, "state": hs,
                          "score": health_score(n) if st == "online" else None,
                          "eligible": st == "online" and hs not in EXCLUDED_STATES and self.allowed(str(n.get("node_id"))),
-                         "load": n.get("load", 0), "health": n.get("health"),
+                         "load": sanitize_peer_load(n.get("load", 0)), "health": n.get("health"),
                          "netsquad": self.netsquad_counts.get(str(n.get("node_id")), 0)})
         return rows
 
@@ -1059,7 +1071,7 @@ class FleetManager:
         rec = {"node_id": nid, "url": url, "last_seen": time.time(),
                "capabilities": payload.get("capabilities", {}),
                "children": payload.get("children", []),
-               "load": payload.get("load", 0),
+               "load": sanitize_peer_load(payload.get("load", 0)),
                "presence": payload.get("presence"),
                "health": sanitize_health(payload.get("health"))}
         with self._lock:

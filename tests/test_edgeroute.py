@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 import avrone.fleet as fleet_mod
-from avrone.fleet import FleetManager, health_score, local_health, sanitize_health
+from avrone.fleet import FleetManager, health_score, local_health, sanitize_health, sanitize_peer_load
 from avrone.governor import Governor
 
 
@@ -102,6 +102,32 @@ def test_sanitize_health_clamps_arbitrary_size_integer_fields():
         "headroom": 1.0,
         "active_agents": 10_000,
     }
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (10 ** 10000, 10_000),
+    (-(10 ** 10000), 0),
+    (float("inf"), 0),
+    (float("-inf"), 0),
+    (float("nan"), 0),
+    (True, 0),
+    ("huge", 0),
+    (-5, 0),
+    (5, 5),
+])
+def test_sanitize_peer_load_is_finite_and_bounded(raw, expected):
+    assert sanitize_peer_load(raw) == expected
+
+
+def test_registration_and_health_score_handle_extreme_peer_load(fm):
+    fm.register({"node_id": "extreme", "url": "http://extreme.test",
+                 "load": 10 ** 10000, "health": COOL})
+    node = fm.nodes["extreme"]
+    assert node["load"] == 10_000
+    assert health_score(node) >= 0
+    node["load"] = float("inf")  # protects routing against older/corrupt persisted records
+    assert health_score(node) >= 0
+    assert fm.health_table()[0]["load"] >= 0
 
 
 def test_register_and_heartbeat_carry_health(fm, core, monkeypatch):

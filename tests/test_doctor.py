@@ -178,9 +178,28 @@ def test_exposed_without_admin_token_warns(tmp_path):
 
 
 def test_exposed_shell_warns(tmp_path):
-    rep = d.run_doctor(_settings(tmp_path), env=_safe_env(AVRONE_HOST="::", AVRONE_ADMIN_TOKEN="a" * 20),
+    # v0.27: only AVRONE_PUBLIC_ACCESS=all leaves /api/chat open on an exposed bind
+    rep = d.run_doctor(_settings(tmp_path), env=_safe_env(AVRONE_HOST="::", AVRONE_ADMIN_TOKEN="a" * 20,
+                                                          AVRONE_PUBLIC_ACCESS="all"),
                        which=_docker, sockets=_sock(tmp_path))
     assert "security.exposed_shell" in _by_name(rep)
+    rep = d.run_doctor(_settings(tmp_path), env=_safe_env(AVRONE_HOST="::", AVRONE_ADMIN_TOKEN="a" * 20),
+                       which=_docker, sockets=_sock(tmp_path))
+    assert "security.exposed_shell" not in _by_name(rep)
+
+
+def test_public_access_checks(tmp_path):
+    s = _settings(tmp_path)
+    s.agents_can_shell = False
+    rep = d.run_doctor(s, env=_safe_env(AVRONE_HOST="0.0.0.0", AVRONE_PUBLIC_ACCESS="all"),
+                       which=_docker, sockets=_sock(tmp_path))
+    assert _by_name(rep)["security.public_access"][0]["status"] == "warn"
+    rep = d.run_doctor(s, env=_safe_env(AVRONE_HOST="0.0.0.0", AVRONE_PUBLIC_ACCESS="bogus"),
+                       which=_docker, sockets=_sock(tmp_path))
+    assert _by_name(rep)["security.public_access"][0]["status"] == "info"
+    rep = d.run_doctor(s, env=_safe_env(AVRONE_HOST="0.0.0.0", AVRONE_PUBLIC_ACCESS="admin"),
+                       which=_docker, sockets=_sock(tmp_path))
+    assert "security.public_access" not in _by_name(rep)
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "[::1]"])

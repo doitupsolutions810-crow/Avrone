@@ -279,10 +279,18 @@ def _insecure_combos(settings: Any, env: Mapping[str, str], toggles: dict[str, s
     if a and f and a == f:
         out.append(Check("security.token_reuse", WARN, "admin and fleet tokens are identical",
                          "a fleet peer could then call admin endpoints; use different secrets"))
-    if exposed and settings.agents_can_shell:
-        out.append(Check("security.exposed_shell", WARN, f"API bound to {host} and agents can run shell; "
-                                                         "/api/chat is unauthenticated",
-                         "bind 127.0.0.1, front with an authenticating proxy, or AVRONE_AGENTS_CAN_SHELL=false"))
+    access = (env.get("AVRONE_PUBLIC_ACCESS") or "loopback").strip().lower()
+    access = access if access in ("loopback", "admin", "all") else "loopback"
+    if exposed and access == "all":
+        shell = " and agents can run shell" if settings.agents_can_shell else ""
+        out.append(Check("security.exposed_shell" if shell else "security.public_access", WARN,
+                         f"API bound to {host} with AVRONE_PUBLIC_ACCESS=all{shell}: anyone who reaches the "
+                         "port can start agents and read every run",
+                         "AVRONE_PUBLIC_ACCESS=loopback (default) or admin, or front with an authenticating proxy"))
+    elif exposed and access == "loopback" and admin == "unset":
+        out.append(Check("security.public_access", INFO, f"API bound to {host}: remote callers get 403 on chat, "
+                                                         "runs and events (AVRONE_PUBLIC_ACCESS=loopback, no admin token)",
+                         "set AVRONE_ADMIN_TOKEN to let remote clients in with X-Admin-Token"))
     if toggles["fleet"] == "on" and not fleet_allow and toggles["host_shell"] == "on":
         out.append(Check("security.fleet", WARN, "privileged fleet (shell on the host runner) with an open "
                                                  "AVRONE_FLEET_ALLOW: any node holding the token can drive this host",

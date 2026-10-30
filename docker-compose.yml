@@ -3,8 +3,11 @@
 #
 # Locked down by default; every knob below is opt-out via .env or the shell:
 #   AVRONE_PUBLISH_ADDR  host address the UI/API is published on (default 127.0.0.1;
-#                        0.0.0.0 exposes it to the LAN. /api/chat has no auth, so front it
-#                        with an authenticating proxy/VPN and set AVRONE_ADMIN_TOKEN)
+#                        0.0.0.0 exposes it to the LAN)
+#   AVRONE_PUBLIC_ACCESS who may start agents and read runs/events: all (compose default, safe
+#                        only because the port is published on 127.0.0.1 - inside the container
+#                        every caller comes from the bridge network), admin (X-Admin-Token
+#                        required; use this whenever AVRONE_PUBLISH_ADDR is not 127.0.0.1)
 #   AVRONE_PUBLISH_PORT  host port (default 8710)
 #   AVRONE_UID/GID       user the server runs as (default 1000:1000, so the ./workspace and
 #                        ./data bind mounts stay owned by you; run `mkdir -p workspace data`
@@ -29,6 +32,7 @@ services:
       AVRONE_DATA_DIR: /srv/data           # the ./data volume, whatever .env says
       AVRONE_HOST: 0.0.0.0                 # bind inside the container; exposure is set by ports: above
       AVRONE_PORT: "8710"
+      AVRONE_PUBLIC_ACCESS: ${AVRONE_PUBLIC_ACCESS:-all}
       AVRONE_ALLOW_NETWORK: ${AVRONE_ALLOW_NETWORK:-false}
       HOME: /tmp
     volumes:

@@ -119,9 +119,12 @@ async function loadTools(){
     $('#extinfo').textContent = `${tools.length} tools` + (parts.length? ' · '+parts.join(' · ') : '');
   } catch(e){ $('#toollist').textContent = 'Could not load tools: '+e; }
 }
+// v0.27: remote callers need the admin token for chat, runs and events (AVRONE_PUBLIC_ACCESS)
+function authh(){ const t=(document.querySelector('#tok')||{}).value||localStorage.getItem('avrone_tok')||''; return t?{'X-Admin-Token':t}:{}; }
+function tokq(){ const t=authh()['X-Admin-Token']; return t?('?token='+encodeURIComponent(t)):''; }
 async function status(){ try { const s = await (await fetch('/api/status')).json(); $('#meta').textContent = `runner: ${s.runner} · ${s.provider||''} model: ${s.model} @ ${s.backend} · squad: ${s.squad_size} · tools: ${s.tools??'?'}`; } catch(e){ $('#meta').textContent='offline'; } }
 function ws(){
-  const w = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/events');
+  const w = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/events'+(tokq()));
   w.onmessage = m => { const e = JSON.parse(m.data);
     if(e.kind==='agent.spawn') agents[e.agent] = {status:'working', focus:e.data.focus, parent:e.data.parent};
     if(e.kind==='tool.call' && agents[e.agent]) agents[e.agent].last = '→ '+e.data.tool+' '+JSON.stringify(e.data.args).slice(0,80);
@@ -138,7 +141,7 @@ $('#f').onsubmit = async ev => { ev.preventDefault(); const q=$('#q').value.trim
   const mode=$('#mode').value; const payload={message:q, mode};
   if(mode==='deep' && $('#first').value.trim()){ payload.first_answer=$('#first').value.trim(); $('#first').value=''; }
   addMsg(q,'user'); const pending = addMsg(mode==='deep' ? 'Second wave reviewing…' : 'Agents working…','bot');
-  try { const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  try { const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json',...authh()},body:JSON.stringify(payload)});
     const j = await r.json(); pending.remove();
     if(!r.ok){ addMsg('Error: '+(j.detail||r.status),'bot'); return; }
     if(j.mode==='deep'){ addReport(j); return; }
@@ -153,7 +156,7 @@ $('#termform').onsubmit = async ev => { ev.preventDefault(); const cmd=$('#cmd')
   const j = await r.json(); $('#termout').textContent = (r.ok ? `$ ${j.cmd}\n${j.stdout}${j.stderr?'\n'+j.stderr:''}\n[exit ${j.exit_code}]` : 'Error: '+(j.detail||r.status)) + '\n\n' + $('#termout').textContent; };
 
 async function loadMap(){
-  const [t, g] = await Promise.all([fetch('/api/telemetry').then(r=>r.json()), fetch('/api/map').then(r=>r.json())]);
+  const [t, g] = await Promise.all([fetch('/api/telemetry',{headers:authh()}).then(r=>r.json()), fetch('/api/map',{headers:authh()}).then(r=>r.json())]);
   const tools = Object.entries(t.tools).slice(0,6).map(([k,v])=>`${k} ${v.calls}${v.errors?' ('+v.errors+' err)':''}`).join(' · ');
   $('#telem').innerHTML = `<b>24h</b> runs ${t.runs.total} (${t.runs.running} live) · p50 ${t.runs.p50_s??'–'}s · agents ${t.agents.spawned} · errors ${t.errors}<br>${esc(tools)}`;
   const kinds = ['node','fleet','core','store','runner','model','toolgroup','agent','tool'];

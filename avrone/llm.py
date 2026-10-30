@@ -20,7 +20,7 @@ from .config import Settings
 
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
-from .gateway import Gateway, LLMError  # noqa: E402,F401  (re-exported)
+from .gateway import Gateway, is_loopback_url, LLMError  # noqa: E402,F401  (re-exported)
 
 
 class LLM:
@@ -60,7 +60,8 @@ class LLM:
         r = None
         for attempt in range(tries):
             try:
-                async with httpx.AsyncClient(timeout=self.s.llm_timeout) as client:
+                async with httpx.AsyncClient(timeout=self.s.llm_timeout,
+                                             trust_env=not is_loopback_url(url)) as client:
                     r = await client.post(url, headers=headers, json=body)
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 raise LLMError(f"Model backend unreachable at {url}: {e}") from e

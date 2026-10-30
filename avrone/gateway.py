@@ -31,6 +31,23 @@ class LLMError(RuntimeError):
     pass
 
 
+def is_loopback_url(url: str) -> bool:
+    """True for http(s)://127.x / localhost / [::1] URLs: those must bypass any env proxy, or a
+    sandbox/corporate HTTP_PROXY swallows calls to the local model server (ConnectError / 404)."""
+    import ipaddress
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(str(url or "")).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 @dataclass
 class Upstream:
     provider: str
@@ -110,6 +127,8 @@ class Gateway:
         kw: dict[str, Any] = {"timeout": self.s.llm_timeout}
         if HTTP_TRANSPORT is not None:
             kw["transport"] = HTTP_TRANSPORT
+        if is_loopback_url(url):
+            kw["trust_env"] = False  # a local Ollama/LM Studio is never reached through HTTP(S)_PROXY
         async with httpx.AsyncClient(**kw) as client:
             r = await client.post(url, headers=headers, json=body)
         if r.status_code in RETRY_STATUS:

@@ -47,6 +47,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -294,8 +295,16 @@ class Ollama:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method,
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with self._opener().open(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
+
+    def _opener(self) -> urllib.request.OpenerDirector:
+        """A loopback server is reached directly: an HTTP(S)_PROXY in the environment would
+        otherwise swallow 127.0.0.1 calls (seen as a 404 'unhealthy' server in sandboxes)."""
+        host = (urllib.parse.urlsplit(self.base).hostname or "").lower()
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return urllib.request.build_opener()
 
     def healthy(self) -> bool:
         try:
@@ -330,7 +339,7 @@ class Ollama:
         req = urllib.request.Request(url, data=json.dumps({"name": model, "stream": True}).encode(),
                                      method="POST", headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with self._opener().open(req, timeout=timeout) as r:
                 for line in r:
                     try:
                         ev = json.loads(line.decode())

@@ -59,6 +59,30 @@ def _gateway(ctx: "AgentContext") -> Any:
     return gw if isinstance(gw, Gateway) else None
 
 
+def route_of(base_url: str) -> str:
+    """How calls to this upstream leave the node: direct (loopback, or no proxy applies) or
+    env-proxy (an HTTP(S)_PROXY in the environment will carry them). The proxy itself is never shown."""
+    import urllib.request
+    from urllib.parse import urlsplit
+    from .gateway import is_loopback_url
+    if is_loopback_url(base_url):
+        return "direct"
+    try:
+        parts = urlsplit(str(base_url or ""))
+        host = parts.hostname or ""
+    except ValueError:
+        return "direct"
+    proxies = urllib.request.getproxies()
+    if not proxies.get(parts.scheme or "https") or not host:
+        return "direct"
+    try:
+        if urllib.request.proxy_bypass(host):
+            return "direct"
+    except Exception:  # noqa: BLE001 - odd NO_PROXY never breaks a read-only report
+        pass
+    return "env-proxy"
+
+
 def circuit_state(up: Any, threshold: int, now: float | None = None) -> tuple[str, float]:
     """(closed|open|half-open, cooldown seconds remaining) from Upstream's real breaker fields."""
     now = time.time() if now is None else now
@@ -95,6 +119,7 @@ def router_status(ctx: "AgentContext") -> dict[str, Any]:
         lead = getattr(u, "lead_model", "") or ""
         rows.append({"position": i, "role": "primary" if i == 0 else "fallback", "upstream": ref,
                      "lead_model": _label(lead, secrets) if lead else None, "state": state,
+                     "route": route_of(str(getattr(u, "base_url", "") or "")),
                      "cooldown_s": remaining, "fails": int(_num(getattr(u, "fails", 0)) or 0),
                      "calls": int(_num(getattr(u, "calls", 0)) or 0),
                      "errors": int(_num(getattr(u, "errors", 0)) or 0)})
@@ -136,6 +161,7 @@ def render_text(rep: dict[str, Any]) -> str:
         cd = f" cooldown={r['cooldown_s']:g}s" if r["state"] == "open" else ""
         lead = f" lead={r['lead_model']}" if r["lead_model"] else ""
         lines.append(f"- [{r['position']}] {r['upstream']}{lead} {r['role']} circuit={r['state']}{cd} "
+                     f"route={r.get('route', 'direct')} "
                      f"fails={r['fails']} calls={r['calls']} errors={r['errors']}")
     if rep["more"]:
         lines.append(f"...[{rep['more']} more upstreams]")

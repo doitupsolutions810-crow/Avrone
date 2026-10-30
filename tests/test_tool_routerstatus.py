@@ -119,3 +119,25 @@ def test_mock_mode_and_empty(env):
 def test_num_rejects_non_finite():
     assert rs._num(True) is None and rs._num(float("nan")) is None and rs._num("1") is None
     assert rs._num(2) == 2.0
+
+
+def test_route_direct_vs_env_proxy(env, monkeypatch):
+    for k in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+    monkeypatch.setenv("https_proxy", "http://proxy.corp:3128")
+    env.gw.upstreams = [gateway.Upstream("ollama", "http://127.0.0.1:11434/v1", "q", ""),
+                        gateway.Upstream("xai", "https://api.x.ai/v1", "grok", KEY)]
+    out = call(env)
+    assert "[0] ollama:q primary circuit=closed route=direct" in out
+    assert "route=env-proxy" in out and "proxy.corp" not in out
+    monkeypatch.setenv("NO_PROXY", "api.x.ai")
+    monkeypatch.setenv("no_proxy", "api.x.ai")
+    assert rs.route_of("https://api.x.ai/v1") == "direct"
+    assert rs.route_of("http://[bad") == "direct" and rs.route_of("") == "direct"
+
+
+def test_route_no_proxy_env(monkeypatch):
+    for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(k, raising=False)
+    assert rs.route_of("https://api.x.ai/v1") == "direct"

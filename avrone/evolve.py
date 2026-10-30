@@ -81,6 +81,42 @@ def _meta_path(ctx: "AgentContext", pid: str) -> Path:
     return _data(ctx) / f"{pid}.json"
 
 
+def _valid_pid(pid: str) -> bool:
+    """Proposal ids are agent-supplied: only a plain SAFE_ID name, never a path."""
+    return bool(pid) and len(pid) <= 80 and not SAFE_ID.search(pid) and not pid.startswith(".")
+
+
+def _proposal(ctx: "AgentContext", pid: str) -> tuple[Path | None, dict[str, Any] | None, Path | None, str]:
+    """(meta path, meta, its worktree, error). The worktree is returned only when it is a
+    directory directly under data_dir/evolve (wt-*), so a corrupt or hostile meta file can never
+    point evolve_reset's rmtree or evolve_diff's git at anything else."""
+    if not _valid_pid(pid):
+        return None, None, None, f"ERROR: invalid proposal id {pid[:80]!r}"
+    mp = _meta_path(ctx, pid)
+    if not mp.is_file():
+        return None, None, None, f"ERROR: no proposal {pid}"
+    try:
+        meta = json.loads(mp.read_text())
+    except (OSError, ValueError):
+        meta = None
+    if not isinstance(meta, dict):
+        return mp, None, None, f"ERROR: proposal {pid} metadata is unreadable"
+    raw = meta.get("worktree")
+    wt = None
+    if isinstance(raw, str) and raw:
+        cand = Path(raw)
+        root = _data(ctx).resolve()
+        try:
+            r = cand.resolve()
+        except (OSError, RuntimeError):
+            r = None
+        if r is not None and r.parent == root and r.name.startswith("wt-") and not cand.is_symlink():
+            wt = cand
+    if wt is None:
+        return mp, meta, None, f"ERROR: proposal {pid} has no worktree under the evolve dir"
+    return mp, meta, wt, ""
+
+
 async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
     """A fresh checkout of the repo's HEAD for proposal `pid`, on its own branch."""
     repo = _repo_root(ctx)
@@ -931,10 +967,11 @@ async def t_evolve_skill_propose(ctx: "AgentContext", args: dict[str, Any]) -> s
 
 async def t_evolve_diff(ctx: "AgentContext", args: dict[str, Any]) -> str:
     pid = str(args.get("pid", ""))
-    mp = _meta_path(ctx, pid)
-    if not mp.exists():
-        return f"ERROR: no proposal {pid}. evolve_list to see them."
-    wt = Path(json.loads(mp.read_text())["worktree"])
+    mp, _, wt, err = _proposal(ctx, pid)
+    if mp is None:
+        return f"{err}. evolve_list to see them."
+    if wt is None or not wt.is_dir():
+        return err or f"ERROR: proposal {pid} worktree is gone"
     r = await _sh(ctx, "git --no-pager diff HEAD~1..HEAD 2>/dev/null || git --no-pager diff", wt)
     return r.text(8000) or "(no diff)"
 
@@ -944,11 +981,15 @@ async def t_evolve_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
     for f in sorted(_data(ctx).glob("*.json")):
         try:
             m = json.loads(f.read_text())
-        except ValueError:
+        except (OSError, ValueError):
             continue
+        if not isinstance(m, dict) or not all(k in m for k in ("pid", "passed", "goal", "files", "by")):
+            continue  # a partial write or a foreign json file never breaks the listing
+        if not isinstance(m["files"], list):
+            m = dict(m, files=[])
         tag = f" loop={m['loop_id']}#{m.get('iteration')}" if m.get("loop_id") else ""
         dur = f" {m['duration_s']:.1f}s" if isinstance(m.get("duration_s"), (int, float)) else ""
-        rows.append(f"{m['pid']} [{'PASS' if m['passed'] else 'FAIL'}] {m['goal'][:70]} "
+        rows.append(f"{m['pid']} [{'PASS' if m['passed'] else 'FAIL'}] {str(m['goal'])[:70]} "
                     f"({', '.join(m['files'])}) by {m['by']}{dur}{tag}")
     loops = list_loops(ctx.core.settings)
     if loops:
@@ -1009,12 +1050,12 @@ async def t_evolve_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_evolve_reset(ctx: "AgentContext", args: dict[str, Any]) -> str:
     pid = str(args.get("pid", ""))
-    mp = _meta_path(ctx, pid)
-    if not mp.exists():
-        return f"ERROR: no proposal {pid}"
-    wt = Path(json.loads(mp.read_text())["worktree"])
-    shutil.rmtree(wt, ignore_errors=True)
-    mp.unlink()
+    mp, _, wt, err = _proposal(ctx, pid)
+    if mp is None:
+        return err
+    if wt is not None:  # only ever our own data_dir/evolve/wt-* dir
+        shutil.rmtree(wt, ignore_errors=True)
+    mp.unlink(missing_ok=True)
     _emit(ctx, "evolve.reset", pid=pid)
     return f"discarded proposal {pid}"
 

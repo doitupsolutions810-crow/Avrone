@@ -66,7 +66,7 @@ def test_cli_reports_count_and_rejects_nonfinite_rows(tmp_path):
 
 def test_cli_rejects_deeply_nested_corrupt_report_without_traceback(tmp_path):
     report = tmp_path / "deep.json"
-    report.write_text("[" * 2000 + "0" + "]" * 2000, encoding="utf-8")
+    report.write_text("[" * 12000 + "0" + "]" * 12000, encoding="utf-8")
     result = subprocess.run(
         [sys.executable, str(HELPER), str(report), "100"],
         capture_output=True, text=True, timeout=5, check=False,

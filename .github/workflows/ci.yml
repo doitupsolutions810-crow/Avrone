@@ -2,7 +2,7 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: compile-gate   # self-hosted runner; was ubuntu-24.04 (hosted pool unreachable)
+    runs-on: self-hosted
     strategy:
       matrix: { python: ["3.11", "3.12"] }
     steps:

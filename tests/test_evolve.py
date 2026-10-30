@@ -63,6 +63,15 @@ def test_path_escape_rejected(tmp_path, monkeypatch):
     out = run(evolve.t_evolve_propose(c, {"goal": "escape", "edits": [{"path": "../evil.py", "content": "x"}]}))
     assert "escapes repo" in out
 
+def test_path_escape_rejects_sibling_with_worktree_prefix(tmp_path):
+    wt = tmp_path / "worktree"
+    sibling = tmp_path / "worktree-escape"
+    wt.mkdir()
+    sibling.mkdir()
+    (sibling / "evil.py").write_text("DO_NOT_TOUCH = True\\n")
+    with pytest.raises(ValueError, match="escapes repo"):
+        evolve._in_repo(wt, "../worktree-escape/evil.py")
+
 
 def test_deny(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_SELF_EVOLVE", "deny")

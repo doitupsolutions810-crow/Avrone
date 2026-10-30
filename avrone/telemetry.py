@@ -7,7 +7,10 @@ Eternal CodeX event logs. Nothing here probes external networks.
 """
 from __future__ import annotations
 
+import heapq
 import json
+import math
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -17,18 +20,152 @@ if TYPE_CHECKING:
     from .trinity import TrinityCore
 
 
-def _iter_events(log_dir: Path, since: float, max_files: int = 200):
-    files = sorted(log_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
-    for p in files:
-        if p.stat().st_mtime < since:
-            continue
-        for line in p.read_text().splitlines():
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
+# Telemetry reads a bounded tail of the newest event logs. This prevents a damaged
+# or unexpectedly large Codex file from turning a read-only endpoint into an
+# unbounded memory allocation.
+MAX_TELEMETRY_FILES = 200
+MAX_TELEMETRY_FILE_BYTES = 2 * 1024 * 1024
+MAX_TELEMETRY_TOTAL_BYTES = 16 * 1024 * 1024
+MAX_TELEMETRY_LINE_BYTES = 256 * 1024
+_TELEMETRY_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _iter_events(log_dir: Path, since: float, max_files: int = MAX_TELEMETRY_FILES):
+    """Yield validated events from a bounded tail of recent JSONL files.
+
+    Files are read in binary chunks, not with read_text(): each file and the whole
+    scan have byte budgets, and a single oversized line is drained without being
+    allocated as one unbounded string. For large append-only files, retain the newest
+    tail and discard its first partial line.
+    """
+    try:
+        since = float(since)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(since):
+        return
+
+    limit = max(0, min(MAX_TELEMETRY_FILES, max_files)) if isinstance(max_files, int) and not isinstance(max_files, bool) else MAX_TELEMETRY_FILES
+
+    def is_regular_log(path: Path) -> bool:
+        try:
+            return not path.is_symlink() and path.is_file()
+        except OSError:
+            return False
+
+    def mtime(path: Path) -> float:
+        try:
+            return path.lstat().st_mtime
+        except OSError:
+            # Files can disappear between globbing and sorting during log rotation.
+            return 0.0
+
+    try:
+        # Filter symlinks before selecting the newest capped set. Otherwise a large
+        # number of fresh symlinks can occupy the cap and starve real event files.
+        files = heapq.nlargest(
+            limit, (p for p in log_dir.glob("*.jsonl") if is_regular_log(p)), key=mtime
+        )
+    except OSError:
+        return
+
+    total_remaining = MAX_TELEMETRY_TOTAL_BYTES
+    for path in files:
+        if total_remaining <= 0:
+            break
+        consumed = 0
+        try:
+            # A log-directory symlink must not redirect a read outside Codex storage.
+            if path.is_symlink():
                 continue
-            if ev.get("ts", 0) >= since:
-                yield ev
+            stat = path.stat()
+            if stat.st_mtime < since:
+                continue
+            file_budget = min(MAX_TELEMETRY_FILE_BYTES, total_remaining)
+            start_offset = max(0, stat.st_size - file_budget)
+            # O_NOFOLLOW closes the check/open race if a regular log is replaced
+            # with a symlink after is_symlink() but before open().
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as stream:
+                if start_offset:
+                    # Tail may begin in the middle of a record. If so, drain only
+                    # that partial line; count every byte against the file budget.
+                    stream.seek(start_offset - 1)
+                    previous = stream.read(1)
+                    stream.seek(start_offset)
+                    if previous != b"\n":
+                        while consumed < file_budget:
+                            chunk = stream.readline(min(_TELEMETRY_READ_CHUNK_BYTES,
+                                                        file_budget - consumed))
+                            if not chunk:
+                                break
+                            consumed += len(chunk)
+                            if chunk.endswith(b"\n"):
+                                break
+
+                while consumed < file_budget:
+                    raw = stream.readline(min(MAX_TELEMETRY_LINE_BYTES + 1,
+                                               file_budget - consumed))
+                    if not raw:
+                        break
+                    consumed += len(raw)
+
+                    if len(raw) > MAX_TELEMETRY_LINE_BYTES:
+                        # A single huge event must not starve the rest of this file.
+                        while not raw.endswith(b"\n") and consumed < file_budget:
+                            chunk = stream.readline(min(_TELEMETRY_READ_CHUNK_BYTES,
+                                                        file_budget - consumed))
+                            if not chunk:
+                                break
+                            consumed += len(chunk)
+                            raw = chunk
+                        continue
+
+                    try:
+                        event = json.loads(raw.decode("utf-8"))
+                    except (ValueError, UnicodeError, RecursionError):
+                        # Deep nesting and oversized integer tokens are malformed for
+                        # telemetry purposes too; skip only this record.
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    # Validate each envelope independently: one corrupt record must
+                    # not poison the other events in the same log.
+                    kind = event.get("kind")
+                    if not isinstance(kind, str) or not kind:
+                        continue
+                    agent = event.get("agent", "")
+                    if not isinstance(agent, str):
+                        continue
+                    run_id = event.get("run_id")
+                    if run_id is not None and (
+                        isinstance(run_id, bool)
+                        or not isinstance(run_id, (str, int, float))
+                    ):
+                        continue
+                    if isinstance(run_id, float) and not math.isfinite(run_id):
+                        continue
+                    if isinstance(run_id, int) and run_id.bit_length() > 63:
+                        continue
+                    data = event.get("data", {})
+                    if not isinstance(data, dict):
+                        continue
+                    timestamp = event.get("ts", 0)
+                    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                        continue
+                    try:
+                        finite_timestamp = math.isfinite(timestamp)
+                    except (OverflowError, TypeError, ValueError):
+                        continue
+                    if not finite_timestamp:
+                        continue
+                    if timestamp >= since:
+                        yield event
+        except (OSError, UnicodeError):
+            # Ignore one unreadable/replaced file instead of failing all telemetry.
+            continue
+        finally:
+            total_remaining -= consumed
 
 
 def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
@@ -49,7 +186,14 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     for ev in _iter_events(core.codex.log_dir, since):
         rid, kind, agent, data, ts = ev.get("run_id"), ev.get("kind"), ev.get("agent", ""), ev.get("data", {}), ev.get("ts", 0)
         if kind == "run.start":
-            runs[rid] = {"run_id": rid, "mode": data.get("mode"), "start": ts, "end": None,
+            mode = data.get("mode")
+            # Aggregation later uses mode as a Counter key. Nested JSON containers
+            # are valid JSON but are not hashable and must not poison the endpoint.
+            if not isinstance(mode, str) or not mode.strip():
+                mode = "unknown"
+            else:
+                mode = mode.strip()[:64]
+            runs[rid] = {"run_id": rid, "mode": mode, "start": ts, "end": None,
                          "prompt": str(data.get("prompt", ""))[:120]}
         elif kind == "run.done" and rid in runs:
             runs[rid]["end"] = ts
@@ -193,7 +337,9 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
             role = str(data.get("role", "Agent"))
             node(f"role:{role}", "agent", role)
             parent = data.get("parent")
-            edges[(f"role:{parent.rsplit('-', 1)[0]}" if parent else "core", f"role:{role}")] += 1
+            parent_text = parent.strip()[:128] if isinstance(parent, str) else ""
+            parent_node = f"role:{parent_text.rsplit('-', 1)[0]}" if parent_text else "core"
+            edges[(parent_node, f"role:{role}")] += 1
             edges[(f"role:{role}", "model:worker")] += 1
         elif kind == "tool.call":
             tool = str(data.get("tool"))

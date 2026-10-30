@@ -2,8 +2,10 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)
+    runs-on: [self-hosted, "Avrone compile-gate", "avrone-disposable"]
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix: { python: ["3.11", "3.12"] }
     steps:
       - uses: actions/checkout@v4
@@ -12,16 +14,12 @@ jobs:
       - name: Install avrone (dev)
         run: |
           set -o pipefail
-          # Defensive checkout hygiene: some file-delivery layers prepend a
-          # status line ("successfully downloaded text file (SHA: ...)") to
-          # delivered text files. Line 1 must parse as TOML/JSON/py source, so
-          # strip such a wrapper line when present (no-op on clean checkouts).
           grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null \
             | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" 2>&1 | tee /tmp/pip.log || {
             tail -n 8 /tmp/pip.log | while IFS= read -r l; do
-              l="${l//%/%25}"
+              l="${l//%/%%25}"
               echo "::error::${l:0:220}"
             done
             exit 1
@@ -31,11 +29,20 @@ jobs:
           set -o pipefail
           grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null \
             | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
-          pytest -q 2>&1 | tee /tmp/pytest.log || {
+          pytest -q --cov=avrone --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json 2>&1 | tee /tmp/pytest.log || {
             tail -n 10 /tmp/pytest.log | while IFS= read -r l; do
-              l="${l//%/%25}"
+              l="${l//%/%%25}"
               echo "::error::${l:0:220}"
             done
             exit 1
           }
         env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "avrone-coverage-python-${{ matrix.python }}"
+          path: |
+            coverage.xml
+            coverage.json
+          if-no-files-found: warn

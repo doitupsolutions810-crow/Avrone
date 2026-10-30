@@ -15,10 +15,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import platform
 import re
+import shutil
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .tools import Tool
+from .tools import Tool, runner_accepts_cwd
 
 if TYPE_CHECKING:
     from .trinity import AgentContext
@@ -94,6 +98,388 @@ async def t_inspect_tool(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if len(hits) > INSPECT_MAX_MATCHES:
         lines.append(f"...[{len(hits) - INSPECT_MAX_MATCHES} more; narrow the query]")
     return _cap("\n".join(lines))
+
+
+# ---------------------------------------------------------------------- runtime_preflight
+def _agent_container_preflight(ctx: "AgentContext", runner: Any, runner_kind: str) -> dict[str, Any]:
+    """Describe per-agent container mode without exposing a path or spawning a process."""
+    try:
+        from . import agentcontainer, agentfs
+        mode = agentcontainer.container_mode()
+        agent_id = getattr(ctx, "agent_id", None)
+        pool = getattr(runner, "agent_pool", None)
+        homes = getattr(pool, "homes", None) if pool is not None else None
+        node = getattr(pool, "node", None) if pool is not None else None
+        live = False
+        if agent_id and isinstance(homes, dict):
+            node_name = node if isinstance(node, str) and node else agentcontainer.local_node_id()
+            home_name = agentcontainer.container_name(node_name, agentfs.sanitize_agent_id(agent_id))
+            live = home_name in homes
+        return {
+            "mode": mode,
+            "persistent_configured": mode == "persistent" and runner_kind == "docker",
+            "agent_id_present": bool(agent_id),
+            "live_container_for_agent": live,
+        }
+    except Exception:  # noqa: BLE001 - diagnostics must never break the main run
+        return {"mode": "unknown", "persistent_configured": False,
+                "agent_id_present": bool(getattr(ctx, "agent_id", None)),
+                "live_container_for_agent": False}
+
+
+
+PREFLIGHT_MAX_CHARS = 4000
+
+
+def runtime_preflight(ctx: "AgentContext") -> dict[str, Any]:
+    """Return a bounded, read-only snapshot of local execution prerequisites."""
+    core = getattr(ctx, "core", None)
+    settings = getattr(core, "settings", None)
+    runner = getattr(core, "runner", None)
+    raw_workspace = getattr(runner, "workspace", None)
+    if raw_workspace is None:
+        raw_workspace = getattr(settings, "workspace", None)
+
+    configured = raw_workspace is not None
+    exists = False
+    writable = False
+    if configured:
+        try:
+            workspace = Path(str(raw_workspace)).expanduser()
+            exists = workspace.is_dir()
+            writable = exists and os.access(workspace, os.W_OK)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            exists = writable = False
+
+    kind = str(getattr(runner, "kind", "unknown") or "unknown").lower()
+    docker_available = bool(shutil.which("docker"))
+    python_ok = sys.version_info >= (3, 11)
+    runner_can_execute = callable(getattr(runner, "run", None))
+    checks = {
+        "python_311_plus": python_ok,
+        "workspace_exists": exists,
+        "workspace_writable": writable,
+        "runner_known": kind in {"local", "docker"},
+        "runner_can_execute": runner_can_execute,
+        "docker_available": docker_available if kind == "docker" else None,
+    }
+    ready = bool(python_ok and exists and writable and checks["runner_known"]
+                 and runner_can_execute and (kind != "docker" or docker_available))
+    return {
+        "ready": ready,
+        "python": platform.python_version(),
+        "runner": kind,
+        "workspace": {"configured": configured, "exists": exists, "writable": writable},
+        "docker": {"available": docker_available},
+        "model": {
+            "provider": str(getattr(settings, "provider", "unknown")),
+            "mode": str(getattr(settings, "llm_mode", "unknown")),
+            "base_url_set": bool(getattr(settings, "llm_base_url", "")),
+            "api_key_set": bool(getattr(settings, "llm_api_key", "")),
+        },
+        "admin": {"enabled": bool(getattr(settings, "admin_token", ""))},
+        "agent_container": _agent_container_preflight(ctx, runner, kind),
+        "checks": checks,
+    }
+
+
+async def t_runtime_preflight(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    fmt = str(args.get("format", "text")).lower()
+    if fmt not in {"text", "json"}:
+        return 'ERROR: format must be "text" or "json"'
+    rep = runtime_preflight(ctx)
+    if fmt == "json":
+        return _cap(json.dumps(rep, indent=2, sort_keys=True), PREFLIGHT_MAX_CHARS)
+    lines = [
+        f"runtime_preflight (read-only; ready={'yes' if rep['ready'] else 'no'})",
+        f"python: {rep['python']}",
+        f"runner: {rep['runner']}",
+        "workspace: " + ("configured" if rep["workspace"]["configured"] else "not configured")
+        + f"; exists={'yes' if rep['workspace']['exists'] else 'no'}"
+        + f"; writable={'yes' if rep['workspace']['writable'] else 'no'}",
+        f"docker available: {'yes' if rep['docker']['available'] else 'no'}",
+        f"model: provider={rep['model']['provider']} mode={rep['model']['mode']}"
+        + f" base_url={'set' if rep['model']['base_url_set'] else 'unset'}"
+        + f" api_key={'set' if rep['model']['api_key_set'] else 'unset'}",
+        f"admin: {'enabled' if rep['admin']['enabled'] else 'disabled'}",
+    ]
+    return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
+
+
+async def t_node_runtime(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Probe Node.js and npm in the current execution environment using fixed version commands only."""
+    fmt = str(args.get("format", "text")).lower()
+    if fmt not in {"text", "json"}:
+        return 'ERROR: format must be "text" or "json"'
+    runner = getattr(getattr(ctx, "core", None), "runner", None)
+    if runner is None or not callable(getattr(runner, "run", None)):
+        return "ERROR: execution runner is not available"
+    agent_dir = getattr(ctx, "agent_dir", None)
+    use_agent_cwd = bool(agent_dir is not None and runner_accepts_cwd(runner))
+    report: dict[str, Any] = {
+        "runner": str(getattr(runner, "kind", "unknown") or "unknown"),
+        "agent_home_context": use_agent_cwd,
+        "node": {"available": False, "version": None, "status": "not_checked"},
+        "npm": {"available": False, "version": None, "status": "not_checked"},
+    }
+    for key, command in (("node", "node --version"), ("npm", "npm --version")):
+        try:
+            call_args: dict[str, Any] = {"timeout": 5}
+            if use_agent_cwd:
+                call_args["cwd"] = agent_dir
+            result = await runner.run(command, **call_args)
+            if bool(getattr(result, "timed_out", False)):
+                report[key]["status"] = "timeout"
+                continue
+            if int(getattr(result, "exit_code", 1)) == 0:
+                # Shell startup hooks can print arbitrary text before the version; keep only
+                # a conventional numeric version token rather than returning a banner.
+                out = str(getattr(result, "stdout", "") or "").strip().splitlines()
+                version_re = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?$")
+                versions = [line.strip() for line in out if version_re.fullmatch(line.strip())]
+                version = versions[0] if versions else "available (version not parsed)"
+                report[key].update(available=True, version=version, status="available")
+            else:
+                # Don't echo stderr: it can contain paths, shell startup messages or injected text.
+                report[key]["status"] = "missing_or_unavailable"
+        except Exception as exc:  # noqa: BLE001 - report only the exception class
+            report[key]["status"] = "error"
+            report[key]["error_type"] = type(exc).__name__
+    if fmt == "json":
+        return _cap(json.dumps(report, indent=2, sort_keys=True), PREFLIGHT_MAX_CHARS)
+    lines = [
+        f"node_runtime (bounded probe; runner={report['runner']}; per_agent_home={'yes' if use_agent_cwd else 'no'})",
+    ]
+    for key in ("node", "npm"):
+        item = report[key]
+        lines.append(f"{key}: {item['version'] if item['available'] else item['status']}")
+    return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
+
+
+# --------------------------------------------------------------------------- node_service
+
+NODE_SERVER_SOURCE = """\"use strict\";
+const http = require(\"node:http\");
+const HOST = \"127.0.0.1\";
+const PORT = 8765;
+const server = http.createServer((req, res) => {
+  if (req.method !== \"GET\") {
+    res.writeHead(405, {\"content-type\": \"text/plain; charset=utf-8\"});
+    res.end(\"method not allowed\");
+    return;
+  }
+  if (req.url === \"/health\") {
+    res.writeHead(200, {\"content-type\": \"application/json\", \"cache-control\": \"no-store\"});
+    res.end(JSON.stringify({ok: true, service: \"avrone-agent-node\", scope: \"loopback\"}));
+    return;
+  }
+  if (req.url === \"/__stop\") {
+    res.writeHead(200, {\"content-type\": \"application/json\", \"cache-control\": \"no-store\"});
+    res.end(JSON.stringify({ok: true, stopping: true, service: "avrone-agent-node"}));
+    setImmediate(() => server.close(() => process.exit(0)));
+    return;
+  }
+  res.writeHead(404, {\"content-type\": \"text/plain; charset=utf-8\"});
+  res.end(\"not found\");
+});
+server.on(\"error\", () => process.exit(1));
+process.on(\"SIGTERM\", () => server.close(() => process.exit(0)));
+server.listen(PORT, HOST);
+"""
+
+_NODE_HEALTH_PROBE = (
+    "node -e 'const h=require(\"node:http\");"
+    "const r=h.get(\"http://127.0.0.1:8765/health\",res=>{let b=\"\";"
+    "res.on(\"data\",x=>b+=x);res.on(\"end\",()=>{"
+    "if(res.statusCode===200 && b.includes(\"avrone-agent-node\")){console.log(b);process.exit(0)}"
+    "process.exit(1)})});r.setTimeout(1000,()=>r.destroy(new Error(\"timeout\")));"
+    "r.on(\"error\",()=>process.exit(2));'"
+)
+_NODE_STOP_PROBE = (
+    "node -e 'const h=require(\"node:http\");"
+    "const r=h.get(\"http://127.0.0.1:8765/__stop\",res=>{let b=\"\";"
+    "res.on(\"data\",x=>b+=x);res.on(\"end\",()=>{"
+    "process.exit(res.statusCode===200 && b.includes(\"avrone-agent-node\")?0:1)})});"
+    "r.setTimeout(1000,()=>r.destroy(new Error(\"timeout\")));"
+    "r.on(\"error\",()=>process.exit(2));'"
+)
+_NODE_START_COMMAND = (
+    f"if {_NODE_HEALTH_PROBE} >/dev/null 2>&1; then printf already_running; "
+    "else nohup node node-server.js >/dev/null 2>&1 </dev/null & sleep 0.2; "
+    f"if {_NODE_HEALTH_PROBE} >/dev/null 2>&1; then printf started; else exit 3; fi; fi"
+)
+NODE_SERVICE_MAX_SOURCE_BYTES = 4096
+NODE_SERVICE_SCOPE = "127.0.0.1:8765 inside this agent's persistent container; no host port is published"
+
+
+def _node_service_home(ctx: "AgentContext") -> tuple[Path | None, Any, str | None]:
+    """Only permit the caller's own direct agent directory and a runner that validates cwd."""
+    core = getattr(ctx, "core", None)
+    runner = getattr(core, "runner", None)
+    if runner is None or not callable(getattr(runner, "run", None)):
+        return None, runner, "execution runner is not available"
+    if not runner_accepts_cwd(runner):
+        return None, runner, "runner does not support a confined per-agent working directory"
+    agent_id = getattr(ctx, "agent_id", None)
+    raw_home = getattr(ctx, "agent_dir", None)
+    workspace = getattr(runner, "workspace", None) or getattr(getattr(core, "settings", None), "workspace", None)
+    if not agent_id or raw_home is None or workspace is None:
+        return None, runner, "a per-agent home is required; enable AVRONE_AGENT_FS"
+    try:
+        from . import agentfs
+        candidate = Path(raw_home)
+        if candidate.is_symlink():
+            return None, runner, "agent home may not be a symlink"
+        home = candidate.resolve()
+        root = Path(workspace).resolve()
+        if (not agentfs.is_agent_dir(root, home)
+                or home.name != agentfs.sanitize_agent_id(agent_id)
+                or not home.is_dir()):
+            return None, runner, "working directory is not your own confined agent home"
+        return home, runner, None
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None, runner, "could not validate your confined agent home"
+
+
+async def _node_service_scaffold(ctx: "AgentContext", home: Path) -> tuple[str, bool]:
+    """Create only the known health-server file; never replace a different agent-owned file."""
+    target = home / "node-server.js"
+    try:
+        if target.is_symlink():
+            return "ERROR: node-server.js is a symlink; refusing to follow or replace it", False
+        if target.exists():
+            if not target.is_file() or target.stat().st_size > NODE_SERVICE_MAX_SOURCE_BYTES:
+                return "ERROR: existing node-server.js is not a small regular file; preserve it and review manually", False
+            if target.read_text(encoding="utf-8", errors="replace") != NODE_SERVER_SOURCE:
+                return "ERROR: node-server.js already exists with different content; it was not overwritten", False
+            return "node-server.js already matches the AVRONE internal health server", True
+    except OSError:
+        return "ERROR: could not inspect node-server.js safely", False
+    registry = getattr(getattr(ctx, "core", None), "tools", None)
+    if registry is None or not callable(getattr(registry, "call", None)):
+        return "ERROR: the tool registry is not available for quota-enforced file creation", False
+    result = await registry.call(ctx, "fs_write", {"path": "node-server.js", "content": NODE_SERVER_SOURCE})
+    if str(result).startswith("ERROR"):
+        return str(result), False
+    return "created node-server.js in your own agent home (quota-enforced)", True
+
+
+async def t_node_service(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Scaffold or manage a fixed loopback-only Node health server in a persistent agent container."""
+    action = str(args.get("action", "status") or "status").strip().lower()
+    fmt = str(args.get("format", "text") or "text").strip().lower()
+    if action not in {"scaffold", "start", "status", "stop"}:
+        return 'ERROR: action must be "scaffold", "start", "status" or "stop"'
+    if fmt not in {"text", "json"}:
+        return 'ERROR: format must be "text" or "json"'
+
+    home, runner, home_error = _node_service_home(ctx)
+    if home_error or home is None:
+        return "ERROR: " + (home_error or "agent home unavailable")
+
+    report: dict[str, Any] = {
+        "action": action, "ok": False, "status": "refused",
+        "runner": str(getattr(runner, "kind", "unknown") or "unknown"),
+        "file": "node-server.js", "url": None,
+        "scope": "agent-home files only; server is not running",
+    }
+
+    if action in {"start", "status", "stop"}:
+        try:
+            from . import agentcontainer
+            persistent = (getattr(runner, "kind", "") == "docker"
+                          and agentcontainer.container_mode() == "persistent")
+        except Exception:  # noqa: BLE001
+            persistent = False
+        if not persistent:
+            report["message"] = "start/status/stop require AVRONE_RUNNER=docker and AVRONE_AGENT_CONTAINER=persistent"
+            return _node_service_render(report, fmt)
+
+    # Status/stop must be observational: never create a lazy persistent container just
+    # to discover that its service is absent. Only start may trigger container creation.
+    if action in {"status", "stop"}:
+        pool = getattr(runner, "agent_pool", None)
+        homes = getattr(pool, "homes", None) if pool is not None else None
+        if not isinstance(homes, dict):
+            report.update(ok=True, status="not_running",
+                          message="No tracked persistent agent container; no container was started")
+            return _node_service_render(report, fmt)
+        try:
+            from . import agentcontainer, agentfs
+            node_id = getattr(pool, "node", None) or agentcontainer.local_node_id()
+            container = agentcontainer.container_name(
+                node_id, agentfs.sanitize_agent_id(getattr(ctx, "agent_id", None)))
+        except Exception:  # noqa: BLE001
+            report.update(status="error", message="Could not safely identify the agent container")
+            return _node_service_render(report, fmt)
+        if container not in homes:
+            report.update(ok=True, status="not_running",
+                          message="No tracked persistent agent container; no container was started")
+            return _node_service_render(report, fmt)
+
+    if action == "scaffold":
+        message, ok = await _node_service_scaffold(ctx, home)
+        report.update(ok=ok, status="scaffolded" if ok else "refused", message=message)
+        return _node_service_render(report, fmt)
+
+    if action == "start":
+        try:
+            version = await runner.run("node --version", timeout=5, cwd=home)
+        except Exception as exc:  # noqa: BLE001
+            report.update(status="node_unavailable", message=f"Node version probe failed ({type(exc).__name__})")
+            return _node_service_render(report, fmt)
+        if bool(getattr(version, "timed_out", False)) or int(getattr(version, "exit_code", 1)) != 0:
+            report.update(status="node_unavailable", message="Node.js is not available in this agent container")
+            return _node_service_render(report, fmt)
+        message, ok = await _node_service_scaffold(ctx, home)
+        if not ok:
+            report.update(status="refused", message=message)
+            return _node_service_render(report, fmt)
+        command, success_status = _NODE_START_COMMAND, "started"
+    elif action == "status":
+        command, success_status = _NODE_HEALTH_PROBE, "running"
+    else:
+        command, success_status = _NODE_STOP_PROBE, "stopped"
+
+    try:
+        result = await runner.run(command, timeout=5, cwd=home)
+    except Exception as exc:  # noqa: BLE001
+        report.update(status="error", message=f"Node service command failed ({type(exc).__name__})")
+        return _node_service_render(report, fmt)
+
+    exit_code = int(getattr(result, "exit_code", 1))
+    timed_out = bool(getattr(result, "timed_out", False))
+    if action in {"status", "stop"} and timed_out:
+        report.update(ok=False, status="timeout",
+                      message=f"Node service {action} probe timed out; current service state is unknown")
+    elif action == "status" and exit_code != 0:
+        report.update(ok=True, status="not_running", message="No responding AVRONE Node health server at loopback port 8765")
+    elif action == "stop" and exit_code != 0:
+        report.update(ok=True, status="not_running", message="No responding AVRONE Node health server to stop")
+    elif timed_out or exit_code != 0:
+        report.update(status="failed", message=f"Node service {action} failed; detailed stderr is not returned")
+    else:
+        output = str(getattr(result, "stdout", "") or "").strip()[:200]
+        if action == "start" and output == "already_running":
+            success_status = "running"
+        report.update(ok=True, status=success_status,
+                      url="http://127.0.0.1:8765" if action in {"start", "status"} else None,
+                      scope=NODE_SERVICE_SCOPE,
+                      message=output or f"Node service {success_status}")
+    return _node_service_render(report, fmt)
+
+
+def _node_service_render(report: dict[str, Any], fmt: str) -> str:
+    if fmt == "json":
+        return _cap(json.dumps(report, indent=2, sort_keys=True), PREFLIGHT_MAX_CHARS)
+    lines = [f"node_service: action={report['action']} status={report['status']} ok={'yes' if report['ok'] else 'no'}"]
+    if report.get("url"):
+        lines.append(f"url: {report['url']}")
+    if report.get("scope"):
+        lines.append(f"scope: {report['scope']}")
+    if report.get("message"):
+        lines.append(f"detail: {report['message']}")
+    return _cap("\n".join(lines), PREFLIGHT_MAX_CHARS)
 
 
 # --------------------------------------------------------------------------- env_report
@@ -180,6 +566,18 @@ INTROSPECT_TOOLS: list[Tool] = [
          "names show set/unset only; URL credentials and token-shaped values masked); optional prefix filter.",
          '{"prefix"?: str, "format"?: "text"|"json"}', t_env_report, source="builtin",
          schema={"optional": {"prefix": "str", "format": "str"}}),
+    Tool("runtime_preflight",
+         "read-only: inspect local Python, runner, workspace access, Docker availability and redacted model/admin readiness; no commands, writes or network probes.",
+         '{"format"?: "text"|"json"}', t_runtime_preflight, source="builtin",
+         schema={"optional": {"format": "str"}}),
+    Tool("node_runtime",
+         "bounded: check Node.js and npm versions in the active runner (and your per-agent cwd when available); executes only fixed version probes, never installs packages or starts a server.",
+         '{"format"?: "text"|"json"}', t_node_runtime, source="builtin",
+         schema={"optional": {"format": "str"}}),
+    Tool("node_service",
+         "bounded: scaffold/start/status/stop a fixed HTTP health server bound only to 127.0.0.1 inside this agent's persistent Docker container; files are confined to your agent home and no host port is published.",
+         '{"action"?: str, "format"?: "text"|"json"}', t_node_service, source="builtin",
+         schema={"optional": {"action": "str", "format": "str"}}),
 ]
 
 

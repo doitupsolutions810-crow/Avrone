@@ -20,7 +20,7 @@ Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; 
      AVRONE_EVOLVE_HISTORY (finished-loop summaries kept in loops/history.jsonl; default 50, can only
      lower it; hard cap 200). evolve_history() reads it back, across restarts.
      AVRONE_EVOLVE_LONG=allow (default off): explicit operator opt-in that raises the loop hard caps
-     from 10 / 1800s to LONG_MAX_ITERS_CAP / LONG_TIME_BUDGET_CAP_S (50 / 7200s). It changes no
+     from 10 / 1800s to LONG_MAX_ITERS_CAP / LONG_TIME_BUDGET_CAP_S (100 / 43200s = 12 hours). It changes no
      default; AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (or a tool argument) still pick the
      actual size, and nothing can exceed the long ceilings.
 Restarts: a "running" loop whose owning process is gone is never resumed automatically. The first
@@ -99,8 +99,11 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
 
 
 def _in_repo(wt: Path, rel: str) -> Path:
-    p = (wt / rel).resolve()
-    if not str(p).startswith(str(wt.resolve())):
+    root = wt.resolve()
+    p = (root / rel).resolve()
+    # String-prefix checks accept sibling paths such as /work/wt-escape for /work/wt.
+    # Path.is_relative_to compares path components and also catches symlink escapes.
+    if not p.is_relative_to(root):
         raise ValueError(f"path escapes repo: {rel}")
     return p
 
@@ -208,8 +211,8 @@ TIME_BUDGET_CAP_S = 1800
 DEFAULT_MAX_ITERS = 3
 DEFAULT_TIME_BUDGET_S = 600
 # Opt-in long loops (AVRONE_EVOLVE_LONG=allow) may rise to these, and never past them.
-LONG_MAX_ITERS_CAP = 50
-LONG_TIME_BUDGET_CAP_S = 7200
+LONG_MAX_ITERS_CAP = 100
+LONG_TIME_BUDGET_CAP_S = 43200
 
 
 def long_loops_allowed() -> bool:
@@ -240,7 +243,7 @@ def loop_limits(max_iters: Any = None, time_budget_s: Any = None) -> tuple[int, 
 
     AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET set the node's default AND its ceiling
     (an agent can ask for less, never more); the hard caps bound everything, env included. The hard
-    caps are 10 / 1800s unless AVRONE_EVOLVE_LONG=allow raises them to 50 / 7200s.
+    caps are 10 / 1800s unless AVRONE_EVOLVE_LONG=allow raises them to 100 / 43200s (12 hours).
     """
     hard_iters, hard_budget = hard_caps()
     env_iters, env_budget = _env_num("AVRONE_EVOLVE_MAX_ITERS"), _env_num("AVRONE_EVOLVE_TIME_BUDGET")
@@ -1025,7 +1028,7 @@ EVOLVE_TOOLS = [
      '{"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}', t_evolve_propose),
     ("evolve_loop", "bounded self-evolution loop: try candidate edit sets one by one (each in its own throwaway "
      "copy, each needing a full test pass) and stop at the first that passes or when the iteration/time budget "
-     "runs out (hard caps: 10 iterations, 1800s; 50 / 7200s only if the operator set AVRONE_EVOLVE_LONG=allow). Returns every attempt's verdict and failing test output.",
+     "runs out (hard caps: 10 iterations, 1800s; 100 / 43200s (12 hours) only if the operator set AVRONE_EVOLVE_LONG=allow). Returns every attempt's verdict and failing test output.",
      '{"goal": str, "candidates": [[{"path": str, "content": str}], ...], "max_iters"?: int, '
      '"time_budget_s"?: number, "test_cmd"?: str}', t_evolve_loop),
     ("evolve_start", "evolve_loop in the BACKGROUND: returns a loop_id at once and keeps iterating (same guardrails "

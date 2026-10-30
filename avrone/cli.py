@@ -98,6 +98,7 @@ async def _run(args: argparse.Namespace) -> int:
         if args.cmd == "evolve":
             from .evolve import list_accepted
             rows = list_accepted(core.settings)
+            _write_json(args.json, rows)
             print(json.dumps(rows, indent=2, default=str) if args.json else
                   ("\n".join(f"{r['pid']} {r['branch']}  {r['goal']}  ({', '.join(r['files'])})" for r in rows)
                    or "no accepted proposals"))

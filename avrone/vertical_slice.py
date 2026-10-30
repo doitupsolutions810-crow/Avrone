@@ -7,6 +7,7 @@ authorizer or host-shell runner is provided here.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -51,11 +52,19 @@ async def execute_vertical_slice(
         state = transition(state, "DENIED")
         return {"state": state, "reason": "policy_denied", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"], "policy_version": str(decision.get("policy_version", "unknown"))}
 
+    policy_version = decision.get("policy_version")
+    if not isinstance(policy_version, str) or not policy_version.strip():
+        return {"state": "UNKNOWN", "reason": "invalid_policy_version", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"]}
+
+    # Preserve the signed grant across the trust boundary. The worker adapter
+    # must verify/use this grant; the model never supplies it.
+    dispatch_request = dict(validated)
+    dispatch_request["_authorization"] = dict(decision)
     state = transition(state, "AUTHORIZED")
     state = transition(state, "DISPATCHED")
     try:
         result = await asyncio.wait_for(
-            run_isolated(validated),
+            run_isolated(dispatch_request),
             timeout=validated["resource_limits"]["timeout_seconds"],
         )
     except asyncio.TimeoutError:
@@ -67,7 +76,13 @@ async def execute_vertical_slice(
     if not isinstance(result, Mapping) or result.get("status") != "completed":
         return {"state": "WORKER_FAILED", "reason": "invalid_runner_result", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"]}
     digests = result.get("artifact_digests", [])
-    if not isinstance(digests, list):
+    if (
+        not isinstance(digests, list)
+        or any(not isinstance(d, str) or not re.fullmatch(r"[0-9a-f]{64}", d) for d in digests)
+        or len(set(digests)) != len(digests)
+        or not isinstance(result.get("worker_id"), str)
+        or not result.get("worker_id", "").strip()
+    ):
         return {"state": "VERIFICATION_FAILED", "reason": "invalid_artifact_manifest", "correlation_id": validated["correlation_id"], "task_id": validated["task_id"]}
     state = transition(state, "COMPLETED")
     # Do not call a task VERIFIED until an independent verifier confirms the
@@ -85,7 +100,7 @@ async def execute_vertical_slice(
             source_repository=validated["source"]["repository"],
             source_commit=validated["source"]["commit_sha"],
             authorization="ALLOW",
-            policy_version=str(decision.get("policy_version", "unknown")),
+            policy_version=policy_version,
             worker_id=str(result.get("worker_id", "")) or None,
             outcome="VERIFIED",
             artifact_digests=digests,

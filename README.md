@@ -81,6 +81,17 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.28: Squad round 14 — MCP JSON-RPC hardening, secrets out of run logs — 2712 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | MCP: non-object params/arguments and a non-string method leaked `AttributeError` as -32603; a dict task ran as its repr; `[]` got no answer; **one line over the 16 MB reader limit killed the server** | -32602/-32600 per JSON-RPC, `'task' must be a string`, empty batch -32600, oversized line answered -32600 and the server keeps serving | `test_robust_v028_mcp.py`; live `python -m avrone.mcp_server` with a 17 MB line: error, then `ping` still answers, exit 0 |
+| robust | **secrets reached the run log and `/ws/events` verbatim** (an agent running `env`, a key in a clone URL) | codex scrubs every event string with the ctxspawn redactor (env secret values, bearer/API keys, private keys, JWTs, URL credentials) before writing or broadcasting; `AVRONE_CODEX_REDACT=off` to disable | `test_robust_v028_redact.py` |
+| tools | old run logs may still hold secrets | `secret_scan` (runs/data/workspace; path:line + kind, never values; `fix` redacts run logs atomically; acting); redaction made idempotent (`[REDACTED]` no longer re-redacted into `[REDACTED]]`) | `test_tool_secrets.py` |
+| tools | no way to check the MCP layer from inside | `mcp_selftest`: in-process handshake, ping, tools/list and three malformed requests | PASS on a fresh node |
+| skills | — | `secret-hygiene` (scan → fix → rotate), `mcp-client-check` (stdio pitfalls, tool names) | grounding + end-to-end hygiene test |
+| coverage | — | `cov14_a` (secret_scan internals), `cov14_b` (fleet branches) | 32 statements missed of 10,693 |
+
 ## v0.27: Squad round 13 — agent and run routes are local-only by default — 2676 tests, coverage 99%
 
 **Breaking (safe direction):** `POST /api/chat`, `/api/runs*`, `/api/telemetry`, `/api/map`, `/api/evolve`,

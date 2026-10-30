@@ -153,3 +153,36 @@ async def test_invalid_authority_signature_prevents_runner_dispatch(
     assert result["state"] == "UNKNOWN"
     assert result["reason"] == "authorization_unavailable"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_production_never_returns_verified_without_receipt_signer(
+    tmp_path, monkeypatch
+):
+    key = Ed25519PrivateKey.generate()
+    install_signed_authority(monkeypatch, key)
+    monkeypatch.setenv("PRODUCTION", "1")
+    monkeypatch.delenv("AVRONE_RECEIPT_SIGNER_URL", raising=False)
+    calls = []
+
+    async def isolated_runner(task):
+        calls.append(task)
+        return {
+            "status": "completed",
+            "worker_id": "ephemeral-runner-test",
+            "artifact_digests": [],
+            "artifacts": [],
+        }
+
+    result = await execute_with_capability_authority(
+        make_envelope(),
+        allowed_capabilities={"read_repository"},
+        run_isolated=isolated_runner,
+        authority_url="http://authority.test",
+        artifact_root=tmp_path,
+    )
+
+    assert len(calls) == 1
+    assert result["state"] == "UNKNOWN"
+    assert result["reason"] == "receipt_signing_unavailable"
+    assert "receipt" not in result

@@ -108,6 +108,8 @@ def _auth_class(fn: Any) -> str:
         return "fleet-signed"
     if "require_admin(" in src:
         return "admin"
+    if "require_local(" in src or "caller_allowed(" in src:
+        return "local"  # loopback or admin token, per AVRONE_PUBLIC_ACCESS
     return "public"
 
 
@@ -123,6 +125,7 @@ def api_surface() -> dict[str, Any]:
         routes.append({"path": path, "methods": methods, "auth": _auth_class(getattr(r, "endpoint", None))})
     return {"routes": sorted(routes, key=lambda x: x["path"]),
             "admin_enabled": bool(getattr(server.settings, "admin_token", None)),
+            "access_policy": server.access_policy(),
             "fleet_enabled": bool(os.getenv("AVRONE_FLEET_TOKEN"))}
 
 
@@ -136,7 +139,8 @@ async def t_api_surface(ctx: "AgentContext", args: dict[str, Any]) -> str:
         by[r["auth"]] = by.get(r["auth"], 0) + 1
     lines = [f"api_surface: {len(a['routes'])} route(s); " + ", ".join(f"{k}={v}" for k, v in sorted(by.items())),
              f"admin token {'SET' if a['admin_enabled'] else 'unset (admin routes answer 403)'}; "
-             f"fleet {'ON' if a['fleet_enabled'] else 'off (signed routes refuse)'}"]
+             f"fleet {'ON' if a['fleet_enabled'] else 'off (signed routes refuse)'}; "
+             f"AVRONE_PUBLIC_ACCESS={a.get('access_policy', '?')}"]
     for r in a["routes"]:
         lines.append(f"- {','.join(r['methods'])} {r['path']} [{r['auth']}]")
     return "\n".join(lines)

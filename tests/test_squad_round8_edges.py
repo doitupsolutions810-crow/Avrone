@@ -108,7 +108,11 @@ def test_telemetry_skips_one_bad_encoding_file_without_losing_good_events(tmp_pa
     ]
 
 
-@pytest.mark.parametrize("raw_payload", ["{bad-json", "null", "[]", "42", '{"score":NaN}', '{"score":Infinity}', '{"score":-Infinity}'])
+@pytest.mark.parametrize("raw_payload", [
+    "{bad-json", "null", "[]", "42",
+    '{"score":NaN}', '{"score":Infinity}', '{"score":-Infinity}',
+    '{"score":1e10000}', '{"score":-1e10000}',
+])
 def test_job_queue_quarantines_poison_payload_and_keeps_processing(raw_payload, tmp_path):
     async def go():
         q = jobqueue.JobQueue(tmp_path / "jobs.db")
@@ -132,12 +136,13 @@ def test_job_queue_quarantines_poison_payload_and_keeps_processing(raw_payload, 
     asyncio.run(go())
 
 
-def test_job_queue_inspection_rejects_nonfinite_persisted_result(tmp_path):
+@pytest.mark.parametrize("raw_result", ['{"score":NaN}', '{"score":1e10000}'])
+def test_job_queue_inspection_rejects_nonfinite_persisted_result(tmp_path, raw_result):
     async def go():
         q = jobqueue.JobQueue(tmp_path / "result-poison.db")
         try:
             jid = await q.enqueue("result", {"ok": True})
-            q._db.execute("UPDATE jobs SET result=? WHERE id=?", ('{"score":NaN}', jid))
+            q._db.execute("UPDATE jobs SET result=? WHERE id=?", (raw_result, jid))
             row = await q.get(jid)
             assert row["status"] == "queued"
             assert row["result"] is None

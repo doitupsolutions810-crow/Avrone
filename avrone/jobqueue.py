@@ -32,6 +32,14 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant: {value}")
 
 
+def _parse_finite_json_float(value: str) -> float:
+    """Reject syntactically valid JSON numbers that overflow Python's float range."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("JSON floating-point value is outside the finite range")
+    return parsed
+
+
 class JobQueue:
     def __init__(self, path: Path, lease_s: float = 900):
         self.path = Path(path)
@@ -107,7 +115,7 @@ class JobQueue:
                 if not row:
                     return None
                 try:
-                    payload = json.loads(row[2], parse_constant=_reject_json_constant)
+                    payload = json.loads(row[2], parse_constant=_reject_json_constant, parse_float=_parse_finite_json_float)
                     if not isinstance(payload, dict):
                         raise ValueError("payload is not an object")
                 except (json.JSONDecodeError, TypeError, ValueError):
@@ -161,7 +169,7 @@ class JobQueue:
                     d[k] = None
                     continue
                 try:
-                    d[k] = json.loads(d[k], parse_constant=_reject_json_constant)
+                    d[k] = json.loads(d[k], parse_constant=_reject_json_constant, parse_float=_parse_finite_json_float)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     # Keep status inspectable even if the database was modified or
                     # damaged outside this API. Preserve the raw bytes nowhere in output.

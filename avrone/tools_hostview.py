@@ -146,12 +146,62 @@ async def t_api_surface(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _token_strength(v: str | None) -> str:
+    if not v:
+        return "unset"
+    if v.lower() in ("changeme", "secret", "password", "token", "admin", "test"):
+        return "placeholder"
+    return "weak" if len(v) < 16 else "ok"
+
+
+def exposure() -> dict[str, Any]:
+    """Who can reach what on this node right now, as a remote (non-loopback) caller with no token."""
+    host = os.getenv("AVRONE_HOST") or "127.0.0.1"
+    exposed = host.strip("[]") not in ("127.0.0.1", "::1", "localhost")
+    a = api_surface()
+    policy, admin_on, fleet_on = a["access_policy"], a["admin_enabled"], a["fleet_enabled"]
+    remote_open = [f"{','.join(r['methods'])} {r['path']}" for r in a["routes"]
+                   if r["auth"] == "public" or (r["auth"] == "local" and policy == "all")]
+    risky = [x for x in remote_open if any(k in x for k in ("/api/chat", "/api/runs", "/ws/events", "/api/telemetry"))]
+    from . import server
+    admin_tok = _token_strength(getattr(server.settings, "admin_token", None))
+    fleet_tok = _token_strength(os.getenv("AVRONE_FLEET_TOKEN"))
+    issues = []
+    if exposed and risky:
+        issues.append(f"bound to {host} with {len(risky)} agent/run route(s) open to anyone")
+    for name, st in (("admin", admin_tok), ("fleet", fleet_tok)):
+        if st in ("weak", "placeholder"):
+            issues.append(f"{name} token is {st}")
+    if admin_tok != "unset" and os.getenv("AVRONE_FLEET_TOKEN") and \
+            os.getenv("AVRONE_FLEET_TOKEN") == getattr(server.settings, "admin_token", None):
+        issues.append("admin and fleet tokens are the same secret")
+    return {"host": host, "exposed": exposed, "policy": policy, "admin_token": admin_tok,
+            "fleet_token": fleet_tok if fleet_on else "unset", "remote_open": remote_open, "risky": risky,
+            "issues": issues, "verdict": "AT RISK" if issues else ("LOCAL" if not exposed else "GUARDED")}
+
+
+async def t_exposure_check(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    try:
+        e = exposure()
+    except Exception as ex:  # noqa: BLE001
+        return f"exposure_check: no HTTP app on this node ({type(ex).__name__})"
+    lines = [f"exposure_check: {e['verdict']} - bind {e['host']} ({'exposed' if e['exposed'] else 'loopback'}), "
+             f"AVRONE_PUBLIC_ACCESS={e['policy']}, admin token {e['admin_token']}, fleet token {e['fleet_token']}",
+             f"open to a remote caller without a token: {len(e['remote_open'])} route(s)"
+             + (f"; agent/run routes among them: {', '.join(e['risky'])}" if e["risky"] else "")]
+    lines += [f"- issue: {i}" for i in e["issues"]]
+    return "\n".join(lines)
+
+
 HOSTVIEW_TOOLS = [
     Tool("proc_status", "read-only: child processes of this AVRONE node (pid, state, age, RSS, command); "
          "flags long-running ones and zombies. Own process tree only, never env vars.",
          '{"all"?: bool}', t_proc_status, source="builtin", schema={"optional": {"all": "bool"}}),
     Tool("api_surface", "read-only: this node's HTTP routes and who can call each (public/admin/fleet-signed), "
          "and whether admin and fleet are enabled.", "{}", t_api_surface, source="builtin", schema={}),
+    Tool("exposure_check", "read-only: is this node safe to expose? bind address, AVRONE_PUBLIC_ACCESS, token "
+         "strength (never values), and which routes a remote caller reaches with no token.",
+         "{}", t_exposure_check, source="builtin", schema={}),
 ]
 
 

@@ -80,6 +80,7 @@ class JobQueue:
         await self._run(lambda: self._db.execute(
             "INSERT INTO jobs(id,kind,payload,status,priority,max_attempts,created,updated) VALUES(?,?,?,?,?,?,?,?)",
             (jid, kind, encoded_payload, "queued", priority, max_attempts, now, now)))
+        return jid
 
     async def claim(self) -> dict[str, Any] | None:
         def _claim() -> Any:

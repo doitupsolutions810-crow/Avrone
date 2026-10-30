@@ -67,6 +67,33 @@ def test_telemetry_skips_malformed_event_envelopes_without_losing_valid_events(t
     assert list(telemetry._iter_events(log_dir, now - 5)) == [rows[-1]]
 
 
+
+
+def test_telemetry_aggregation_normalizes_untrusted_mode_and_rejects_nonfinite_run_id(tmp_path, monkeypatch):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    rows = [
+        {"ts": now, "kind": "run.start", "agent": "A", "run_id": "bad-mode",
+         "data": {"mode": ["not", "hashable"]}},
+        {"ts": now, "kind": "run.start", "agent": "A", "run_id": "good-mode",
+         "data": {"mode": "chat"}},
+    ]
+    path = log_dir / "events.jsonl"
+    path.write_text(
+        "\\n".join(json.dumps(row) for row in rows)
+        + '\\n{"ts":' + str(now) + ',"kind":"run.start","agent":"A","run_id":NaN,"data":{"mode":"bad-id"}}\\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(telemetry, "node_health", lambda core: {})
+    monkeypatch.setattr(telemetry, "fleet_health", lambda core: [])
+    core = SimpleNamespace(codex=SimpleNamespace(log_dir=log_dir), active={})
+
+    result = telemetry.telemetry(core, window_s=60)
+    assert result["runs"]["total"] == 2
+    assert result["runs"]["by_mode"] == {"unknown": 1, "chat": 1}
+
+
 def test_telemetry_skips_one_bad_encoding_file_without_losing_good_events(tmp_path):
     log_dir = tmp_path / "events"
     log_dir.mkdir()

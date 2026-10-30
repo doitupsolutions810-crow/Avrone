@@ -70,6 +70,8 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
             rid = ev.get("run_id")
             if rid is not None and (isinstance(rid, bool) or not isinstance(rid, (str, int, float))):
                 continue
+            if isinstance(rid, float) and not math.isfinite(rid):
+                continue
             data = ev.get("data", {})
             if not isinstance(data, dict):
                 continue
@@ -104,7 +106,14 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     for ev in _iter_events(core.codex.log_dir, since):
         rid, kind, agent, data, ts = ev.get("run_id"), ev.get("kind"), ev.get("agent", ""), ev.get("data", {}), ev.get("ts", 0)
         if kind == "run.start":
-            runs[rid] = {"run_id": rid, "mode": data.get("mode"), "start": ts, "end": None,
+            mode = data.get("mode")
+            # Aggregation later uses mode as a Counter key. Nested JSON containers
+            # are valid JSON but are not hashable and must not poison the endpoint.
+            if not isinstance(mode, str) or not mode.strip():
+                mode = "unknown"
+            else:
+                mode = mode.strip()[:64]
+            runs[rid] = {"run_id": rid, "mode": mode, "start": ts, "end": None,
                          "prompt": str(data.get("prompt", ""))[:120]}
         elif kind == "run.done" and rid in runs:
             runs[rid]["end"] = ts

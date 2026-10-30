@@ -1240,3 +1240,5 @@ def register_extra_tools(registry) -> None:
     register_limits_tools(registry)
     from .tools_gatewayview import register_gatewayview_tools
     register_gatewayview_tools(registry)
+    from .tools_packpeer import register_packpeer_tools
+    register_packpeer_tools(registry)

@@ -1232,3 +1232,5 @@ def register_extra_tools(registry) -> None:
     register_lessonforget_tools(registry)
     from .tools_statehealth import register_statehealth_tools
     register_statehealth_tools(registry)
+    from .tools_hostview import register_hostview_tools
+    register_hostview_tools(registry)

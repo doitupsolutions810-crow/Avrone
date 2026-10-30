@@ -1409,12 +1409,21 @@ class FleetManager:
                 "run_id": run_id, "answer": answer}
 
     async def handle_message(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("message payload must be a JSON object")
         hops = int(payload.get("hops", 1))
         if hops > self.max_hops:
             raise PermissionError("max fleet hops exceeded")
-        return await self.send_message([str(x) for x in payload.get("route") or []], str(payload["agent"]),
-                                       str(payload["message"]), str(payload.get("from", "?")), hops,
-                                       bool(payload.get("wait")))
+        agent, message = payload.get("agent"), payload.get("message")
+        if not isinstance(agent, str) or not agent.strip():
+            raise ValueError("'agent' must be a non-empty string")
+        if not isinstance(message, str):
+            raise ValueError("'message' must be a string")
+        route = payload.get("route") or []
+        if not isinstance(route, list):
+            raise ValueError("'route' must be a list of node ids")
+        return await self.send_message([str(x) for x in route], agent, message,
+                                       str(payload.get("from", "?")), hops, payload.get("wait") is True)
 
     async def run_job(self, kind: str, p: dict[str, Any]) -> dict[str, Any]:
         """Queue handler: retried by the JobQueue if the target node is down."""

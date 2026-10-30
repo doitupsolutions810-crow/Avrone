@@ -219,8 +219,8 @@ def test_fleet_message_errors_and_local_delivery(fclient, monkeypatch):
     c = server.core()
     r = signed_post(fclient, "/api/fleet/message", {"agent": "A", "message": "m", "hops": 99})
     assert r.status_code == 403
-    r = signed_post(fclient, "/api/fleet/message", {"hops": 1})            # missing agent -> KeyError
-    assert r.status_code == 502
+    r = signed_post(fclient, "/api/fleet/message", {"hops": 1})            # missing agent -> 400, not 502
+    assert r.status_code == 400 and "agent" in r.json()["detail"]
     r = signed_post(fclient, "/api/fleet/message", {"agent": "A", "message": "m", "route": ["ghost"]})
     assert r.status_code == 502 and "unknown node" in r.json()["detail"]
     monkeypatch.setattr(c, "message_agent", lambda *a: True)

@@ -307,7 +307,7 @@ def test_deliver_local_respawn_background(fm, core):
 def test_handle_message(fm, core):
     with pytest.raises(PermissionError, match="exceeded"):
         run(fm.handle_message({"hops": fm.max_hops + 1, "agent": "a", "message": "m"}))
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="agent"):
         run(fm.handle_message({"hops": 1}))
     core.message_agent.return_value = True
     res = run(fm.handle_message({"agent": "A-1", "message": "m", "route": None}))

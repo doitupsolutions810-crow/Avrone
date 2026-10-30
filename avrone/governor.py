@@ -86,7 +86,10 @@ def make_disk_reader(path: str = ".") -> Reader:
             if parent == p:
                 break
             p = parent
-        u = shutil.disk_usage(p or ".")
+        try:
+            u = shutil.disk_usage(p or ".")
+        except OSError:  # vanished mount / unreadable path: no reading rather than an exception
+            return None
         return 100.0 * u.free / u.total if u.total else None
     return read_disk_free_pct
 

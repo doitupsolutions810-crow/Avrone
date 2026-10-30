@@ -14,7 +14,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 def proposal(pid, ts, *, branch="evolve/test", files=None):
-    return {"pid": pid, "branch": branch, "files": files or ["tests/test_new.py"], "ts": ts}
+    return {"pid": pid, "branch": branch, "files": files if files is not None else ["tests/test_new.py"], "ts": ts}
 
 
 def test_counts_only_unique_structurally_valid_proposals_from_this_run():

@@ -8,15 +8,7 @@ The account-level Actions-disable explanation is currently **unverified**. Possi
 
 ## A self-hosted runner would not match the current CI job yet
 
-Avrone's `.github/workflows/ci.yml` currently says:
-
-```yaml
-runs-on: ubuntu-24.04
-strategy:
-  matrix: { python: ["3.11", "3.12"] }
-```
-
-The candidate `swarm-vm-runner` image advertises labels `self-hosted, linux, x64, control12, swarm`. A runner carrying those labels cannot satisfy a job that requests `ubuntu-24.04`. Registering it alone does not unblock PR #9. Moving the matrix to self-hosted labels would be a separate workflow change; the two matrix jobs need two simultaneously available runner slots (or an explicitly serialized matrix).
+Avrone's `.github/workflows/ci.yml` currently requests `runs-on: self-hosted` with a Python 3.11/3.12 matrix. This is a material change from the earlier `ubuntu-24.04` workflow described in the first draft of this note. The candidate `swarm-vm-runner` advertises `self-hosted, linux, x64, control12, swarm`; those labels must be explicitly compared with the job's runner requirements and the runner group must be authorized for this repository. The matrix requires two concurrent runner slots unless its strategy is configured to serialize jobs. Do not route untrusted pull-request code to a persistent or host-privileged runner.
 
 Do not switch the workflow to self-hosted until the runner host is isolated for untrusted workflow code. The current swarm compose runner mounts `/var/run/docker.sock` into the runner container. A workflow with access to that socket can control the host Docker daemon; this is a high-privilege trust boundary. Avrone's `pull_request` workflow must not route untrusted fork code to a runner with host-level access.
 

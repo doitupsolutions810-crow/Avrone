@@ -1,0 +1,23 @@
+{
+  "proposal": "I",
+  "branch": "hermetic-harness",
+  "date": "2026-10-29",
+  "files": 6,
+  "invariants": 8,
+  "core_claim": "The verifier must live outside the loop it verifies. Safety is embedded in verification, not layered on top.",
+  "gedel_mapping": "harness repo = metalanguage; AVRONE = object language; human quarterly read = external witness",
+  "success_criteria": [
+    "evolve payloads with harness paths rejected at parser",
+    "SHA mismatch aborts before tests (fail-closed)",
+    "eight invariants documented and version-pinned",
+    "human duty: one commit per quarter"
+  ],
+  "prior_branches": ["thermo-descent", "thermo-descent-v2", "es-descent"],
+  "next_steps": [
+    "create avrone-harness repo (separate, human-only writes)",
+    "wire harness_client.py into evolve_propose gate stage-one",
+    "replace placeholder PINNED_SHA with real hash after first harness commit",
+    "add harness-path rejection to evolve payload parser",
+    "quarterly human review cadence: read invariants, confirm SHA, append CHANGELOG"
+  ]
+}

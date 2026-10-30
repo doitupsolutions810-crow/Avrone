@@ -130,6 +130,15 @@ def test_registration_and_health_score_handle_extreme_peer_load(fm):
     assert fm.health_table()[0]["load"] >= 0
 
 
+def test_pick_migration_target_sanitizes_legacy_peer_metrics(fm):
+    # Simulate a fleet.json record written before peer-health/load normalization.
+    add(fm, "legacy", load=10 ** 10000, health={
+        "state": "ok", "headroom": 10 ** 10000, "load": 10 ** 10000,
+        "temp_c": 10 ** 10000, "active_agents": 10 ** 10000,
+    })
+    assert fm.pick_migration_target("auto")["node_id"] == "legacy"
+
+
 def test_register_and_heartbeat_carry_health(fm, core, monkeypatch):
     fm.register({"node_id": "kid", "url": "http://kid.test", "health": {**COOL, "junk": "x"}})
     assert fm.nodes["kid"]["health"] == {k: v for k, v in COOL.items()}

@@ -981,7 +981,7 @@ class FleetManager:
             posts = bridge_export(self.core, run_id=run_id)
             if posts:
                 payload["bridge"] = posts
-            node["load"] = node.get("load", 0) + 1
+            node["load"] = sanitize_peer_load(node.get("load", 0)) + 1
             bumped = True
             t = offload_timeout()
             res = await asyncio.wait_for(self._post(node["url"], "/api/fleet/run", payload, timeout=t), t)
@@ -999,7 +999,7 @@ class FleetManager:
             raise RuntimeError(f"netsquad to {node_id} failed: {reason}") from e
         finally:
             if bumped and node is not None:
-                node["load"] = max(0, node.get("load", 1) - 1)
+                node["load"] = sanitize_peer_load(node.get("load", 1) - 1)
 
     def _netsquad_refuse(self, code: str, message: str, **kw: Any) -> PermissionError:
         self._audit("fleet.refused", code=code, reason=message, endpoint="run", capability=NETSQUAD_CAP, **kw)
@@ -1184,10 +1184,9 @@ class FleetManager:
             raise RuntimeError("no online nodes to migrate to")
 
         def h(n: dict[str, Any], k: str) -> float | None:
-            v = (n.get("health") if isinstance(n.get("health"), dict) else {}).get(k)
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-                return None
-            return float(v)
+            # Saved peer records can predate health sanitization; normalize them on read too.
+            value = (sanitize_health(n.get("health")) or {}).get(k)
+            return float(value) if value is not None else None
         # Never pick a peer that is itself hot: one that reports state hot/throttled, or a temp at
         # or over this node's thermal max. (The old code fell back to the hot peers when no cool
         # one existed, bouncing agents from one overheating node to another.)
@@ -1200,8 +1199,7 @@ class FleetManager:
         measured = [n for n in live if h(n, "temp_c") is not None or h(n, "load") is not None]
 
         def nload(n: dict[str, Any]) -> float:
-            v = n.get("load", 0)
-            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 1e9
+            return float(sanitize_peer_load(n.get("load", 0)))
         if measured:
             return min(measured, key=lambda n: (h(n, "temp_c") if h(n, "temp_c") is not None else 0.0,
                                                 h(n, "load") or 0.0, nload(n), n["node_id"]))

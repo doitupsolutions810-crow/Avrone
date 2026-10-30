@@ -81,6 +81,22 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.24: Squad round 10 — evolve traversal closed, local models reachable behind proxies, lesson pruning — 2536 tests, coverage 99%
+
+Great Scale form (heat → mapping → verification; Ψ = CONE: every residual closed).
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | `evolve_reset {"pid": "../x"}` read any `x.json` and **rmtree'd the dir it named**; `evolve_diff` ran git there; corrupt/partial proposal files crashed reset/diff/list | `_proposal()`: pid must be a plain id, worktree must be `data_dir/evolve/wt-*`, corrupt meta handled | `test_robust_v024_evolve.py` 9/10 fail → 0/10 |
+| robust | Found live: with an env `HTTP(S)_PROXY`, calls to the default Ollama on 127.0.0.1 went through the proxy (ConnectError / bench saw 404 "unhealthy") | `is_loopback_url` → `trust_env=False` for local upstreams only (gateway, legacy llm, model_bench) | `test_robust_v024_proxy.py` 12/13 fail → 0 |
+| tools | Lessons could be learned but never retracted | `lesson_forget` (key + reason; reason posted as a bridge `correction`, audited; `MemoryStore.delete`), `bridge_status` (posts by kind/agent, relayed, unanswered questions) | 12 tests |
+| tools | Router view hid how calls leave the node | `router_status` per-upstream `route=direct\|env-proxy` (proxy value never shown) | 2 tests |
+| skills | — | `local-model-ops` (route, circuits, bench-driven model choice, fallback) and `lesson-hygiene` (recall → verify → forget → relearn → close open questions) | grounding + full-cycle tests |
+| coverage | trinity/fleet 96% | `test_cov10_a.py` (fleet fallbacks in trinity), `test_cov10_b.py` (fleet thermal/inbound/privileged gate) | trinity 98%, fleet 98%, total 99% |
+| lead | `AVRONE_PROVIDER=ollama` with no model set picked `llama3.1` (8B, never benchmarked) while docs said qwen2.5:3b | preset default → `qwen2.5:3b` | 3 preset tests updated |
+
+**Live model bench re-run (2 vCPU, ~8 GB RAM, no GPU):** llama3.2:3b scored **69/100**: valid JSON 4 of 5 turns but it *printed a tool result without calling the tool* (guessed 52277; real 53527), then finished squad (35) and deep (10). qwen3.5:4b and gemma3:4b could not load on this host (llama-server killed while loading; model files live in RAM-backed storage here), so they stay unscored. qwen2.5:3b (100/100) remains the default.
+
 ## v0.23: Squad round 9 — conclude-bridge hardening, long-horizon learning loop, router bridge view — 2449 tests (2468 after merging origin), coverage 99%
 
 Great Scale form (each finding: heat → mapping → verification; Ψ = CONE when every residual closes).

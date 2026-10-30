@@ -34,7 +34,7 @@ def test_custom_fallback_without_base_url_is_skipped(monkeypatch):
     monkeypatch.setenv("AVRONE_LLM_MODE", "live")
     ups = gateway.parse_upstreams(Settings(), env={"AVRONE_LLM_FALLBACKS": " custom:m , ,ollama|big-lead"})
     assert [u.provider for u in ups] == ["xai", "ollama"]
-    assert ups[1].model == "llama3.1" and ups[1].lead_model == "big-lead"
+    assert ups[1].model == "qwen2.5:3b" and ups[1].lead_model == "big-lead"
 
 
 def test_openclaw_session_header_and_auth(monkeypatch):

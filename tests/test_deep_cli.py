@@ -121,7 +121,7 @@ def test_provider_presets():
     assert resolve_provider("xai", env=env) == ("xai", "https://api.x.ai/v1", "grok-4", "xai-k")
     assert resolve_provider("openai", env={})[1:3] == ("https://api.openai.com/v1", "gpt-4.1")
     assert resolve_provider("OpenRouter", env={})[1] == "https://openrouter.ai/api/v1"
-    assert resolve_provider("ollama", env={})[1:] == ("http://127.0.0.1:11434/v1", "llama3.1", "")
+    assert resolve_provider("ollama", env={})[1:] == ("http://127.0.0.1:11434/v1", "qwen2.5:3b", "")
     # explicit values override the preset
     assert resolve_provider("xai", "http://proxy/v1", "grok-3", "explicit", env=env) == \
         ("xai", "http://proxy/v1", "grok-3", "explicit")

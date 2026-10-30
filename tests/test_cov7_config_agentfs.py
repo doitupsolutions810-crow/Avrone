@@ -68,7 +68,7 @@ def test_dotenv_values_feed_fresh_settings(tmp_path, clean_env):
     f.write_text("AVRONE_PROVIDER=ollama\nAVRONE_MAX_STEPS=9 # more steps\n")
     config._load_dotenv(f)
     s = config.Settings()
-    assert s.provider == "ollama" and s.llm_model == "llama3.1" and s.max_steps == 9
+    assert s.provider == "ollama" and s.llm_model == "qwen2.5:3b" and s.max_steps == 9
     assert s.llm_base_url.startswith("http://127.0.0.1:11434")
 
 

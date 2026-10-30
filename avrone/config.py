@@ -32,7 +32,7 @@ PROVIDERS: dict[str, tuple[str, str, str]] = {
     "xai": ("https://api.x.ai/v1", "grok-4", "XAI_API_KEY"),
     "openai": ("https://api.openai.com/v1", "gpt-4.1", "OPENAI_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "x-ai/grok-4", "OPENROUTER_API_KEY"),
-    "ollama": ("http://127.0.0.1:11434/v1", "llama3.1", ""),
+    "ollama": ("http://127.0.0.1:11434/v1", "qwen2.5:3b", ""),
     "custom": ("", "default", ""),
 }
 

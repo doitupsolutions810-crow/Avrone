@@ -78,3 +78,30 @@ in `tests/test_plane.py`.
 
 Do not merge the AVRONE PR or connect this path to untrusted pull requests until
 the disposable VM adapter, cleanup tests, and actual CI execution are complete.
+
+
+## Claude Agent SDK guest worker contract
+
+The optional SDK worker is packaged in `avrone/claude_agent_node.py`. A
+provider-backed guest image with the `claude-agent` extra installed runs:
+
+```bash
+python -m avrone.claude_agent_node
+```
+
+The VM backend sends exactly one UTF-8 JSON object on stdin with these fields:
+`task_id`, `correlation_id`, `objective`, `source_repository`, and
+`source_commit_sha`. The payload is capped at 24 KiB and rejects extra keys.
+The backend injects the following guest environment values from its own
+provisioning record (never from model output): `AVRONE_VM_LEASE_ID`,
+`AVRONE_VM_WORKER_ID`, `AVRONE_VM_WORKSPACE`, `AVRONE_VM_DISPOSABLE=1`,
+`AVRONE_VM_NETWORK_EGRESS_DENIED=1`, `AVRONE_VM_DOCKER_SOCKET_MOUNTED=0`,
+and `AVRONE_VM_GITHUB_CREDENTIALS_MOUNTED=0`. Missing or malformed security
+flags fail closed.
+
+The process emits one JSON line on stdout and exits non-zero on failure. The
+backend must bound stdin/stdout, wall time, CPU, memory and disk; kill the guest
+on timeout; collect workspace files only after completion; independently hash
+the bytes; and destroy the VM regardless of outcome. These environment flags
+are an adapter contract, not a provider attestation or proof of isolation.
+Only the actual provider's control-plane evidence can establish those controls.

@@ -50,6 +50,23 @@ def test_telemetry_skips_timestamp_when_finiteness_check_overflows(tmp_path, mon
     assert list(telemetry._iter_events(log_dir, now - 5)) == []
 
 
+def test_telemetry_skips_malformed_event_envelopes_without_losing_valid_events(tmp_path):
+    log_dir = tmp_path / "events"
+    log_dir.mkdir()
+    now = time.time()
+    rows = [
+        {"ts": now, "kind": "tool.call", "agent": "A", "data": []},
+        {"ts": now, "kind": "tool.call", "agent": {}, "data": {"tool": "shell"}},
+        {"ts": now, "kind": [], "agent": "A", "data": {"tool": "shell"}},
+        {"ts": now, "kind": "tool.call", "agent": "A", "run_id": [], "data": {"tool": "shell"}},
+        {"ts": now, "kind": "tool.call", "agent": "A", "run_id": "good", "data": {"tool": "shell"}},
+    ]
+    (log_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    assert list(telemetry._iter_events(log_dir, now - 5)) == [rows[-1]]
+
+
 def test_telemetry_skips_one_bad_encoding_file_without_losing_good_events(tmp_path):
     log_dir = tmp_path / "events"
     log_dir.mkdir()

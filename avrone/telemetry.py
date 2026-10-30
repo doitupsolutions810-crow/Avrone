@@ -59,6 +59,20 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
                 continue
             if not isinstance(ev, dict):
                 continue
+            # The event file is append-only but may still be truncated, manually edited,
+            # or written by an older version. Ignore malformed event envelopes independently.
+            kind = ev.get("kind")
+            if not isinstance(kind, str) or not kind:
+                continue
+            agent = ev.get("agent", "")
+            if not isinstance(agent, str):
+                continue
+            rid = ev.get("run_id")
+            if rid is not None and (isinstance(rid, bool) or not isinstance(rid, (str, int, float))):
+                continue
+            data = ev.get("data", {})
+            if not isinstance(data, dict):
+                continue
             ts = ev.get("ts", 0)
             if isinstance(ts, bool) or not isinstance(ts, (int, float)):
                 continue

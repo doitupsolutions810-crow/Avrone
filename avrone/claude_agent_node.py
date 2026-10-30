@@ -8,8 +8,10 @@ The SDK worker deliberately has no Bash, web, computer, or Docker tools.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -266,3 +268,68 @@ async def execute_claude_agent_node(
     if isinstance(terminal.total_cost_usd, (int, float)) and not isinstance(terminal.total_cost_usd, bool):
         response["cost_usd"] = float(terminal.total_cost_usd)
     return response
+
+
+def _required_flag(name: str) -> str:
+    value = os.environ.get(name)
+    if value not in {"0", "1"}:
+        raise ClaudeAgentNodeError(f"{name} must be explicitly set to 0 or 1")
+    return value
+
+
+def _lease_from_guest_environment() -> ClaudeVMLease:
+    """Build the guest-side lease assertion from provider-injected environment.
+
+    The concrete VM backend, not the model or task payload, must set these
+    values after applying and attesting the corresponding guest controls.
+    """
+    return ClaudeVMLease(
+        lease_id=os.environ.get("AVRONE_VM_LEASE_ID", ""),
+        worker_id=os.environ.get("AVRONE_VM_WORKER_ID", ""),
+        workspace=os.environ.get("AVRONE_VM_WORKSPACE", ""),
+        disposable_vm=_required_flag("AVRONE_VM_DISPOSABLE") == "1",
+        network_egress_denied=_required_flag("AVRONE_VM_NETWORK_EGRESS_DENIED") == "1",
+        docker_socket_mounted=_required_flag("AVRONE_VM_DOCKER_SOCKET_MOUNTED") == "1",
+        github_credentials_mounted=_required_flag("AVRONE_VM_GITHUB_CREDENTIALS_MOUNTED") == "1",
+    )
+
+
+def _parse_guest_request(raw: bytes) -> dict[str, str]:
+    if not isinstance(raw, bytes) or not raw or len(raw) > 24 * 1024:
+        raise ClaudeAgentNodeError("guest work request is empty or exceeds 24 KiB")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ClaudeAgentNodeError("guest work request must be valid UTF-8 JSON") from exc
+    expected = {
+        "task_id", "correlation_id", "objective",
+        "source_repository", "source_commit_sha",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ClaudeAgentNodeError("guest work request has an invalid shape")
+    if any(not isinstance(v, str) for v in value.values()):
+        raise ClaudeAgentNodeError("guest work request fields must be strings")
+    return value
+
+
+async def _guest_main() -> int:
+    """Worker CLI: read one bounded request from stdin and emit one JSON result."""
+    try:
+        raw = sys.stdin.buffer.read(24 * 1024 + 1)
+        request = _parse_guest_request(raw)
+        lease = _lease_from_guest_environment()
+        result = await execute_claude_agent_node(lease, **request)
+        output = {"ok": True, "result": result}
+        sys.stdout.write(json.dumps(output, sort_keys=True, allow_nan=False) + "\\n")
+        return 0
+    except ClaudeAgentNodeError as exc:
+        sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}) + "\\n")
+        return 2
+    except Exception:
+        # Never print raw provider/SDK exceptions to the coordinator channel.
+        sys.stdout.write(json.dumps({"ok": False, "error": "worker_internal_error"}) + "\\n")
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(_guest_main()))

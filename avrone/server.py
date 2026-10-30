@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 
 import asyncio
+import os
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -84,6 +85,29 @@ def require_local(request: Request, token: str | None) -> None:
                                  "(AVRONE_PUBLIC_ACCESS=loopback|admin|all).")
 
 
+DEFAULT_MAX_BACKGROUND_RUNS = 32
+HARD_MAX_BACKGROUND_RUNS = 1024
+DEFAULT_MAX_MESSAGE_CHARS = 200_000
+HARD_MAX_MESSAGE_CHARS = 5_000_000
+
+
+def _env_cap(name: str, default: int, hard: int) -> int:
+    """Positive int from env, clamped to 1..hard; junk or unset -> default."""
+    try:
+        n = int(str(os.environ.get(name, "")).strip() or default)
+    except (TypeError, ValueError):
+        n = default
+    return max(1, min(hard, n))
+
+
+def max_background_runs() -> int:
+    return _env_cap("AVRONE_MAX_BACKGROUND_RUNS", DEFAULT_MAX_BACKGROUND_RUNS, HARD_MAX_BACKGROUND_RUNS)
+
+
+def max_message_chars() -> int:
+    return _env_cap("AVRONE_MAX_MESSAGE_CHARS", DEFAULT_MAX_MESSAGE_CHARS, HARD_MAX_MESSAGE_CHARS)
+
+
 class ChatIn(BaseModel):
     message: str
     mode: str = "squad"  # squad | chat | deep
@@ -146,6 +170,12 @@ def _open_checkpoint(cid_raw: str, task: str, mode: str):
 async def chat(body: ChatIn, request: Request, x_admin_token: str | None = Header(default=None)):
     require_local(request, x_admin_token)
     c = core()
+    limit = max_message_chars()
+    if len(body.message) > limit or len(body.first_answer or "") > limit:
+        raise HTTPException(413, f"message too long (max {limit} characters; AVRONE_MAX_MESSAGE_CHARS)")
+    if body.background and len(state.get("tasks") or ()) >= max_background_runs():
+        raise HTTPException(429, f"too many background runs in flight (max {max_background_runs()}; "
+                                 "AVRONE_MAX_BACKGROUND_RUNS); wait for one to finish")
     if body.mode not in ("squad", "chat", "deep"):
         raise HTTPException(400, f"Unknown mode {body.mode!r}. Use squad, chat or deep.")
     if body.dispatch is not None:

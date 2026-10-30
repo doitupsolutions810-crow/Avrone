@@ -1236,3 +1236,5 @@ def register_extra_tools(registry) -> None:
     register_hostview_tools(registry)
     from .tools_secrets import register_secret_tools
     register_secret_tools(registry)
+    from .tools_limits import register_limits_tools
+    register_limits_tools(registry)

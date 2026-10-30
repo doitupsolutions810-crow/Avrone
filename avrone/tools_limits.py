@@ -1,0 +1,160 @@
+"""limits_status + run_logs.
+
+    limits_status {}
+        Every load cap this node enforces, its current value and where it comes from (env or
+        default), plus live usage where this node can see it: concurrent model calls in use,
+        agents active, agents started per run. Read-only.
+
+    run_logs {"prune"?: bool, "older_than_days"?: int, "keep"?: int}
+        Run-log disk usage (count, bytes, oldest/newest). Run logs are append-only and never
+        rotated, so a busy node grows data/runs forever. prune=true deletes run logs older than
+        older_than_days (default 30, min 1) while always keeping the newest `keep` (default 50,
+        min 10) and any run still active on this node. Acting when pruning.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from .tools import Tool
+
+if TYPE_CHECKING:
+    from .trinity import AgentContext
+
+DAY = 86400
+
+
+def _limits() -> list[tuple[str, str, int, str]]:
+    from . import ctxspawn, mcp_server, server
+    rows = []
+    for env, fn in (("AVRONE_MAX_BACKGROUND_RUNS", server.max_background_runs),
+                    ("AVRONE_MAX_MESSAGE_CHARS", server.max_message_chars),
+                    ("AVRONE_MCP_MAX_INFLIGHT", mcp_server.max_inflight),
+                    ("AVRONE_MAX_AGENTS_PER_RUN", ctxspawn.max_agents_per_run),
+                    ("AVRONE_SPAWN_CONTEXT_CHARS", ctxspawn.context_chars)):
+        try:
+            v = fn()
+        except Exception:  # noqa: BLE001
+            continue
+        rows.append((env, "env" if os.environ.get(env, "").strip() else "default", v, ""))
+    return rows
+
+
+async def t_limits_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    core = getattr(ctx, "core", None)
+    lines = ["limits_status:"]
+    mp = getattr(getattr(core, "settings", None), "max_parallel", None)
+    sem = getattr(core, "_sem", None)
+    if isinstance(mp, int):
+        free = getattr(sem, "_value", None)
+        used = f", {mp - free} in use now" if isinstance(free, int) else ""
+        lines.append(f"- AVRONE_MAX_PARALLEL (concurrent model calls) = {mp}{used}")
+    for env, src, v, _ in _limits():
+        lines.append(f"- {env} = {v} ({src})")
+    from . import server
+    bg = server.state.get("tasks")
+    if isinstance(bg, set):
+        lines.append(f"live: {len(bg)} background run(s) in flight of {server.max_background_runs()}")
+    active = getattr(core, "active", None)
+    if isinstance(active, dict):
+        working = sum(1 for a in active.values() if isinstance(a, dict) and a.get("status") == "working")
+        lines.append(f"live: {working} agent(s) working, {len(active)} known")
+    ra = getattr(core, "run_agents", None)
+    if isinstance(ra, dict) and ra:
+        top = sorted(ra.items(), key=lambda kv: -kv[1])[:5]
+        lines.append("agents started per run (top): " + ", ".join(f"{k}={v}" for k, v in top))
+    return "\n".join(lines)
+
+
+def _runs_dir(ctx: "AgentContext") -> Path | None:
+    dd = getattr(getattr(getattr(ctx, "core", None), "settings", None), "data_dir", None)
+    return Path(dd) / "runs" if dd is not None else None
+
+
+def usage(runs: Path) -> dict[str, Any]:
+    files = []
+    for p in runs.glob("*.jsonl") if runs.is_dir() else []:
+        try:
+            if p.is_file() and not p.is_symlink():
+                st = p.stat()
+                files.append((st.st_mtime, st.st_size, p))
+        except OSError:
+            continue
+    files.sort(key=lambda x: x[0], reverse=True)  # newest first
+    return {"files": files, "count": len(files), "bytes": sum(f[1] for f in files)}
+
+
+def prune(runs: Path, older_than_days: int, keep: int, active: set[str], now: float | None = None) -> dict:
+    u = usage(runs)
+    cutoff = (now or time.time()) - older_than_days * DAY
+    removed = freed = 0
+    for i, (mtime, size, p) in enumerate(u["files"]):
+        if i < keep or mtime >= cutoff or p.stem in active:
+            continue
+        try:
+            p.unlink()
+            removed += 1
+            freed += size
+        except OSError:
+            continue
+    return {"removed": removed, "freed": freed}
+
+
+def _int(v: Any, default: int, lo: int) -> int | None:
+    if v is None:
+        return default
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return max(lo, v)
+
+
+def _mb(n: int) -> str:
+    return f"{n / 1048576:.2f} MB"
+
+
+async def t_run_logs(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    runs = _runs_dir(ctx)
+    if runs is None:
+        return "run_logs: no data_dir configured on this node"
+    days = _int(args.get("older_than_days"), 30, 1)
+    keep = _int(args.get("keep"), 50, 10)
+    if days is None or keep is None:
+        return "ERROR: older_than_days and keep must be integers"
+    u = await asyncio.to_thread(usage, runs)
+    if not u["count"]:
+        return "run_logs: no run logs yet"
+    now = time.time()
+    newest, oldest = u["files"][0][0], u["files"][-1][0]
+    head = (f"run_logs: {u['count']} run log(s), {_mb(u['bytes'])}; newest {int((now - newest) // DAY)}d ago, "
+            f"oldest {int((now - oldest) // DAY)}d ago")
+    if args.get("prune") is not True:
+        stale = sum(1 for i, f in enumerate(u["files"]) if i >= keep and f[0] < now - days * DAY)
+        return head + f"\nprunable with older_than_days={days}, keep={keep}: {stale}"
+    active = {str(getattr(ctx, "run_id", "") or "")}
+    core = getattr(ctx, "core", None)
+    for a in (getattr(core, "active", None) or {}).values():
+        if isinstance(a, dict) and a.get("run_id"):
+            active.add(str(a["run_id"]))
+    r = await asyncio.to_thread(prune, runs, days, keep, active, now)
+    return head + f"\npruned {r['removed']} run log(s) older than {days}d (kept newest {keep} and active runs), " \
+                  f"freed {_mb(r['freed'])}"
+
+
+LIMITS_TOOLS = [
+    Tool("limits_status", "read-only: every load cap this node enforces (background runs, message size, MCP "
+         "in-flight, agents per run, model concurrency) with its value, source and live usage.",
+         "{}", t_limits_status, source="builtin", schema={}),
+    Tool("run_logs", "run-log disk usage; prune=true deletes logs older than older_than_days (default 30), "
+         "always keeping the newest `keep` (default 50, min 10) and active runs.",
+         '{"prune"?: bool, "older_than_days"?: int, "keep"?: int}', t_run_logs, source="builtin",
+         schema={"optional": {"prune": "bool", "older_than_days": "int", "keep": "int"}}),
+]
+
+
+def register_limits_tools(registry) -> None:
+    for t in LIMITS_TOOLS:
+        registry.register(Tool(t.name, t.description, t.args_doc, t.fn, source=t.source,
+                               schema=dict(t.schema) if t.schema is not None else None))

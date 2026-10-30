@@ -10,10 +10,12 @@ import asyncio
 import base64
 import json
 import os
+import ssl
 import time
 from typing import Any, Mapping
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -62,8 +64,26 @@ def _issue_sync(envelope: Mapping[str, Any], base_url: str, timeout: float) -> d
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
+    parsed_url = urlsplit(base_url)
+    production = os.environ.get("PRODUCTION", "0") == "1" or os.environ.get("AVRONE_PRODUCTION", "0") == "1"
+    context = None
+    if parsed_url.scheme == "https":
+        ca_file = os.environ.get("AVRONE_PLANE_CA_FILE")
+        cert_file = os.environ.get("AVRONE_PLANE_CLIENT_CERT_FILE")
+        key_file = os.environ.get("AVRONE_PLANE_CLIENT_KEY_FILE")
+        if not cert_file or not key_file:
+            raise AuthorityUnavailable("mTLS client certificate and key are required for HTTPS authority")
+        try:
+            context = ssl.create_default_context(cafile=ca_file or None)
+            context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        except (OSError, ssl.SSLError) as exc:
+            raise AuthorityUnavailable("authority mTLS client configuration is invalid") from exc
+    elif production:
+        raise AuthorityUnavailable("production capability authority connections must use HTTPS with mTLS")
+    elif parsed_url.scheme != "http" or parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise AuthorityUnavailable("non-production HTTP authority access is restricted to loopback")
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with urlopen(request, timeout=timeout, context=context) as response:
             if response.status != 200:
                 raise AuthorityUnavailable(f"authority HTTP status {response.status}")
             raw_payload = response.read(64 * 1024 + 1)

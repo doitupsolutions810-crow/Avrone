@@ -46,7 +46,7 @@ def test_mac_local_squad_bounds_setup_and_baseline_stages():
 def test_mac_local_squad_enforces_two_accepted_proposals_per_lane():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
     assert 'python -m avrone.cli evolve --json "$proposal_report"' in script
-    assert 'accepted_count -lt 2' in script
+    assert 'if [ "$accepted_count" -lt 2 ]; then' in script
     assert 'AVRONE_DATA_DIR="$lane_data"' in script
     assert 'exit 1' in script
     assert "python -m avrone.cli evolve list" not in script
@@ -63,7 +63,7 @@ def test_mac_local_squad_counts_only_current_run_proposals():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
     assert 'RUN_STARTED_EPOCH="$(python -c' in script
     assert 'scripts/count_fresh_evolve_proposals.py' in script
-    assert 'accepted_count -lt 2' in script
+    assert 'if [ "$accepted_count" -lt 2 ]; then' in script
 
 
 def test_mac_local_squad_bounds_ollama_install_stage():

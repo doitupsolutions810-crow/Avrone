@@ -45,9 +45,10 @@ RESOURCE_PATHS: dict[str, dict[str, str]] = {
         "health": "/v1/health",
         "activity": "/v1/activity?limit=100",
     },
-    "great_scale": {
-        "scale_state": "/api/v1/scale/state",
-    },
+    # The Great Scale Vercel project inspected for this PR is a static site;
+    # no live scale-state API route was verified. Keep the target visible but
+    # expose no callable resource until a versioned API contract is deployed.
+    "great_scale": {},
     "cyclekernel": {
         "status": "/health",
         "metrics": "/metrics",

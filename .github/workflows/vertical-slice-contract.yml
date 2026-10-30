@@ -1,0 +1,31 @@
+name: Vertical Slice Contract Tests
+
+on:
+  push:
+    branches:
+      - squad/round4-hardening-coverage-20261029
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Run vertical-slice contract tests
+        run: python -m pytest -q tests/test_task_contract.py tests/test_execution_state.py tests/test_vertical_slice.py

@@ -1,4 +1,6 @@
 import asyncio
+import os
+import time
 from types import SimpleNamespace as S
 
 import pytest
@@ -16,9 +18,10 @@ def run(c):
 def test_registered():
     r = builtin_registry()
     register_extra_tools(r)
-    assert r.get("limits_status")
+    assert r.get("limits_status") and r.get("run_logs")
     from avrone.tools_statehealth import ACTING
-    assert "limits_status" not in ACTING
+    assert "run_logs" in ACTING and "limits_status" not in ACTING
+    assert r.check("run_logs", {"keep": "x"})[0] == "bad_args"
 
 
 def test_limits_status(monkeypatch):
@@ -45,3 +48,46 @@ def test_limits_skips_broken_getter(monkeypatch):
     from avrone import ctxspawn
     monkeypatch.setattr(ctxspawn, "context_chars", lambda: 1 / 0)
     assert all(r[0] != "AVRONE_SPAWN_CONTEXT_CHARS" for r in tl._limits())
+
+
+def _mk(runs, n, age_days):
+    runs.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for i in range(n):
+        p = runs / f"run{i:03d}.jsonl"
+        p.write_text("x" * 100)
+        t = now - (age_days + i) * tl.DAY
+        os.utime(p, (t, t))
+
+
+def test_run_logs_report_and_prune(tmp_path):
+    runs = tmp_path / "runs"
+    _mk(runs, 80, 20)  # ages 20..99 days
+    (runs / "link.jsonl").symlink_to(runs / "run000.jsonl")
+    ctx = S(core=S(settings=S(data_dir=str(tmp_path)), active={"A": {"run_id": "run079"}}), run_id="run078")
+    out = run(tl.t_run_logs(ctx, {}))
+    assert out.startswith("run_logs: 80 run log(s)") and "oldest 99d ago" in out
+    assert "prunable with older_than_days=30, keep=50: 30" in out
+    out = run(tl.t_run_logs(ctx, {"prune": True}))
+    assert "pruned 28 run log(s)" in out  # 30 stale minus run078 (this run) and run079 (active)
+    left = sorted(p.stem for p in runs.glob("run*.jsonl"))
+    assert len(left) == 52 and "run078" in left and "run079" in left and (runs / "link.jsonl").is_symlink()
+
+
+def test_run_logs_floors_and_errors(tmp_path):
+    runs = tmp_path / "runs"
+    _mk(runs, 15, 100)
+    ctx = S(core=S(settings=S(data_dir=str(tmp_path))))
+    out = run(tl.t_run_logs(ctx, {"prune": True, "keep": 0, "older_than_days": 0}))
+    assert "pruned 5 run log(s) older than 1d (kept newest 10" in out
+    assert run(tl.t_run_logs(ctx, {"keep": True})).startswith("ERROR")
+    assert run(tl.t_run_logs(S(core=None), {})).startswith("run_logs: no data_dir")
+    assert run(tl.t_run_logs(S(core=S(settings=S(data_dir=str(tmp_path / "x")))), {})) == "run_logs: no run logs yet"
+
+
+def test_prune_unlink_failure(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    _mk(runs, 12, 100)
+    from pathlib import Path
+    monkeypatch.setattr(Path, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError("ro")))
+    assert tl.prune(runs, 1, 10, set()) == {"removed": 0, "freed": 0}

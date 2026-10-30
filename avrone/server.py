@@ -272,6 +272,8 @@ async def fleet_message(request: Request):
         return await _fleet().handle_message(payload)
     except PermissionError as e:
         raise HTTPException(403, str(e)) from None
+    except ValueError as e:  # a signed but malformed body is the caller's error, not a bad gateway
+        raise HTTPException(400, str(e)[:300]) from None
     except (RuntimeError, KeyError) as e:
         raise HTTPException(502, str(e)) from None
 

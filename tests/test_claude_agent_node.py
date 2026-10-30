@@ -119,7 +119,7 @@ async def test_sdk_execution_uses_bounded_tools_and_reports_worker_receipt_only(
     result = await execute_claude_agent_node(lease(tmp_path), **task_kwargs())
 
     options = captured["options"]
-    assert options["tools"] == ["Read", "Write", "Edit", "Glob", "Grep", "Task"]
+    assert options["tools"] == ["Read", "Write", "Edit", "Glob", "Grep", "Agent"]
     assert "Bash" in options["disallowed_tools"]
     assert options["setting_sources"] == []
     assert options["permission_mode"] == "dontAsk"

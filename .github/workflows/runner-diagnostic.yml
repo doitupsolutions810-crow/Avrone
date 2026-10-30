@@ -38,3 +38,17 @@ jobs:
           echo "RUNNER_NAME=$RUNNER_NAME"
           uname -a
           python --version
+
+  ubuntu-slim:
+    name: hosted runner ubuntu-slim
+    runs-on: ubuntu-slim
+    timeout-minutes: 3
+    steps:
+      - name: Report runner allocation
+        run: |
+          echo "RUNNER_LABEL=ubuntu-slim"
+          echo "RUNNER_OS=$RUNNER_OS"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          echo "RUNNER_NAME=$RUNNER_NAME"
+          uname -a
+          python --version

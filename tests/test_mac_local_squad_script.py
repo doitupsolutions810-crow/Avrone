@@ -66,10 +66,10 @@ def test_mac_local_squad_counts_only_current_run_proposals():
     assert 'accepted_count -lt 2' in script
 
 
-def test_mac_local_squad_bounds_brew_install_stages():
+def test_mac_local_squad_bounds_ollama_install_stage():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
-    assert "timeout 900 brew install coreutils" in script
     assert "timeout 1800 brew install ollama" in script
+    assert "timeout 900 ollama run" in script
 
 
 

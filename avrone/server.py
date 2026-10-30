@@ -4,12 +4,14 @@ from __future__ import annotations
 import hmac
 
 import asyncio
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+import anyio
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +21,8 @@ from . import __version__
 from .bootstrap import build_core, run_cleanups
 from .config import settings
 from .trinity import TrinityCore, clamp_deep_rounds
+
+log = logging.getLogger("avrone.server")
 
 STATIC = Path(__file__).parent / "static"
 state: dict = {}
@@ -509,15 +513,37 @@ async def events(ws: WebSocket):
         await ws.close(code=1008)  # policy violation: the live codex stream shows every run
         return
     await ws.accept()
-    q = core().codex.subscribe()
+    codex = core().codex
+    q = codex.subscribe()
+
+
     try:
-        while True:
-            ev = await q.get()
-            await ws.send_json(asdict(ev))
-    except WebSocketDisconnect:
-        pass
+        async with anyio.create_task_group() as tg:
+            async def pump() -> None:
+                try:
+                    while True:
+                        ev = await q.get()
+                        await ws.send_json(asdict(ev))
+                except (WebSocketDisconnect, RuntimeError, OSError):
+                    pass  # a send to a vanished client is a disconnect, not a server error
+                tg.cancel_scope.cancel()
+
+            async def watch() -> None:
+                # A client that leaves while no events flow used to keep its queue (and this handler)
+                # alive until the next event failed to send; listening for the disconnect frees it.
+                try:
+                    while True:
+                        msg = await ws.receive()
+                        if msg.get("type") == "websocket.disconnect":
+                            break
+                except (WebSocketDisconnect, RuntimeError, OSError):
+                    pass
+                tg.cancel_scope.cancel()
+
+            tg.start_soon(pump)
+            tg.start_soon(watch)
     finally:
-        core().codex.unsubscribe(q)
+        codex.unsubscribe(q)
 
 
 def main() -> None:

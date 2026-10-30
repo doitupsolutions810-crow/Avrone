@@ -30,6 +30,7 @@ through model context or a worker-controlled environment:
 - `AVRONE_PLANE_ISSUER`: expected broker SPIFFE URI (default
   `spiffe://prod/broker`).
 - `AVRONE_PLANE_TRUST_DOMAIN`: expected trust domain (default `prod`).
+- `AVRONE_PLANE_AUDIENCE`: exact AVRONE SPIFFE workload identity; required and compared to the signed capability audience.
 - `AVRONE_ARTIFACT_ROOT`: dedicated, per-task staging directory mounted
   read-only to the verifier and writable only by the worker during execution.
 

@@ -152,6 +152,9 @@ def test_runtime_mission_write_requires_opt_in_and_idempotency(monkeypatch):
     assert "disabled" in _call(registry, "platform_bridge_create_mission", args)
 
     monkeypatch.setenv("AVRONE_PLATFORM_WRITE_ENABLED", "true")
+    # This test isolates idempotency validation; supply a dummy token so the
+    # credential precondition does not short-circuit the assertion.
+    monkeypatch.setenv("AVRONE_BRIDGE_RUNTIME_TOKEN", "test-tenant-scoped-key")
     missing_key = _call(registry, "platform_bridge_create_mission", {
         "name": "Research", "objective": "Inspect queue backlog"
     })

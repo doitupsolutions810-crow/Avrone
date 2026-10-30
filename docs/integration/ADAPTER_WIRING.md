@@ -105,3 +105,27 @@ on timeout; collect workspace files only after completion; independently hash
 the bytes; and destroy the VM regardless of outcome. These environment flags
 are an adapter contract, not a provider attestation or proof of isolation.
 Only the actual provider's control-plane evidence can establish those controls.
+
+
+## AVRONE VMBackend binding
+
+`avrone.claude_vm_backend.ClaudeSDKVMBackend` implements AVRONE's existing
+`VMBackend` protocol and can be passed directly to
+`DisposableVMRunner(ClaudeSDKVMBackend(provider, objective_resolver=...))`.
+The objective resolver must read the full objective from authenticated
+server-side task storage; the strict task envelope deliberately does not let
+a model inject arbitrary extra fields.
+
+The provider interface must provision a new `ClaudeVMLease`, execute the
+guest command `python -m avrone.claude_agent_node` with the adapter's bounded
+stdin and non-secret lease environment, collect staged artifact bytes, and
+destroy the VM. It must independently enforce the advertised isolation;
+the adapter's flags do not themselves prove isolation. Provider credentials
+for the model must be injected into the guest from a secret manager or
+workload identity, never from the task, prompt, or assistant output.
+
+The adapter validates the guest result's worker and lease IDs before
+collection, requires collection identity to match, and preserves the SDK
+summary separately from artifact digests. The existing vertical slice then
+reopens the collected artifact bytes, verifies SHA-256, and only then creates
+a receipt. Teardown remains in `DisposableVMRunner`'s finally path.

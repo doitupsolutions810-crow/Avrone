@@ -11,7 +11,7 @@ Status: **initial integration PR**. This adds a controlled plugin adapter; it do
 | [Control704 Grok Bot Knowledge](https://github.com/doitupsolutions810-crow/control704-grokbot-knowledge) | FastAPI orchestrator/HUD, nested jobs and sub-agents, artifacts, knowledge endpoints | /jobs is the job-creation contract; actual model execution remains governed by that service's ALLOW_AGENT_EXECUTION setting |
 | AVRONE Runtime v0.82 | Authenticated tenant-scoped API gateway, mission/task/swarms endpoints, idempotency keys, durable worker fleet, admission/backpressure, activity and audit | Separate runtime artifact from the Avrone app package; use tenant API keys, idempotency and its own admission/receipt controls |
 | [Capability Plane](https://github.com/doitupsolutions810-crow/capability-plane) | Capability issue/attenuate/verify/execute contract and AttestPipe evidence events | Must retain capability verification and executor-only boundaries; this bridge intentionally does not call /v1/execute |
-| [Great Scale](https://github.com/doitupsolutions810-crow/great-scale) | Scale-state endpoint, Great Scale residual/QGT tests, lattice bridge contract | Read scale state only; no automatic state mutation or claim of empirical validation |
+| [Great Scale](https://github.com/doitupsolutions810-crow/great-scale) | Static geometry site, scale calculations, residual/QGT tests, lattice bridge docs | No live scale-state API was verified in the current static Vercel deployment; bridge resource remains disabled until an API contract is deployed |
 | [CycleKernal](https://github.com/doitupsolutions810-crow/CycleKernal) | Simulation, /health, Prometheus /metrics, stored simulation data | Keep internal; bridge excludes per-user histories and mutation endpoints |
 | [swarm-vm-runner](https://github.com/doitupsolutions810-crow/swarm-vm-runner) | Coordinator, role workers, Redis, content host, self-hosted runner deployment | Treat as a worker substrate, not an alternative authorization layer |
 | [Unified Tool Stack](https://github.com/doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform) | High-level platform notes | Current README is only a short statement; implementation and deploy contracts need further inspection before wiring production traffic |
@@ -34,11 +34,11 @@ Supported resources:
 | avrone | status, telemetry, map, runs |
 | grokbot | status, runs, governor, agents, ledger |
 | control704 | status, services, jobs, tools, knowledge, artifacts |
-| great_scale | scale_state |
+| great_scale | none until a live read-only API endpoint is implemented and verified |
 | cyclekernel | status, metrics |
 | capability_plane | openapi |
 
-Only targets present in AVRONE_PLATFORM_TARGETS_JSON can be contacted. Base URLs are operator configuration, not agent input. Redirects are disabled; response output is capped; per-target bearer tokens can be supplied through AVRONE_BRIDGE_<TARGET>_TOKEN. Do not put tokens in this repository. For public/non-local targets, use HTTPS when sending bearer tokens. Control704's optional tenant is taken only from AVRONE_BRIDGE_CONTROL704_TENANT_ID; the agent cannot choose it. Runtime task capabilities requested by the agent must be a subset of AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON, which defaults to an empty list.
+The inspected Great Scale project deploys static assets via `vercel.json`; its documented `/api/v1/scale/state` path is not backed by a deployed serverless route in that project. Therefore the bridge intentionally advertises no callable Great Scale resource until a versioned read-only endpoint exists and passes a live contract test. Only targets present in AVRONE_PLATFORM_TARGETS_JSON can be contacted. Base URLs are operator configuration, not agent input. Redirects are disabled; response output is capped; per-target bearer tokens can be supplied through AVRONE_BRIDGE_<TARGET>_TOKEN. Do not put tokens in this repository. For public/non-local targets, use HTTPS when sending bearer tokens. Control704's optional tenant is taken only from AVRONE_BRIDGE_CONTROL704_TENANT_ID; the agent cannot choose it. Runtime task capabilities requested by the agent must be a subset of AVRONE_BRIDGE_RUNTIME_CAPABILITIES_JSON, which defaults to an empty list.
 
 ## Configure a private, internal deployment
 

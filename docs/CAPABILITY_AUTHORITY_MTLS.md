@@ -29,3 +29,19 @@ The production issue route accepts the caller only from the verified TLS peer ce
 `execute_with_capability_authority` deliberately requires a `run_isolated` adapter. That adapter must provision one disposable VM per job, enforce timeout/memory/output/network policy, stage output under the configured artifact root, and destroy the VM in a `finally` path. The repository's current Compose runner is not that VM adapter.
 
 The integration test uses a fake isolated runner and a mocked HTTP response carrying a real Ed25519 signature. It proves AVRONE's client-to-orchestrator contract and independent artifact-byte hashing; it does not prove a deployed mTLS connection, VM isolation, or a signed receipt. The current receipt carries a SHA-256 integrity digest, not a digital signature. Keep autonomous publication disabled until those remaining gates are implemented and exercised against live services.
+
+## Disposable VM and signed receipt gates
+
+AVRONE now includes `avrone.disposable_vm_runner.DisposableVMRunner`. It wraps a provider backend with provision, execute, collect, and destroy operations. It enforces bounded lifecycle timeouts and refuses to return success if teardown fails. The backend must make provisioning transactional: if its provision call times out before returning a lease, the backend itself must clean up any partially-created VM. A cloud-provider backend has not yet been supplied or deployed.
+
+The execution entry point accepts this runner as `run_isolated`; do not pass the existing Compose runner or a host-shell callback as a production substitute.
+
+A separate signer process is provided by `python -m avrone.receipt_signer_service`. It requires:
+- `RECEIPT_SIGNER_PRIVATE_KEY_FILE`: Ed25519 private key, provisioned outside AVRONE and readable only by the signer service account.
+- `RECEIPT_SIGNER_TLS_CERT_FILE`, `RECEIPT_SIGNER_TLS_KEY_FILE`, and `RECEIPT_SIGNER_CLIENT_CA_FILE`: mTLS server identity and client trust bundle.
+- `RECEIPT_SIGNER_ALLOWED_CALLER`: exact AVRONE SPIFFE URI SAN allowed to request signatures.
+- `RECEIPT_SIGNER_KEY_ID`: public key identifier.
+
+AVRONE configures `AVRONE_RECEIPT_SIGNER_URL`, `AVRONE_RECEIPT_CLIENT_CERT_FILE`, `AVRONE_RECEIPT_CLIENT_KEY_FILE`, `AVRONE_RECEIPT_CA_FILE`, and an out-of-band pinned `AVRONE_RECEIPT_SIGNER_PUBLIC_KEY_B64`. Production integration requires the signer and independently verifies the Ed25519 signature before returning VERIFIED. The signer refuses receipts that are not integrity-valid and VERIFIED.
+
+The signer process and its private key must run under a separate workload identity and deployment boundary. Do not run it inside the untrusted worker, do not mount its private key into AVRONE's model/worker process, and do not treat this repository's signer implementation as deployed infrastructure.

@@ -1,5 +1,9 @@
 """Static safety contract tests for the manual Apple-Silicon squad launcher."""
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 
 def test_mac_local_squad_launcher_fails_closed_before_lanes():
@@ -78,3 +82,16 @@ def test_mac_local_squad_bootstraps_coreutils_before_using_gtimeout():
     assert 'timeout 900 brew install coreutils' not in bootstrap
     assert 'command -v gtimeout' in bootstrap
     assert 'timeout() { command gtimeout "$@"; }' in bootstrap
+
+
+
+def test_mac_local_squad_shell_syntax_is_valid():
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is unavailable")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh"
+    result = subprocess.run(
+        [bash, "-n", str(script)],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert result.returncode == 0, result.stderr

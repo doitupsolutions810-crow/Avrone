@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         with report_path.open("r", encoding="utf-8") as stream:
             rows = json.load(stream)
         count = count_fresh_accepted(rows, started)
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError, RecursionError) as exc:
         print(f"invalid accepted proposal report: {type(exc).__name__}", file=sys.stderr)
         return 2
     print(count)

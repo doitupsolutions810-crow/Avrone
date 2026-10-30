@@ -1,6 +1,9 @@
 """Tests for the local squad's fresh accepted-proposal gate."""
 import importlib.util
+import json
 import math
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,3 +45,32 @@ def test_invalid_start_timestamp_and_report_shape_fail_closed():
         MODULE.count_fresh_accepted([], math.inf)
     with pytest.raises(ValueError, match="JSON list"):
         MODULE.count_fresh_accepted({"pid": "not-a-list"}, 100.0)
+
+
+
+def test_cli_reports_count_and_rejects_nonfinite_rows(tmp_path):
+    report = tmp_path / "accepted.json"
+    report.write_text(json.dumps([
+        proposal("ok-1", 101.0),
+        proposal("nan", math.nan),
+        proposal("infinite", math.inf),
+        proposal("old", 99.0),
+    ]), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(HELPER), str(report), "100"],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "1"
+
+
+def test_cli_rejects_deeply_nested_corrupt_report_without_traceback(tmp_path):
+    report = tmp_path / "deep.json"
+    report.write_text("[" * 2000 + "0" + "]" * 2000, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(HELPER), str(report), "100"],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert result.returncode == 2
+    assert "invalid accepted proposal report" in result.stderr
+    assert "Traceback" not in result.stderr

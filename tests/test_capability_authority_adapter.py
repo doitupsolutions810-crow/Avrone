@@ -84,3 +84,36 @@ async def test_invalid_signature_fails_closed(monkeypatch, envelope):
     monkeypatch.setattr(adapter, "urlopen", lambda *a, **k: FakeResponse(signed_payload(other)))
     with pytest.raises(adapter.AuthorityUnavailable):
         await adapter.authorize_with_capability_authority(envelope)
+
+
+@pytest.mark.asyncio
+async def test_wrong_audience_fails_closed(monkeypatch, envelope):
+    key = Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv("AVRONE_PLANE_PUBLIC_KEY_B64", base64.b64encode(pub).decode())
+    monkeypatch.setenv("AVRONE_PLANE_AUDIENCE", "spiffe://prod/agent/avrone")
+    payload = signed_payload(key)
+    payload["capability"]["audience"] = "spiffe://prod/agent/other"
+    payload["signature"] = base64.b64encode(
+        key.sign(adapter._canonical(payload["capability"]))
+    ).decode()
+    monkeypatch.setattr(adapter, "urlopen", lambda *a, **k: FakeResponse(payload))
+    with pytest.raises(adapter.AuthorityUnavailable, match="does not match requested authority"):
+        await adapter.authorize_with_capability_authority(envelope)
+
+
+@pytest.mark.asyncio
+async def test_missing_expected_audience_fails_closed(monkeypatch, envelope):
+    key = Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv("AVRONE_PLANE_PUBLIC_KEY_B64", base64.b64encode(pub).decode())
+    monkeypatch.delenv("AVRONE_PLANE_AUDIENCE", raising=False)
+    monkeypatch.setattr(adapter, "urlopen", lambda *a, **k: FakeResponse(signed_payload(key)))
+    with pytest.raises(adapter.AuthorityUnavailable, match="does not match requested authority"):
+        await adapter.authorize_with_capability_authority(envelope)

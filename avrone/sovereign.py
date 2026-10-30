@@ -18,6 +18,19 @@ from . import agentcontainer, agentfs
 from .config import Settings
 
 
+async def _reap(proc) -> None:
+    """Kill a child that may already have exited, then wait for it (never raises ProcessLookupError)."""
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await proc.wait()
+    except Exception:  # noqa: BLE001 - reaping is best effort
+        pass
+
+
 @dataclass
 class CommandResult:
     cmd: str
@@ -62,16 +75,24 @@ class Runner:
 
     async def _exec(self, argv: list[str], cmd: str, timeout: int, cwd: Path | None = None,
                     env: dict[str, str] | None = None) -> CommandResult:
-        proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(cwd) if cwd else None, env={**os.environ, **env} if env else None,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        if any("\x00" in a for a in argv):
+            return CommandResult(cmd.replace("\x00", "\\0"), -1, "", "refused: command contains a NUL byte")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, cwd=str(cwd) if cwd else None, env={**os.environ, **env} if env else None,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        except (OSError, ValueError) as e:  # E2BIG, missing cwd/binary, bad env: a result, not a crash
+            return CommandResult(cmd, -1, "", f"could not start command: {type(e).__name__}: {e}"[:500])
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return CommandResult(cmd, proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace"))
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await _reap(proc)
             return CommandResult(cmd, -1, "", "command timed out", timed_out=True)
+        except asyncio.CancelledError:
+            # a cancelled run (evolve_cancel, client gone, squad shutdown) must not leave the child running
+            await asyncio.shield(_reap(proc))
+            raise
 
 
 class LocalRunner(Runner):

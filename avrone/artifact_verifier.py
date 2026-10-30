@@ -33,13 +33,17 @@ def verify_staged_artifacts(
     if not base.is_dir():
         return False
 
+    if not isinstance(task, Mapping) or not isinstance(result, Mapping):
+        return False
     digests = result.get("artifact_digests")
     artifacts = result.get("artifacts")
     if not isinstance(digests, list) or not isinstance(artifacts, list):
         return False
-    if len(digests) != len(artifacts) or len(set(digests)) != len(digests):
+    if len(digests) != len(artifacts):
         return False
     if any(not isinstance(d, str) or not _DIGEST.fullmatch(d) for d in digests):
+        return False
+    if len(set(digests)) != len(digests):
         return False
 
     limits = task.get("resource_limits")

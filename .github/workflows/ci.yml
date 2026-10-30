@@ -2,7 +2,7 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: [self-hosted, "Avrone compile-gate"]
+    runs-on: [self-hosted, "Avrone compile-gate", "avrone-disposable"]
     timeout-minutes: 20
     strategy:
       fail-fast: false

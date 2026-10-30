@@ -1,0 +1,14 @@
+{
+  "proposals": {
+    "A": ["harmonic/node_env.js", "harmonic/package.json", "tests/test_node_env.js", "round2/README.md"],
+    "B": ["harmonic/swarm_dispatch.js", "harmonic/edge_extent.js", "tests/test_swarm_dispatch.js", "tests/test_edge_extent.js", "round2/SPEC.md"],
+    "C": ["harmonic/harmonic_thermo.py", "tests/test_harmonic_thermo.py"],
+    "D": ["harmonic/harmonic_dash.py", "tests/test_harmonic_dash.py", "dashboard/README.md"],
+    "E": ["tests/test_harmonic_smoke.py", "dashboard/README.md"]
+  },
+  "order": ["A", "B", "C", "D", "E"],
+  "tarball": "avrone-squad-artifacts.tar.gz",
+  "tarball_sha256": "0f7e210463bff5cc6ad67fbd399bfea94856fa33033e45b20bc22d576dfc467f",
+  "tarball_bytes": 5224,
+  "note": "A/B/C payloads drafted in earlier sessions; D and E complete and tested. Tarball contains full avrone-squad tree."
+}

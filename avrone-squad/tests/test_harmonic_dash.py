@@ -4,7 +4,7 @@ def _load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
 
-H = _load("harmonic_dash", os.path.join(os.path.dirname(__file__) if False else "/tmp/avrone-squad/harmonic", "harmonic_dash.py"))
+H = _load("harmonic_dash", os.path.join(os.path.dirname(__file__), "..", "harmonic", "harmonic_dash.py"))
 
 def test_gauge_spec_shape():
     s = H.GAUGE_SPEC

@@ -11,7 +11,7 @@ def run(c): return asyncio.run(c)
 
 def test_host_arg_url_stripping(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.22 recon is default-deny; allow any public host to exercise stripping
     cases = [
         ({"host": "https://example.com:443/path?x=1"}, "example.com"),
         ({"domain": "http://sub.api.com/"}, "sub.api.com"),
@@ -36,7 +36,7 @@ def test_allowlist_suffix_logic(monkeypatch):
 
 def test_port_cap_authorized_gate(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
-    monkeypatch.delenv("AVRONE_RECON_ALLOWLIST", raising=False)
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.22 default-deny; cap/gate checks run only on an allowed host
     out = run(recon.t_port_scan(ctx(), {"host": "example.com"}))
     assert "authorized" in out and "refused" in out
     out = run(recon.t_port_scan(ctx(), {"host": "example.com", "authorized": True, "ports": list(range(50))}))  # >32

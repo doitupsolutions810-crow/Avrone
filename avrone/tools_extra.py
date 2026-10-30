@@ -331,6 +331,84 @@ async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return f"edited {name} (1 replacement)"
 
 
+# --------------------------------------------------------------------------- grokbot bridge
+
+async def t_grokbot_ask(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Call the fixed Grok Bot research agent; never accept a caller-supplied URL."""
+    base = os.getenv("AVRONE_GROKBOT_URL", "").strip().rstrip("/")
+    if not base:
+        return "ERROR: AVRONE_GROKBOT_URL is not set; the Grok Bot bridge is disabled."
+    parsed = urlparse(base)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.query or parsed.fragment):
+        return "ERROR: AVRONE_GROKBOT_URL must be an HTTP(S) origin without credentials, path, query, or fragment."
+    prompt = str(args.get("prompt", "")).strip()
+    if not prompt:
+        return "ERROR: prompt is required."
+    if len(prompt) > 8000:
+        return "ERROR: prompt exceeds the 8000-character limit."
+
+    # Fixed low-privilege agent + chat mode prevents recursive AVRONE ↔ Grok
+    # delegation and does not expose Grok Bot's terminal-enabled main agent.
+    payload = {"agentId": "grok-researcher", "mode": "chat", "message": prompt}
+    kw: dict[str, Any] = {"timeout": httpx.Timeout(180.0, connect=5.0), "follow_redirects": False}
+    if HTTP_TRANSPORT is not None:
+        kw["transport"] = HTTP_TRANSPORT
+
+    max_response_bytes = 64 * 1024
+    try:
+        async with httpx.AsyncClient(**kw) as client:
+            async with client.stream("POST", base + "/api/chat", json=payload) as response:
+                if 300 <= response.status_code < 400:
+                    _emit(ctx, "grokbot.bridge", ok=False, status=response.status_code, reason="redirect blocked")
+                    return f"ERROR: Grok Bot returned HTTP {response.status_code}; redirects are blocked."
+                if not response.is_success:
+                    _emit(ctx, "grokbot.bridge", ok=False, status=response.status_code)
+                    return f"ERROR: Grok Bot returned HTTP {response.status_code}."
+
+                declared = response.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > max_response_bytes:
+                    _emit(ctx, "grokbot.bridge", ok=False, reason="response exceeds limit")
+                    return "ERROR: Grok Bot response exceeded the 64 KiB limit."
+
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_response_bytes:
+                        _emit(ctx, "grokbot.bridge", ok=False, reason="response exceeds limit")
+                        return "ERROR: Grok Bot response exceeded the 64 KiB limit."
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+    except Exception as exc:
+        # Do not echo upstream URLs, response bodies, or exception messages into
+        # agent memory/CodeX; exception class is enough to diagnose the category.
+        name = type(exc).__name__
+        _emit(ctx, "grokbot.bridge", ok=False, error=name)
+        return f"ERROR: Grok Bot bridge request failed: {name}."
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        _emit(ctx, "grokbot.bridge", ok=False, reason="invalid JSON")
+        return "ERROR: Grok Bot returned invalid JSON."
+
+    answer = data.get("answer") if isinstance(data, dict) else None
+    if not isinstance(answer, str) or not answer.strip():
+        _emit(ctx, "grokbot.bridge", ok=False, reason="empty answer")
+        return "ERROR: Grok Bot returned no textual answer."
+
+    _emit(ctx, "grokbot.bridge", ok=True, agent="grok-researcher", answer_chars=len(answer))
+    result = {"ok": True, "agent": "grok-researcher", "answer": answer}
+    encoded = json.dumps(result, ensure_ascii=False)
+    if len(encoded) > 9000:
+        result["answer"] = answer[:8000]
+        result["truncated"] = True
+        encoded = json.dumps(result, ensure_ascii=False)
+    return encoded
+
+
 # --------------------------------------------------------------------------- http_request
 
 _KEY_HEADERS = ("content-type", "content-length", "location", "etag", "last-modified",
@@ -1155,6 +1233,8 @@ EXTRA_TOOLS: list[tuple[str, str, str, Any]] = [
      '{"pattern": str, "path"?: str}', t_search_files),
     ("edit_file", "replace one exact, unique occurrence of `old` with `new` in a file (own agent dir by default, `shared/...` for the shared workspace; quota applies in your dir).",
      '{"path": str, "old": str, "new": str}', t_edit_file),
+    ("grokbot.ask", "Ask Grok Bot's low-privilege research agent over the configured private bridge; no arbitrary URL, shell, or recursive AVRONE delegation.",
+     '{"prompt": str}', t_grokbot_ask),
     ("http_request", "make an HTTP request (any method) and return status, key headers and body.",
      '{"method": str, "url": str, "headers"?: dict, "body"?: str|dict}', t_http_request),
     ("git", "run a git command in the workspace, e.g. {\"args\": \"status\"} (force push refused).",

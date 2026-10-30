@@ -56,6 +56,7 @@ async def test_authority_adapter_verifies_pinned_signature(monkeypatch, envelope
         format=serialization.PublicFormat.Raw,
     )
     monkeypatch.setenv("AVRONE_PLANE_PUBLIC_KEY_B64", base64.b64encode(pub).decode())
+    monkeypatch.setenv("AVRONE_PLANE_AUDIENCE", "spiffe://prod/agent/avrone")
     monkeypatch.setattr(adapter, "urlopen", lambda *a, **k: FakeResponse(signed_payload(key)))
     result = await adapter.authorize_with_capability_authority(envelope)
     assert result["decision"] == "ALLOW"

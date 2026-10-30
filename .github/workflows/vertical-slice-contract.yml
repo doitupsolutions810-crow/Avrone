@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   contract-tests:
-    runs-on: [self-hosted, "Avrone compile-gate"]
+    runs-on: [self-hosted, "Avrone compile-gate", "avrone-disposable"]
     timeout-minutes: 10
     steps:
       - name: Checkout

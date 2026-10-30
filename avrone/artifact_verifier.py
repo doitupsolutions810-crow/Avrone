@@ -22,9 +22,10 @@ def verify_staged_artifacts(
     *,
     root: str | Path | None = None,
 ) -> bool:
-    configured_root = Path(root or os.environ.get("AVRONE_ARTIFACT_ROOT", "")).expanduser()
-    if not str(configured_root):
+    raw_root = root if root is not None else os.environ.get("AVRONE_ARTIFACT_ROOT")
+    if raw_root is None or str(raw_root).strip() == "":
         return False
+    configured_root = Path(raw_root).expanduser()
     try:
         base = configured_root.resolve(strict=True)
     except OSError:

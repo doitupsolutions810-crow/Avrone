@@ -999,7 +999,7 @@ class FleetManager:
             raise RuntimeError(f"netsquad to {node_id} failed: {reason}") from e
         finally:
             if bumped and node is not None:
-                node["load"] = sanitize_peer_load(node.get("load", 1) - 1)
+                node["load"] = max(0, sanitize_peer_load(node.get("load", 1)) - 1)
 
     def _netsquad_refuse(self, code: str, message: str, **kw: Any) -> PermissionError:
         self._audit("fleet.refused", code=code, reason=message, endpoint="run", capability=NETSQUAD_CAP, **kw)
@@ -1447,14 +1447,14 @@ class FleetManager:
             if mode == "chat":
                 raise ValueError("checkpoint_id works with mode squad or deep")
             payload["checkpoint_id"] = sanitize_ckpt_id(checkpoint_id)
-        node["load"] = node.get("load", 0) + 1
+        node["load"] = sanitize_peer_load(node.get("load", 0)) + 1
         try:
             return await self._post(
                 node["url"], "/api/fleet/run", payload, timeout=900,
                 privileged_peer=node["node_id"] if privileged else "",
             )
         finally:
-            node["load"] = max(0, node.get("load", 1) - 1)
+            node["load"] = max(0, sanitize_peer_load(node.get("load", 1)) - 1)
 
     async def send_message(self, route: list[str], agent: str, text: str, sender: str, hops: int = 0,
                            wait: bool = False) -> dict[str, Any]:

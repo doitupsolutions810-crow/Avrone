@@ -130,6 +130,12 @@ def test_registration_and_health_score_handle_extreme_peer_load(fm):
     assert fm.health_table()[0]["load"] >= 0
 
 
+def test_peer_load_decrement_sanitizes_before_arithmetic():
+    assert max(0, sanitize_peer_load("corrupt") - 1) == 0
+    assert max(0, sanitize_peer_load(float("inf")) - 1) == 0
+    assert max(0, sanitize_peer_load(9) - 1) == 8
+
+
 def test_pick_migration_target_sanitizes_legacy_peer_metrics(fm):
     # Simulate a fleet.json record written before peer-health/load normalization.
     add(fm, "legacy", load=10 ** 10000, health={

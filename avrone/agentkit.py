@@ -60,7 +60,9 @@ def _img_path(ctx: "AgentContext", p: str) -> Path:
 # ---------------------------------------------------------------- images
 async def t_image_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
     from PIL import Image
-    p = _img_path(ctx, str(args["path"]))
+    if not isinstance(args.get("path"), str) or not args["path"].strip():
+        return "ERROR: path is required (an image file in your workspace)"
+    p = _img_path(ctx, args["path"])
     im = Image.open(p)
     g = im.convert("L")
     hist = g.histogram()
@@ -95,7 +97,9 @@ async def t_image_decode(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return ("ERROR: zxing-cpp not installed. It is a pip package (not apt): "
                 "env_install {\"package\": \"zxing-cpp\", \"manager\": \"pip\"} then retry.")
     from PIL import Image
-    p = _img_path(ctx, str(args["path"]))
+    if not isinstance(args.get("path"), str) or not args["path"].strip():
+        return "ERROR: path is required (an image file in your workspace)"
+    p = _img_path(ctx, args["path"])
     im = Image.open(p).convert("L")
     seen: dict[tuple[str, str], str] = {}
     for scale in (1.0, 0.5, 2.0, 0.25):
@@ -242,7 +246,7 @@ def record_change(ctx: "AgentContext", action: str, target: str, ok: bool, detai
 
 async def t_env_install(ctx: "AgentContext", args: dict[str, Any]) -> str:
     policy = os.getenv("AVRONE_SELF_CHANGES", "allow").lower()
-    pkg, mgr = str(args["package"]).strip(), str(args.get("manager", "pip")).lower()
+    pkg, mgr = str(args.get("package") or "").strip(), str(args.get("manager", "pip")).lower()
     if not PKG_RE.match(pkg):
         return "ERROR: invalid package name"
     if policy == "deny":
@@ -313,14 +317,27 @@ def _board(ctx: "AgentContext") -> Path:
 
 async def t_task_board(ctx: "AgentContext", args: dict[str, Any]) -> str:
     p = _board(ctx)
-    board: list[dict[str, Any]] = json.loads(p.read_text()) if p.exists() else []
+    try:
+        board: list[dict[str, Any]] = json.loads(p.read_text()) if p.exists() else []
+    except (OSError, ValueError):
+        board = []  # a torn/corrupt board starts fresh instead of breaking the tool for the run
+    if not isinstance(board, list):
+        board = []
+    board = [t for t in board if isinstance(t, dict) and isinstance(t.get("id"), int)]
     op = str(args.get("op", "list"))
     if op == "add":
-        item = {"id": len(board) + 1, "title": str(args["title"])[:200], "status": "todo",
+        title = str(args.get("title") or "").strip()
+        if not title:
+            return "ERROR: op=add needs a title"
+        item = {"id": max((t["id"] for t in board), default=0) + 1, "title": title[:200], "status": "todo",
                 "owner": str(args.get("owner", ctx.name)), "note": "", "by": ctx.name}
         board.append(item)
     elif op == "update":
-        item = next((t for t in board if t["id"] == int(args["id"])), None)
+        try:
+            tid = int(args.get("id"))
+        except (TypeError, ValueError):
+            return "ERROR: op=update needs an integer id"
+        item = next((t for t in board if t["id"] == tid), None)
         if not item:
             return "ERROR: no such task"
         for k in ("status", "note", "owner"):
@@ -328,11 +345,14 @@ async def t_task_board(ctx: "AgentContext", args: dict[str, Any]) -> str:
                 item[k] = str(args[k])[:1000]
     elif op != "list":
         return "ERROR: op must be add, update or list"
-    p.write_text(json.dumps(board, indent=1))
+    if op != "list":
+        tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(board, indent=1))
+        os.replace(tmp, p)  # atomic: a crash never leaves a half-written board
     if op != "list":
         _emit(ctx, "task.board", op=op, board=board[-10:])
-    return "\n".join(f"#{t['id']} [{t['status']}] {t['title']} (owner {t['owner']}){' - ' + t['note'] if t['note'] else ''}"
-                     for t in board) or "board empty"
+    return "\n".join(f"#{t['id']} [{t.get('status', '?')}] {t.get('title', '')} (owner {t.get('owner', '?')})"
+                     f"{' - ' + str(t['note']) if t.get('note') else ''}" for t in board) or "board empty"
 
 
 KIT_TOOLS = [
@@ -352,6 +372,17 @@ KIT_TOOLS = [
 ]
 
 
+KIT_SCHEMAS: dict[str, dict[str, dict[str, str]]] = {
+    "image_inspect": {"required": {"path": "str"}},
+    "image_decode": {"required": {"path": "str"}},
+    "skill_load": {"required": {"name": "str"}},
+    "env_install": {"required": {"package": "str"}, "optional": {"manager": "str"}},
+    "resources": {},
+    "task_board": {},  # op-dependent fields; the body validates them (ids may arrive as "1")
+}
+
+
 def register_kit_tools(registry) -> None:
     for name, desc, args_doc, fn in KIT_TOOLS:
-        registry.register(Tool(name, desc, args_doc, fn, source="builtin"))
+        schema = KIT_SCHEMAS.get(name, {})
+        registry.register(Tool(name, desc, args_doc, fn, source="builtin", schema=schema))

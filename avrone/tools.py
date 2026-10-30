@@ -150,10 +150,19 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             return self.unknown_message(name)
+        if args is None:
+            args = {}
+        # Defense in depth for entry points that skip check() (MCP, fleet, admin, direct calls):
+        # a tool body never sees a list/str where it expects an object. (Typed per-field checks stay
+        # in check() and in each tool, which give the model their own, more specific messages.)
+        if not isinstance(args, dict):
+            return (f"ARG ERROR ({name}): args must be a JSON object, got {type(args).__name__}; "
+                    f"expected {tool.args_doc}. The tool did not run.")
         try:
-            return await tool.fn(ctx, args)
+            out = await tool.fn(ctx, args)
         except Exception as e:  # errors go back to the agent
             return f"ERROR: {type(e).__name__}: {e}"
+        return out if isinstance(out, str) else str(out)
 
 
 def _safe_path(root: Path, rel: str) -> Path:

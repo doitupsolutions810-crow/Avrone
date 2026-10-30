@@ -58,7 +58,7 @@ def test_mac_local_squad_rejects_duplicate_lane_names():
 def test_mac_local_squad_counts_only_current_run_proposals():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
     assert 'RUN_STARTED_EPOCH="$(python -c' in script
-    assert 'r["ts"] >= started' in script
+    assert 'scripts/count_fresh_evolve_proposals.py' in script
     assert 'accepted_count -lt 2' in script
 
 

@@ -176,7 +176,7 @@ for selected_lane in $LANES; do
   log "checking accepted proposals for lane $selected_lane"
   if AVRONE_DATA_DIR="$lane_data" python -m avrone.cli evolve --json "$proposal_report" > "$proposal_tmp" 2> "$OUT/$selected_lane.evolve.err"; then
     if mv "$proposal_tmp" "$proposal_report"; then
-      accepted_count=$(python -c 'import json,sys; rows=json.load(open(sys.argv[1])); started=float(sys.argv[2]); fresh=[r for r in rows if isinstance(r.get("ts"), (int,float)) and not isinstance(r.get("ts"), bool) and r["ts"] >= started]; print(len(fresh))' "$proposal_report" "$RUN_STARTED_EPOCH" 2>/dev/null)
+      accepted_count=$(python "$REPO/scripts/count_fresh_evolve_proposals.py" "$proposal_report" "$RUN_STARTED_EPOCH" 2>/dev/null)
       case "$accepted_count" in
         ''|*[!0-9]*) log "lane $selected_lane proposal report is invalid"; proposal_status=1 ;;
         *)

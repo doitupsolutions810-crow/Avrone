@@ -161,3 +161,53 @@ validate task envelope → verify signed capability → provision disposable VM
 → execute Claude SDK guest worker → collect artifacts → independently verify
 artifact bytes → request signed receipt → destroy VM. The injected
 `provider` is the sole infrastructure-specific piece still outstanding.
+
+
+## Cross-repository success contract: four independent gates
+
+The integration uses the Great Scale Descent XCIX acceptance rule:
+
+`ACCEPT = I ∧ A ∧ E ∧ P`
+
+where:
+
+- **I — Integrity:** AVRONE reopens the collected artifact bytes and recomputes their SHA-256; the canonical task and receipt identities match.
+- **A — Authenticity:** the VM workload identity and receipt signer chain to pinned trust roots (production capability issuance requires authenticated workload identity/mTLS); a worker-supplied name or signature reference is insufficient.
+- **E — Execution:** a trusted provider records that the exact repository revision, guest image digest, worker lease, command/test suite, and exit code were actually executed. A model summary, queued job, CI run with no allocated runner, or self-generated digest does not meet this gate.
+- **P — Permission:** the authenticated principal holds a current, method/action/resource-bound capability. Task-envelope identifiers do not prove identity or ownership.
+
+These gates are conjunctive. A valid hash does not establish who produced the bytes; a signature does not prove a command ran; a test result for another commit is not evidence for this commit; and a verified artifact does not authorize a caller to retrieve or deploy it.
+
+### State and retry semantics
+
+The authoritative operation lifecycle is:
+
+`PLANNED → AUTHORIZED → LEASED → RUNNING → STAGED → VERIFIED → ATTESTED → ACKNOWLEDGED`
+
+Any timeout, lost runner connection, ambiguous provider response, signer outage, or lost acknowledgement after a possible side effect moves the request to `UNKNOWN`. The coordinator must query/reconcile using the same immutable operation/idempotency key before it may retry. It must not assume that an HTTP error means no side effect occurred. A repeated request with the same operation/evidence identity and different content is a conflict, not a new success.
+
+A request can only enter `VERIFIED` after I, A, E and P all independently pass. The SDK's own `ResultMessage`, worker summary, agent transcript, and self-reported test claims are diagnostic inputs only; none is a proof gate. A successful operation is not `ACKNOWLEDGED` until the trusted caller receives the matching signed receipt.
+
+### How existing repositories participate
+
+- **Great Scale:** the four-gate acceptance model and its 16-state logical test provide the success predicate. The logical test is not a deployed proof mechanism.
+- **Capability Authority / Capability Plane:** provide current method-bound, action/resource-bound rights; production workload identity and mTLS are required. Keep the capability issuer and signing keys outside the SDK worker.
+- **AVRONE:** owns validated task envelopes, fleet dispatch, per-job lease lifecycle, byte-level artifact verification, and receipt-request flow.
+- **CONTROL12 operation ledger:** may append the trusted verifier's ACCEPTED/REJECTED/NOT_VERIFIED decision with idempotency and hash-chain continuity **after** the evidence gate. Its own module explicitly does not authenticate evidence.
+- **attested-history:** its current writer rejects model-only entries without a human root / positive provenance depth and writes a digest-linked append-only line. The current verifier recomputes digests and `prev_hash` only; it does not verify signatures, trusted identities, exact runner execution, or the truth of the supplied provenance depth. An absent `history.jsonl` is reported as “empty log” with exit code zero. Treat it as a tamper-evident history sink, not an acceptance authority, until those checks are added and externally verified.
+- **Grok Bot / Trinity Core:** may route the request and display status/replay. Their UI status must reflect the verifier's state, including `UNKNOWN`; local fallback or a status string must never be rendered as real remote execution.
+- **Living Intermediate Control Plane:** can provide federation/attestation ingest only after its G0–G6 verifier accepts the exact receipt schema, policy version and provenance. A 404/local fallback is not an attested remote result.
+
+### Promotion gates for this integration
+
+1. A concrete provider provisions one new guest per task and exposes independently checkable provider instance/lease identity.
+2. Provider evidence proves guest image digest, workload identity, CPU/memory/disk/wall-time bounds, default-deny network egress, no Docker socket, no ambient GitHub credentials, and deletion/revocation after every outcome.
+3. The official SDK task is executed in the guest; its summary stays separate from artifacts; the provider collector stages bounded artifact bytes.
+4. AVRONE verifies the artifact manifest and bytes, exact source revision, test command and exit status. Negative tests must prove that missing, mismatched or stale evidence cannot become `VERIFIED`.
+5. Capability Authority verifies a current method-bound capability and trusted caller identity; the independent signer binds exact task, action, commit, worker lease and artifact digest.
+6. The CONTROL12 operation ledger records the verifier decision under an idempotency key; the history sink verifies continuity; neither substitutes for the independent gates.
+7. Both Python CI versions and the contract workflow execute on real runners and publish inspectable step logs / artifacts. A queued run or a job with `runner_id=0` is not a test pass.
+8. Run a controlled integration test against the real provider and receipt signer, including denial, expired capability, forged worker ID, changed bytes, wrong commit, timeout after possible side effect, lost acknowledgement, duplicate retry, and VM teardown.
+9. Keep the SDK feature flag off and the PR draft until the complete promotion record is independently reviewed.
+
+No downstream CONTROL12 ledger, attested-history, Grok Bot or Living Intermediate Control Plane runtime connection is claimed by this branch yet. Their contracts are mapped here; production adapters require authenticated service endpoints and independently verifiable responses.

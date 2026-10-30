@@ -52,7 +52,8 @@ log(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$OUT/squad.log"; }
 # Use a real timeout command for every long-running install, baseline and agent lane.
 if ! command -v timeout >/dev/null 2>&1; then
   command -v brew >/dev/null || { log "timeout is unavailable and Homebrew is missing"; exit 1; }
-  timeout 900 brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded execution"; exit 1; }
+  # Bootstrap exception: GNU timeout is the tool being installed here.
+  brew install coreutils >/dev/null 2>&1 || { log "could not install coreutils for bounded execution"; exit 1; }
   command -v gtimeout >/dev/null 2>&1 || { log "gtimeout was not installed"; exit 1; }
   timeout() { command gtimeout "$@"; }
 fi

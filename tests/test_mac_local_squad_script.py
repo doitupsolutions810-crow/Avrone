@@ -66,3 +66,15 @@ def test_mac_local_squad_bounds_brew_install_stages():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
     assert "timeout 900 brew install coreutils" in script
     assert "timeout 1800 brew install ollama" in script
+
+
+
+def test_mac_local_squad_bootstraps_coreutils_before_using_gtimeout():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "mac-local-squad.sh").read_text(encoding="utf-8")
+    start = script.index('if ! command -v timeout')
+    end = script.index('# 1. Ollama', start)
+    bootstrap = script[start:end]
+    assert 'brew install coreutils' in bootstrap
+    assert 'timeout 900 brew install coreutils' not in bootstrap
+    assert 'command -v gtimeout' in bootstrap
+    assert 'timeout() { command gtimeout "$@"; }' in bootstrap

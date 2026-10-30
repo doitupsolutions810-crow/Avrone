@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   contract-tests:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, "Avrone compile-gate"]
     timeout-minutes: 10
     steps:
       - name: Checkout

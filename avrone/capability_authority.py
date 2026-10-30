@@ -89,7 +89,9 @@ def _issue_sync(envelope: Mapping[str, Any], base_url: str, timeout: float) -> d
     rights = capability.get("rights")
     expires = capability.get("expires_at")
     if (
-        capability.get("issuer") != expected_issuer
+        not expected_audience
+        or capability.get("audience") != expected_audience
+        or capability.get("issuer") != expected_issuer
         or capability.get("trust_domain") != expected_domain
         or not isinstance(expires, (int, float))
         or isinstance(expires, bool)

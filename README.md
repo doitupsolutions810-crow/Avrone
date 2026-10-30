@@ -81,6 +81,20 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.26: Squad round 12 — HTTP surface fuzz, no orphaned children, host view tools — 2641 tests, coverage 99%
+
+Great Scale form (heat → mapping → verification; Ψ = CONE).
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | Fuzzing all 21 GET + 8 POST routes (11 junk bodies × unsigned / fleet-signed / admin): a **signed** peer's malformed `/api/fleet/message` leaked `KeyError` as a 502 | `handle_message` validates agent/message/route types; server maps `ValueError` → 400 with a reason | `test_robust_v026_api.py` |
+| robust | Admin `/api/terminal` with a NUL byte → 500; a **cancelled** run (evolve_cancel, client gone) left its child process running | runner refuses NUL bytes, returns a result for unstartable commands, and kills + reaps the child on cancellation | `test_robust_v026_runner.py` (live: cancelled `sleep` is gone); 8/16 fail before |
+| tools | Agents couldn't see their own processes or front door | `proc_status` (own children from /proc: age, state, RSS, cmd; long-running + zombies; never env) and `api_surface` (every route + auth class; admin/fleet enabled) | 7 tests |
+| skills | — | `surface-audit` (read-only own-node audit → Great Scale report), `runaway-process` (proc_status → codex_search → evolve_cancel) | grounding + live cancel-kills-child |
+| coverage | disk reader raised on an unreadable path | returns None | `test_cov12_a.py`, `test_cov12_b.py`; 47 statements missed of 10,450 |
+
+api_surface on a default node: 27 routes — 15 public, 8 admin, 4 fleet-signed; admin token unset (admin routes 403), fleet off.
+
 ## v0.25: Squad round 11 — whole-registry fuzz, corrupt state can't stop a node, schemas everywhere — 2593 tests, coverage 99%
 
 Great Scale form (heat → mapping → verification; Ψ = CONE).

@@ -69,9 +69,38 @@ async def t_pack_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def t_peer_audit(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    from .fleet import check_node_url
+    f = getattr(getattr(ctx, "core", None), "fleet", None)
+    if f is None or not getattr(f, "enabled", False):
+        return "peer_audit: fleet disabled on this node (no AVRONE_FLEET_TOKEN)"
+    nodes = dict(getattr(f, "nodes", {}) or {})
+    if not nodes:
+        return "peer_audit: no registered peers"
+    lines, bad = [], 0
+    for nid in sorted(nodes):
+        n = nodes[nid] if isinstance(nodes[nid], dict) else {}
+        try:
+            status = f.status_of(n)
+        except Exception:  # noqa: BLE001
+            status = "unknown"
+        try:
+            check_node_url(n.get("url"))
+            verdict = "ok"
+        except ValueError as e:
+            verdict = f"BAD URL - {e}"
+            bad += 1
+        lines.append(f"- {nid} [{status}]: {verdict}")
+    head = f"peer_audit: {len(nodes)} peer(s), {bad} with a url this node should not call"
+    tail = ["calls to these peers are refused; have each re-register with a valid url"] if bad else []
+    return "\n".join([head, *lines, *tail])
+
+
 PACKPEER_TOOLS = [
     Tool("pack_list", "read-only: list agent packs and verify each in memory (or say why import would refuse it).",
          "{}", t_pack_list, source="builtin", schema={}),
+    Tool("peer_audit", "read-only: check every registered fleet peer's url against current rules (no metadata/"
+         "link-local/credentials) plus its status. Never prints urls.", "{}", t_peer_audit, source="builtin", schema={}),
 ]
 
 

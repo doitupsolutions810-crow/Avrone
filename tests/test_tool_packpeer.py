@@ -23,7 +23,7 @@ def test_registered_read_only():
     r = builtin_registry()
     register_extra_tools(r)
     from avrone.tools_statehealth import ACTING
-    for n in ("pack_list",):
+    for n in ("pack_list", "peer_audit"):
         assert r.get(n) and n not in ACTING
 
 
@@ -70,3 +70,39 @@ def test_pack_list_caps_and_unreadable(tmp_path, monkeypatch):
     monkeypatch.setattr(tp.Path, "read_bytes", lambda self: (_ for _ in ()).throw(PermissionError("no")))
     out = run(tp.t_pack_list(_ctx(tmp_path), {}))
     assert "first 2 shown" in out and "UNREADABLE - PermissionError" in out
+
+
+@pytest.fixture
+def fm(tmp_path, monkeypatch):
+    for k in ("AVRONE_FLEET_MAX_HOPS", "AVRONE_FLEET_PARENT", "AVRONE_PUBLIC_URL", "AVRONE_FLEET_ALLOW",
+              "AVRONE_FLEET_REQUIRE_ALLOW"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("AVRONE_FLEET_TOKEN", "tok")
+    monkeypatch.setenv("AVRONE_NODE_ID", "root")
+    monkeypatch.setattr(fleet_mod, "HTTP_TRANSPORT", None)
+    c = MagicMock()
+    c.active = {}
+    return fleet_mod.FleetManager(c, tmp_path)
+
+
+def test_peer_audit(fm, tmp_path):
+    ctx = _ctx(tmp_path, fm)
+    assert run(tp.t_peer_audit(ctx, {})) == "peer_audit: no registered peers"
+    fm.register({"node_id": "good", "url": "http://10.0.0.2:8710"})
+    fm.nodes["old"] = {"node_id": "old", "url": "http://169.254.169.254", "last_seen": 0}
+    fm.nodes["weird"] = "junk"
+    out = run(tp.t_peer_audit(ctx, {}))
+    assert "3 peer(s), 2 with a url" in out and "- good [online]: ok" in out
+    assert "- old [offline]: BAD URL - url points at a cloud metadata endpoint" in out
+    assert "169.254" not in out.split("BAD URL")[0] and "re-register" in out
+    assert "disabled" in run(tp.t_peer_audit(_ctx(tmp_path, None), {}))
+
+
+def test_peer_audit_status_error(tmp_path):
+    f = S(enabled=True, nodes={"n": {"url": "http://a.test"}}, status_of=lambda n: 1 / 0)
+    assert "- n [unknown]: ok" in run(tp.t_peer_audit(_ctx(tmp_path, f), {}))
+
+
+def test_post_refuses_saved_bad_url(fm):
+    with pytest.raises(RuntimeError, match="refusing to call peer url"):
+        run(fm._post("http://169.254.169.254", "/api/fleet/run", {}))

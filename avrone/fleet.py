@@ -1118,6 +1118,10 @@ class FleetManager:
         return httpx.AsyncClient(**kw)
 
     async def _post(self, base: str, path: str, payload: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
+        try:  # a peer saved before v0.31 (or a hand-edited fleet.json) may hold a url we must not call
+            check_node_url(base)
+        except ValueError as e:
+            raise RuntimeError(f"refusing to call peer url: {e}") from None
         body = json.dumps(payload).encode()
         headers = {"content-type": "application/json", **sign(self.token, "POST", path, body)}
         async with self._client(timeout) as c:

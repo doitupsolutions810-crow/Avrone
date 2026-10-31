@@ -81,6 +81,16 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.34: Squad round 20: run-log reads streamed and bounded. 2908 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | **one run view could take the node down**: `Codex.replay` read and parsed the whole log on the event loop and returned every event | streamed replay keeping the newest `AVRONE_REPLAY_MAX_EVENTS` (2000, hard 50k); lines over 4 MB skipped unread (`iter_lines`); `/api/runs/{id}` runs off the loop and sets `X-Avrone-Truncated` | `test_robust_v034_replay.py`; live 200 MB log: **7.6 s, every other request stalled 7.1 s, 212 MB body, 1.37 GB RSS** before; **1.2 s, 0.01 s, 1 MB, 46 MB** now |
+| robust | `codex_search` loaded newline-less logs whole and let a deeply nested line raise | line-bounded reads, RecursionError skipped | `test_robust_v034_search.py`; 60 MB newline-less log: **120 MB -> 16 MB** peak |
+| tools | caps and log damage invisible | `log_health` (corrupt / over-long / torn lines, logs bigger than a view, 256 MB read budget, no content); `limits_status` adds the replay cap; priv_admin `codex_tail` streams only the tail | `test_tool_loghealth.py`, `test_tool_limits.py` |
+| skills | (none) | `log-integrity`; `log-retention` starts with `log_health` | `test_skill_r20.py` |
+| coverage | (none) | `cov20_a`, `cov20_b` | 6 statements missed of 11,388 |
+
 ## v0.33: Squad round 19: thread-side events wake the stream, capped stream subscribers. 2887 tests, coverage 99%
 
 | Lane | Finding (heat) | Mapping | Verification |

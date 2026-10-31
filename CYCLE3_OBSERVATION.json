@@ -1,0 +1,11 @@
+{
+  "cycle": 3,
+  "system_S": 0.01,
+  "system_orient": "mixed",
+  "unmeasured_layers": ["CycleKernal", "swarm-vm-runner"],
+  "gate": "HOLD",
+  "invariant": "a_system_is_only_as_strict_as_its_loosest_layer",
+  "mitigation": ["CycleKernal random trust -> evidence_snapshot", "swarm-vm-runner lineage seed via attested-history"],
+  "digest": "d22280d3cb7a6af9",
+  "sourced": "evolve-daemon-cycle3"
+}

@@ -2,7 +2,7 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)
+    runs-on: self-hosted
     strategy:
       matrix: { python: ["3.11", "3.12"] }
     steps:
@@ -21,7 +21,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" 2>&1 | tee /tmp/pip.log || {
             tail -n 8 /tmp/pip.log | while IFS= read -r l; do
-              l="${l//%/%25}"
+              l="${l//%/%%}"
               echo "::error::${l:0:220}"
             done
             exit 1
@@ -33,7 +33,7 @@ jobs:
             | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
           pytest -q 2>&1 | tee /tmp/pytest.log || {
             tail -n 10 /tmp/pytest.log | while IFS= read -r l; do
-              l="${l//%/%25}"
+              l="${l//%/%%}"
               echo "::error::${l:0:220}"
             done
             exit 1

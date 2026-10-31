@@ -106,3 +106,26 @@ def test_peer_audit_status_error(tmp_path):
 def test_post_refuses_saved_bad_url(fm):
     with pytest.raises(RuntimeError, match="refusing to call peer url"):
         run(fm._post("http://169.254.169.254", "/api/fleet/run", {}))
+
+
+def test_fleet_forget(fm, tmp_path, monkeypatch):
+    from avrone.tools_statehealth import ACTING
+    assert "fleet_forget" in ACTING
+    ctx = _ctx(tmp_path, fm)
+    fm.register({"node_id": "live", "url": "http://10.0.0.2:8710"})
+    fm.register({"node_id": "gone", "url": "http://10.0.0.3:8710"})
+    fm.nodes["gone"]["last_seen"] = 0
+    out = run(tp.t_fleet_forget(ctx, {"node": "live"}))
+    assert out.startswith("ERROR:") and "rejoin" in out and "live" in fm.nodes
+    assert run(tp.t_fleet_forget(ctx, {"node": "gone"})) == "forgot peer gone (was offline)"
+    assert "gone" not in fm.nodes and "gone" not in (tmp_path / "fleet.json").read_text()
+    assert "no peer 'nope'" in run(tp.t_fleet_forget(ctx, {"node": "nope"}))
+    assert "invalid node_id" in run(tp.t_fleet_forget(ctx, {"node": "Bad ID"}))
+    assert "node is required" in run(tp.t_fleet_forget(ctx, {}))
+    assert "fleet disabled" in run(tp.t_fleet_forget(_ctx(tmp_path, None), {"node": "x"}))
+    fm.allow = {"someone-else"}  # live is no longer allowed: removal sticks even while online
+    out = run(tp.t_fleet_forget(ctx, {"node": "live"}))
+    assert out == "forgot peer live (was online) (revoked in AVRONE_FLEET_ALLOW, so it cannot rejoin)"
+    kinds = [c.args[1] for c in fm.core.codex.emit.call_args_list]
+    assert kinds.count("fleet.forget") == 2
+

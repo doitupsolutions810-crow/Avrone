@@ -1139,6 +1139,24 @@ class FleetManager:
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)
         return {"ok": True, "parent": self.node_id}
 
+    def forget(self, nid: str, *, allow_online: bool = False) -> dict[str, Any]:
+        """Remove a peer from the registry. An online peer is refused unless allow_online: it would
+        simply re-register on its next heartbeat (revoke it in AVRONE_FLEET_ALLOW first)."""
+        if not isinstance(nid, str) or not ID_RE.match(nid):
+            raise ValueError("invalid node_id")
+        with self._lock:
+            rec = self.nodes.get(nid)
+            if rec is None:
+                raise KeyError(nid)
+            status = self.status_of(rec)
+            if status == "online" and not allow_online:
+                raise PermissionError(f"{nid} is online and would rejoin on its next heartbeat; "
+                                      "remove it from AVRONE_FLEET_ALLOW first")
+            self.nodes = {k: v for k, v in self.nodes.items() if k != nid}
+            self._save()
+        self._audit("fleet.forget", node=nid, status=status)
+        return {"node": nid, "status": status}
+
     # ------------------------------------------------------------ client side
     def _client(self, timeout: float) -> httpx.AsyncClient:
         kw: dict[str, Any] = {"timeout": timeout}

@@ -66,7 +66,17 @@ If a target requires bearer authentication, supply the token as an environment s
 
 ## Verification and remaining gaps
 
-tests/test_platform_bridge.py covers tool registration, unknown target/resource rejection, fixed paths, URL validation, default write denial, Control704 tenant binding, Runtime mission routing/idempotency, mission status identifier validation, sequential mission-task-swarm record creation, nested Runtime response normalization, capability allowlist enforcement, and input bounds. Repository CI is configured to run the test suite on pull requests; this document does not claim the CI has passed until GitHub reports a green result.
+The bridge tests cover tool registration, unknown target/resource rejection, fixed paths, URL validation, default write denial, Control704 tenant binding, Runtime mission routing/idempotency, mission status identifier validation, sequential mission-task-swarm record creation, nested Runtime response normalization, capability allowlist enforcement, and input bounds. Repository CI is configured to run the test suite on pull requests; this document does not claim the CI has passed until GitHub reports a green result.
+
+Run the focused suite and then the complete suite in a development environment:
+
+```bash
+python -m pip install -e ".[dev]"
+AVRONE_LLM_MODE=mock AVRONE_RUNNER=local pytest -q tests/test_platform_bridge.py
+AVRONE_LLM_MODE=mock AVRONE_RUNNER=local pytest -q
+```
+
+A passing local test run is useful but does not replace remote CI. If a workflow job fails before its first step and has no logs, record the run/job IDs and inspect the GitHub Actions service status rather than changing application code that the runner never executed.
 
 The next integration increments should be separate and contract-driven:
 

@@ -112,6 +112,86 @@ def max_message_chars() -> int:
     return _env_cap("AVRONE_MAX_MESSAGE_CHARS", DEFAULT_MAX_MESSAGE_CHARS, HARD_MAX_MESSAGE_CHARS)
 
 
+DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024
+HARD_MAX_BODY_BYTES = 512 * 1024 * 1024
+
+
+def max_body_bytes(path: str = "") -> int:
+    """Largest request body this server reads for ``path``. Never below what the message cap needs
+    (message + first_answer, worst-case JSON escaping), and the agent-pack route also fits a
+    base64 bundle at the agent-fs quota."""
+    n = max(_env_cap("AVRONE_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES, HARD_MAX_BODY_BYTES),
+            12 * max_message_chars() + 64 * 1024)
+    if path == "/api/fleet/agentpack":
+        from .agentpack import quota_bytes
+        n = max(n, (quota_bytes() + 1024 * 1024) * 4 // 3 + 4 * 1024 * 1024)
+    return n
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodyLimit:
+    """ASGI guard: refuse an oversized request body with 413 before it is buffered. Routes read the
+    whole body before auth (HMAC needs it; pydantic parses it), so without this an unauthenticated
+    caller could make the server hold any amount of memory - e.g. 1 GB to /api/fleet/register.
+    A declared Content-Length over the cap is refused at once; a chunked body is counted as it
+    streams and cut off at the cap."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        limit = max_body_bytes(scope.get("path", ""))
+        declared = None
+        for k, v in scope.get("headers") or ():
+            if k.lower() == b"content-length":
+                try:
+                    declared = int(v)
+                except ValueError:
+                    declared = None
+        if declared is not None and declared > limit:
+            return await self._refuse(send, limit)
+        seen = 0
+        started = False
+
+        async def limited_receive():
+            nonlocal seen
+            msg = await receive()
+            if msg.get("type") == "http.request":
+                seen += len(msg.get("body") or b"")
+                if seen > limit:
+                    raise _BodyTooLarge()
+            return msg
+
+        async def tracking_send(msg):
+            nonlocal started
+            if msg.get("type") == "http.response.start":
+                started = True
+            await send(msg)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except _BodyTooLarge:
+            if not started:
+                await self._refuse(send, limit)
+
+    @staticmethod
+    async def _refuse(send, limit: int) -> None:
+        import json as _json
+        body = _json.dumps({"detail": f"request body too large (max {limit} bytes; AVRONE_MAX_BODY_BYTES)"}).encode()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
+                                (b"connection", b"close")]})
+        await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(BodyLimit)
+
+
 class ChatIn(BaseModel):
     message: str
     mode: str = "squad"  # squad | chat | deep

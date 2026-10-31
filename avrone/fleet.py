@@ -127,6 +127,18 @@ NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 # Replay-cache bound: past this many live nonces new requests are refused (fail closed) rather than
 # evicting a live nonce, which would re-open replay of that request.
 NONCE_CACHE_MAX = 100_000
+# Peer registry bounds: a token holder (or allow-all fleet) could register unlimited node ids, each
+# rewriting fleet.json (quadratic), with megabytes of capabilities/presence per record.
+DEFAULT_MAX_NODES, HARD_MAX_NODES = 256, 4096
+MAX_NODE_RECORD_BYTES = 64 * 1024
+
+
+def max_nodes() -> int:
+    try:
+        n = int(os.environ.get("AVRONE_FLEET_MAX_NODES", "").strip() or DEFAULT_MAX_NODES)
+    except ValueError:
+        n = DEFAULT_MAX_NODES
+    return max(1, min(HARD_MAX_NODES, n))
 
 # Tests may set this to an httpx transport (e.g. ASGITransport routing to in-process apps).
 HTTP_TRANSPORT: httpx.AsyncBaseTransport | None = None
@@ -1098,17 +1110,52 @@ class FleetManager:
                "load": payload.get("load", 0),
                "presence": payload.get("presence"),
                "health": sanitize_health(payload.get("health"))}
+        try:
+            size = len(json.dumps(rec, default=str))
+        except (TypeError, ValueError, RecursionError):
+            raise ValueError("node record is not JSON-serializable") from None
+        if size > MAX_NODE_RECORD_BYTES:
+            raise ValueError(f"node record is {size} bytes (max {MAX_NODE_RECORD_BYTES}): trim capabilities/presence")
         with self._lock:
             # the "already online at another url" check and the write are one step: two racing
             # registrations of one id from different urls could otherwise both be accepted
             existing = self.nodes.get(nid)
             if existing and existing.get("url") != url and self.status_of(existing) == "online":
                 raise ValueError(f"node_id {nid} already online at another url")
+            nodes = dict(self.nodes)
+            cap = max_nodes()
+            if nid not in nodes and len(nodes) >= cap:
+                # make room from offline peers only (oldest first); never evict a live one
+                for old_id in sorted((k for k, v in nodes.items() if self.status_of(v) == "offline"),
+                                     key=lambda k: nodes[k].get("last_seen", 0)):
+                    if len(nodes) < cap:
+                        break
+                    del nodes[old_id]
+                if len(nodes) >= cap:
+                    raise PermissionError(f"fleet registry full ({cap} peers; AVRONE_FLEET_MAX_NODES)")
             # copy-on-write: readers iterating self.nodes.values() never see it change size mid-loop
-            self.nodes = {**self.nodes, nid: rec}
+            self.nodes = {**nodes, nid: rec}
             self._save()
         self.core.codex.emit("fleet", "fleet.join", self.node_id, node=nid, url=url)
         return {"ok": True, "parent": self.node_id}
+
+    def forget(self, nid: str, *, allow_online: bool = False) -> dict[str, Any]:
+        """Remove a peer from the registry. An online peer is refused unless allow_online: it would
+        simply re-register on its next heartbeat (revoke it in AVRONE_FLEET_ALLOW first)."""
+        if not isinstance(nid, str) or not ID_RE.match(nid):
+            raise ValueError("invalid node_id")
+        with self._lock:
+            rec = self.nodes.get(nid)
+            if rec is None:
+                raise KeyError(nid)
+            status = self.status_of(rec)
+            if status == "online" and not allow_online:
+                raise PermissionError(f"{nid} is online and would rejoin on its next heartbeat; "
+                                      "remove it from AVRONE_FLEET_ALLOW first")
+            self.nodes = {k: v for k, v in self.nodes.items() if k != nid}
+            self._save()
+        self._audit("fleet.forget", node=nid, status=status)
+        return {"node": nid, "status": status}
 
     # ------------------------------------------------------------ client side
     def _client(self, timeout: float) -> httpx.AsyncClient:

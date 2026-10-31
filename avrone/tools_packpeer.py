@@ -1,4 +1,4 @@
-"""pack_list + peer_audit.
+"""pack_list + peer_audit + fleet_forget.
 
     pack_list {}
         Every agent pack in data/agentpacks/: name, size, and whether it verifies (manifest, sha256s,
@@ -10,6 +10,11 @@
         from before v0.31 may still hold a metadata/link-local/credentialed url this node would POST
         to (since v0.31 every outgoing call refuses such a url). Also shows each peer's status. Read-only:
         the fix is the peer re-registering with a valid url.
+
+    fleet_forget {"node": str}
+        Remove one peer from this node's registry (fleet.json). Refuses an online peer - it would
+        rejoin on its next heartbeat - unless it is no longer allowed by AVRONE_FLEET_ALLOW, in which
+        case removal sticks. Audited (fleet.forget). Acting.
 """
 from __future__ import annotations
 
@@ -96,11 +101,34 @@ async def t_peer_audit(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return "\n".join([head, *lines, *tail])
 
 
+async def t_fleet_forget(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    f = getattr(getattr(ctx, "core", None), "fleet", None)
+    if f is None or not getattr(f, "enabled", False):
+        return "ERROR: fleet disabled on this node (no AVRONE_FLEET_TOKEN)"
+    nid = args.get("node")
+    if not isinstance(nid, str) or not nid.strip():
+        return "ERROR: node is required (a peer id from fleet_status / peer_audit)"
+    nid = nid.strip()
+    try:
+        # a peer no longer allowed cannot re-register, so removing it while online is safe and final
+        revoked = not f.allowed(nid)
+        r = f.forget(nid, allow_online=revoked)
+    except KeyError:
+        return f"ERROR: no peer {nid!r} registered here"
+    except (ValueError, PermissionError) as e:
+        return f"ERROR: {e}"
+    note = " (revoked in AVRONE_FLEET_ALLOW, so it cannot rejoin)" if revoked else ""
+    return f"forgot peer {r['node']} (was {r['status']}){note}"
+
+
 PACKPEER_TOOLS = [
     Tool("pack_list", "read-only: list agent packs and verify each in memory (or say why import would refuse it).",
          "{}", t_pack_list, source="builtin", schema={}),
     Tool("peer_audit", "read-only: check every registered fleet peer's url against current rules (no metadata/"
          "link-local/credentials) plus its status. Never prints urls.", "{}", t_peer_audit, source="builtin", schema={}),
+    Tool("fleet_forget", "acting: remove one fleet peer from this node's registry; refuses an online peer that "
+         "is still allowed (it would rejoin).", '{"node": "<peer id>"}', t_fleet_forget, source="builtin",
+         schema={"type": "object", "properties": {"node": {"type": "string"}}, "required": ["node"]}),
 ]
 
 

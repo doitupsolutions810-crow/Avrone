@@ -8,8 +8,8 @@
 
     stream_status {}
         The live event stream (/ws/events): connected subscribers, each one's queue depth vs its
-        1000-event limit, events emitted and events dropped because a subscriber was too slow.
-        Read-only.
+        1000-event limit, events emitted and events dropped because a subscriber was too slow, the
+        subscriber cap (AVRONE_MAX_WS_SUBSCRIBERS) and connections refused at it. Read-only.
 """
 from __future__ import annotations
 
@@ -70,12 +70,18 @@ async def t_stream_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
     subs = list(cx._subscribers)
     depths = sorted((q.qsize(), q.maxsize) for q in subs)
     emitted, dropped = getattr(cx, "emitted", 0), getattr(cx, "dropped", 0)
-    lines = [f"stream_status: {len(subs)} subscriber(s); {emitted} event(s) emitted since start, {dropped} dropped"]
+    from .codex import max_subscribers
+    cap = max_subscribers()
+    refused = getattr(cx, "refused", 0)
+    lines = [f"stream_status: {len(subs)} subscriber(s) of {cap} allowed; {emitted} event(s) emitted since start, "
+             f"{dropped} dropped, {refused} connection(s) refused at the cap"]
     for i, (d, m) in enumerate(depths, 1):
         flag = " FULL - dropping" if m and d >= m else (" backed up" if m and d >= m * 0.8 else "")
         lines.append(f"- subscriber {i}: {d}/{m or 'unbounded'} queued{flag}")
     if dropped:
         lines.append("a slow dashboard missed events; the run logs still hold every one (codex_search)")
+    if refused or len(subs) >= cap:
+        lines.append("the stream is or was full: close idle dashboards or raise AVRONE_MAX_WS_SUBSCRIBERS")
     return "\n".join(lines)
 
 

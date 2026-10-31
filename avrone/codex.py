@@ -46,6 +46,23 @@ def _scrub(v: Any, depth: int = 0) -> Any:
     return v
 
 
+DEFAULT_MAX_SUBSCRIBERS, HARD_MAX_SUBSCRIBERS = 64, 1024
+
+
+def max_subscribers() -> int:
+    """Live event-stream subscribers allowed at once (AVRONE_MAX_WS_SUBSCRIBERS)."""
+    import os
+    try:
+        n = int(os.environ.get("AVRONE_MAX_WS_SUBSCRIBERS", "").strip() or DEFAULT_MAX_SUBSCRIBERS)
+    except ValueError:
+        n = DEFAULT_MAX_SUBSCRIBERS
+    return max(1, min(HARD_MAX_SUBSCRIBERS, n))
+
+
+class SubscribersFull(RuntimeError):
+    pass
+
+
 class Codex:
     def __init__(self, data_dir: Path):
         self.log_dir = data_dir / "runs"
@@ -62,6 +79,10 @@ class Codex:
         self.emitted = 0
 
     def subscribe(self) -> asyncio.Queue[Event]:
+        # every emit fans out to every subscriber, and each queue holds up to 1000 events: unbounded
+        # subscribers made each run's events cost O(subscribers) and memory grow per connection
+        if len(self._subscribers) >= max_subscribers():
+            raise SubscribersFull(f"event stream full ({max_subscribers()} subscribers; AVRONE_MAX_WS_SUBSCRIBERS)")
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
         try:
             self._loops[q] = asyncio.get_running_loop()

@@ -592,9 +592,18 @@ async def events(ws: WebSocket):
     if not caller_allowed(ws.client.host if ws.client else None, token):
         await ws.close(code=1008)  # policy violation: the live codex stream shows every run
         return
-    await ws.accept()
+    from .codex import SubscribersFull
     codex = core().codex
-    q = codex.subscribe()
+    try:
+        q = codex.subscribe()
+    except SubscribersFull:
+        await ws.close(code=1013)  # try again later: the stream is at AVRONE_MAX_WS_SUBSCRIBERS
+        return
+    try:
+        await ws.accept()
+    except BaseException:
+        codex.unsubscribe(q)
+        raise
 
 
     try:

@@ -110,8 +110,9 @@ Always run Ollama with a large context so the 75-tool prompt is never truncated
 - Recon/OSINT is **default-deny**; the only allowlisted target is `127.0.0.1`, and
   `port_scan` requires `authorized=true` with ≤5 ports on localhost. Do not scan anything
   else.
-- Do not delete committed source. An untracked `agents/` scratch dir may appear; the
-  autopilot checks `git status` and only removes files that are untracked and stray.
+- Do not delete committed source. `agents/` in the repo is AVRONE's runtime per-agent home
+  (recreated every run). The autopilot keeps it and hides it from git via `.git/info/exclude`;
+  never delete it.
 - Everything is logged (CodeX + resources ledger). Keep it that way.
 
 ## 6. How to run
@@ -126,6 +127,11 @@ It will: locate/validate the checkout → apply the two carried patches if the c
 the **baseline gate** (must be green before anything evolves) → write and self-check the
 coherent env + bridges → then **loop**: advance the reintro stage and run the evolve squad
 lanes, writing results to `$DRIVE/avrone-runs/` and accepted proposals to `MERGE_ME.md`.
+
+Exit codes: 0 done, 1 config/precondition error (message says what), 2 another autopilot already
+running on that drive, 130/143 interrupted (lock released, child processes stopped). It is safe to
+rerun at any time: state resumes from the drive, corrupt state files are reseeded, a stale lock is
+recovered, and Ollama is restarted if it dies (gives up after 3 restarts).
 
 Useful switches: `MODEL=gpt-oss:120b` (default), `ONCE=1` (one cycle then stop),
 `CYCLES=N` (stop after N cycles; default: loop forever), `SKIP_GATE=1` (not recommended),

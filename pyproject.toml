@@ -13,6 +13,7 @@ vision = ["pillow>=10", "zxing-cpp>=2.3"]
 avrone = "avrone.server:main"
 avrone-cli = "avrone.cli:main"
 avrone-mcp = "avrone.mcp_server:main"
+avrone-verify = "avrone.connection_verify:main"
 
 [build-system]
 requires = ["setuptools>=68"]

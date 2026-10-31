@@ -59,6 +59,37 @@ def max_subscribers() -> int:
     return max(1, min(HARD_MAX_SUBSCRIBERS, n))
 
 
+DEFAULT_REPLAY_EVENTS, HARD_REPLAY_EVENTS = 2000, 50_000
+MAX_LINE_BYTES = 4 * 1024 * 1024  # one event line; anything longer is skipped, never loaded whole
+
+
+def replay_limit() -> int:
+    """Newest events a replay returns (AVRONE_REPLAY_MAX_EVENTS)."""
+    import os
+    try:
+        n = int(os.environ.get("AVRONE_REPLAY_MAX_EVENTS", "").strip() or DEFAULT_REPLAY_EVENTS)
+    except ValueError:
+        n = DEFAULT_REPLAY_EVENTS
+    return max(1, min(HARD_REPLAY_EVENTS, n))
+
+
+def iter_lines(f, max_line: int = MAX_LINE_BYTES):
+    """Lines of a text file, each read at most max_line chars at a time; an overlong line yields
+    None (and is skipped through in chunks), so a 1 GB line never sits in memory."""
+    while True:
+        line = f.readline(max_line)
+        if not line:
+            return
+        if line.endswith("\n") or len(line) < max_line:
+            yield line
+            continue
+        while True:  # overlong: discard the rest of this line
+            more = f.readline(max_line)
+            if not more or more.endswith("\n"):
+                break
+        yield None
+
+
 class SubscribersFull(RuntimeError):
     pass
 
@@ -157,7 +188,8 @@ class Codex:
         for _, p in stamped[:limit]:
             try:
                 with p.open(encoding="utf-8", errors="replace") as f:
-                    start = self._parse_line(f.readline())
+                    first = next(iter_lines(f), None)
+                start = self._parse_line(first) if first else None
             except OSError:
                 continue
             if start is None:
@@ -167,14 +199,25 @@ class Codex:
             out.append({"run_id": p.stem, "started": start.get("ts"), "prompt": prompt})
         return out
 
-    def replay(self, run_id: str) -> list[dict[str, Any]]:
-        """Every intact event of a run, in order. Truncated/corrupt lines (e.g. a crash mid-write)
-        are skipped, so one bad line never hides the rest of the audit log."""
+    def replay(self, run_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        """The newest intact events of a run (at most `limit`, default AVRONE_REPLAY_MAX_EVENTS), in
+        order. Truncated/corrupt lines (e.g. a crash mid-write) are skipped, so one bad line never
+        hides the rest of the audit log. Streams the file: a 200 MB log used to be read whole and
+        parsed whole (1.4 GB RSS for one request)."""
         p = self.log_dir / f"{run_id}.jsonl"
         if not p.exists() or not p.resolve().is_relative_to(self.log_dir.resolve()):
             return []
+        from collections import deque
+        n = replay_limit() if limit is None else max(1, int(limit))
+        keep: deque[dict[str, Any]] = deque(maxlen=n)
+        total = 0
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            with p.open(encoding="utf-8", errors="replace") as f:
+                for line in iter_lines(f):
+                    ev = self._parse_line(line) if line is not None else None
+                    if ev is not None:
+                        keep.append(ev)
+                        total += 1
         except OSError:
             return []
-        return [ev for ev in map(self._parse_line, text.splitlines()) if ev is not None]
+        return list(keep)

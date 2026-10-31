@@ -11,6 +11,12 @@
         rotated, so a busy node grows data/runs forever. prune=true deletes run logs older than
         older_than_days (default 30, min 1) while always keeping the newest `keep` (default 50,
         min 10) and any run still active on this node. Acting when pruning.
+
+    log_health {"runs"?: int}
+        Integrity of the newest run logs (default 50, max 200; at most 256 MB read): per log with a
+        problem, corrupt lines, lines too long to load (> 4 MB, skipped by every reader), a torn last
+        line (crash mid-write), and whether it holds more events than a run view shows
+        (AVRONE_REPLAY_MAX_EVENTS). Read-only; never prints event content.
 """
 from __future__ import annotations
 
@@ -36,6 +42,7 @@ def _limits() -> list[tuple[str, str, int, str]]:
                     ("AVRONE_MAX_BODY_BYTES", server.max_body_bytes),
                     ("AVRONE_FLEET_MAX_NODES", fleet.max_nodes),
                     ("AVRONE_MAX_WS_SUBSCRIBERS", codex.max_subscribers),
+                    ("AVRONE_REPLAY_MAX_EVENTS", codex.replay_limit),
                     ("AVRONE_MCP_MAX_INFLIGHT", mcp_server.max_inflight),
                     ("AVRONE_MAX_AGENTS_PER_RUN", ctxspawn.max_agents_per_run),
                     ("AVRONE_SPAWN_CONTEXT_CHARS", ctxspawn.context_chars)):
@@ -161,6 +168,92 @@ async def t_run_logs(ctx: "AgentContext", args: dict[str, Any]) -> str:
                   f"freed {_mb(r['freed'])}"
 
 
+LOG_HEALTH_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _scan_log(p: Path, budget: int) -> dict[str, Any]:
+    import json
+    from .codex import MAX_LINE_BYTES, iter_lines
+    r = {"events": 0, "corrupt": 0, "overlong": 0, "torn": False, "read": 0}
+    with p.open(encoding="utf-8", errors="replace") as f:
+        last = ""
+        for line in iter_lines(f, MAX_LINE_BYTES):
+            if line is None:
+                r["overlong"] += 1
+                r["read"] += MAX_LINE_BYTES
+                last = "\n"
+                continue
+            r["read"] += len(line)
+            last = line
+            if not line.strip():
+                continue
+            try:
+                ok = isinstance(json.loads(line), dict)
+            except (ValueError, RecursionError):
+                ok = False
+            if ok and line.endswith("\n"):
+                r["events"] += 1
+            elif line.endswith("\n"):
+                r["corrupt"] += 1
+            if r["read"] >= budget:
+                r["partial"] = True
+                break
+        r["torn"] = bool(last) and not last.endswith("\n") and not r.get("partial")
+    return r
+
+
+async def t_log_health(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    d = _runs_dir(ctx)
+    if d is None or not d.is_dir():
+        return "log_health: no run logs on this node"
+    try:
+        n = int(args.get("runs", 50))
+    except (TypeError, ValueError):
+        n = 50
+    n = max(1, min(200, n))
+    from .codex import replay_limit
+    cap = replay_limit()
+    stamped = []
+    for p in d.glob("*.jsonl"):
+        try:
+            stamped.append((p.stat().st_mtime, p))
+        except OSError:
+            continue
+    stamped.sort(key=lambda t: t[0], reverse=True)
+    budget, checked, problems, partial = LOG_HEALTH_MAX_BYTES, 0, [], False
+
+    def scan() -> None:
+        nonlocal budget, checked, partial
+        for _, p in stamped[:n]:
+            if budget <= 0:
+                partial = True
+                break
+            try:
+                r = _scan_log(p, budget)
+            except OSError:
+                problems.append(f"- {p.stem}: unreadable")
+                continue
+            checked += 1
+            budget -= r["read"]
+            partial = partial or bool(r.get("partial"))
+            notes = []
+            if r["corrupt"]:
+                notes.append(f"{r['corrupt']} corrupt line(s)")
+            if r["overlong"]:
+                notes.append(f"{r['overlong']} line(s) over 4 MB, skipped by every reader")
+            if r["torn"]:
+                notes.append("torn last line (crash mid-write)")
+            if r["events"] > cap:
+                notes.append(f"{r['events']} events, views show the newest {cap}")
+            if notes:
+                problems.append(f"- {p.stem}: " + "; ".join(notes))
+    await asyncio.to_thread(scan)
+    head = f"log_health: {checked} of {len(stamped)} run log(s) checked, {len(problems)} with findings"
+    if partial:
+        head += " (stopped at the 256 MB read budget)"
+    return "\n".join([head] + problems + ([] if problems else ["all checked logs intact"]))
+
+
 LIMITS_TOOLS = [
     Tool("limits_status", "read-only: every load cap this node enforces (background runs, message size, MCP "
          "in-flight, agents per run, model concurrency) with its value, source and live usage.",
@@ -169,6 +262,9 @@ LIMITS_TOOLS = [
          "always keeping the newest `keep` (default 50, min 10) and active runs.",
          '{"prune"?: bool, "older_than_days"?: int, "keep"?: int}', t_run_logs, source="builtin",
          schema={"optional": {"prune": "bool", "older_than_days": "int", "keep": "int"}}),
+    Tool("log_health", "read-only: integrity of the newest run logs - corrupt, over-long and torn lines, and "
+         "logs bigger than a run view shows. Never prints event content.", '{"runs"?: int}', t_log_health,
+         source="builtin", schema={"optional": {"runs": "int"}}),
 ]
 
 

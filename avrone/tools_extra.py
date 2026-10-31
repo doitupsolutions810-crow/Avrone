@@ -720,15 +720,18 @@ async def t_codex_search(ctx: "AgentContext", args: dict[str, Any]) -> str:
             fh = f.open(errors="replace")
         except OSError:
             continue
+        from .codex import iter_lines
         with fh:
-            for line in fh:
+            for line in iter_lines(fh):  # a giant/newline-less line is skipped, never loaded whole
                 if scanned >= CODEX_MAX_EVENTS_SCANNED:
                     capped = True
                     break
                 scanned += 1
+                if line is None:
+                    continue
                 try:
                     ev = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
                     continue
                 if not isinstance(ev, dict) or not _codex_match(ev, kind, agent, tool, query):
                     continue
@@ -1106,7 +1109,12 @@ async def _admin_codex_tail(ctx: "AgentContext", args: dict[str, Any]) -> Any:
         raise ValueError("invalid run_id")
     n = _int(args.get("limit"), 20, 1, 100)
     out = []
-    for e in _admin_codex(ctx).replay(run_id)[-n:]:
+    cx = _admin_codex(ctx)
+    try:
+        evs = cx.replay(run_id, limit=n)  # only the tail is kept while streaming
+    except TypeError:  # an older codex without the limit argument
+        evs = cx.replay(run_id)[-n:]
+    for e in evs:
         data = e.get("data")
         out.append({"ts": e.get("ts"), "kind": e.get("kind"), "agent": e.get("agent"),
                     "data": json.dumps(data, default=str)[:300] if data is not None else None})

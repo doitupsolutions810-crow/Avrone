@@ -130,3 +130,30 @@ def test_limits_status_reports_ws_subscribers(tmp_path, monkeypatch):
     cx.subscribe()
     out = asyncio.run(t_limits_status(S(core=S(codex=cx)), {}))
     assert "- AVRONE_MAX_WS_SUBSCRIBERS = 5 (env)" in out and "live: 1 event-stream subscriber(s) of 5" in out
+
+
+def test_limits_status_reports_replay_cap(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace as S
+    from avrone.tools_limits import t_limits_status
+    monkeypatch.setenv("AVRONE_REPLAY_MAX_EVENTS", "77")
+    assert "- AVRONE_REPLAY_MAX_EVENTS = 77 (env)" in asyncio.run(t_limits_status(S(core=None), {}))
+
+
+def test_codex_tail_uses_bounded_replay(tmp_path):
+    import asyncio
+    import json
+    from types import SimpleNamespace as S
+    from avrone import tools_extra as te
+    from avrone.codex import Codex
+    cx = Codex(tmp_path)
+    (cx.log_dir / "r.jsonl").write_text("".join(json.dumps({"kind": "k", "agent": "a", "data": {"i": i}, "ts": i}) + "\n"
+                                                for i in range(50)))
+    out = asyncio.run(te._admin_codex_tail(S(core=S(codex=cx), run_id="r"), {"limit": 3}))
+    assert [o["ts"] for o in out] == [47, 48, 49]
+
+    class Old:
+        def replay(self, run_id):
+            return [{"ts": i} for i in range(5)]
+    out = asyncio.run(te._admin_codex_tail(S(core=S(codex=Old()), run_id="r"), {"limit": 2}))
+    assert [o["ts"] for o in out] == [3, 4]

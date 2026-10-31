@@ -555,10 +555,24 @@ async def runs(request: Request, x_admin_token: str | None = Header(default=None
 @app.get("/api/runs/{run_id}")
 async def run_log(run_id: str, request: Request, x_admin_token: str | None = Header(default=None)):
     require_local(request, x_admin_token)
-    events = core().codex.replay(run_id)
+    import asyncio as _asyncio
+    from .codex import replay_limit
+    cx = core().codex
+    limit = replay_limit()
+
+    def read() -> tuple[list, int]:
+        ev = cx.replay(run_id, limit=limit + 1)
+        return ev, len(ev)
+    # off the event loop: a big log used to stall every other request while it was parsed
+    events, got = await _asyncio.to_thread(read)
     if not events:
         raise HTTPException(404, f"no run {run_id!r}")
-    return events
+    from fastapi.responses import JSONResponse
+    headers = {}
+    if got > limit:
+        events = events[-limit:]
+        headers["X-Avrone-Truncated"] = f"newest {limit} events (AVRONE_REPLAY_MAX_EVENTS)"
+    return JSONResponse(events, headers=headers)
 
 
 @app.get("/api/runs/{run_id}/bridge")

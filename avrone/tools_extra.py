@@ -1250,3 +1250,5 @@ def register_extra_tools(registry) -> None:
     register_gatewayview_tools(registry)
     from .tools_packpeer import register_packpeer_tools
     register_packpeer_tools(registry)
+    from .tools_gapsystem import register_gapsystem_tools
+    register_gapsystem_tools(registry)

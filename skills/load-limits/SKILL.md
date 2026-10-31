@@ -6,7 +6,7 @@ description: Explain or tune why AVRONE refused a run (HTTP 429 or 413, an MCP b
    usage: model calls in use, background runs in flight, agents working, agents started per run.
 2. Match the refusal to its cap: HTTP 429 from /api/chat is AVRONE_MAX_BACKGROUND_RUNS; HTTP 413 or
    "task too long" is AVRONE_MAX_MESSAGE_CHARS; an MCP "busy" result is AVRONE_MCP_MAX_INFLIGHT; a
-   spawn refused mid-run is AVRONE_MAX_AGENTS_PER_RUN. A 413 "request body too large" is
+   spawn refused mid-run is AVRONE_MAX_AGENTS_PER_RUN; the context pack a spawned sub-agent receives is capped by AVRONE_SPAWN_CONTEXT_CHARS. A 413 "request body too large" is
    AVRONE_MAX_BODY_BYTES (never set below what the message cap needs); a peer refused with
    "registry full" is AVRONE_FLEET_MAX_NODES (offline peers are evicted first); a dashboard whose
    /ws/events connection closes with 1013 is AVRONE_MAX_WS_SUBSCRIBERS; a run view carrying the

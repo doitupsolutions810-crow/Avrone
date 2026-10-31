@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avrone.invalid/schemas/authorization-receipt-v1.schema.json",
+  "title": "AVRONE signed authorization/execution receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_id", "correlation_id", "capability_id", "issuer", "executor",
+    "action", "resource", "method", "outcome", "timestamp", "payload_digest",
+    "previous_receipt_digest", "signature"
+  ],
+  "properties": {
+    "message_id": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "capability_id": { "type": "string", "minLength": 1 },
+    "issuer": { "type": "string", "minLength": 1 },
+    "executor": { "type": "string", "minLength": 1 },
+    "action": { "type": "string", "minLength": 1 },
+    "resource": { "type": "string", "minLength": 1 },
+    "method": { "type": "string", "pattern": "^[A-Z]+$" },
+    "outcome": { "enum": ["authorized_not_executed", "succeeded", "failed"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "payload_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "previous_receipt_digest": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      ]
+    },
+    "signature": { "type": "string", "minLength": 16 }
+  }
+}

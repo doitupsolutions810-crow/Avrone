@@ -35,7 +35,12 @@ LANES="${LANES-deepcov newmods tools robust}"; LANE_TIMEOUT="${LANE_TIMEOUT:-360
 CYCLES="${CYCLES:-0}"; [ "${ONCE:-0}" = "1" ] && CYCLES=1
 case "$CYCLES" in ''|*[!0-9]*) die "CYCLES must be a non-negative integer (got '$CYCLES')";; esac
 case "$CTX" in ''|*[!0-9]*) die "CTX must be an integer (got '$CTX')";; esac
-OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; export OLLAMA_HOST="$OHOST"
+{ [ "${#CTX}" -le 7 ] && [ "$CTX" -ge 2048 ] && [ "$CTX" -le 1048576 ]; } || die "CTX must be between 2048 and 1048576 (got $CTX)"
+OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; OHOST="${OHOST#https://}"; OHOST="${OHOST%%/*}"
+case "$OHOST" in *:*) ;; '') OHOST=127.0.0.1:11434;; *) OHOST="$OHOST:11434";; esac
+export OLLAMA_HOST="$OHOST"
+command -v git >/dev/null || die "git is required (xcode-select --install)"
+command -v python3 >/dev/null || die "python3 is required"
 OURL="http://$OHOST"
 STATE_SRC="$REPO/scripts/avrone-state"; STATE="$DRIVE/avrone-state"
 RUNS="$DRIVE/avrone-runs"; DATA="$DRIVE/avrone-data"
@@ -69,32 +74,58 @@ trap 'log "terminated"; exit 143' TERM
 
 # ---------- state: seed once, then validate every run ----------
 [ -f "$STATE_SRC/reintro-plan.json" ] || die "missing $STATE_SRC/reintro-plan.json"
+JUDGE="$STATE_SRC/smoke_judge.py"; [ -f "$JUDGE" ] || die "missing $JUDGE"
 plan_ok(){ python3 - "$1" <<'PY' 2>/dev/null
-import json,sys
+import json,re,sys
 p=json.load(open(sys.argv[1]))
-assert isinstance(p.get('core'),list) and p['core'] and all(isinstance(t,str) for t in p['core'])
-assert isinstance(p.get('batches'),list) and p['batches'] and all(isinstance(b,list) and b for b in p['batches'])
+ok=lambda t: isinstance(t,str) and re.fullmatch(r'[a-z0-9_]{1,64}',t)
+assert isinstance(p,dict) and isinstance(p.get('core'),list) and p['core'] and all(ok(t) for t in p['core'])
+assert isinstance(p.get('batches'),list) and p['batches'] and all(isinstance(b,list) and b and all(ok(t) for t in b) for b in p['batches'])
+allt=p['core']+[t for b in p['batches'] for t in b]
+assert len(allt)==len(set(allt)), 'duplicate tool names'
 PY
 }
 plan_ok "$STATE_SRC/reintro-plan.json" || die "repo copy of reintro-plan.json is invalid"
-if [ ! -f "$STATE/reintro-plan.json" ] || ! plan_ok "$STATE/reintro-plan.json"; then
-  [ -f "$STATE/reintro-plan.json" ] && { log "WARN: drive plan corrupt — reseeding from repo"; mv "$STATE/reintro-plan.json" "$STATE/reintro-plan.json.bad-$$"; }
-  cp "$STATE_SRC/reintro-plan.json" "$STATE/"
-fi
-NB=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['batches']))" "$STATE/reintro-plan.json")
 read_stage(){ tr -d ' \t\r\n' < "$STATE/reintro-stage.txt" 2>/dev/null; }
-S0="$(read_stage)"
-case "$S0" in
-  ''|*[!0-9]*)
-    seed="$(tr -d ' \t\r\n' < "$STATE_SRC/reintro-stage.txt" 2>/dev/null)"
-    case "$seed" in ''|*[!0-9]*) seed=0;; esac
-    [ -f "$STATE/reintro-stage.txt" ] && log "WARN: stage file corrupt ('$S0') — reseeding to $seed"
-    echo "$seed" > "$STATE/reintro-stage.txt";;
-esac
-S0="$(read_stage)"
-if [ "$S0" -gt "$NB" ]; then log "WARN: stage $S0 > $NB batches — clamping"; echo "$NB" > "$STATE/reintro-stage.txt"; fi
+is_uint(){ case "$1" in ''|*[!0-9]*) return 1;; esac; [ "${#1}" -le 6 ]; }
+validate_state(){   # called at start and before every cycle: state on a USB drive can vanish or rot
+  local s0 seed from
+  if [ ! -f "$STATE/reintro-plan.json" ] || ! plan_ok "$STATE/reintro-plan.json"; then
+    [ -f "$STATE/reintro-plan.json" ] && { log "WARN: drive plan corrupt — reseeding from repo"; mv "$STATE/reintro-plan.json" "$STATE/reintro-plan.json.bad-$$-$RANDOM"; }
+    cp "$STATE_SRC/reintro-plan.json" "$STATE/" || die "cannot write plan to $STATE"
+  fi
+  NB=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['batches']))" "$STATE/reintro-plan.json")
+  s0="$(read_stage)"
+  if ! is_uint "$s0"; then
+    seed="$(tr -d ' \t\r\n' < "$STATE/reintro-stage.txt.bak" 2>/dev/null)"; from=backup
+    is_uint "$seed" || { seed="$(tr -d ' \t\r\n' < "$STATE_SRC/reintro-stage.txt" 2>/dev/null)"; from=repo; }
+    is_uint "$seed" || { seed=0; from=default; }
+    if [ -e "$STATE/reintro-stage.txt" ]; then log "WARN: stage file corrupt ('$(printf %.20s "$s0")') — restoring $seed from $from"
+    elif [ -n "${VALIDATED:-}" ]; then log "WARN: stage file vanished — restoring $seed from $from"; fi
+    echo "$seed" > "$STATE/reintro-stage.txt" || die "cannot write stage to $STATE"
+  fi
+  s0="$(read_stage)"
+  if [ "$s0" -gt "$NB" ]; then log "WARN: stage $s0 > $NB batches — clamping"; echo "$NB" > "$STATE/reintro-stage.txt"; fi
+  VALIDATED=1
+}
+VALIDATED=""
+validate_state
 log "AVRONE autopilot  repo=$REPO  drive=$DRIVE  model=$MODEL  stage=$(read_stage)/$NB  pid=$$"
 
+# RAM sanity for the big models (warn only; Apple Silicon unified memory)
+case "$MODEL" in gpt-oss:120b*) need_ram=72;; qwen3-coder-next*) need_ram=60;; *70b*|*72b*) need_ram=48;; *) need_ram=0;; esac
+ram_gb="${AUTOPILOT_RAM_GB:-}"
+if [ -z "$ram_gb" ]; then
+  if command -v sysctl >/dev/null && sysctl -n hw.memsize >/dev/null 2>&1; then ram_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+  elif [ -r /proc/meminfo ]; then ram_gb=$(awk '/MemTotal/{print int($2/1048576)}' /proc/meminfo); fi
+fi
+if [ "$need_ram" -gt 0 ] && is_uint "${ram_gb:-x}" && [ "$ram_gb" -lt "$need_ram" ]; then
+  log "WARN: $MODEL wants ~${need_ram}GB RAM but this machine has ${ram_gb}GB — expect swapping or OOM; try MODEL=qwen3-coder:30b"
+fi
+if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" != arm64 ]; then log "WARN: not Apple Silicon ($(uname -m)) — local models will be very slow"; fi
+# keep a Mac awake while we run (caffeinate exits with us), and survive the terminal closing
+if command -v caffeinate >/dev/null; then caffeinate -ims -w $$ >/dev/null 2>&1 & fi
+trap 'log "SIGHUP (terminal closed) — ignoring, still running; stop with: kill $$"' HUP
 BREW_OK=""
 need_brew(){ command -v brew >/dev/null || die "Homebrew is required to install $1 — get it at https://brew.sh"; }
 if command -v timeout >/dev/null; then TO=timeout
@@ -115,6 +146,10 @@ grep -qxF '/agents/' "$EXCL" 2>/dev/null || { echo '/agents/' >> "$EXCL"; log "a
 for f in MERGE_ME.md MERGE_ME.md.tmp; do grep -qxF "/$f" "$EXCL" || echo "/$f" >> "$EXCL"; done
 if git ls-files --error-unmatch agents >/dev/null 2>&1; then log "agents/ is tracked in git — left untouched"; fi
 if ! { grep -q "def apply_tool_focus" avrone/bootstrap.py && grep -q "def coerce_args" avrone/trinity.py; }; then
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    git status --short --untracked-files=no | head -10
+    die "uncommitted changes in tracked files — commit or stash them first (nothing was touched)"
+  fi
   log "applying carried patches (TOOLS_ONLY, coerce_args)"
   ls "$STATE_SRC"/patches/*.patch >/dev/null 2>&1 || die "patches missing from $STATE_SRC/patches"
   git -c user.name=avrone -c user.email=avrone@local am --3way "$STATE_SRC"/patches/*.patch >> "$OUT/patch.log" 2>&1 \
@@ -211,17 +246,7 @@ reintro_step(){   # Track A: smoke-test the next batch; advance when coherent
   P="Tool check. Reply ONLY with one JSON object {\"tool\":NAME,\"args\":{...}} per turn. Call each of these tools exactly once with small, safe, valid arguments (read each tool's args doc; use path '.', text 'hello', host 127.0.0.1 where needed): $NEXT. Guardrails: port_scan only 127.0.0.1 with authorized=true and <=5 ports; shell/priv_shell/priv_admin only read-only commands (id, uname -a, df -h); fs_delete only a file you created; docker_run/env_install only if available (an 'unavailable' error counts as exercised); bridge_post then bridge_read then bridge_reply on the same post; spawn one tiny sub-agent with a one-line task. Finish with one line per tool: NAME OK or FAIL."
   AVRONE_TOOLS_ONLY="$CUR,$NEXT" AVRONE_MAX_STEPS=$(( $(echo "$NEXT" | tr , '\n' | wc -l) * 2 + 6 )) \
   AVRONE_DATA_DIR="$DATA/smoke" $TO "${SMOKE_TIMEOUT:-1800}" python -m avrone.cli chat "$P" > "$OUT/smoke-$S.txt" 2> "$OUT/smoke-$S.err"
-  python3 - "$OUT/smoke-$S.err" "$NEXT" "$STATE/reintro-stage.txt" "$S" <<'PY' | tee -a "$OUT/autopilot.log"
-import sys,re,os
-log=open(sys.argv[1],errors='replace').read(); nxt=sys.argv[2].split(',')
-called=set(re.findall(r'tool\.call\s+\S+\s+(\S+)',log))
-ok=[t for t in nxt if t in called]
-bad=log.count('action.malformed')+len(re.findall(r'unknown tool',log,re.I))
-passed=len(ok)/len(nxt)>=0.6 and bad<=3
-print(f"  smoke: {len(ok)}/{len(nxt)} exercised, malformed/unknown={bad} -> {'ADVANCE' if passed else 'HOLD'}; missed={sorted(set(nxt)-set(ok))}")
-if passed:
-    tmp=sys.argv[3]+'.tmp'; open(tmp,'w').write(str(int(sys.argv[4])+1)); os.replace(tmp,sys.argv[3])  # atomic
-PY
+  python3 "$JUDGE" "$OUT/smoke-$S.err" "$NEXT" "$STATE/reintro-stage.txt" "$S" | tee -a "$OUT/autopilot.log"
 }
 
 COMMON='You are one lane of the AVRONE self-improvement squad. Reply ONLY with one JSON object {"tool":NAME,"args":{...}} per turn. Start with evolve_list; if it already shows two ACCEPTED proposals for your lane goal, finish. Read only real paths you have seen in a listing (list_files/read_file; if paths are prefixed shared/ in listings, evolve_propose paths are repo-relative WITHOUT shared/). Rules: create NEW files only, small and genuinely useful, stdlib or installed deps, offline tests only (patch network). Never write repo files with write_file/edit_file — put them only in evolve_propose {"goal":..., "edits":[{"path":..., "content":FULL FILE}]}. The harness runs the full non-integration suite in an isolated clone and keeps it only if ALL tests pass. If REJECTED, read the test tail, fix YOUR file, resubmit. You may run python/shell to test locally first, and post findings to the learning bridge (bridge_post) so other lanes see them. Finish after two ACCEPTED, then call evolve_list and report each id + status. Your lane: '
@@ -270,6 +295,7 @@ report(){
 n=0
 while :; do
   n=$((n+1)); log "=== cycle $n ==="
+  validate_state
   ensure_ollama restart
   reintro_step
   squad

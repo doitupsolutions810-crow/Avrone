@@ -133,6 +133,14 @@ running on that drive, 130/143 interrupted (lock released, child processes stopp
 rerun at any time: state resumes from the drive, corrupt state files are reseeded, a stale lock is
 recovered, and Ollama is restarted if it dies (gives up after 3 restarts).
 
+More resilience: state is re-validated before **every** cycle (a stage file deleted or corrupted
+mid-run is restored from `reintro-stage.txt.bak`, written on each advance). A hanging lane is killed
+at `LANE_TIMEOUT` and a crashing lane is logged; the loop continues either way. It refuses to apply
+patches over uncommitted edits to tracked files (your work is never touched). The Mac is kept awake
+with `caffeinate`, closing the terminal (SIGHUP) does not stop it, and it warns when RAM is too small
+for the chosen model. The stage-advance rule lives in `scripts/avrone-state/smoke_judge.py`
+(>=60% of the batch called, <=3 malformed/unknown calls).
+
 Useful switches: `MODEL=gpt-oss:120b` (default), `ONCE=1` (one cycle then stop),
 `CYCLES=N` (stop after N cycles; default: loop forever), `SKIP_GATE=1` (not recommended),
 `LANES="deepcov newmods tools robust"`.

@@ -64,6 +64,38 @@ sys.exit(0)
 '''
 
 
+STUB_PYTHON = r'''#!/bin/sh
+# wraps the real interpreter; `python -m avrone.cli chat ...` can be made to misbehave via flag files
+case " $* " in *" avrone.cli chat "*)
+  S="$DRIVE/avrone-state"
+  [ -e "$STUB_DIR/chat_delete_stage" ] && rm -f "$S/reintro-stage.txt"
+  [ -e "$STUB_DIR/chat_corrupt_plan" ] && printf '{' > "$S/reintro-plan.json"
+  [ -e "$STUB_DIR/chat_crash" ] && { echo "Traceback: boom" >&2; exit 3; }
+  [ -e "$STUB_DIR/chat_hang" ] && exec sleep 300
+  if [ -e "$STUB_DIR/chat_smoke_pass" ]; then
+    for t in $(echo "$AVRONE_TOOLS_ONLY" | tr , ' '); do echo "tool.call agent-1 $t {}" >&2; done
+    echo "OK"; exit 0
+  fi;;
+esac
+exec "@PY@" "$@"
+'''
+
+
+def path_without(tmp: Path, *names: str) -> str:
+    """A PATH holding symlinks to every executable on the current PATH except `names`."""
+    d = tmp / ("path-without-" + "-".join(names)); d.mkdir(exist_ok=True)
+    for pdir in os.environ["PATH"].split(":"):
+        if not os.path.isdir(pdir):
+            continue
+        for f in os.listdir(pdir):
+            if f in names or (d / f).exists():
+                continue
+            src = os.path.join(pdir, f)
+            if os.access(src, os.X_OK) and not os.path.isdir(src):
+                (d / f).symlink_to(src)
+    return str(d)
+
+
 def _free_port() -> int:
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -93,9 +125,9 @@ def base_repos(tmp_path_factory):
 
 
 class Env:
-    def __init__(self, tmp: Path, repo: Path, drive_name="drive"):
+    def __init__(self, tmp: Path, repo: Path, drive_name="drive", repo_name="repo"):
         self.tmp = tmp
-        self.repo = tmp / "repo"
+        self.repo = tmp / repo_name
         shutil.copytree(repo, self.repo, symlinks=True)
         # fake venv: real >=3.11 interpreter, empty activate (no pip install in tests)
         venv = self.repo / ".venv" / "bin"
@@ -112,7 +144,7 @@ class Env:
             "ollama": STUB_OLLAMA,
             "brew": '#!/bin/sh\necho "brew $*" >> "$STUB_DIR/calls.log"\n[ "$1" = --prefix ] && echo /usr\nexit 0\n',
             "launchctl": "#!/bin/sh\nexit 0\n",
-            "python": f'#!/bin/sh\nexec "{sys.executable}" "$@"\n',
+            "python": STUB_PYTHON.replace("@PY@", sys.executable),
         }.items():
             p = self.bin / name; p.write_text(body); p.chmod(0o755)
         self.port = _free_port()
@@ -481,3 +513,275 @@ def test_rerun_after_success_is_clean(env):
     r = env.run()
     assert r.returncode == 0, out(r)
     assert len(list((env.drive / "avrone-runs").iterdir())) == 2, "each run gets its own results dir"
+
+
+# =====================================================================================
+# Round 2: deeper edges
+# =====================================================================================
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location("smoke_judge", ROOT / "scripts/avrone-state/smoke_judge.py")
+smoke_judge = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(smoke_judge)
+
+
+def _judge(tmp_path, log: str | bytes | None, nxt: str, stage="7"):
+    errf = tmp_path / "smoke.err"
+    if log is not None:
+        errf.write_bytes(log if isinstance(log, bytes) else log.encode())
+    sf = tmp_path / "stage.txt"; sf.write_text(stage)
+    r = subprocess.run([sys.executable, str(ROOT / "scripts/avrone-state/smoke_judge.py"), str(errf), nxt, str(sf), stage],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return r.stdout, sf.read_text(), (tmp_path / "stage.txt.bak")
+
+
+def _calls(*tools): return "\n".join(f"12:00 tool.call agent-1 {t} {{}}" for t in tools)
+
+
+class TestSmokeJudge:
+    def test_all_called_advances_and_backs_up(self, tmp_path):
+        out_, st, bak = _judge(tmp_path, _calls("a", "b", "c"), "a,b,c")
+        assert "ADVANCE" in out_ and st == "8" and bak.read_text() == "8"
+        assert not list(tmp_path.glob("*.tmp.*")), "atomic write leaves no temp files"
+
+    def test_exactly_sixty_percent_advances(self, tmp_path):
+        assert "ADVANCE" in _judge(tmp_path, _calls("a", "b", "c"), "a,b,c,d,e")[0]
+
+    def test_below_sixty_percent_holds(self, tmp_path):
+        out_, st, bak = _judge(tmp_path, _calls("a", "b"), "a,b,c,d,e")
+        assert "HOLD" in out_ and st == "7" and not bak.exists()
+
+    def test_too_many_malformed_holds(self, tmp_path):
+        log = _calls("a", "b") + "\naction.malformed\n" * 4
+        assert "HOLD" in _judge(tmp_path, log, "a,b")[0]
+
+    def test_unknown_tool_counts_as_bad(self, tmp_path):
+        log = _calls("a") + "\nError: Unknown tool 'x'\n" * 4
+        assert "malformed/unknown=4" in _judge(tmp_path, log, "a")[0]
+
+    def test_three_bad_still_advances(self, tmp_path):
+        log = _calls("a") + "\naction.malformed" * 3
+        assert "ADVANCE" in _judge(tmp_path, log, "a")[0]
+
+    def test_missing_log_holds(self, tmp_path):
+        out_, st, _ = _judge(tmp_path, None, "a,b")
+        assert "HOLD" in out_ and st == "7"
+
+    def test_binary_garbage_log_holds(self, tmp_path):
+        assert "HOLD" in _judge(tmp_path, os.urandom(200_000), "a,b")[0]
+
+    def test_empty_next_is_noop(self, tmp_path):
+        out_, st, _ = _judge(tmp_path, _calls("a"), "-")
+        assert "HOLD" in out_ and st == "7"
+
+    def test_duplicate_next_names_counted_once(self, tmp_path):
+        assert "1/1 exercised" in _judge(tmp_path, _calls("a"), "a,a,a")[0]
+
+    def test_prefix_names_do_not_match(self, tmp_path):
+        out_ = _judge(tmp_path, _calls("bridge_post_extra", "spawnx"), "bridge_post,spawn")[0]
+        assert "0/2" in out_ and "HOLD" in out_
+
+    def test_non_integer_stage_never_crashes(self, tmp_path):
+        out_, st, _ = _judge(tmp_path, _calls("a"), "a", stage="x")
+        assert "ADVANCE" in out_ and st == "x"
+
+    def test_wrong_argc_is_hold(self):
+        r = subprocess.run([sys.executable, str(ROOT / "scripts/avrone-state/smoke_judge.py")], capture_output=True, text=True)
+        assert r.returncode == 0 and "HOLD" in r.stdout
+
+    def test_judge_function_direct(self):
+        assert smoke_judge.judge("", []) == (False, [], 0)
+        ok, hit, bad = smoke_judge.judge(_calls("x", "y"), ["x", "y", " "])
+        assert ok and hit == ["x", "y"] and bad == 0
+
+
+# ---------------- progression across cycles ----------------
+
+def test_smoke_pass_advances_stage_end_to_end(env):
+    env.flag("chat_smoke_pass")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "ADVANCE" in out(r) and env.stage() == "8"
+    assert (env.state / "reintro-stage.txt.bak").read_text() == "8"
+
+
+def test_multi_cycle_reaches_full_registry(env):
+    env.flag("chat_smoke_pass")
+    r = env.run(CYCLES="3", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert env.stage() == "9" and "reintro complete: 9/9, all 75 tools active" in out(r)
+
+
+def test_stage_deleted_mid_run_restored_from_backup(env):
+    env.flag("chat_smoke_pass"); env.flag("chat_delete_stage")
+    r = env.run(CYCLES="2", ONCE="0", LANES="tools")
+    assert r.returncode == 0, out(r)
+    assert "stage file vanished — restoring 8 from backup" in out(r)
+
+
+def test_stage_deleted_without_backup_falls_back_to_repo(env):
+    env.flag("chat_delete_stage")
+    r = env.run(CYCLES="2", ONCE="0", LANES="tools")
+    assert r.returncode == 0 and "restoring 7 from repo" in out(r)
+
+
+def test_plan_corrupted_mid_run_is_reseeded(env):
+    env.flag("chat_corrupt_plan")
+    r = env.run(CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert "plan corrupt — reseeding" in out(r) and out(r).count("=== cycle") == 2
+
+
+@pytest.mark.parametrize("content,expect", [("0000007", "7"), ("99999999999999999999", "7"), ("1e3", "7"), ("७", "7"), ("8\r\n", "8")])
+def test_more_stage_encodings(env, content, expect):
+    env.state.mkdir(parents=True); (env.state / "reintro-stage.txt").write_text(content)
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert str(int(env.stage())) == expect
+
+
+@pytest.mark.parametrize("plan", ['{"core":["a","a"],"batches":[["b"]]}', '{"core":["a"],"batches":[["a"]]}',
+                                  '{"core":["Bad Name"],"batches":[["b"]]}', '{"core":["a"],"batches":[[]]}',
+                                  '{"core":["a"],"batches":[["b",3]]}', '{"core":["' + "x" * 65 + '"],"batches":[["b"]]}'])
+def test_semantically_bad_plans_reseeded(env, plan):
+    env.state.mkdir(parents=True); (env.state / "reintro-plan.json").write_text(plan)
+    r = env.run()
+    assert r.returncode == 0 and "plan corrupt" in out(r)
+
+
+# ---------------- lanes misbehaving ----------------
+
+def test_hanging_lane_times_out_and_loop_continues(env):
+    env.flag("chat_hang")
+    t0 = time.time()
+    r = env.run(LANES="tools robust", LANE_TIMEOUT="2", SMOKE_TIMEOUT="2")
+    assert r.returncode == 0, out(r)
+    assert "lane tools rc=124 (timed out)" in out(r) and "lane robust rc=124 (timed out)" in out(r)
+    assert "HOLD" in out(r) and (env.repo / "MERGE_ME.md").exists()
+    assert time.time() - t0 < 60
+
+
+def test_crashing_lane_does_not_stop_the_loop(env):
+    env.flag("chat_crash")
+    r = env.run(LANES="tools", CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert out(r).count("lane tools rc=3") == 2 and "done." in out(r)
+
+
+def test_perl_timeout_fallback_when_no_timeout_binary(env, tmp_path):
+    if shutil.which("perl") is None:
+        pytest.skip("no perl")
+    env.flag("chat_hang")
+    p = path_without(tmp_path, "timeout", "gtimeout", "brew")
+    r = env.run(PATH=f"{env.bin}:{p}", LANES="tools", LANE_TIMEOUT="2", SMOKE_TIMEOUT="2")
+    assert r.returncode == 0, out(r)
+    assert "lane tools rc=124" in out(r)
+
+
+# ---------------- git / working tree ----------------
+
+def test_dirty_tree_blocks_patching_and_preserves_edits(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    t = e.repo / "avrone/trinity.py"
+    t.write_text(t.read_text() + "\n# MY PRECIOUS UNCOMMITTED EDIT\n")
+    r = e.run()
+    assert r.returncode == 1 and "uncommitted changes" in out(r)
+    assert "MY PRECIOUS UNCOMMITTED EDIT" in t.read_text()
+    assert "def coerce_args" not in t.read_text()
+    e.kill_server()
+
+
+def test_dirty_tree_fine_when_no_patch_needed(env):
+    t = env.repo / "README.md"; t.write_text(t.read_text() + "\nlocal note\n")
+    r = env.run()
+    assert r.returncode == 0 and "local note" in t.read_text()
+
+
+def test_git_missing(env, tmp_path):
+    r = env.run(PATH=f"{env.bin}:{path_without(tmp_path, 'git')}")
+    assert r.returncode == 1 and "git is required" in out(r)
+
+
+# ---------------- paths ----------------
+
+def test_repo_path_with_spaces_and_unicode(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["patched"], drive_name="Drïve ü 2", repo_name="my repö dir")
+    r = e.run(LANES="tools")
+    assert r.returncode == 0, out(r)
+    assert 'AVRONE_REPO_DIR="' + str(e.repo) + '"' in (e.state / "env.sh").read_text()
+    assert "lane tools rc=0" in out(r)
+    e.kill_server()
+
+
+def test_symlinked_drive(env, tmp_path):
+    link = tmp_path / "Volumes-AI"; link.symlink_to(env.drive)
+    r = env.run(DRIVE=str(link))
+    assert r.returncode == 0, out(r)
+    assert (env.drive / "avrone-state" / "env.sh").exists()
+
+
+# ---------------- config parsing ----------------
+
+@pytest.mark.parametrize("ctx,ok", [("1024", False), ("99999999", False), ("2048", True), ("0", False)])
+def test_ctx_bounds(env, ctx, ok):
+    r = env.run(CTX=ctx)
+    assert (r.returncode == 0) == ok, out(r)
+
+
+@pytest.mark.parametrize("fmt", ["http://127.0.0.1:{p}", "http://127.0.0.1:{p}/", "127.0.0.1:{p}/v1"])
+def test_ollama_host_formats(env, fmt):
+    r = env.run(OLLAMA_HOST=fmt.format(p=env.port))
+    assert r.returncode == 0, out(r)
+    assert f'AVRONE_LLM_BASE_URL="http://127.0.0.1:{env.port}/v1"' in (env.state / "env.sh").read_text()
+
+
+def test_model_prefix_is_not_a_match(env):
+    (env.stub / "models").write_text("stub-model-big\n")
+    r = env.run()
+    assert r.returncode == 0 and "ollama pull stub-model" in env.calls()
+
+
+def test_model_with_regex_chars_matched_literally(env):
+    (env.stub / "models").write_text("a.b+c:1\n")
+    r = env.run(MODEL="a.b+c:1")
+    assert r.returncode == 0 and "ollama pull" not in env.calls()
+
+
+def test_low_ram_warns_for_big_model(env):
+    (env.stub / "models").write_text("gpt-oss:120b\n")
+    r = env.run(MODEL="gpt-oss:120b", AUTOPILOT_RAM_GB="16")
+    assert r.returncode == 0 and "wants ~72GB RAM" in out(r)
+
+
+def test_enough_ram_no_warning(env):
+    (env.stub / "models").write_text("gpt-oss:120b\n")
+    r = env.run(MODEL="gpt-oss:120b", AUTOPILOT_RAM_GB="128")
+    assert r.returncode == 0 and "RAM" not in out(r)
+
+
+# ---------------- signals ----------------
+
+def _start_and_wait_cycle(env, **kw):
+    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="60", **kw),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 90; log = ""
+    while time.time() < deadline and "summary written" not in log:
+        time.sleep(0.3)
+        runs = list((env.drive / "avrone-runs").glob("*/autopilot.log"))
+        log = runs[0].read_text() if runs else ""
+    assert "summary written" in log
+    return p
+
+
+def test_sigint_exits_130_and_cleans(env):
+    p = _start_and_wait_cycle(env)
+    p.send_signal(signal.SIGINT); p.communicate(timeout=20)
+    assert p.returncode == 130 and not (env.state / ".autopilot.lock").exists()
+
+
+def test_sighup_is_survived(env):
+    p = _start_and_wait_cycle(env)
+    p.send_signal(signal.SIGHUP); time.sleep(1.5)
+    assert p.poll() is None, "terminal closing must not kill the autopilot"
+    p.send_signal(signal.SIGTERM); o, _ = p.communicate(timeout=20)
+    assert p.returncode == 143 and "SIGHUP" in o

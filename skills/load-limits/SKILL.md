@@ -9,7 +9,8 @@ description: Explain or tune why AVRONE refused a run (HTTP 429 or 413, an MCP b
    spawn refused mid-run is AVRONE_MAX_AGENTS_PER_RUN. A 413 "request body too large" is
    AVRONE_MAX_BODY_BYTES (never set below what the message cap needs); a peer refused with
    "registry full" is AVRONE_FLEET_MAX_NODES (offline peers are evicted first); a dashboard whose
-   /ws/events connection closes with 1013 is AVRONE_MAX_WS_SUBSCRIBERS. Waiting for runs to finish clears the first
+   /ws/events connection closes with 1013 is AVRONE_MAX_WS_SUBSCRIBERS; a run view carrying the
+   X-Avrone-Truncated header shows only the newest AVRONE_REPLAY_MAX_EVENTS events. Waiting for runs to finish clears the first
    and third; the others need a smaller task or a deliberate cap change.
 3. Size for the host. Model concurrency (AVRONE_MAX_PARALLEL) is the real throttle: on a CPU-only
    box running a local model through Ollama keep it at 1-2, because parallel calls only queue inside

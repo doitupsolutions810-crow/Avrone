@@ -1,6 +1,5 @@
 # AVRONE connection verification
 
- 
 The verification command distinguishes configuration readiness from a real provider round-trip.
 
 ## Usage
@@ -30,3 +29,12 @@ Exit code is 0 when the requested scope passes and 1 when configuration or a req
 The report records status, a bounded error category, route labels, and response length—not the model response, API key, endpoint URL, or provider's raw error body. Keep the environment containing `AVRONE_LLM_API_KEY` or a provider-specific key protected. Never commit credentials or the generated report if it contains deployment details from additional customizations.
 
 This command verifies AVRONE's configured model-provider connection only. It does not claim that sibling services, GitHub Actions runners, Runtime tenants, or Capability Plane credentials are connected. Those require their own contract and end-to-end checks.
+
+## Troubleshooting a live verification failure
+
+- **HTTP 401/403:** check which provider key is configured, its project, and its permissions. Do not paste secrets into logs or issue comments.
+- **HTTP 429 / `rate_limited`:** check project billing, usage limits, and the model's rate limits. Treat the check as failed; do not add a tight retry loop or claim the provider is fully verified from a successful authentication-only request.
+- **Timeout / connection error:** confirm the endpoint and network path from the same deployment environment. A local test does not prove Vercel can reach the endpoint.
+- **Configuration-only pass:** use `avrone-verify --live` when provider quota is available to test an actual inference round-trip.
+
+Keep reports secret-free and distinguish the provider's authentication status from inference readiness.

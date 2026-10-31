@@ -118,3 +118,15 @@ def test_limits_status_pack_cap_error_skipped(monkeypatch):
     monkeypatch.setattr(server, "max_body_bytes", lambda path="": (_ for _ in ()).throw(OSError()) if path else real())
     out = asyncio.run(t_limits_status(S(core=None), {}))
     assert "body cap on" not in out
+
+
+def test_limits_status_reports_ws_subscribers(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace as S
+    from avrone.codex import Codex
+    from avrone.tools_limits import t_limits_status
+    monkeypatch.setenv("AVRONE_MAX_WS_SUBSCRIBERS", "5")
+    cx = Codex(tmp_path)
+    cx.subscribe()
+    out = asyncio.run(t_limits_status(S(core=S(codex=cx)), {}))
+    assert "- AVRONE_MAX_WS_SUBSCRIBERS = 5 (env)" in out and "live: 1 event-stream subscriber(s) of 5" in out

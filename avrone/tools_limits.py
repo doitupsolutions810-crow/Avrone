@@ -29,12 +29,13 @@ DAY = 86400
 
 
 def _limits() -> list[tuple[str, str, int, str]]:
-    from . import ctxspawn, fleet, mcp_server, server
+    from . import codex, ctxspawn, fleet, mcp_server, server
     rows = []
     for env, fn in (("AVRONE_MAX_BACKGROUND_RUNS", server.max_background_runs),
                     ("AVRONE_MAX_MESSAGE_CHARS", server.max_message_chars),
                     ("AVRONE_MAX_BODY_BYTES", server.max_body_bytes),
                     ("AVRONE_FLEET_MAX_NODES", fleet.max_nodes),
+                    ("AVRONE_MAX_WS_SUBSCRIBERS", codex.max_subscribers),
                     ("AVRONE_MCP_MAX_INFLIGHT", mcp_server.max_inflight),
                     ("AVRONE_MAX_AGENTS_PER_RUN", ctxspawn.max_agents_per_run),
                     ("AVRONE_SPAWN_CONTEXT_CHARS", ctxspawn.context_chars)):
@@ -74,6 +75,10 @@ async def t_limits_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
         lines.append(f"body cap on /api/fleet/agentpack (fits a quota-sized pack) = {pack_body}")
     except Exception:  # noqa: BLE001
         pass
+    cx = getattr(core, "codex", None)
+    if isinstance(getattr(cx, "_subscribers", None), set):
+        from .codex import max_subscribers
+        lines.append(f"live: {len(cx._subscribers)} event-stream subscriber(s) of {max_subscribers()}")
     f = getattr(core, "fleet", None)
     nodes = getattr(f, "nodes", None)
     if getattr(f, "enabled", False) and isinstance(nodes, dict):

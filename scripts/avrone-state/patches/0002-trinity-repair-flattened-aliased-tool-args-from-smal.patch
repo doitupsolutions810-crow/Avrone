@@ -1,0 +1,87 @@
+From 4ae698118db61c5db379a37dfc79327958155944 Mon Sep 17 00:00:00 2001
+From: doitupsolutions810-crow
+ <242237293+doitupsolutions810-crow@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 04:02:20 +0000
+Subject: [PATCH 2/2] trinity: repair flattened/aliased tool args from small
+ models
+
+---
+ avrone/trinity.py         | 27 +++++++++++++++++++++++++++
+ tests/test_coerce_args.py | 20 ++++++++++++++++++++
+ 2 files changed, 47 insertions(+)
+ create mode 100644 tests/test_coerce_args.py
+
+diff --git a/avrone/trinity.py b/avrone/trinity.py
+index f307968..c1f9c3e 100644
+--- a/avrone/trinity.py
++++ b/avrone/trinity.py
+@@ -285,6 +285,32 @@ def parse_action(text: str) -> dict[str, Any] | None:
+     return None
+ 
+ 
++# Small local models often flatten args onto the action ({"tool":"shell","cmd":...}) or use a
++# near-synonym key ("command" for "cmd"). Repair only when the declared schema says so.
++ARG_ALIASES = {"command": "cmd", "cmdline": "cmd", "script": "cmd", "file": "path", "file_path": "path",
++               "filename": "path", "filepath": "path", "text": "content", "data": "content",
++               "body": "content", "code": "content"}
++
++
++def coerce_args(registry: Any, tool: str, action: dict[str, Any], args: Any) -> Any:
++    """Return args repaired for flattened/aliased keys; unchanged when nothing applies."""
++    t = registry.get(tool) if registry is not None else None
++    schema = getattr(t, "schema", None) if t is not None else None
++    if not isinstance(args, dict) or not isinstance(schema, dict):
++        return args
++    known = set(schema.get("required", {})) | set(schema.get("optional", {}))
++    if not known:
++        return args
++    out = dict(args)
++    if not out:  # flattened: pull known keys from the action itself
++        out = {k: v for k, v in action.items() if k not in ("tool", "args")}
++    for k in list(out):
++        a = ARG_ALIASES.get(k)
++        if k not in known and a in known and a not in out:
++            out[a] = out.pop(k)
++    return out if out != {} else args
++
++
+ DEFAULT_MAX_CALLS_PER_TURN = 4
+ HARD_MAX_CALLS_PER_TURN = 8
+ # After this many consecutive ARG ERRORs from one agent, stop blocking its calls on the
+@@ -542,6 +568,7 @@ class TrinityCore:
+             else:
+                 tool, args = str(c.get("tool")), c.get("args")
+                 args = {} if args is None else args
++                args = coerce_args(self.tools, tool, c, args)
+                 problem = self.tools.check(tool, args)
+             if problem and problem[0] == "bad_args" and budget["spent"] and isinstance(c, dict):
+                 problem = None  # budget spent: stop nudging, let the tool handle its args
+diff --git a/tests/test_coerce_args.py b/tests/test_coerce_args.py
+new file mode 100644
+index 0000000..1f52a2f
+--- /dev/null
++++ b/tests/test_coerce_args.py
+@@ -0,0 +1,20 @@
++from avrone.tools import builtin_registry
++from avrone.trinity import coerce_args
++
++
++def test_flattened_shell():
++    r = builtin_registry()
++    assert coerce_args(r, "shell", {"tool": "shell", "cmd": "id"}, {}) == {"cmd": "id"}
++
++
++def test_alias_command_and_file_path():
++    r = builtin_registry()
++    assert coerce_args(r, "shell", {}, {"command": "ls"}) == {"cmd": "ls"}
++    assert coerce_args(r, "write_file", {}, {"file_path": "a.py", "text": "x"}) == {"path": "a.py", "content": "x"}
++
++
++def test_unknown_tool_and_valid_args_untouched():
++    r = builtin_registry()
++    assert coerce_args(r, "nope", {}, {"command": "ls"}) == {"command": "ls"}
++    assert coerce_args(r, "shell", {}, {"cmd": "ls"}) == {"cmd": "ls"}
++
+-- 
+2.47.3
+

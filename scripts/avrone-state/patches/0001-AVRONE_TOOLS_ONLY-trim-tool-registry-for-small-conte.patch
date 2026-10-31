@@ -1,0 +1,80 @@
+From d282a88c1a29968b964d4490aebeb205cebf2ccb Mon Sep 17 00:00:00 2001
+From: doitupsolutions810-crow
+ <242237293+doitupsolutions810-crow@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 03:41:49 +0000
+Subject: [PATCH 1/2] AVRONE_TOOLS_ONLY: trim tool registry for small-context
+ local models
+
+---
+ avrone/bootstrap.py      | 20 ++++++++++++++++++++
+ tests/test_tool_focus.py | 23 +++++++++++++++++++++++
+ 2 files changed, 43 insertions(+)
+ create mode 100644 tests/test_tool_focus.py
+
+diff --git a/avrone/bootstrap.py b/avrone/bootstrap.py
+index 44dec22..d3fb425 100644
+--- a/avrone/bootstrap.py
++++ b/avrone/bootstrap.py
+@@ -201,6 +201,7 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
+         log.exception("fleet failed")
+ 
+     ext["tool_sources"] = _sources(registry)
++    apply_tool_focus(registry)
+     return core, cleanups
+ 
+ 
+@@ -213,3 +214,22 @@ async def run_cleanups(cleanups: list[Cleanup]) -> None:
+                 await res
+         except Exception:
+             log.exception("cleanup failed")
++
++
++
++def apply_tool_focus(registry, spec: str | None = None) -> list[str]:
++    """Trim the registry to a comma-separated allowlist (AVRONE_TOOLS_ONLY).
++
++    Small local models have short context windows; 75 tool docs (~5k tokens)
++    crowd out the task. Unknown names are ignored; an empty/unset spec keeps all.
++    Returns the names that were removed.
++    """
++    import os
++    spec = os.environ.get("AVRONE_TOOLS_ONLY", "") if spec is None else spec
++    keep = {s.strip() for s in spec.split(",") if s.strip()}
++    if not keep:
++        return []
++    removed = [n for n in registry.names() if n not in keep]
++    for n in removed:
++        registry.unregister(n)
++    return removed
+diff --git a/tests/test_tool_focus.py b/tests/test_tool_focus.py
+new file mode 100644
+index 0000000..f54b31e
+--- /dev/null
++++ b/tests/test_tool_focus.py
+@@ -0,0 +1,23 @@
++from avrone.bootstrap import apply_tool_focus
++from avrone.tools import builtin_registry
++
++
++def test_focus_keeps_only_listed():
++    r = builtin_registry()
++    removed = apply_tool_focus(r, "read_file, write_file,nope")
++    assert set(r.names()) == {"read_file", "write_file"}
++    assert "shell" in removed
++
++
++def test_focus_empty_keeps_all():
++    r = builtin_registry()
++    before = r.names()
++    assert apply_tool_focus(r, "") == []
++    assert r.names() == before
++
++
++def test_focus_env(monkeypatch):
++    monkeypatch.setenv("AVRONE_TOOLS_ONLY", "shell")
++    r = builtin_registry()
++    apply_tool_focus(r)
++    assert r.names() == ["shell"]
+-- 
+2.47.3
+

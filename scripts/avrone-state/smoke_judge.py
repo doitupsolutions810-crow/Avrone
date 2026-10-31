@@ -59,8 +59,11 @@ def main(argv: list[str]) -> int:
             new = str(int(stage_s) + 1)
         except ValueError:
             return 0
-        _atomic_write(stage_file, new)
-        _atomic_write(stage_file + ".bak", new)
+        try:
+            _atomic_write(stage_file, new)
+            _atomic_write(stage_file + ".bak", new)
+        except OSError as e:
+            print(f"  smoke: WARN could not save stage {new}: {e.strerror or e} (will retry next cycle)")
     return 0
 
 

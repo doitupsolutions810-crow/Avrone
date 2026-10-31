@@ -42,6 +42,8 @@ if cmd == "serve":
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             n[0] += 1
+            if flag("serve_hang_after") and n[0] > int(open(os.path.join(D, "serve_hang_after")).read()):
+                import time; time.sleep(600)
             self.send_response(200); self.end_headers(); self.wfile.write(b'{"version":"stub"}')
             if maxreq and n[0] >= maxreq:
                 threading.Thread(target=srv.shutdown).start()
@@ -59,6 +61,8 @@ if cmd == "pull":
     open(models, "a").write(sys.argv[2] + "\n"); sys.exit(0)
 if cmd == "run":
     if flag("run_silent"): sys.exit(0)
+    if flag("run_hang"):
+        import time; time.sleep(300)
     print("ready"); sys.exit(0)
 sys.exit(0)
 '''
@@ -70,6 +74,12 @@ case " $* " in *" avrone.cli chat "*)
   S="$DRIVE/avrone-state"
   [ -e "$STUB_DIR/chat_delete_stage" ] && rm -f "$S/reintro-stage.txt"
   [ -e "$STUB_DIR/chat_corrupt_plan" ] && printf '{' > "$S/reintro-plan.json"
+  # unplug right after the agent process ends (AVRONE itself may mkdir its data dir while running;
+  # on a real Mac /Volumes is root-owned so that fails — what we test is that the autopilot never recreates it)
+  if [ -e "$STUB_DIR/chat_unplug" ]; then "@PY@" "$@"; rc=$?; mv "$DRIVE" "$DRIVE.unplugged"; exit $rc; fi
+  [ -e "$STUB_DIR/chat_remove_model" ] && : > "$STUB_DIR/models"
+  [ -e "$STUB_DIR/chat_readonly_state" ] && chmod 555 "$S"
+  if [ -e "$STUB_DIR/chat_flood" ]; then head -c 3000000 /dev/zero | tr '\0' 'x'; head -c 3000000 /dev/zero | tr '\0' 'y' >&2; fi
   [ -e "$STUB_DIR/chat_crash" ] && { echo "Traceback: boom" >&2; exit 3; }
   [ -e "$STUB_DIR/chat_hang" ] && exec sleep 300
   if [ -e "$STUB_DIR/chat_smoke_pass" ]; then
@@ -785,3 +795,193 @@ def test_sighup_is_survived(env):
     assert p.poll() is None, "terminal closing must not kill the autopilot"
     p.send_signal(signal.SIGTERM); o, _ = p.communicate(timeout=20)
     assert p.returncode == 143 and "SIGHUP" in o
+
+
+# =====================================================================================
+# Round 3: hostile environment
+# =====================================================================================
+
+# ---------------- injection / input validation ----------------
+
+@pytest.mark.parametrize("model", ['x"; touch /tmp/pwned_avrone; "', "a b", "$(id)", "m`id`", "a;b", "x\ny"])
+def test_model_injection_rejected(env, model):
+    Path("/tmp/pwned_avrone").unlink(missing_ok=True)
+    r = env.run(MODEL=model)
+    assert r.returncode == 1 and ("illegal characters" in out(r) or "MODEL" in out(r)), out(r)
+    assert not Path("/tmp/pwned_avrone").exists()
+    assert not (env.state / "env.sh").exists()
+
+
+@pytest.mark.parametrize("model", ["gpt-oss:120b", "qwen3-coder-next:q4_K_M", "hf.co/org/Model-GGUF:Q4_K_M", "a.b+c:1"])
+def test_legit_model_names_accepted(env, model):
+    (env.stub / "models").write_text(model + "\n")
+    r = env.run(MODEL=model, AUTOPILOT_RAM_GB="512")
+    assert r.returncode == 0, out(r)
+    assert f'AVRONE_LLM_MODEL="{model}"' in (env.state / "env.sh").read_text()
+
+
+@pytest.mark.parametrize("lanes", ["tools; rm -rf /", "bogus", "tools $(id)"])
+def test_bad_lanes_rejected(env, lanes):
+    r = env.run(LANES=lanes)
+    assert r.returncode == 1 and "unknown lane" in out(r)
+
+
+@pytest.mark.parametrize("host", ['127.0.0.1:1"; id; "', "h ost:1", "$(id):1"])
+def test_ollama_host_injection_rejected(env, host):
+    r = env.run(OLLAMA_HOST=host)
+    assert r.returncode == 1 and "illegal characters" in out(r)
+
+
+def test_drive_root_rejected(env):
+    r = env.run(DRIVE="/")
+    assert r.returncode == 1 and ("filesystem root" in out(r) or "not writable" in out(r))
+
+
+def test_drive_inside_repo_rejected(env):
+    d = env.repo / "scratch-drive"; d.mkdir()
+    r = env.run(DRIVE=str(d))
+    assert r.returncode == 1 and "inside the repo" in out(r)
+    assert not (d / "avrone-state").exists()
+
+
+def test_drive_symlink_into_repo_rejected(env, tmp_path):
+    link = tmp_path / "sneaky"; link.symlink_to(env.repo)
+    r = env.run(DRIVE=str(link))
+    assert r.returncode == 1 and "inside the repo" in out(r)
+
+
+def test_drive_is_home_rejected(env):
+    r = env.run(HOME=str(env.drive))
+    assert r.returncode == 1 and "home folder" in out(r)
+
+
+def test_root_refused_unless_allowed(env):
+    (env.bin / "id").write_text('#!/bin/sh\n[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n'); (env.bin / "id").chmod(0o755)
+    r = env.run()
+    assert r.returncode == 1 and "do not run as root" in out(r)
+    r = env.run(ALLOW_ROOT="1")
+    assert r.returncode == 0, out(r)
+
+
+# ---------------- the drive misbehaving ----------------
+
+def test_drive_unplugged_mid_run_stops_cleanly(env):
+    env.flag("chat_unplug")
+    r = env.run(LANES="tools", CYCLES="3", ONCE="0", timeout=120)
+    assert r.returncode == 1 and "disappeared or was swapped" in out(r)
+    assert not env.drive.exists(), "must not recreate the unplugged mount point"
+    assert out(r).count("=== cycle") == 1
+
+
+def test_drive_swapped_mid_run_detected(env):
+    # another drive with the same mount name: token no longer matches
+    env.flag("chat_smoke_pass")
+    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="3"),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 90
+    while time.time() < deadline and not (env.state / ".autopilot.lock" / "token").exists():
+        time.sleep(0.2)
+    time.sleep(1)
+    (env.state / ".autopilot.lock" / "token").write_text("someone-elses-drive")
+    o, _ = p.communicate(timeout=90)
+    env.kill_server()
+    assert p.returncode == 1 and "disappeared or was swapped" in o
+
+
+def test_state_goes_readonly_while_advancing(env):
+    env.flag("chat_smoke_pass"); env.flag("chat_readonly_state")
+    try:
+        r = env.run()
+    finally:
+        os.chmod(env.state, 0o755)
+    assert r.returncode == 0, out(r)
+    assert "could not save stage" in out(r) and env.stage() == "7"
+
+
+def test_stage_path_is_a_directory(env):
+    (env.state / "reintro-stage.txt").mkdir(parents=True)
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "directory or unreadable" in out(r) and env.stage() == "7"
+
+
+def test_stage_file_unreadable(env):
+    env.state.mkdir(parents=True); f = env.state / "reintro-stage.txt"; f.write_text("8"); f.chmod(0)
+    try:
+        r = env.run()
+    finally:
+        for g in env.state.glob("reintro-stage.txt*"):
+            g.chmod(0o644)
+    if os.geteuid() == 0:
+        pytest.skip("root can read anything")
+    assert r.returncode == 0, out(r)
+    assert "unreadable" in out(r) and env.stage() in {"7", "8"}
+
+
+def test_plan_path_is_a_directory(env):
+    (env.state / "reintro-plan.json").mkdir(parents=True)
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert (env.state / "reintro-plan.json").is_file()
+
+
+def test_stale_tmp_files_from_killed_write_ignored(env):
+    env.state.mkdir(parents=True)
+    (env.state / "reintro-stage.txt").write_text("8")
+    (env.state / "reintro-stage.txt.tmp.99999").write_text("garbage")
+    r = env.run()
+    assert r.returncode == 0 and env.stage() == "8"
+
+
+# ---------------- ollama misbehaving ----------------
+
+def test_our_own_hung_ollama_is_killed_and_restarted(env):
+    env.flag("serve_hang_after", "2")
+    r = env.run(CYCLES="2", ONCE="0", timeout=150)
+    assert r.returncode == 0, out(r)
+    assert "ollama is down — restarting" in out(r)
+
+
+def test_foreign_hung_listener_detected_not_waited_forever(env):
+    import socket
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", env.port)); srv.listen(16)   # accepts connections, never answers
+    try:
+        t0 = time.time()
+        r = env.run(timeout=120)
+    finally:
+        srv.close()
+    assert r.returncode == 1 and "does not answer (hung ollama?)" in out(r), out(r)
+    assert time.time() - t0 < 60
+
+
+def test_warmup_hang_times_out(env):
+    env.flag("run_hang")
+    t0 = time.time()
+    r = env.run(WARM_TIMEOUT="3")
+    assert r.returncode == 1 and "no output on warm-up within 3s" in out(r)
+    assert time.time() - t0 < 60
+
+
+def test_model_deleted_mid_run_is_repulled(env):
+    env.flag("chat_remove_model")
+    r = env.run(LANES="tools", CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert "ollama pull stub-model" in env.calls() and "pulling stub-model" in out(r)
+
+
+def test_model_deleted_and_disk_full_mid_run(env):
+    env.flag("chat_remove_model")
+    r = env.run(LANES="tools", CYCLES="2", ONCE="0", MIN_FREE_GB="999999")
+    assert r.returncode == 1 and "not enough space" in out(r)
+
+
+# ---------------- floods ----------------
+
+def test_output_flood_from_lanes_is_contained(env):
+    env.flag("chat_flood")
+    r = env.run(LANES="tools robust")
+    assert r.returncode == 0, out(r)
+    assert len(r.stdout) < 200_000, "lane output must go to files, not the terminal"
+    run = next((env.drive / "avrone-runs").iterdir())
+    assert (run / "tools.txt").stat().st_size >= 3_000_000

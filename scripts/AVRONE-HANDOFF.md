@@ -141,6 +141,13 @@ with `caffeinate`, closing the terminal (SIGHUP) does not stop it, and it warns 
 for the chosen model. The stage-advance rule lives in `scripts/avrone-state/smoke_judge.py`
 (>=60% of the batch called, <=3 malformed/unknown calls).
 
+Hostile-environment guards: it stops cleanly (exit 1, state intact) if the drive is unplugged or
+swapped mid-run and never recreates the mount point; refuses `DRIVE=/`, your home folder, or a path
+inside the repo; refuses to run as root (`ALLOW_ROOT=1` to force); rejects shell metacharacters in
+`MODEL`, `LANES`, `OLLAMA_HOST` (they are written into env.sh); restarts its own hung Ollama but
+refuses to fight a foreign hung listener on the port; times out a frozen warm-up (`WARM_TIMEOUT`,
+default 900s); and re-pulls the model if it is deleted mid-run.
+
 Useful switches: `MODEL=gpt-oss:120b` (default), `ONCE=1` (one cycle then stop),
 `CYCLES=N` (stop after N cycles; default: loop forever), `SKIP_GATE=1` (not recommended),
 `LANES="deepcov newmods tools robust"`.

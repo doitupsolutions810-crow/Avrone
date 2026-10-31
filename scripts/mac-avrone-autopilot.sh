@@ -25,19 +25,29 @@ if [ -z "$DRIVE" ]; then
   [ -d /Volumes ] && { echo "Volumes:"; ls /Volumes; }
   die "set DRIVE, e.g. DRIVE=/Volumes/AI $0"
 fi
+[ "$DRIVE" = / ] && die "DRIVE must not be the filesystem root"
 DRIVE="${DRIVE%/}"
 [ -d "$DRIVE" ] || die "drive $DRIVE is not mounted / does not exist"
+DRIVE_REAL="$(cd -P "$DRIVE" && pwd)"; REPO_REAL="$(cd -P "$REPO" && pwd)"
+[ "$DRIVE_REAL" = / ] && die "DRIVE must not be the filesystem root"
+case "$DRIVE_REAL/" in "$REPO_REAL"/*) die "DRIVE must not be inside the repo ($REPO) — state would end up in git";; esac
+[ "$DRIVE_REAL" = "$HOME" ] && die "DRIVE must not be your home folder — point it at the external drive"
 [ -w "$DRIVE" ] && touch "$DRIVE/.avrone-write-test" 2>/dev/null && rm -f "$DRIVE/.avrone-write-test" \
   || die "drive $DRIVE is not writable"
 
 MODEL="${MODEL:-gpt-oss:120b}"; CTX="${CTX:-32768}"
 LANES="${LANES-deepcov newmods tools robust}"; LANE_TIMEOUT="${LANE_TIMEOUT:-3600}"
+# MODEL/LANES end up inside env.sh (sourced later) — allow only plain identifiers, never shell syntax
+case "$MODEL" in ''|*[!A-Za-z0-9._:/+-]*) die "MODEL has illegal characters: '$MODEL'";; esac
+for _l in ${LANES-}; do case "$_l" in deepcov|newmods|tools|robust) ;; *) die "unknown lane '$_l' (valid: deepcov newmods tools robust)";; esac; done
+if [ "$(id -u)" = 0 ] && [ -z "${ALLOW_ROOT:-}" ]; then die "do not run as root/sudo — files on the drive would become root-owned (set ALLOW_ROOT=1 to force)"; fi
 CYCLES="${CYCLES:-0}"; [ "${ONCE:-0}" = "1" ] && CYCLES=1
 case "$CYCLES" in ''|*[!0-9]*) die "CYCLES must be a non-negative integer (got '$CYCLES')";; esac
 case "$CTX" in ''|*[!0-9]*) die "CTX must be an integer (got '$CTX')";; esac
 { [ "${#CTX}" -le 7 ] && [ "$CTX" -ge 2048 ] && [ "$CTX" -le 1048576 ]; } || die "CTX must be between 2048 and 1048576 (got $CTX)"
 OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; OHOST="${OHOST#https://}"; OHOST="${OHOST%%/*}"
 case "$OHOST" in *:*) ;; '') OHOST=127.0.0.1:11434;; *) OHOST="$OHOST:11434";; esac
+case "$OHOST" in *[!A-Za-z0-9.:_-]*) die "OLLAMA_HOST has illegal characters: '$OHOST'";; esac
 export OLLAMA_HOST="$OHOST"
 command -v git >/dev/null || die "git is required (xcode-select --install)"
 command -v python3 >/dev/null || die "python3 is required"
@@ -58,6 +68,11 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   mkdir "$LOCK" 2>/dev/null || { log "lost the lock race — exiting"; exit 2; }
 fi
 echo $$ > "$LOCK/pid"
+DRIVE_TOKEN="$$-$RANDOM-$(date +%s)"; echo "$DRIVE_TOKEN" > "$LOCK/token"
+check_drive(){   # on macOS an unplugged /Volumes/X must never be silently recreated on the internal disk
+  [ "$(cat "$LOCK/token" 2>/dev/null)" = "$DRIVE_TOKEN" ] && return 0
+  OUT=""; LOCK_GONE=1; die "drive $DRIVE disappeared or was swapped mid-run — replug it and rerun (state resumes)"
+}
 
 OLLAMA_PID=""; LANE_PIDS=""; SLEEP_PID=""
 cleanup(){
@@ -65,7 +80,7 @@ cleanup(){
   for p in $LANE_PIDS $SLEEP_PID; do kill "$p" 2>/dev/null; done
   pkill -P $$ 2>/dev/null   # any other child still holding our stdout
   [ -n "$OLLAMA_PID" ] && kill "$OLLAMA_PID" 2>/dev/null
-  [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
+  [ -z "${LOCK_GONE:-}" ] && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -86,23 +101,28 @@ assert len(allt)==len(set(allt)), 'duplicate tool names'
 PY
 }
 plan_ok "$STATE_SRC/reintro-plan.json" || die "repo copy of reintro-plan.json is invalid"
-read_stage(){ tr -d ' \t\r\n' < "$STATE/reintro-stage.txt" 2>/dev/null; }
+read_stage(){ tr -d ' \t\r\n' 2>/dev/null < "$STATE/reintro-stage.txt"; }
 is_uint(){ case "$1" in ''|*[!0-9]*) return 1;; esac; [ "${#1}" -le 6 ]; }
 validate_state(){   # called at start and before every cycle: state on a USB drive can vanish or rot
   local s0 seed from
+  if [ -d "$STATE/reintro-plan.json" ]; then log "WARN: plan path is a directory — moving it aside"; mv "$STATE/reintro-plan.json" "$STATE/reintro-plan.json.bad-$$-$RANDOM"; fi
   if [ ! -f "$STATE/reintro-plan.json" ] || ! plan_ok "$STATE/reintro-plan.json"; then
     [ -f "$STATE/reintro-plan.json" ] && { log "WARN: drive plan corrupt — reseeding from repo"; mv "$STATE/reintro-plan.json" "$STATE/reintro-plan.json.bad-$$-$RANDOM"; }
     cp "$STATE_SRC/reintro-plan.json" "$STATE/" || die "cannot write plan to $STATE"
   fi
   NB=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['batches']))" "$STATE/reintro-plan.json")
+  if [ -d "$STATE/reintro-stage.txt" ] || { [ -e "$STATE/reintro-stage.txt" ] && [ ! -r "$STATE/reintro-stage.txt" ]; }; then
+    log "WARN: stage path is a directory or unreadable — moving it aside"
+    mv "$STATE/reintro-stage.txt" "$STATE/reintro-stage.txt.bad-$$-$RANDOM" 2>/dev/null || rm -rf "$STATE/reintro-stage.txt"
+  fi
   s0="$(read_stage)"
   if ! is_uint "$s0"; then
-    seed="$(tr -d ' \t\r\n' < "$STATE/reintro-stage.txt.bak" 2>/dev/null)"; from=backup
-    is_uint "$seed" || { seed="$(tr -d ' \t\r\n' < "$STATE_SRC/reintro-stage.txt" 2>/dev/null)"; from=repo; }
+    seed="$(tr -d ' \t\r\n' 2>/dev/null < "$STATE/reintro-stage.txt.bak")"; from=backup
+    is_uint "$seed" || { seed="$(tr -d ' \t\r\n' 2>/dev/null < "$STATE_SRC/reintro-stage.txt")"; from=repo; }
     is_uint "$seed" || { seed=0; from=default; }
     if [ -e "$STATE/reintro-stage.txt" ]; then log "WARN: stage file corrupt ('$(printf %.20s "$s0")') — restoring $seed from $from"
     elif [ -n "${VALIDATED:-}" ]; then log "WARN: stage file vanished — restoring $seed from $from"; fi
-    echo "$seed" > "$STATE/reintro-stage.txt" || die "cannot write stage to $STATE"
+    rm -f "$STATE/reintro-stage.txt"; echo "$seed" > "$STATE/reintro-stage.txt" || die "cannot write stage to $STATE"
   fi
   s0="$(read_stage)"
   if [ "$s0" -gt "$NB" ]; then log "WARN: stage $s0 > $NB batches — clamping"; echo "$NB" > "$STATE/reintro-stage.txt"; fi
@@ -162,13 +182,17 @@ command -v ollama >/dev/null || { need_brew ollama; log "installing ollama"; bre
 export OLLAMA_MODELS="$DRIVE/ollama-models" OLLAMA_CONTEXT_LENGTH="$CTX" OLLAMA_KEEP_ALIVE=2h
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-2}"
 command -v launchctl >/dev/null && { launchctl setenv OLLAMA_MODELS "$OLLAMA_MODELS" 2>/dev/null; launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX" 2>/dev/null; }
-ollama_up(){ curl -s -m 3 "$OURL/api/version" >/dev/null 2>&1; }
+ollama_up(){ curl -s -m 5 "$OURL/api/version" >/dev/null 2>&1; }
+port_open(){ python3 -c "import socket,sys;h,p=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(2);sys.exit(0 if s.connect_ex((h,int(p)))==0 else 1)" "$OHOST" 2>/dev/null; }
 OLLAMA_RESTARTS=0
 ensure_ollama(){
   ollama_up && return 0
   [ "$1" = "restart" ] && { OLLAMA_RESTARTS=$((OLLAMA_RESTARTS+1)); log "WARN: ollama is down — restarting (#$OLLAMA_RESTARTS)"; }
   [ "$OLLAMA_RESTARTS" -gt 3 ] && die "ollama keeps dying (>3 restarts); see $DRIVE/ollama.log"
-  [ -n "$OLLAMA_PID" ] && kill "$OLLAMA_PID" 2>/dev/null
+  [ -n "$OLLAMA_PID" ] && { kill "$OLLAMA_PID" 2>/dev/null; sleep 1; kill -9 "$OLLAMA_PID" 2>/dev/null; }
+  if port_open; then
+    die "something on $OHOST accepts connections but does not answer (hung ollama?) — quit it (pkill ollama / quit the Ollama app) and rerun"
+  fi
   log "starting ollama serve on $OHOST (ctx=$CTX)"
   nohup ollama serve >> "$DRIVE/ollama.log" 2>&1 &
   OLLAMA_PID=$!
@@ -176,16 +200,19 @@ ensure_ollama(){
   die "ollama did not start; see $DRIVE/ollama.log"
 }
 ensure_ollama start
-if ! ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qxF "$MODEL"; then
+ensure_model(){
+  ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qxF "$MODEL" && return 0
+  local need_gb free_gb ok attempt
   need_gb="${MIN_FREE_GB:-80}"
   free_gb=$(df -Pk "$DRIVE" | awk 'NR==2{print int($4/1048576)}')
   [ "${free_gb:-0}" -ge "$need_gb" ] || die "not enough space on $DRIVE for $MODEL: ${free_gb}GB free, need ${need_gb}GB (set MIN_FREE_GB to override)"
-  log "pulling $MODEL (one-time, large; ${free_gb}GB free)"
+  log "pulling $MODEL (large; ${free_gb}GB free)"
   ok=""; for attempt in 1 2 3; do ollama pull "$MODEL" && { ok=1; break; }; log "WARN: pull attempt $attempt failed"; sleep $((attempt*5)); done
   [ -n "$ok" ] || die "could not pull $MODEL after 3 attempts"
-fi
-warm="$(ollama run "$MODEL" 'reply with the single word ready' </dev/null 2>/dev/null | tr -d '\n' | head -c 60)"
-[ -n "$warm" ] || die "$MODEL produced no output on warm-up; check $DRIVE/ollama.log (out of memory?)"
+}
+ensure_model
+warm="$($TO "${WARM_TIMEOUT:-900}" ollama run "$MODEL" 'reply with the single word ready' </dev/null 2>/dev/null | tr -d '\n' | head -c 60)"
+[ -n "$warm" ] || die "$MODEL produced no output on warm-up within ${WARM_TIMEOUT:-900}s; check $DRIVE/ollama.log (out of memory?)"
 log "warming $MODEL: $warm"
 
 # ---------- 3. install + baseline gate ----------
@@ -254,6 +281,7 @@ COMMON='You are one lane of the AVRONE self-improvement squad. Reply ONLY with o
 lane(){   # Track B
   case " $LANES " in *" $1 "*) ;; *) return 0;; esac
   local d="$DATA/lane-$1" CUR rc
+  check_drive
   mkdir -p "$d"
   read -r CUR _ < <(tools_for "$(read_stage)")
   log "lane $1 start ($(echo "$CUR" | tr , '\n' | wc -l | tr -d ' ') tools)"
@@ -295,10 +323,15 @@ report(){
 n=0
 while :; do
   n=$((n+1)); log "=== cycle $n ==="
+  check_drive
   validate_state
   ensure_ollama restart
+  ensure_model
   reintro_step
+  check_drive
+  check_drive
   squad
+  check_drive
   report
   [ "$CYCLES" != "0" ] && [ "$n" -ge "$CYCLES" ] && break
   sleep "${CYCLE_SLEEP:-30}" & SLEEP_PID=$!; wait "$SLEEP_PID"; SLEEP_PID=""   # backgrounded so TERM/INT act immediately

@@ -7,7 +7,7 @@
 #
 # Usage:  DRIVE=/Volumes/AI ./scripts/mac-avrone-autopilot.sh
 # Env:    MODEL (default gpt-oss:120b)  CTX (default 32768)  ONCE=1  CYCLES=N
-#         LANES ("deepcov newmods tools robust")  LANE_TIMEOUT (sec, 3600)  SKIP_GATE=1
+#         LANES ("deepcov newmods tools robust")  LANE_TIMEOUT (sec, 3600)  SMOKE_TIMEOUT (1800)  SKIP_GATE=1
 set -uo pipefail
 
 # ---------- 0. locate everything ----------
@@ -26,7 +26,6 @@ mkdir -p "$STATE" "$RUNS" "$DATA" "$DRIVE/ollama-models"
 # persistent state lives on the drive; seed it from the repo copy the first time only
 [ -f "$STATE/reintro-plan.json" ] || cp "$STATE_SRC/reintro-plan.json" "$STATE/"
 [ -f "$STATE/reintro-stage.txt" ] || cp "$STATE_SRC/reintro-stage.txt" "$STATE/"
-echo 0 > /dev/null
 OUT="$RUNS/$(date +%Y%m%d-%H%M)"; mkdir -p "$OUT"
 log(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$OUT/autopilot.log"; }
 log "AVRONE autopilot  repo=$REPO  drive=$DRIVE  model=$MODEL  stage=$(cat "$STATE/reintro-stage.txt")/9"
@@ -36,7 +35,7 @@ command -v timeout >/dev/null || { brew install coreutils >/dev/null 2>&1; }
 TO=timeout; command -v timeout >/dev/null || TO=gtimeout
 
 # ---------- 1. repo hygiene + carried patches ----------
-cd "$REPO"
+cd "$REPO" || exit 1
 git rev-parse --git-dir >/dev/null 2>&1 || { log "no git repo here"; exit 1; }
 if [ -d agents ] && ! git ls-files --error-unmatch agents >/dev/null 2>&1 && ! git check-ignore -q agents; then
   log "removing untracked stray agents/ scratch dir"; rm -rf agents
@@ -55,7 +54,7 @@ launchctl setenv OLLAMA_MODELS "$OLLAMA_MODELS" 2>/dev/null || true
 launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX" 2>/dev/null || true
 if ! curl -s -m 3 http://127.0.0.1:11434/api/version >/dev/null; then
   log "starting ollama serve (ctx=$CTX)"; nohup ollama serve > "$DRIVE/ollama.log" 2>&1 &
-  for i in $(seq 1 40); do curl -s -m 2 http://127.0.0.1:11434/api/version >/dev/null && break; sleep 1; done
+  for _ in $(seq 1 40); do curl -s -m 2 http://127.0.0.1:11434/api/version >/dev/null && break; sleep 1; done
 fi
 curl -s -m 3 http://127.0.0.1:11434/api/version >/dev/null || { log "ollama did not start; see $DRIVE/ollama.log"; exit 1; }
 if ! ollama list | awk 'NR>1{print $1}' | grep -qx "$MODEL"; then
@@ -64,7 +63,16 @@ fi
 log "warming $MODEL: $(ollama run "$MODEL" 'reply with the single word ready' </dev/null 2>/dev/null | tr -d '\n' | head -c 60)"
 
 # ---------- 3. install + baseline gate ----------
-[ -d .venv ] || python3 -m venv .venv
+# AVRONE needs Python >= 3.11 (macOS ships 3.9): pick a new-enough interpreter or install one
+PY=""
+for c in python3.13 python3.12 python3.11 python3; do
+  command -v "$c" >/dev/null && "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' && { PY="$c"; break; }
+done
+[ -n "$PY" ] || { log "installing python@3.12"; brew install python@3.12 && PY="$(brew --prefix)/bin/python3.12"; }
+[ -d .venv ] && ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null && { log "rebuilding old .venv"; rm -rf .venv; }
+[ -d .venv ] || "$PY" -m venv .venv || { rm -rf .venv; log "venv creation failed for $PY"; exit 1; }
+[ -f .venv/bin/activate ] || { rm -rf .venv; log "broken .venv (no activate) — rerun"; exit 1; }
+# shellcheck disable=SC1091
 source .venv/bin/activate
 pip install -q -e ".[dev]" || { log "pip install failed"; exit 1; }
 if [ "${SKIP_GATE:-0}" != "1" ]; then
@@ -109,7 +117,7 @@ reintro_step(){   # Track A: smoke-test the next batch; advance when coherent
   log "reintro stage $S/9 — smoke-testing: $NEXT"
   local P="Tool check. Reply ONLY with one JSON object {\"tool\":NAME,\"args\":{...}} per turn. Call each of these tools exactly once with small, safe, valid arguments (read each tool's args doc; use path '.', text 'hello', host 127.0.0.1 where needed): $NEXT. Guardrails: port_scan only 127.0.0.1 with authorized=true and <=5 ports; shell/priv_shell/priv_admin only read-only commands (id, uname -a, df -h); fs_delete only a file you created; docker_run/env_install only if available (an 'unavailable' error counts as exercised); bridge_post then bridge_read then bridge_reply on the same post; spawn one tiny sub-agent with a one-line task. Finish with one line per tool: NAME OK or FAIL."
   AVRONE_TOOLS_ONLY="$CUR,$NEXT" AVRONE_MAX_STEPS=$(( $(echo "$NEXT" | tr , '\n' | wc -l) * 2 + 6 )) \
-  AVRONE_DATA_DIR="$DATA/smoke" $TO 1800 python -m avrone.cli chat "$P" > "$OUT/smoke-$S.txt" 2> "$OUT/smoke-$S.err"
+  AVRONE_DATA_DIR="$DATA/smoke" $TO "${SMOKE_TIMEOUT:-1800}" python -m avrone.cli chat "$P" > "$OUT/smoke-$S.txt" 2> "$OUT/smoke-$S.err"
   python3 - "$OUT/smoke-$S.err" "$NEXT" "$STATE/reintro-stage.txt" "$S" <<'PY' | tee -a "$OUT/autopilot.log"
 import sys,re
 log=open(sys.argv[1]).read(); nxt=sys.argv[2].split(',')
@@ -134,19 +142,20 @@ lane(){   # Track B
   log "lane $1 rc=$? calls=$(grep -c 'tool.call' "$OUT/$1.err") proposals=$(grep -c 'evolve_propose' "$OUT/$1.err") accepted=$(grep -ci 'ACCEPTED' "$OUT/$1.err")"
 }
 
-squad(){
-  lane deepcov "DEEP COVERAGE: avrone/trinity.py, avrone/evolve.py, avrone/gateway.py uncovered error/edge branches. New files like tests/test_trinity_deep_r6.py. Land TWO accepted." &
-  lane newmods "COVERAGE for newest modules: avrone/governor.py, greatscale.py, checkpoint.py, memstore.py, agentfs.py, bridge.py. New files tests/test_<module>_r6.py. Land TWO accepted." &
-  wait
-  lane tools "NEW TOOLS: read plugins/calculator.py for the register(registry, settings) shape; add plugins/hash_tool.py (hash_text {text, algo}) and plugins/agent_memory.py, each with its own focused test file. Land TWO accepted." &
-  lane robust "ROBUSTNESS: avrone/recon.py (default-deny allowlist), osint.py, fleet.py, jobqueue.py edge cases, offline. Land TWO accepted." &
-  wait
+squad(){   # wait only on lane PIDs: a bare `wait` would also block on the backgrounded ollama serve
+  local a b
+  lane deepcov "DEEP COVERAGE: avrone/trinity.py, avrone/evolve.py, avrone/gateway.py uncovered error/edge branches. New files like tests/test_trinity_deep_r6.py. Land TWO accepted." & a=$!
+  lane newmods "COVERAGE for newest modules: avrone/governor.py, greatscale.py, checkpoint.py, memstore.py, agentfs.py, bridge.py. New files tests/test_<module>_r6.py. Land TWO accepted." & b=$!
+  wait "$a" "$b"
+  lane tools "NEW TOOLS: read plugins/calculator.py for the register(registry, settings) shape; add plugins/hash_tool.py (hash_text {text, algo}) and plugins/agent_memory.py, each with its own focused test file. Land TWO accepted." & a=$!
+  lane robust "ROBUSTNESS: avrone/recon.py (default-deny allowlist), osint.py, fleet.py, jobqueue.py edge cases, offline. Land TWO accepted." & b=$!
+  wait "$a" "$b"
 }
 
 report(){
-  { echo "# AVRONE — accepted proposals awaiting review"; echo; echo "Generated $(date). Review with: python -m avrone.cli evolve diff <id>. Do NOT merge without Crow's go-ahead."; echo
+  { echo "# AVRONE — accepted proposals awaiting review"; echo; echo "Generated $(date). Review with: AVRONE_DATA_DIR=<lane data dir> python -m avrone.cli evolve diff <id>. Do NOT merge without Crow's go-ahead."; echo
     echo "Reintro stage: $(cat "$STATE/reintro-stage.txt")/9"; echo; echo '```'
-    for d in "$DATA"/lane-*; do AVRONE_DATA_DIR="$d" python -m avrone.cli evolve 2>/dev/null; done; echo '```'; } > "$REPO/MERGE_ME.md"
+    for d in "$DATA"/lane-*; do echo "## $d"; AVRONE_DATA_DIR="$d" python -m avrone.cli evolve 2>/dev/null; done; echo '```'; } > "$REPO/MERGE_ME.md"
   cp "$REPO/MERGE_ME.md" "$OUT/MERGE_ME.md"
   log "summary written: MERGE_ME.md (and $OUT)"
 }

@@ -77,11 +77,13 @@ class Codex:
         self._write_lock = threading.Lock()
         self.dropped = 0  # events a full subscriber queue could not take (slow dashboard)
         self.emitted = 0
+        self.refused = 0  # subscribe attempts turned away at AVRONE_MAX_WS_SUBSCRIBERS
 
     def subscribe(self) -> asyncio.Queue[Event]:
         # every emit fans out to every subscriber, and each queue holds up to 1000 events: unbounded
         # subscribers made each run's events cost O(subscribers) and memory grow per connection
         if len(self._subscribers) >= max_subscribers():
+            self.refused += 1
             raise SubscribersFull(f"event stream full ({max_subscribers()} subscribers; AVRONE_MAX_WS_SUBSCRIBERS)")
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
         try:

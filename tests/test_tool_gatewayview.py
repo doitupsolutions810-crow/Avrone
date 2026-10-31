@@ -72,7 +72,7 @@ def test_stream_status(tmp_path):
     for i in range(3):
         cx.emit("r", "k", "a", i=i)
     out = run(gv.t_stream_status(S(core=S(codex=cx)), {}))
-    assert "2 subscriber(s); 3 event(s) emitted since start, 1 dropped" in out
+    assert "2 subscriber(s) of 64 allowed; 3 event(s) emitted since start, 1 dropped, 0 connection(s) refused" in out
     assert "2/2 queued FULL - dropping" in out and "3/1000 queued" in out and "codex_search" in out
     assert q1.qsize() == 3
     assert run(gv.t_stream_status(S(core=None), {})).startswith("stream_status: no event bus")
@@ -87,3 +87,20 @@ def test_stream_backed_up_and_unbounded(tmp_path):
         cx.emit("r", "k", "a")
     out = run(gv.t_stream_status(S(core=S(codex=cx)), {}))
     assert "4/5 queued backed up" in out and "4/unbounded queued" in out and "dropped" in out
+
+
+def test_stream_status_reports_cap_and_refusals(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from avrone.codex import Codex, SubscribersFull
+    from avrone.tools_gatewayview import t_stream_status
+    monkeypatch.setenv("AVRONE_MAX_WS_SUBSCRIBERS", "1")
+    cx = Codex(tmp_path)
+    cx.subscribe()
+    try:
+        cx.subscribe()
+    except SubscribersFull:
+        pass
+    out = asyncio.run(t_stream_status(SimpleNamespace(core=SimpleNamespace(codex=cx)), {}))
+    assert "1 subscriber(s) of 1 allowed" in out and "1 connection(s) refused at the cap" in out
+    assert "raise AVRONE_MAX_WS_SUBSCRIBERS" in out

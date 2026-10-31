@@ -1,0 +1,37 @@
+{
+  "schema": "avrone.promotion-policy/v1",
+  "default_decision": "HOLD",
+  "required_checks": {
+    "pinned_revision": true,
+    "schema_compatibility": true,
+    "independent_identity_verification": true,
+    "exact_action_resource_method_authorization": true,
+    "durable_signed_receipt": true,
+    "idempotency_and_replay_tests": true,
+    "failure_recovery_tests": true,
+    "independent_evaluator": true,
+    "complete_residual_measurement": true
+  },
+  "hard_denies": [
+    "missing_trust_root",
+    "untrusted_embedded_key",
+    "missing_or_expired_capability",
+    "method_mismatch",
+    "missing_receipt",
+    "receipt_chain_break",
+    "duplicate_non_idempotent_effect",
+    "unmeasured_residual",
+    "self_approval",
+    "mock_or_simulation_claimed_as_live_evidence"
+  ],
+  "learning": {
+    "allowed": "propose_skill_from_verified_failure_or_success",
+    "forbidden": [
+      "change_policy",
+      "change_trust_roots",
+      "modify_holdout_tests",
+      "approve_own_change",
+      "promote_without_independent_attestation"
+    ]
+  }
+}

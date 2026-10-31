@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema": "avrone.integration-contracts/v1",
+  "version": "1.0.0",
+  "promotion_default": "HOLD",
+  "repositories": [
+    {
+      "id": "avrone",
+      "repository": "doitupsolutions810-crow/Avrone",
+      "role": "supervisor_orchestrator",
+      "revision": "77587633029794ef95af4d72a140abb837498512"
+    },
+    {
+      "id": "trainllm",
+      "repository": "doitupsolutions810-crow/TrainLLM",
+      "role": "inference_analysis",
+      "revision": "22969639b568783aba0fba7573f80107ea65d221"
+    },
+    {
+      "id": "capability-authority",
+      "repository": "doitupsolutions810-crow/capability-authority",
+      "role": "identity_authorization_execution",
+      "revision": "012dc7d5ed254c2ece5c7c1782fb6d3eba3e08ce"
+    },
+    {
+      "id": "control12",
+      "repository": "doitupsolutions810-crow/control12-lattice-ops",
+      "role": "policy_admission_release_planning",
+      "revision": "aa669b63b9695eeb33fedcdf3ec2bbf30604b6a5"
+    },
+    {
+      "id": "attested-history",
+      "repository": "doitupsolutions810-crow/attested-history",
+      "role": "append_only_history_verification",
+      "revision": "c56449d72c2e024b33f47326b9ec89795056b8d0"
+    },
+    {
+      "id": "swarm-vm-runner",
+      "repository": "doitupsolutions810-crow/swarm-vm-runner",
+      "role": "isolated_worker_execution",
+      "revision": "9bd1cfb75a223aa1e04dcf052b6d30a35f65895b"
+    },
+    {
+      "id": "cyclekernel",
+      "repository": "doitupsolutions810-crow/CycleKernal",
+      "role": "deterministic_cycle_state_replay",
+      "revision": "cbbcce9b6c3864e8710a5607033e351364dab605",
+      "revision_source": "github_default_branch_main",
+      "revision_verified_at": "2026-10-31"
+    }
+  ],
+  "required_envelope": [
+    "schema",
+    "message_id",
+    "correlation_id",
+    "issued_at",
+    "expires_at",
+    "issuer",
+    "audience",
+    "capability_id",
+    "payload_digest",
+    "signature"
+  ],
+  "required_receipt": [
+    "message_id",
+    "correlation_id",
+    "capability_id",
+    "issuer",
+    "executor",
+    "action",
+    "resource",
+    "method",
+    "outcome",
+    "timestamp",
+    "payload_digest",
+    "previous_receipt_digest",
+    "signature"
+  ],
+  "required_gates": [
+    "inventory_pinned",
+    "contract_compatible",
+    "identity_pinned",
+    "exact_method_authorized",
+    "receipt_durable",
+    "replay_safe",
+    "failure_recovery_tested",
+    "independent_verification",
+    "promotion_approved"
+  ],
+  "edges": [
+    {
+      "from": "avrone",
+      "to": "trainllm",
+      "interface": "analysis.request/v1",
+      "state": "UNVERIFIED"
+    },
+    {
+      "from": "avrone",
+      "to": "capability-authority",
+      "interface": "capability.issue-verify-execute/v1",
+      "state": "UNVERIFIED"
+    },
+    {
+      "from": "avrone",
+      "to": "control12",
+      "interface": "control12.intent/v5",
+      "state": "UNVERIFIED"
+    },
+    {
+      "from": "avrone",
+      "to": "attested-history",
+      "interface": "history.entry/v1",
+      "state": "UNVERIFIED"
+    },
+    {
+      "from": "avrone",
+      "to": "swarm-vm-runner",
+      "interface": "swarm.job/v1",
+      "state": "UNVERIFIED"
+    },
+    {
+      "from": "avrone",
+      "to": "cyclekernel",
+      "interface": "cycle.state/v1",
+      "state": "UNVERIFIED"
+    }
+  ],
+  "prohibitions": [
+    "embedded_public_key_as_trust_root",
+    "methodless_wildcard_right",
+    "success_without_durable_receipt",
+    "agent_self_approval",
+    "mock_output_as_runtime_evidence",
+    "missing_residual_as_passing_state"
+  ],
+  "scope_note": "Seven core repositories identified for the initial control slice. This is not the complete 36-candidate repository inventory."
+}

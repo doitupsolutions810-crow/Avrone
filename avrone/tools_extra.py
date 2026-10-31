@@ -720,15 +720,18 @@ async def t_codex_search(ctx: "AgentContext", args: dict[str, Any]) -> str:
             fh = f.open(errors="replace")
         except OSError:
             continue
+        from .codex import iter_lines
         with fh:
-            for line in fh:
+            for line in iter_lines(fh):  # a giant/newline-less line is skipped, never loaded whole
                 if scanned >= CODEX_MAX_EVENTS_SCANNED:
                     capped = True
                     break
                 scanned += 1
+                if line is None:
+                    continue
                 try:
                     ev = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
                     continue
                 if not isinstance(ev, dict) or not _codex_match(ev, kind, agent, tool, query):
                     continue

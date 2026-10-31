@@ -81,6 +81,16 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.33: Squad round 19: thread-side events wake the stream, capped stream subscribers. 2887 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | **events emitted from worker threads stalled the live stream**: `Codex.emit` called `asyncio.Queue.put_nowait` from runner/fleet threads; the queue is not thread-safe and the put never woke the loop | each subscriber queue remembers its loop; off-loop emits go through `call_soon_threadsafe`; subscribers of a closed loop are dropped | `test_robust_v033_threademit.py`; thread emit at 0.1 s: arrived **3.0 s** (only when a timer fired) before, **0.10 s** now |
+| robust | **unbounded `/ws/events` subscribers**, each a 1000-event queue every emit fans out to | `AVRONE_MAX_WS_SUBSCRIBERS` (64, hard 1024): past it the socket closes 1013; slot released if accept fails | `test_robust_v033_wscap.py`; live 200 connects: **200 held** before, **64** now |
+| tools | caps invisible | `stream_status` shows cap + connections refused; `limits_status` shows the cap + live subscribers; `load-limits` maps the 1013 | `test_tool_gatewayview.py`, `test_tool_limits.py` |
+| skills | (none) | `release-verification` (probe old vs new on a real server); `event-stream-health` covers the cap and thread-side events | `test_skill_r19.py` |
+| coverage | (none) | `cov19_a`, `cov19_b` | 9 statements missed of 11,258 |
+
 ## v0.32: Squad round 18: bodies capped before buffering, bounded fleet registry. 2866 tests, coverage 99%
 
 | Lane | Finding (heat) | Mapping | Verification |

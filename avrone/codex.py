@@ -51,6 +51,10 @@ class Codex:
         self.log_dir = data_dir / "runs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._subscribers: set[asyncio.Queue[Event]] = set()
+        # the event loop each subscriber queue belongs to: asyncio.Queue is not thread-safe, and a
+        # put from a worker thread never wakes the loop, so a waiting dashboard stalled until some
+        # unrelated loop activity (measured: a thread emit arrived only when a 3 s timer fired)
+        self._loops: dict[asyncio.Queue[Event], asyncio.AbstractEventLoop] = {}
         # emit() is called from the event loop and from worker threads (runner, fleet);
         # one lock keeps each JSONL record a single whole line.
         self._write_lock = threading.Lock()
@@ -59,11 +63,40 @@ class Codex:
 
     def subscribe(self) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
+        try:
+            self._loops[q] = asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # subscribed outside a loop: delivered by direct put, as before
         self._subscribers.add(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue[Event]) -> None:
         self._subscribers.discard(q)
+        self._loops.pop(q, None)
+
+    def _offer(self, q: asyncio.Queue[Event], ev: Event) -> None:
+        try:
+            q.put_nowait(ev)
+        except asyncio.QueueFull:
+            self.dropped += 1
+
+    def _deliver(self, q: asyncio.Queue[Event], ev: Event) -> None:
+        loop = self._loops.get(q)
+        if loop is None:
+            return self._offer(q, ev)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            return self._offer(q, ev)
+        if loop.is_closed():
+            self.unsubscribe(q)
+            return None
+        try:
+            loop.call_soon_threadsafe(self._offer, q, ev)
+        except RuntimeError:  # loop closed between the check and the call
+            self.unsubscribe(q)
 
     def emit(self, run_id: str, kind: str, agent: str, **data: Any) -> Event:
         if _redact_on():
@@ -74,10 +107,7 @@ class Codex:
             f.write(line)
         self.emitted += 1
         for q in list(self._subscribers):
-            try:
-                q.put_nowait(ev)
-            except asyncio.QueueFull:
-                self.dropped += 1
+            self._deliver(q, ev)
         return ev
 
     @staticmethod

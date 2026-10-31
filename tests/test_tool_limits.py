@@ -41,7 +41,8 @@ def test_limits_status(monkeypatch):
 def test_limits_status_bare_core(monkeypatch):
     monkeypatch.setattr(tl, "_limits", lambda: [])
     monkeypatch.delitem(server.state, "tasks", raising=False)
-    assert run(tl.t_limits_status(S(core=None), {})) == "limits_status:"
+    out = run(tl.t_limits_status(S(core=None), {}))
+    assert out.splitlines()[0] == "limits_status:" and all("live:" not in ln for ln in out.splitlines())
 
 
 def test_limits_skips_broken_getter(monkeypatch):
@@ -91,3 +92,29 @@ def test_prune_unlink_failure(tmp_path, monkeypatch):
     from pathlib import Path
     monkeypatch.setattr(Path, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError("ro")))
     assert tl.prune(runs, 1, 10, set()) == {"removed": 0, "freed": 0}
+
+
+def test_limits_status_reports_body_and_fleet_caps(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace as S
+    from avrone.tools_limits import t_limits_status
+    monkeypatch.setenv("AVRONE_MAX_BODY_BYTES", "1")
+    monkeypatch.setenv("AVRONE_FLEET_MAX_NODES", "7")
+    core = S(fleet=S(enabled=True, nodes={"a": {}, "b": {}}))
+    out = asyncio.run(t_limits_status(S(core=core), {}))
+    assert "- AVRONE_MAX_BODY_BYTES = " in out and "(env)" in out
+    assert "- AVRONE_FLEET_MAX_NODES = 7 (env)" in out
+    assert "body cap on /api/fleet/agentpack" in out and "live: 2 fleet peer(s) registered of 7" in out
+    out = asyncio.run(t_limits_status(S(core=S(fleet=S(enabled=False, nodes={}))), {}))
+    assert "fleet peer(s)" not in out
+
+
+def test_limits_status_pack_cap_error_skipped(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace as S
+    from avrone import server
+    from avrone.tools_limits import t_limits_status
+    real = server.max_body_bytes
+    monkeypatch.setattr(server, "max_body_bytes", lambda path="": (_ for _ in ()).throw(OSError()) if path else real())
+    out = asyncio.run(t_limits_status(S(core=None), {}))
+    assert "body cap on" not in out

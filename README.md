@@ -81,6 +81,17 @@ probes outside networks.
 - **Map** tab in the UI: live graph + headline metrics
 - `avrone-cli telemetry` and `avrone-cli map [--format mermaid|json]`
 
+## v0.32: Squad round 18: bodies capped before buffering, bounded fleet registry. 2866 tests, coverage 99%
+
+| Lane | Finding (heat) | Mapping | Verification |
+|---|---|---|---|
+| robust | **an unauthenticated caller could make the server hold any amount of RAM**: every route read the whole body before auth (fleet HMAC needs it, `/api/chat` parses it) | `BodyLimit` ASGI guard: 413 on a declared Content-Length over the cap, chunked bodies counted and cut off; `AVRONE_MAX_BODY_BYTES` (16 MB, hard 512 MB), never below what the message cap needs, agent-pack route fits a quota-sized bundle | `test_robust_v032_body.py`; live 400 MB chunked unauth POST: v0.31 **401 after RSS 48 -> 415 MB**, v0.32 **413, RSS flat** |
+| robust | **fleet registry unbounded**: any allowed id (allow-all by default) could register, each join rewrote fleet.json, megabytes per record | `AVRONE_FLEET_MAX_NODES` (256, hard 4096): offline peers evicted oldest-first, live never, then "registry full"; node record <= 64 KB | `test_robust_v032_registry.py` |
+| tools | no way to remove a peer | `fleet_forget` (acting, audited): refuses an online still-allowed peer (it would rejoin), final once revoked | `test_tool_packpeer.py` |
+| tools | new caps invisible | `limits_status` adds body cap, agent-pack body cap, peers vs registry cap; `load-limits` skill maps both new refusals | `test_tool_limits.py`, `test_skill_r15.py` |
+| skills | (none) | `fleet-offboarding`, `flood-response` (every refusal message it cites is asserted to exist in code) | `test_skill_r18.py` |
+| coverage | (none) | `cov18_a`, `cov18_b` | 14 statements missed of 11,201 |
+
 ## v0.31: Squad round 17: bomb-proof agent packs, validated peer urls. 2838 tests, coverage 99%
 
 | Lane | Finding (heat) | Mapping | Verification |

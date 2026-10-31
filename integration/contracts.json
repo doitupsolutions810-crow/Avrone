@@ -44,7 +44,9 @@
       "id": "cyclekernel",
       "repository": "doitupsolutions810-crow/CycleKernal",
       "role": "deterministic_cycle_state_replay",
-      "revision": null
+      "revision": "cbbcce9b6c3864e8710a5607033e351364dab605",
+      "revision_source": "github_default_branch_main",
+      "revision_verified_at": "2026-10-31"
     }
   ],
   "required_envelope": [

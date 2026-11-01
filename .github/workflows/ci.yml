@@ -37,3 +37,13 @@ jobs:
             exit 1
           }
         env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }
+      - name: Preserve diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: avrone-ci-logs-python-${{ matrix.python }}
+          path: |
+            /tmp/pip.log
+            /tmp/pytest.log
+          if-no-files-found: warn
+          retention-days: 14

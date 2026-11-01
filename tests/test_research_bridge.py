@@ -37,7 +37,7 @@ def test_receipt_binds_source_run_and_result_digest(tmp_path):
         rounds=2,
         result=result,
     )
-    assert receipt["result_digest_sha256"] == hashlib.sha256(answer.encode()).hexdigest()
+    assert receipt["result_digest_sha256"] == hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     stored = read_receipt(tmp_path, "run-123")
     assert stored["source"]["commit_sha"] == "a" * 40
     assert stored["run_id"] == "run-123"

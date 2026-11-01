@@ -106,6 +106,19 @@ case " $* " in *" avrone.cli chat "*)
   [ -e "$STUB_DIR/chat_readonly_state" ] && chmod 555 "$S"
   if [ -e "$STUB_DIR/chat_flood" ]; then head -c 3000000 /dev/zero | tr '\0' 'x'; head -c 3000000 /dev/zero | tr '\0' 'y' >&2; fi
   [ -e "$STUB_DIR/chat_crash" ] && { echo "Traceback: boom" >&2; exit 3; }
+  [ -e "$STUB_DIR/chat_rm_runs" ] && rm -rf "$DRIVE/avrone-runs"
+  case "${AVRONE_DATA_DIR:-}" in *lane-*)
+    if [ -e "$STUB_DIR/chat_err_text" ]; then
+      printf '%s\n' "task: Land TWO accepted." "tool.call a evolve_propose {}" "tool.result a def x(): return 'ACCEPTED (tests pass'" "agent.done a evolve_propose was ACCEPTED, accepted, Accepted" >&2
+    fi
+    if [ -e "$STUB_DIR/chat_fake_accept" ]; then
+      mkdir -p "$AVRONE_DATA_DIR/evolve"
+      echo '{"pid": "p-new-ok", "passed": true}' > "$AVRONE_DATA_DIR/evolve/p-new-ok.json"
+      echo '{"pid": "p-new-bad", "passed": false}' > "$AVRONE_DATA_DIR/evolve/p-new-bad.json"
+      echo '{"id": "loop-1", "iterations": []}' > "$AVRONE_DATA_DIR/evolve/loop-1.json"
+      printf '{' > "$AVRONE_DATA_DIR/evolve/torn.json"
+    fi;;
+  esac
   if [ -e "$STUB_DIR/chat_orphan" ]; then sleep 300 & echo $! >> "$STUB_DIR/orphans"; exec sleep 300; fi
   [ -e "$STUB_DIR/chat_hang" ] && exec sleep 300
   if [ -e "$STUB_DIR/chat_smoke_pass" ]; then
@@ -113,6 +126,7 @@ case " $* " in *" avrone.cli chat "*)
     echo "OK"; exit 0
   fi;;
 esac
+case " $* " in *" avrone.cli evolve "*) [ -e "$STUB_DIR/evolve_hang" ] && exec sleep 300;; esac
 exec "@PY@" "$@"
 '''
 
@@ -2093,3 +2107,103 @@ def test_ctx_change_makes_new_derived_model(env):
     assert r.returncode == 0, out(r)
     assert "ollama create avrone-stub-model:ctx32768" in env.calls()
     assert "avrone-stub-model:ctx32768" in (env.state / "env.sh").read_text()
+
+
+# =====================================================================================
+# Round 10: honest lane numbers, a report that can't freeze the loop, drive tidying, log growth
+# =====================================================================================
+
+def _lane_line(r, lane="tools"):
+    return [l for l in out(r).splitlines() if f"lane {lane} rc=" in l][-1]
+
+
+def test_lane_counts_ignore_log_noise(env):
+    env.flag("chat_err_text")
+    r = env.run(LANES="tools")
+    assert r.returncode == 0, out(r)
+    assert "proposals=0 accepted=0" in _lane_line(r)
+
+
+def test_lane_counts_come_from_proposal_records(env):
+    ev = env.drive / "avrone-data" / "lane-tools" / "evolve"; ev.mkdir(parents=True)
+    old = ev / "p-old.json"; old.write_text('{"pid": "p-old", "passed": true}')
+    os.utime(old, (time.time() - 86400, time.time() - 86400))
+    env.flag("chat_fake_accept")
+    r = env.run(LANES="tools")
+    assert r.returncode == 0, out(r)
+    assert "proposals=2 accepted=1" in _lane_line(r), _lane_line(r)
+
+
+def test_hung_proposal_listing_does_not_freeze_report(env):
+    env.flag("evolve_hang")
+    t0 = time.time()
+    r = env.run(LANES="tools", REPORT_TIMEOUT="3", CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert out(r).count("=== cycle") == 2
+    assert "listing timed out" in (list((env.drive / "avrone-runs").glob("*/MERGE_ME.md"))[0]).read_text()
+    assert time.time() - t0 < 150
+
+
+def test_merge_me_blocked_by_folder_keeps_looping(env):
+    (env.repo / "MERGE_ME.md").mkdir()
+    r = env.run(LANES="tools", CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert out(r).count("=== cycle") == 2
+    assert "could not update" in out(r)
+    assert list((env.drive / "avrone-runs").glob("*/MERGE_ME.md"))
+    assert (env.repo / "MERGE_ME.md").is_dir()
+
+
+def test_merge_me_readonly_file_keeps_looping(env):
+    m = env.repo / "MERGE_ME.md"; m.write_text("old"); 
+    os.chmod(env.repo, 0o555)
+    try:
+        r = env.run(LANES="tools")
+    finally:
+        os.chmod(env.repo, 0o755)
+    assert r.returncode == 0, out(r)
+    assert "could not update" in out(r)
+    assert not (env.repo / "MERGE_ME.md.tmp").exists()
+
+
+def test_merge_me_written_atomically_in_repo(env):
+    r = env.run(LANES="tools")
+    assert r.returncode == 0, out(r)
+    assert (env.repo / "MERGE_ME.md").read_text().startswith("# AVRONE")
+    assert not (env.repo / "MERGE_ME.md.tmp").exists()
+    assert "MERGE_ME.md" not in _git(env.repo, "status", "--porcelain").stdout
+
+
+def test_run_folder_deleted_mid_run_is_recreated(env):
+    env.flag("chat_rm_runs")
+    r = env.run(LANES="tools")
+    assert r.returncode == 0, out(r)
+    logs = list((env.drive / "avrone-runs").glob("*/autopilot.log"))
+    assert logs and "done. results in" in logs[0].read_text()
+
+
+def test_big_ollama_log_rotated(env):
+    f = env.drive / "ollama.log"
+    with open(f, "wb") as fh: fh.truncate(3 * 1048576)
+    r = env.run(OLLAMA_LOG_MAX_MB="2")
+    assert r.returncode == 0, out(r)
+    assert "rotated ollama.log (3MB)" in out(r)
+    assert (env.drive / "ollama.log.1").stat().st_size == 3 * 1048576
+    assert f.stat().st_size < 1048576
+
+
+def test_small_ollama_log_left_alone(env):
+    f = env.drive / "ollama.log"; f.write_text("keep me\n")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "rotated" not in out(r)
+    assert f.read_text().startswith("keep me")
+
+
+@pytest.mark.parametrize("var", ["OLLAMA_LOG_MAX_MB", "REPORT_TIMEOUT"])
+@pytest.mark.parametrize("val", ["0", "abc", "1+1", "a[$(touch /tmp/pwned-r10)]"])
+def test_round10_settings_validated(env, var, val):
+    r = env.run(**{var: val}, timeout=60)
+    assert r.returncode == 1, out(r)
+    assert var in out(r)
+    assert not os.path.exists("/tmp/pwned-r10")

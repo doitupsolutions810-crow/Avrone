@@ -17,6 +17,7 @@ if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 # Env:    MODEL (gpt-oss:120b)  CTX (32768)  ONCE=1  CYCLES=N (0 = forever)  CYCLE_SLEEP (30)
 #         LANES ("deepcov newmods tools robust")  LANE_TIMEOUT (3600)  SMOKE_TIMEOUT (1800)
 #         SKIP_GATE=1  GATE_CMD (override the baseline gate)  MIN_FREE_GB (80, checked before a pull)
+#         REPORT_TIMEOUT (120)  OLLAMA_LOG_MAX_MB (50, rotate ollama.log above this)
 #         OLLAMA_HOST (127.0.0.1:11434)  AUTOPILOT_NO_INSTALL=1 (skip pip; for tests)
 # Exit:   0 done · 1 config/precondition error · 2 already running · 130/143 interrupted
 set -uo pipefail
@@ -51,7 +52,13 @@ case "$(umask)" in *[1-7]??) umask 022;; esac
 # explicit letters: in a UTF-8 locale old bash (macOS 3.2) lets [A-Za-z] match accented and other letters
 AZ='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 OUT=""
-log(){ local m; m="[$(date +%H:%M:%S)] $*"; if [ -n "$OUT" ]; then echo "$m" | tee -a "$OUT/autopilot.log"; else echo "$m"; fi; }
+log(){ local m; m="[$(date +%H:%M:%S)] $*"
+  if [ -n "$OUT" ]; then
+    # someone tidied the drive and deleted this run's folder: recreate it, but only while the drive is
+    # still mounted (never mkdir a fake /Volumes/X on the internal disk after an unplug)
+    [ -d "$OUT" ] || { [ -n "${DRIVE:-}" ] && [ -d "$DRIVE" ] && mkdir -p "$OUT" 2>/dev/null; }
+    echo "$m" | tee -a "$OUT/autopilot.log" 2>/dev/null || echo "$m"
+  else echo "$m"; fi; }
 die(){ log "FATAL: $*"; exit 1; }
 
 { [ -f "$REPO/avrone/trinity.py" ] && [ -f "$REPO/pyproject.toml" ]; } || die "not an AVRONE checkout: $REPO"
@@ -81,12 +88,12 @@ if [ "$(id -u)" = 0 ] && [ -z "${ALLOW_ROOT:-}" ]; then die "do not run as root/
 CYCLES="${CYCLES:-0}"; [ "${ONCE:-0}" = "1" ] && CYCLES=1
 case "$CYCLES" in ''|*[!0-9]*) die "CYCLES must be a non-negative integer (got '$CYCLES')";; esac
 # whole numbers only (no 1.5, 1h, -3, 1e3); caught now instead of as a cryptic test error hours into a run
-for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT REPORT_TIMEOUT OLLAMA_LOG_MAX_MB CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
   eval "_x=\${$_v-}"; [ -z "$_x" ] && continue
   case "$_x" in *[!0123456789]*) die "$_v must be a whole number (got '$_x')";; esac
   [ "${#_x}" -le 9 ] || die "$_v is too large (got '$_x')"
 done
-for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1 second"; done
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT REPORT_TIMEOUT OLLAMA_LOG_MAX_MB; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1"; done
 case "$CTX" in ''|*[!0-9]*) die "CTX must be an integer (got '$CTX')";; esac
 { [ "${#CTX}" -le 7 ] && [ "$CTX" -ge 2048 ] && [ "$CTX" -le 1048576 ]; } || die "CTX must be between 2048 and 1048576 (got $CTX)"
 OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; OHOST="${OHOST#https://}"; OHOST="${OHOST%%/*}"
@@ -291,6 +298,13 @@ ollama_up(){ curl -s -m 5 "$OURL/api/version" 2>/dev/null | grep -q '"version"';
 http_code(){ curl -s -m 5 -o /dev/null -w '%{http_code}' "$OURL/api/version" 2>/dev/null; }
 port_open(){ python3 -c "import socket,sys;h,p=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(2);sys.exit(0 if s.connect_ex((h,int(p)))==0 else 1)" "$OHOST" 2>/dev/null; }
 OLLAMA_RESTARTS=0
+# Ollama logs every request; weeks of looping would grow ollama.log by gigabytes on the drive
+rotate_ollama_log(){ local f="$DRIVE/ollama.log" sz
+  [ -f "$f" ] || return 0
+  sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  case "$sz" in ''|*[!0123456789]*) return 0;; esac   # (is_uint caps at 6 digits — sizes are bigger)
+  [ "$sz" -gt $(( ${OLLAMA_LOG_MAX_MB:-50} * 1048576 )) ] || return 0
+  mv -f "$f" "$f.1" 2>/dev/null && log "rotated ollama.log ($((sz/1048576))MB) to ollama.log.1"; }
 OLLAMA_FOREIGN=""   # 1 = the server answering on $OHOST was not started by this run (e.g. the Ollama menu-bar app)
 ensure_ollama(){
   if ollama_up; then
@@ -308,6 +322,7 @@ ensure_ollama(){
     die "something on $OHOST accepts connections but does not answer (hung ollama?) — quit it (pkill ollama / quit the Ollama app) and rerun"
   fi
   log "starting ollama serve on $OHOST (ctx=$CTX)"
+  rotate_ollama_log
   nohup ollama serve >> "$DRIVE/ollama.log" 2>&1 &
   OLLAMA_PID=$!
   OLLAMA_FOREIGN=""
@@ -494,10 +509,31 @@ lane(){   # Track B
   mkdir -p "$d"
   read -r CUR _ < <(tools_for "$(read_stage)")
   log "lane $1 start ($(echo "$CUR" | tr , '\n' | wc -l | tr -d ' ') tools)"
+  touch "$d/.lane-start"
   AVRONE_TOOLS_ONLY="$CUR" AVRONE_MAX_STEPS=96 AVRONE_DATA_DIR="$d" \
     $TO "$LANE_TIMEOUT" python -m avrone.cli chat "$COMMON$2" --json "$OUT/$1.json" > "$OUT/$1.txt" 2> "$OUT/$1.err"
   rc=$?
-  log "lane $1 rc=$rc$([ "$rc" = 124 ] && echo ' (timed out)') calls=$(grep -c 'tool.call' "$OUT/$1.err") proposals=$(grep -c 'evolve_propose' "$OUT/$1.err") accepted=$(grep -ci 'ACCEPTED' "$OUT/$1.err")"
+  log "lane $1 rc=$rc$([ "$rc" = 124 ] && echo ' (timed out)') calls=$(grep -c 'tool.call' "$OUT/$1.err" 2>/dev/null || echo 0) $(lane_counts "$d")"
+}
+# proposals/accepted come from the proposal records this lane wrote, not from grepping its log:
+# the log also holds the task text ("Land TWO accepted"), files the agent read (evolve.py says
+# ACCEPTED), and narration — all of which inflated the old counts
+lane_counts(){ $TO 60 python - "$1" <<'PY' 2>/dev/null || echo "proposals=? accepted=?"
+import json, os, sys
+from pathlib import Path
+d = Path(sys.argv[1]); mark = d / ".lane-start"
+t0 = mark.stat().st_mtime if mark.exists() else 0
+p = a = 0
+for f in (d / "evolve").glob("*.json") if (d / "evolve").is_dir() else []:
+    try:
+        if not f.is_file() or f.stat().st_mtime < t0: continue
+        m = json.loads(f.read_text())
+    except (OSError, ValueError):
+        continue
+    if isinstance(m, dict) and isinstance(m.get("pid"), str) and "passed" in m:
+        p += 1; a += bool(m.get("passed"))
+print(f"proposals={p} accepted={a}")
+PY
 }
 
 run_pair(){   # wait only on our lane PIDs: a bare `wait` would also block on the backgrounded ollama serve
@@ -518,13 +554,22 @@ squad(){
 }
 
 report(){
-  local tmp="$REPO/MERGE_ME.md.tmp" d
+  local tmp="$OUT/MERGE_ME.md.tmp" d
   { echo "# AVRONE — accepted proposals awaiting review"; echo
     echo "Generated $(date). Review with: AVRONE_DATA_DIR=<lane data dir> python -m avrone.cli evolve diff <id>. Do NOT merge without Crow's go-ahead."; echo
     echo "Reintro stage: $(read_stage)/$NB"; echo; echo '```'
-    for d in "$DATA"/lane-*; do [ -d "$d" ] || continue; echo "## $d"; AVRONE_DATA_DIR="$d" python -m avrone.cli evolve 2>/dev/null; done
-    echo '```'; } > "$tmp" && mv "$tmp" "$REPO/MERGE_ME.md"
-  cp "$REPO/MERGE_ME.md" "$OUT/MERGE_ME.md"
+    for d in "$DATA"/lane-*; do [ -d "$d" ] || continue; echo "## $d"
+      # a stuck record (network volume, FIFO, locked file) must not freeze the whole loop at report time
+      AVRONE_DATA_DIR="$d" $TO "${REPORT_TIMEOUT:-120}" python -m avrone.cli evolve 2>/dev/null </dev/null \
+        || { [ $? = 124 ] && echo "(listing timed out after ${REPORT_TIMEOUT:-120}s — check $d/evolve)"; }
+    done
+    echo '```'; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$OUT/MERGE_ME.md" \
+    || { log "WARN: could not write the summary in $OUT"; return 0; }
+  # the repo copy is a convenience; a folder/readonly file in the way must not stop the loop
+  if [ -d "$REPO/MERGE_ME.md" ] || ! { cp "$OUT/MERGE_ME.md" "$REPO/MERGE_ME.md.tmp" 2>/dev/null && mv -f "$REPO/MERGE_ME.md.tmp" "$REPO/MERGE_ME.md" 2>/dev/null; }; then
+    rm -f "$REPO/MERGE_ME.md.tmp" 2>/dev/null
+    log "WARN: could not update $REPO/MERGE_ME.md — summary is in $OUT/MERGE_ME.md"; return 0
+  fi
   log "summary written: MERGE_ME.md (and $OUT)"
 }
 

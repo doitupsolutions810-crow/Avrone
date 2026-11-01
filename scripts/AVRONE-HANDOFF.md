@@ -215,3 +215,11 @@ merge without his word.
 - **LIST_TIMEOUT and WARM_TIMEOUT are validated** as whole numbers ≥ 1, the same as the other settings.
 - **Offline reruns:** if pip fails but AVRONE, pytest and fastapi are already installed, the run warns and continues. On a first run with nothing installed, it stops and says to connect to the internet.
 - **venv creation:** if the first python ≥ 3.11 can't create a venv (a stripped build), the others are tried. A .venv whose python link was broken by `brew upgrade` gets rebuilt.
+
+## Round 10 hardening (honest numbers, a report that can't hang, a tidy drive)
+- **Lane numbers are real now.** `proposals=` and `accepted=` come from the proposal records each lane wrote this run, not from grepping its log, which also held the task text ("Land TWO accepted"), files the agent read, and its narration. Old records and broken files aren't counted.
+- **The report can't freeze the loop.** Each lane's listing has a REPORT_TIMEOUT (default 120s); a stuck one is noted in MERGE_ME.md and the loop moves on.
+- **MERGE_ME.md is written to the run folder first.** If the repo copy is blocked (a folder with that name, a read-only repo), you get a warning and the loop keeps going.
+- **Deleting the run folder mid-run is survivable.** It's recreated, but only while the drive is still mounted.
+- **ollama.log is rotated** once it passes OLLAMA_LOG_MAX_MB (default 50) when the autopilot starts Ollama, so weeks of request logs can't fill the drive. One old copy is kept as ollama.log.1.
+- **REPORT_TIMEOUT and OLLAMA_LOG_MAX_MB are validated** before they ever reach shell arithmetic, where text like `a[$(cmd)]` would otherwise run.

@@ -84,7 +84,7 @@ def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
         "claim": claim,
         "mode": mode,
         "rounds_requested": rounds,
-        "result_digest_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        "result_digest_sha256": hashlib.sha256(_canonical_json(result)).hexdigest(),
         "result": result,
         "verification_boundary": (
             "Source commit identity was checked against GitHub. The digest binds the recorded result; "

@@ -312,7 +312,7 @@ class ResearchDebateIn(BaseModel):
     commit_sha: str
     claim: str
     rounds: int = 2
-    source_paths: list[str] = []
+    source_paths: list[str] | None = None
 
 
 @app.post("/api/research/debate")
@@ -337,7 +337,7 @@ async def research_debate(body: ResearchDebateIn, request: Request,
 
     run_id = uuid.uuid4().hex[:12]
     try:
-        source_files = await fetch_source_files(body.repository, body.commit_sha, body.source_paths)
+        source_files = await fetch_source_files(body.repository, body.commit_sha, body.source_paths or [])
     except ResearchBridgeError as exc:
         raise HTTPException(422, str(exc)) from None
     fetched = [item for item in source_files if item.get("status") == "fetched"]

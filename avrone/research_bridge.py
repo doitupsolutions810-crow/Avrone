@@ -11,6 +11,8 @@ import os
 import re
 import tempfile
 import time
+import base64
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +37,7 @@ def validate_source(repository: str, commit_sha: str) -> tuple[str, str]:
     return repository, commit_sha
 
 
-async def verify_public_commit(repository: str, commit_sha: str) -> dict[str, str]:
+async def verify_public_commit(repository: str, commit_sha: str) -> dict[str, Any]:
     """Resolve a pinned public commit via GitHub's API; fail closed on any ambiguity."""
     repository, commit_sha = validate_source(repository, commit_sha)
     url = f"https://api.github.com/repos/{repository}/commits/{commit_sha}"
@@ -54,12 +56,87 @@ async def verify_public_commit(repository: str, commit_sha: str) -> dict[str, st
         data = response.json()
         resolved = str(data["sha"]).lower()
         html_url = str(data["html_url"])
+        commit_message = str(data.get("commit", {}).get("message", ""))[:1000]
+        tree_sha = str(data.get("commit", {}).get("tree", {}).get("sha", ""))
+        parents = [str(p.get("sha", "")) for p in data.get("parents", [])[:8]]
+        changed_files = [
+            {"path": str(f.get("filename", "")), "status": str(f.get("status", "")),
+             "additions": int(f.get("additions", 0)), "deletions": int(f.get("deletions", 0))}
+            for f in data.get("files", [])[:50]
+        ]
     except (ValueError, KeyError, TypeError):
         raise ResearchBridgeError("GitHub returned malformed commit metadata") from None
     if resolved != commit_sha:
         raise ResearchBridgeError("GitHub returned a different commit SHA; refusing unpinned source")
     return {"repository": repository, "commit_sha": commit_sha, "commit_url": html_url,
+            "commit_message": commit_message, "tree_sha": tree_sha, "parent_shas": parents,
+            "changed_files": changed_files,
             "verification": "github_public_commit_api_exact_sha"}
+
+
+DEFAULT_SOURCE_PATHS = (
+    "public/atlas.html",
+    "research/ENDOMORPHISM_DEBATE_ATLAS.md",
+    "test_atlas_contract.cjs",
+    "package.json",
+)
+
+
+async def fetch_source_files(repository: str, commit_sha: str, paths: list[str]) -> list[dict[str, Any]]:
+    """Fetch bounded text files at the pinned SHA; never fetch arbitrary hosts or execute code."""
+    repository, commit_sha = validate_source(repository, commit_sha)
+    if not paths:
+        paths = list(DEFAULT_SOURCE_PATHS)
+    if len(paths) > 5:
+        raise ResearchBridgeError("source_paths accepts at most 5 files per run")
+    clean_paths: list[str] = []
+    for raw in paths:
+        path = raw.strip().strip("/")
+        parts = path.split("/")
+        if (not path or len(path) > 240 or any(p in ("", ".", "..") for p in parts)
+                or not re.fullmatch(r"[A-Za-z0-9_.@/-]+", path)):
+            raise ResearchBridgeError("source paths must be repository-relative paths without traversal")
+        if path not in clean_paths:
+            clean_paths.append(path)
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    results: list[dict[str, Any]] = []
+    total_chars = 0
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+        for path in clean_paths:
+            url = f"https://api.github.com/repos/{repository}/contents/{quote(path, safe='/')}?ref={commit_sha}"
+            try:
+                response = await client.get(url, headers=headers)
+            except httpx.HTTPError as exc:
+                raise ResearchBridgeError(f"GitHub source fetch unavailable: {type(exc).__name__}") from None
+            if response.status_code == 404:
+                results.append({"path": path, "status": "not_found_at_pinned_sha"})
+                continue
+            if response.status_code != 200:
+                raise ResearchBridgeError(f"GitHub source fetch for {path} returned HTTP {response.status_code}")
+            try:
+                obj = response.json()
+                if obj.get("type") != "file" or obj.get("encoding") != "base64":
+                    raise ValueError("not a base64 file")
+                raw_bytes = base64.b64decode(obj["content"], validate=False)
+                text_content = raw_bytes.decode("utf-8")
+                blob_sha = str(obj["sha"])
+            except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+                results.append({"path": path, "status": "non_text_or_unreadable"})
+                continue
+            room = max(0, 30000 - total_chars)
+            excerpt = text_content[:min(12000, room)]
+            total_chars += len(excerpt)
+            results.append({"path": path, "status": "fetched", "blob_sha": blob_sha,
+                            "bytes": len(raw_bytes), "truncated": len(excerpt) < len(text_content),
+                            "content": excerpt})
+            if total_chars >= 30000:
+                break
+    if not any(item.get("status") == "fetched" for item in results):
+        raise ResearchBridgeError("none of the requested source files could be fetched at the pinned SHA")
+    return results
 
 
 def _canonical_json(value: Any) -> bytes:

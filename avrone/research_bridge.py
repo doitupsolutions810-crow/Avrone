@@ -156,19 +156,26 @@ def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
     result_bytes = _canonical_json(result)
     if len(result_bytes) > 2_000_000:
         raise ResearchBridgeError("complete result envelope exceeds the 2 MB receipt limit")
-    payload = {
+    result_digest = hashlib.sha256(result_bytes).hexdigest()
+    binding = {
         "schema": "avrone.research-receipt.v1",
-        "created_at_unix": time.time(),
         "run_id": run_id,
         "source": source,
         "claim": claim,
         "mode": mode,
         "rounds_requested": rounds,
-        "result_digest_sha256": hashlib.sha256(result_bytes).hexdigest(),
+        "result_digest_sha256": result_digest,
+    }
+    evidence_digest = hashlib.sha256(_canonical_json(binding)).hexdigest()
+    payload = {
+        **binding,
+        "created_at_unix": time.time(),
+        "result_digest_sha256": result_digest,
+        "evidence_digest_sha256": evidence_digest,
         "result": result,
         "verification_boundary": (
-            "Source commit identity was checked against GitHub. The digest binds the recorded result; "
-            "it is not a digital signature, mathematical proof, or proof that every tool action succeeded."
+            "The evidence digest binds source identity, claim, mode, round count, and result digest. "
+            "It is not a digital signature, mathematical proof, or proof that every tool action succeeded."
         ),
     }
     target_dir = Path(data_dir) / "research_receipts"

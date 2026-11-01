@@ -43,6 +43,9 @@ def test_receipt_binds_source_run_and_result_digest(tmp_path):
     assert stored["source"]["commit_sha"] == "a" * 40
     assert stored["run_id"] == "run-123"
     assert stored["result_digest_sha256"] == receipt["result_digest_sha256"]
+    binding = {key: stored[key] for key in ("schema", "run_id", "source", "claim", "mode", "rounds_requested", "result_digest_sha256")}
+    expected_evidence_digest = hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert stored["evidence_digest_sha256"] == expected_evidence_digest
     assert json.loads((tmp_path / "research_receipts" / "run-123.json").read_text())["schema"] == "avrone.research-receipt.v1"
 
 

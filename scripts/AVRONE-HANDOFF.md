@@ -178,3 +178,11 @@ Leave the system with: the highest reintro stage you reached, the baseline + lan
 `$DRIVE/avrone-runs/<timestamp>/`, and `MERGE_ME.md` listing each accepted proposal id with
 its goal and branch. Report that summary back to Crow for review and merge. Do not push or
 merge without his word.
+
+## Round 5 hardening (macOS bash 3.2, launch quirks, fuzzing)
+- Verified on GNU bash 3.2.57 (the /bin/bash every Mac ships) as well as bash 5: the full 202-test edge suite passes on both.
+- `sh mac-avrone-autopilot.sh` re-execs under bash; running it through a symlink (e.g. in /usr/local/bin) still finds the real repo.
+- Closed stdin/stdout/stderr (launchd, cron, `>&-`) are pointed at /dev/null first; previously a closed stdout made the model look missing and re-pulled it.
+- SIGHUP or SIGUSR1 during a lane pair no longer cuts the wait short (bash `wait` returns early on any trapped signal). `kill -USR1 <pid>` logs a status line (cycle, phase, stage, lanes). SIGQUIT cleans up like SIGTERM (exit 131).
+- Symlinked state files on the drive are removed, never written through. A multi-line stage file ("6\n7") is treated as corrupt instead of read as 67; leading zeros are normalized.
+- Fuzzed: 300 random smoke logs, unicode tool names, a 20 MB stage file, a JSON recursion bomb, random binary plan files, corrupt patch files, 500+ character drive paths.

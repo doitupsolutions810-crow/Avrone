@@ -22,6 +22,8 @@ pytestmark = [pytest.mark.integration,
               pytest.mark.skipif(sys.platform == "win32", reason="bash script")]
 
 ROOT = Path(__file__).resolve().parents[1]
+# run the whole suite under another bash (e.g. a build of macOS's stock bash 3.2.57)
+BASH = os.environ.get("AUTOPILOT_TEST_BASH", "bash")
 SCRIPT_REL = "scripts/mac-avrone-autopilot.sh"
 BASE_COMMIT = "1121d26"   # upstream main before the carried patches
 
@@ -72,6 +74,8 @@ STUB_PYTHON = r'''#!/bin/sh
 # wraps the real interpreter; `python -m avrone.cli chat ...` can be made to misbehave via flag files
 case " $* " in *" avrone.cli chat "*)
   S="$DRIVE/avrone-state"
+  [ -e "$STUB_DIR/chat_sleep" ] && sleep "$(cat "$STUB_DIR/chat_sleep")"
+  [ -e "$STUB_DIR/chat_set_stage" ] && { cat "$STUB_DIR/chat_set_stage" > "$S/reintro-stage.txt"; cat "$STUB_DIR/chat_set_stage" > "$S/reintro-stage.txt.bak"; }
   [ -e "$STUB_DIR/chat_delete_stage" ] && rm -f "$S/reintro-stage.txt"
   [ -e "$STUB_DIR/chat_corrupt_plan" ] && printf '{' > "$S/reintro-plan.json"
   # unplug right after the agent process ends (AVRONE itself may mkdir its data dir while running;
@@ -174,7 +178,7 @@ class Env:
         return {k: v for k, v in e.items() if v is not None and v != "__unset__"}
 
     def run(self, timeout=180, **kw):
-        r = subprocess.run(["bash", str(self.repo / SCRIPT_REL)], cwd=self.tmp, env=self.env(**kw),
+        r = subprocess.run([BASH, str(self.repo / SCRIPT_REL)], cwd=self.tmp, env=self.env(**kw),
                            capture_output=True, text=True, timeout=timeout)
         self.kill_server()
         return r
@@ -251,7 +255,7 @@ def test_bad_numeric_env(env, bad):
 def test_not_a_checkout(env, tmp_path):
     fake = tmp_path / "fake" / "scripts"; fake.mkdir(parents=True)
     shutil.copy(env.repo / SCRIPT_REL, fake / "x.sh")
-    r = subprocess.run(["bash", str(fake / "x.sh")], env=env.env(), capture_output=True, text=True, timeout=30)
+    r = subprocess.run([BASH, str(fake / "x.sh")], env=env.env(), capture_output=True, text=True, timeout=30)
     assert r.returncode == 1 and "not an AVRONE checkout" in out(r)
 
 
@@ -444,7 +448,7 @@ def test_already_running_ollama_is_reused(env):
                 socket.create_connection(("127.0.0.1", env.port), 0.2).close(); break
             except OSError:
                 time.sleep(0.1)
-        r = subprocess.run(["bash", str(env.repo / SCRIPT_REL)], env=env.env(), capture_output=True, text=True, timeout=120)
+        r = subprocess.run([BASH, str(env.repo / SCRIPT_REL)], env=env.env(), capture_output=True, text=True, timeout=120)
         assert r.returncode == 0, out(r)
         assert "starting ollama serve" not in out(r)
         assert srv.poll() is None, "must not kill an ollama it did not start"
@@ -496,9 +500,9 @@ def test_stale_lock_is_recovered(env):
 
 def test_two_concurrent_runs_one_wins(env):
     e = env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="2")
-    a = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    a = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(0.05)
-    b = subprocess.run(["bash", str(env.repo / SCRIPT_REL)], env=e, capture_output=True, text=True, timeout=60)
+    b = subprocess.run([BASH, str(env.repo / SCRIPT_REL)], env=e, capture_output=True, text=True, timeout=60)
     a.send_signal(signal.SIGTERM)
     try: a.communicate(timeout=30)
     except subprocess.TimeoutExpired: a.kill(); raise
@@ -506,7 +510,7 @@ def test_two_concurrent_runs_one_wins(env):
 
 
 def test_sigterm_cleans_up_lock_and_ollama(env):
-    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="60"),
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="60"),
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     log = ""
     deadline = time.time() + 90
@@ -781,7 +785,7 @@ def test_enough_ram_no_warning(env):
 # ---------------- signals ----------------
 
 def _start_and_wait_cycle(env, **kw):
-    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="60", **kw),
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="60", **kw),
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     deadline = time.time() + 90; log = ""
     while time.time() < deadline and "summary written" not in log:
@@ -885,7 +889,7 @@ def test_drive_unplugged_mid_run_stops_cleanly(env):
 def test_drive_swapped_mid_run_detected(env):
     # another drive with the same mount name: token no longer matches
     env.flag("chat_smoke_pass")
-    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="3"),
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(CYCLES="0", ONCE="0", CYCLE_SLEEP="3"),
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     deadline = time.time() + 90
     while time.time() < deadline and not (env.state / ".autopilot.lock" / "token").exists():
@@ -1045,7 +1049,7 @@ def test_lane_timeout_kills_grandchildren(env, impl):
 
 def test_sigterm_kills_whole_tree(env):
     env.flag("chat_orphan")
-    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools"),
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools"),
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     deadline = time.time() + 60
     while time.time() < deadline and len(_orphans(env)) < 1:
@@ -1069,14 +1073,14 @@ def test_sigterm_kills_whole_tree(env):
 
 def test_second_autopilot_same_repo_other_drive_refused(env, tmp_path):
     env.flag("chat_hang")
-    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools", LANE_TIMEOUT="30", SMOKE_TIMEOUT="30"),
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools", LANE_TIMEOUT="30", SMOKE_TIMEOUT="30"),
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     lock = env.repo / ".git" / "avrone-autopilot.lock" / "pid"
     deadline = time.time() + 60
     while time.time() < deadline and not lock.exists():
         time.sleep(0.2)
     other = tmp_path / "drive2"; other.mkdir()
-    r = subprocess.run(["bash", str(env.repo / SCRIPT_REL)], env=env.env(DRIVE=str(other)),
+    r = subprocess.run([BASH, str(env.repo / SCRIPT_REL)], env=env.env(DRIVE=str(other)),
                        capture_output=True, text=True, timeout=60)
     p.send_signal(signal.SIGTERM); p.communicate(timeout=60); env.kill_server()
     assert r.returncode == 2 and "already using this repo" in out(r), out(r)
@@ -1184,7 +1188,7 @@ def test_sigterm_during_long_foreground_step_is_immediate(env, where):
     kw = {"SKIP_GATE": "__unset__", "GATE_CMD": "sleep 300"} if where == "gate" else {"SMOKE_TIMEOUT": "300"}
     if where == "smoke":
         env.flag("chat_hang")
-    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(**kw),
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(**kw),
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     marker = "baseline gate" if where == "gate" else "smoke-testing"
     buf, deadline = "", time.time() + 60
@@ -1200,3 +1204,264 @@ def test_sigterm_during_long_foreground_step_is_immediate(env, where):
     assert time.time() - t0 < 10
     logs = "".join(f.read_text() for f in (env.drive / "avrone-runs").glob("*/autopilot.log"))
     assert p.returncode == 143 and "terminated" in logs
+
+
+
+# =====================================================================================
+# Round 5: how it is launched, symlink tricks, garbage fuzzing, signals during waits
+# =====================================================================================
+
+def test_suite_bash_version_reported():
+    v = subprocess.run([BASH, "-c", "echo $BASH_VERSION"], capture_output=True, text=True).stdout.strip()
+    print("autopilot suite running under bash", v)
+    assert v
+
+
+# ---------------- how it is launched ----------------
+
+def test_launched_with_sh_reexecs_bash(env):
+    sh = shutil.which("dash") or shutil.which("sh")
+    r = subprocess.run([sh, str(env.repo / SCRIPT_REL)], cwd=env.tmp, env=env.env(), capture_output=True, text=True, timeout=180)
+    env.kill_server()
+    assert r.returncode == 0, out(r)
+    assert "AVRONE autopilot" in out(r)
+
+
+def test_launched_via_symlink_finds_real_repo(env, tmp_path):
+    link_dir = tmp_path / "usr-local-bin"; link_dir.mkdir()
+    link = link_dir / "avrone-autopilot"; link.symlink_to(env.repo / SCRIPT_REL)
+    r = subprocess.run([BASH, str(link)], cwd=tmp_path, env=env.env(), capture_output=True, text=True, timeout=180)
+    env.kill_server()
+    assert r.returncode == 0, out(r)
+    assert f"repo={env.repo}" in out(r)
+
+
+def test_launched_via_relative_symlink_chain(env, tmp_path):
+    a = tmp_path / "a"; a.mkdir(); b = tmp_path / "b"; b.mkdir()
+    (b / "real").symlink_to(os.path.relpath(env.repo / SCRIPT_REL, b))
+    (a / "go").symlink_to("../b/real")
+    r = subprocess.run([BASH, str(a / "go")], cwd=tmp_path, env=env.env(), capture_output=True, text=True, timeout=180)
+    env.kill_server()
+    assert r.returncode == 0 and f"repo={env.repo}" in out(r), out(r)
+
+
+def test_launched_from_inside_another_git_repo(env, tmp_path):
+    other = tmp_path / "otherrepo"; other.mkdir(); _git(other, "init", "-q")
+    r = subprocess.run([BASH, str(env.repo / SCRIPT_REL)], cwd=other, env=env.env(), capture_output=True, text=True, timeout=180)
+    env.kill_server()
+    assert r.returncode == 0, out(r)
+    assert not (other / "MERGE_ME.md").exists() and (env.repo / "MERGE_ME.md").exists()
+
+
+def test_stdout_closed_still_runs_and_logs(env):
+    r = subprocess.run([BASH, "-c", 'exec >&- 2>&-; "$0" "$1"; echo "rc=$?" > "$2"', BASH,
+                        str(env.repo / SCRIPT_REL), str(env.tmp / "rc.txt")],
+                       cwd=env.tmp, env=env.env(), timeout=180)
+    env.kill_server()
+    assert (env.tmp / "rc.txt").read_text().strip() == "rc=0"
+    logs = "".join(f.read_text() for f in (env.drive / "avrone-runs").glob("*/autopilot.log"))
+    assert "summary written" in logs
+    assert "ollama pull" not in env.calls(), "closed stdout must not make the model look missing"
+
+
+def test_stdin_closed(env):
+    r = subprocess.run([BASH, "-c", 'exec <&-; "$0" "$1"', BASH, str(env.repo / SCRIPT_REL)],
+                       cwd=env.tmp, env=env.env(), capture_output=True, text=True, timeout=180)
+    env.kill_server()
+    assert r.returncode == 0, out(r)
+
+
+# ---------------- symlink tricks on the drive ----------------
+
+@pytest.mark.parametrize("name", ["reintro-stage.txt", "reintro-stage.txt.bak", "reintro-plan.json", "mcp.json", "env.sh"])
+def test_state_symlink_never_written_through(env, tmp_path, name):
+    victim = tmp_path / "victim.txt"; victim.write_text("PRECIOUS\n")
+    env.state.mkdir(parents=True)
+    (env.state / name).symlink_to(victim)
+    env.flag("chat_smoke_pass")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert victim.read_text() == "PRECIOUS\n", f"wrote through {name} symlink"
+    assert not (env.state / name).is_symlink()
+
+
+def test_lock_path_is_a_regular_file(env):
+    env.state.mkdir(parents=True); (env.state / ".autopilot.lock").write_text("junk")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+
+
+def test_lock_path_is_symlink_to_dir_elsewhere(env, tmp_path):
+    elsewhere = tmp_path / "elsewhere"; elsewhere.mkdir(); (elsewhere / "keep.txt").write_text("keep")
+    env.state.mkdir(parents=True); (env.state / ".autopilot.lock").symlink_to(elsewhere)
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert (elsewhere / "keep.txt").read_text() == "keep"
+
+
+# ---------------- stage format fuzz ----------------
+
+@pytest.mark.parametrize("content,expect", [
+    ("08\n", "8"), ("007", "7"), (" 6 \n", "6"), ("6\r\n", "6"), ("\ufeff6", "7"),
+    ("\u0661", "7"), ("+3", "7"), ("-1", "7"), ("1e3", "7"), ("0x5", "7"), ("5.0", "7"),
+    ("6\n7\n", "7"), ("\x00\x00", "7"), ("9" * 7, "7"), ("", "7"),
+])
+def test_stage_format_fuzz(env, content, expect):
+    env.state.mkdir(parents=True)
+    (env.state / "reintro-stage.txt").write_bytes(content.encode("utf-8"))
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert env.stage() == expect, (content, env.stage())
+
+
+def test_huge_stage_file(env):
+    env.state.mkdir(parents=True)
+    with open(env.state / "reintro-stage.txt", "wb") as f:
+        f.write(b"7" * (20 * 1024 * 1024))
+    r = env.run()
+    assert r.returncode == 0 and env.stage() == "7"
+
+
+def test_plan_json_recursion_bomb(env):
+    env.state.mkdir(parents=True)
+    (env.state / "reintro-plan.json").write_text("[" * 200000 + "]" * 200000)
+    r = env.run()
+    assert r.returncode == 0 and "plan corrupt" in out(r)
+
+
+def test_binary_garbage_plan(env):
+    env.state.mkdir(parents=True)
+    (env.state / "reintro-plan.json").write_bytes(os.urandom(4096))
+    r = env.run()
+    assert r.returncode == 0 and "plan corrupt" in out(r)
+
+
+# ---------------- smoke judge fuzz (fast, no autopilot run) ----------------
+
+JUDGE = ROOT / "scripts" / "avrone-state" / "smoke_judge.py"
+
+
+def _fjudge(tmp_path, log_bytes, tools="a,b,c", stage="3"):
+    logf = tmp_path / "smoke.err"; logf.write_bytes(log_bytes)
+    st = tmp_path / "stage.txt"; st.write_text(stage)
+    r = subprocess.run([sys.executable, str(JUDGE), str(logf), tools, str(st), stage],
+                       capture_output=True, text=True, timeout=30)
+    return r, st.read_text().strip()
+
+
+def test_judge_random_garbage_never_crashes_or_advances(tmp_path):
+    import random
+    rnd = random.Random(1337)
+    words = [b"tool.call", b"a", b"b", b"c", b"{", b"}", b'"tool"', b":", b"\n", b"\x00", b"\xff",
+             b"error", b"unknown tool", b"malformed", b"\xe2\x98\x83", b" ", b"name=", b"args"]
+    for i in range(300):
+        blob = b"".join(rnd.choice(words) if rnd.random() < .8 else os.urandom(rnd.randint(1, 40))
+                        for _ in range(rnd.randint(0, 400)))
+        r, st = _fjudge(tmp_path, blob)
+        assert r.returncode == 0, (i, r.stderr[-500:])
+        assert "Traceback" not in r.stderr, (i, r.stderr[-500:])
+        assert st in {"3", "4"}, (i, st)
+
+
+def test_judge_unicode_tool_names_and_huge_log(tmp_path):
+    r, st = _fjudge(tmp_path, ("tool.call ✓ " * 200000).encode(), tools="✓,ß,工具")
+    assert r.returncode == 0 and "Traceback" not in r.stderr and st in {"3", "4"}
+
+
+@pytest.mark.parametrize("tools", ["", ",", ",,,", "a,,b", " a , b "])
+def test_judge_odd_tool_lists(tmp_path, tools):
+    r, st = _fjudge(tmp_path, b"tool.call a\n", tools=tools)
+    assert r.returncode == 0 and "Traceback" not in r.stderr and st in {"3", "4"}
+
+
+@pytest.mark.parametrize("stage", ["abc", "", "-2", "99999999999999999999"])
+def test_judge_bad_current_stage_arg(tmp_path, stage):
+    r, st = _fjudge(tmp_path, b"tool.call a\n", stage=stage)
+    assert "Traceback" not in r.stderr
+
+
+# ---------------- signals while waiting on lanes ----------------
+
+@pytest.mark.parametrize("sig", ["SIGHUP", "SIGUSR1"])
+def test_signal_during_lanes_does_not_cut_wait_short(env, sig):
+    # `wait` returns early when a trapped signal arrives; the pair must still be awaited
+    env.flag("chat_sleep", "4")
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools robust", SMOKE_TIMEOUT="60"),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    buf, deadline = "", time.time() + 60
+    while time.time() < deadline and "lane tools start" not in buf:
+        line = p.stdout.readline()
+        if not line: break
+        buf += line
+    time.sleep(0.5)
+    for _ in range(3):
+        p.send_signal(getattr(signal, sig)); time.sleep(0.3)
+    o, _ = p.communicate(timeout=90)
+    env.kill_server()
+    allout = buf + o
+    assert p.returncode == 0, allout
+    # both lanes of the first pair must finish before the report
+    assert allout.index("lane tools rc=0") < allout.index("summary written")
+    assert allout.index("lane robust rc=0") < allout.index("summary written")
+    if sig == "SIGUSR1":
+        assert "status: pid=" in allout and "phase=lanes" in allout
+
+
+def test_sigquit_cleans_up(env):
+    env.flag("chat_hang")
+    p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools", SMOKE_TIMEOUT="60"),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 60
+    while time.time() < deadline and not (env.state / ".autopilot.lock" / "pid").exists():
+        time.sleep(0.2)
+    time.sleep(2)
+    p.send_signal(signal.SIGQUIT)
+    p.communicate(timeout=30); env.kill_server()
+    assert p.returncode == 131
+    assert not (env.state / ".autopilot.lock").exists()
+
+
+# ---------------- user edits state by hand mid-run ----------------
+
+def test_user_edits_stage_mid_run_is_honoured(env):
+    env.flag("chat_set_stage", "3")
+    r = env.run(CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert "reintro stage 3/9" in out(r)
+
+
+# ---------------- corrupt carried patch ----------------
+
+def test_corrupt_patch_file_restores_tree(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    pd = e.repo / "scripts/avrone-state/patches"
+    first = sorted(pd.glob("*.patch"))[0]
+    first.write_text("From nobody\nSubject: [PATCH] broken\n\n--- a/x\n+++ b/x\n@@ garbage @@\n")
+    _git(e.repo, "add", "-A"); _git(e.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "corrupt patch")
+    head = _git(e.repo, "rev-parse", "HEAD").stdout.strip()
+    r = e.run()
+    assert r.returncode == 1 and "patch apply failed" in out(r)
+    assert _git(e.repo, "rev-parse", "HEAD").stdout.strip() == head
+    assert not (e.repo / ".git" / "rebase-apply").exists()
+
+
+def test_junk_files_in_patch_dir_ignored(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    pd = e.repo / "scripts/avrone-state/patches"
+    (pd / "README.txt").write_text("not a patch"); (pd / ".DS_Store").write_bytes(b"\x00\x01")
+    _git(e.repo, "add", "-A"); _git(e.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "junk")
+    r = e.run()
+    assert r.returncode == 0, out(r)
+
+
+# ---------------- long paths ----------------
+
+def test_very_long_drive_path(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["patched"])
+    deep = e.drive
+    for i in range(12):
+        deep = deep / ("d" * 40 + str(i))
+    deep.mkdir(parents=True)
+    r = e.run(DRIVE=str(deep))
+    assert r.returncode == 0, out(r)
+    assert sourced(deep / "avrone-state" / "env.sh", "AVRONE_MCP_CONFIG") == str(deep / "avrone-state" / "mcp.json")

@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# started as `sh script` (dash/posix sh)? re-exec under bash before any bash-only syntax is parsed
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
+# launched with stdout/stderr/stdin closed (launchd, cron, `>&-`)? point them at /dev/null so tools that
+# print (ollama list, git) still work — a closed fd 1 made `ollama list` fail and triggered a needless re-pull
+# (bash's `test` checks /dev/fd/N against the real descriptor; order matters — fix 0,1,2 before anything opens a pipe)
+[ -e /dev/fd/0 ] || exec 0</dev/null
+[ -e /dev/fd/1 ] || exec 1>/dev/null
+[ -e /dev/fd/2 ] || exec 2>/dev/null
 # AVRONE autopilot for Apple Silicon Macs — finds the system, configures it and its bridges,
 # installs a big free local model, and resumes the work exactly where it left off:
 #   Track A: tool reintroduction (stage N of 9 in scripts/avrone-state/)
@@ -14,7 +22,9 @@
 set -uo pipefail
 
 # ---------- 0. locate everything ----------
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+SELF="$0"   # follow symlinks (e.g. linked into /usr/local/bin) to find the real repo — readlink -f is not on old macOS
+while [ -L "$SELF" ]; do _t="$(readlink "$SELF")"; case "$_t" in /*) SELF="$_t";; *) SELF="$(dirname "$SELF")/$_t";; esac; done
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
 OUT=""
 log(){ local m; m="[$(date +%H:%M:%S)] $*"; if [ -n "$OUT" ]; then echo "$m" | tee -a "$OUT/autopilot.log"; else echo "$m"; fi; }
 die(){ log "FATAL: $*"; exit 1; }
@@ -76,7 +86,15 @@ check_drive(){   # on macOS an unplugged /Volumes/X must never be silently recre
 }
 
 OLLAMA_PID=""; LANE_PIDS=""; SLEEP_PID=""
-bg_wait(){ "$@" & local p=$!; wait "$p"; }   # TERM/INT act at once even during long steps
+# `wait` returns early (>128) whenever a trapped signal (HUP, USR1) arrives; keep waiting while the child lives
+wait_pid(){ local p="$1" rc rc2
+  while :; do
+    wait "$p"; rc=$?
+    [ "$rc" -gt 128 ] || return "$rc"
+    kill -0 "$p" 2>/dev/null && continue
+    wait "$p" 2>/dev/null; rc2=$?; [ "$rc2" = 127 ] && return "$rc"; return "$rc2"
+  done; }
+bg_wait(){ "$@" & local p=$!; wait_pid "$p"; }   # TERM/INT act at once even during long steps
 descendants(){ local c; for c in $(pgrep -P "$1" 2>/dev/null); do descendants "$c"; echo "$c"; done; }
 cleanup(){
   local rc=$?
@@ -91,6 +109,9 @@ cleanup(){
 trap cleanup EXIT
 trap 'log "interrupted"; exit 130' INT
 trap 'log "terminated"; exit 143' TERM
+trap 'log "quit"; exit 131' QUIT
+CYCLE_N=0; PHASE=startup
+trap 'log "status: pid=$$ cycle=$CYCLE_N phase=$PHASE stage=$(read_stage 2>/dev/null)/${NB:-?} lanes=[${LANE_PIDS:-none}] out=$OUT"' USR1
 
 # ---------- state: seed once, then validate every run ----------
 [ -f "$STATE_SRC/reintro-plan.json" ] || die "missing $STATE_SRC/reintro-plan.json"
@@ -106,10 +127,17 @@ assert len(allt)==len(set(allt)), 'duplicate tool names'
 PY
 }
 plan_ok "$STATE_SRC/reintro-plan.json" || die "repo copy of reintro-plan.json is invalid"
-read_stage(){ tr -d ' \t\r\n' 2>/dev/null < "$STATE/reintro-stage.txt"; }
-is_uint(){ case "$1" in ''|*[!0-9]*) return 1;; esac; [ "${#1}" -le 6 ]; }
+# one value on one line; "6\n7" must read as corrupt, not as stage 67
+read_stage(){ local c; c="$(tr -d ' \t\r' 2>/dev/null < "$STATE/reintro-stage.txt")"
+  case "$c" in *"$NL"*) echo multi;; *) printf '%s\n' "$c";; esac; }
+NL='
+'
+is_uint(){ case "$1" in ''|*[!0123456789]*) return 1;; esac; [ "${#1}" -le 6 ]; }
 validate_state(){   # called at start and before every cycle: state on a USB drive can vanish or rot
-  local s0 seed from
+  local s0 seed from f
+  for f in reintro-stage.txt reintro-stage.txt.bak reintro-plan.json mcp.json env.sh; do
+    if [ -L "$STATE/$f" ]; then log "WARN: $f on the drive is a symlink — removing the link (never writing through it)"; rm -f "$STATE/$f"; fi
+  done
   if [ -d "$STATE/reintro-plan.json" ]; then log "WARN: plan path is a directory — moving it aside"; mv "$STATE/reintro-plan.json" "$STATE/reintro-plan.json.bad-$$-$RANDOM"; fi
   if [ ! -f "$STATE/reintro-plan.json" ] || ! plan_ok "$STATE/reintro-plan.json"; then
     [ -f "$STATE/reintro-plan.json" ] && { log "WARN: drive plan corrupt — reseeding from repo"; mv "$STATE/reintro-plan.json" "$STATE/reintro-plan.json.bad-$$-$RANDOM"; }
@@ -130,6 +158,7 @@ validate_state(){   # called at start and before every cycle: state on a USB dri
     rm -f "$STATE/reintro-stage.txt"; echo "$seed" > "$STATE/reintro-stage.txt" || die "cannot write stage to $STATE"
   fi
   s0="$(read_stage)"
+  if [ "$s0" != "$((10#$s0))" ]; then s0=$((10#$s0)); rm -f "$STATE/reintro-stage.txt"; echo "$s0" > "$STATE/reintro-stage.txt"; fi
   if [ "$s0" -gt "$NB" ]; then log "WARN: stage $s0 > $NB batches — clamping"; echo "$NB" > "$STATE/reintro-stage.txt"; fi
   VALIDATED=1
 }
@@ -324,7 +353,7 @@ run_pair(){   # wait only on our lane PIDs: a bare `wait` would also block on th
   lane "$1" "$2" & a=$!
   lane "$3" "$4" & b=$!
   LANE_PIDS="$a $b"
-  wait "$a"; wait "$b"
+  wait_pid "$a"; wait_pid "$b"
   LANE_PIDS=""
 }
 
@@ -350,7 +379,7 @@ report(){
 # ---------- 5. the loop ----------
 n=0
 while :; do
-  n=$((n+1)); log "=== cycle $n ==="
+  n=$((n+1)); CYCLE_N=$n; log "=== cycle $n ==="
   free_now=$(df -Pk "$DRIVE" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
   [ "${free_now:-0}" -ge "${MIN_RUN_FREE_GB:-5}" ] || die "drive $DRIVE is nearly full (${free_now:-?}GB free, need ${MIN_RUN_FREE_GB:-5}GB) — free space and rerun; state is saved"
   prune_runs
@@ -358,13 +387,14 @@ while :; do
   validate_state
   ensure_ollama restart
   ensure_model
-  reintro_step
+  PHASE=smoke; reintro_step
   check_drive
   check_drive
-  squad
+  PHASE=lanes; squad
   check_drive
-  report
+  PHASE="report"; report; PHASE="sleep"
   [ "$CYCLES" != "0" ] && [ "$n" -ge "$CYCLES" ] && break
   sleep "${CYCLE_SLEEP:-30}" & SLEEP_PID=$!; wait "$SLEEP_PID"; SLEEP_PID=""   # backgrounded so TERM/INT act immediately
 done
 log "done. results in $OUT"
+exit 0

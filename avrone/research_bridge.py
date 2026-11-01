@@ -37,7 +37,7 @@ def validate_source(repository: str, commit_sha: str) -> tuple[str, str]:
     return repository, commit_sha
 
 
-async def verify_public_commit(repository: str, commit_sha: str) -> dict[str, Any]:
+async def verify_github_commit(repository: str, commit_sha: str) -> dict[str, Any]:
     """Resolve a pinned public commit via GitHub's API; fail closed on any ambiguity."""
     repository, commit_sha = validate_source(repository, commit_sha)
     url = f"https://api.github.com/repos/{repository}/commits/{commit_sha}"
@@ -71,7 +71,7 @@ async def verify_public_commit(repository: str, commit_sha: str) -> dict[str, An
     return {"repository": repository, "commit_sha": commit_sha, "commit_url": html_url,
             "commit_message": commit_message, "tree_sha": tree_sha, "parent_shas": parents,
             "changed_files": changed_files,
-            "verification": "github_public_commit_api_exact_sha"}
+            "verification": "github_commit_api_exact_sha"}
 
 
 DEFAULT_SOURCE_PATHS = (
@@ -153,6 +153,9 @@ def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
         answer = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
     if len(answer) > 200_000:
         raise ResearchBridgeError("agent result exceeds the 200000-character receipt limit")
+    result_bytes = _canonical_json(result)
+    if len(result_bytes) > 2_000_000:
+        raise ResearchBridgeError("complete result envelope exceeds the 2 MB receipt limit")
     payload = {
         "schema": "avrone.research-receipt.v1",
         "created_at_unix": time.time(),
@@ -161,7 +164,7 @@ def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
         "claim": claim,
         "mode": mode,
         "rounds_requested": rounds,
-        "result_digest_sha256": hashlib.sha256(_canonical_json(result)).hexdigest(),
+        "result_digest_sha256": hashlib.sha256(result_bytes).hexdigest(),
         "result": result,
         "verification_boundary": (
             "Source commit identity was checked against GitHub. The digest binds the recorded result; "

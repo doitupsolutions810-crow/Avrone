@@ -81,6 +81,7 @@ case " $* " in *" avrone.cli chat "*)
   [ -e "$STUB_DIR/chat_readonly_state" ] && chmod 555 "$S"
   if [ -e "$STUB_DIR/chat_flood" ]; then head -c 3000000 /dev/zero | tr '\0' 'x'; head -c 3000000 /dev/zero | tr '\0' 'y' >&2; fi
   [ -e "$STUB_DIR/chat_crash" ] && { echo "Traceback: boom" >&2; exit 3; }
+  if [ -e "$STUB_DIR/chat_orphan" ]; then sleep 300 & echo $! >> "$STUB_DIR/orphans"; exec sleep 300; fi
   [ -e "$STUB_DIR/chat_hang" ] && exec sleep 300
   if [ -e "$STUB_DIR/chat_smoke_pass" ]; then
     for t in $(echo "$AVRONE_TOOLS_ONLY" | tr , ' '); do echo "tool.call agent-1 $t {}" >&2; done
@@ -167,7 +168,7 @@ class Env:
         e.update(PATH=f"{self.bin}:{e['PATH']}", STUB_DIR=str(self.stub), DRIVE=str(self.drive),
                  OLLAMA_HOST=f"127.0.0.1:{self.port}", MODEL="stub-model", ONCE="1", LANES="",
                  SKIP_GATE="1", AUTOPILOT_NO_INSTALL="1", AVRONE_LLM_MODE="mock",
-                 SMOKE_TIMEOUT="60", LANE_TIMEOUT="60", CYCLE_SLEEP="0", MIN_FREE_GB="0",
+                 SMOKE_TIMEOUT="60", LANE_TIMEOUT="60", CYCLE_SLEEP="0", MIN_FREE_GB="0", MIN_RUN_FREE_GB="0",
                  PYTHONDONTWRITEBYTECODE="1")
         e.update({k: str(v) for k, v in kw.items()})
         return {k: v for k, v in e.items() if v is not None and v != "__unset__"}
@@ -202,6 +203,14 @@ def env(tmp_path, base_repos):
 
 
 def out(r): return r.stdout + r.stderr
+
+
+def sourced(envsh: Path, var: str) -> str:
+    """Value of `var` after actually sourcing env.sh under `set -u` (proves it is valid, safe shell)."""
+    r = subprocess.run(["bash", "-c", 'set -eu; source "$1"; printf %s "${!2}"', "_", str(envsh), var],
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+    assert r.returncode == 0, r.stderr
+    return r.stdout
 
 
 # ---------------- argument / drive validation ----------------
@@ -254,7 +263,7 @@ def test_happy_path_with_spaces_in_drive(tmp_path, base_repos):
     assert r.returncode == 0, out(r)
     envsh = (e.state / "env.sh").read_text()
     assert "AVRONE_PROVIDER=ollama" in envsh and "AVRONE_RECON_ALLOWLIST=127.0.0.1,localhost" in envsh
-    assert f"127.0.0.1:{e.port}/v1" in envsh and 'AVRONE_LLM_MODEL="stub-model"' in envsh
+    assert f"127.0.0.1:{e.port}/v1" in envsh and sourced(e.state / "env.sh", "AVRONE_LLM_MODEL") == "stub-model"
     assert (e.repo / "MERGE_ME.md").exists() and "Reintro stage" in (e.repo / "MERGE_ME.md").read_text()
     assert "=== cycle 1 ===" in out(r) and "done." in out(r)
     assert not (e.state / ".autopilot.lock").exists(), "lock must be released"
@@ -718,7 +727,7 @@ def test_repo_path_with_spaces_and_unicode(tmp_path, base_repos):
     e = Env(tmp_path, base_repos["patched"], drive_name="Drïve ü 2", repo_name="my repö dir")
     r = e.run(LANES="tools")
     assert r.returncode == 0, out(r)
-    assert 'AVRONE_REPO_DIR="' + str(e.repo) + '"' in (e.state / "env.sh").read_text()
+    assert sourced(e.state / "env.sh", "AVRONE_REPO_DIR") == str(e.repo)
     assert "lane tools rc=0" in out(r)
     e.kill_server()
 
@@ -742,7 +751,7 @@ def test_ctx_bounds(env, ctx, ok):
 def test_ollama_host_formats(env, fmt):
     r = env.run(OLLAMA_HOST=fmt.format(p=env.port))
     assert r.returncode == 0, out(r)
-    assert f'AVRONE_LLM_BASE_URL="http://127.0.0.1:{env.port}/v1"' in (env.state / "env.sh").read_text()
+    assert sourced(env.state / "env.sh", "AVRONE_LLM_BASE_URL") == f"http://127.0.0.1:{env.port}/v1"
 
 
 def test_model_prefix_is_not_a_match(env):
@@ -817,7 +826,7 @@ def test_legit_model_names_accepted(env, model):
     (env.stub / "models").write_text(model + "\n")
     r = env.run(MODEL=model, AUTOPILOT_RAM_GB="512")
     assert r.returncode == 0, out(r)
-    assert f'AVRONE_LLM_MODEL="{model}"' in (env.state / "env.sh").read_text()
+    assert sourced(env.state / "env.sh", "AVRONE_LLM_MODEL") == model
 
 
 @pytest.mark.parametrize("lanes", ["tools; rm -rf /", "bogus", "tools $(id)"])
@@ -985,3 +994,209 @@ def test_output_flood_from_lanes_is_contained(env):
     assert len(r.stdout) < 200_000, "lane output must go to files, not the terminal"
     run = next((env.drive / "avrone-runs").iterdir())
     assert (run / "tools.txt").stat().st_size >= 3_000_000
+
+
+
+# =====================================================================================
+# Round 4: slow-burn failures, process hygiene, stripped environments
+# =====================================================================================
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:   # zombies count as dead
+        return "Z" not in open(f"/proc/{pid}/stat").read().split(")")[-1].split()[0]
+    except OSError:
+        return True
+
+
+def _orphans(env):
+    f = env.stub / "orphans"
+    return [int(x) for x in f.read_text().split()] if f.exists() else []
+
+
+def _reap(pids):
+    for p in pids:
+        try: os.kill(p, signal.SIGKILL)
+        except ProcessLookupError: pass
+
+
+# ---------------- process hygiene ----------------
+
+@pytest.mark.parametrize("impl", ["native", "perl"])
+def test_lane_timeout_kills_grandchildren(env, impl):
+    if impl == "perl" and shutil.which("perl") is None:
+        pytest.skip("no perl")
+    env.flag("chat_orphan")
+    kw = {"AUTOPILOT_TIMEOUT_IMPL": "perl"} if impl == "perl" else {}
+    r = env.run(LANES="tools", LANE_TIMEOUT="2", SMOKE_TIMEOUT="2", **kw)
+    pids = _orphans(env)
+    try:
+        assert r.returncode == 0, out(r)
+        assert pids, "stub never spawned its grandchild"
+        time.sleep(3)
+        leaked = [p for p in pids if _alive(p)]
+        assert not leaked, f"{impl}: grandchildren survived the timeout: {leaked}"
+    finally:
+        _reap(pids)
+
+
+def test_sigterm_kills_whole_tree(env):
+    env.flag("chat_orphan")
+    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools"),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 60
+    while time.time() < deadline and len(_orphans(env)) < 1:
+        time.sleep(0.2)
+    time.sleep(1)
+    p.send_signal(signal.SIGTERM)
+    p.communicate(timeout=30)
+    env.kill_server()
+    pids = _orphans(env)
+    try:
+        assert pids
+        time.sleep(3)
+        assert not [x for x in pids if _alive(x)], "orphans left after SIGTERM"
+        assert not (env.state / ".autopilot.lock").exists()
+        assert not (env.repo / ".git" / "avrone-autopilot.lock").exists()
+    finally:
+        _reap(pids)
+
+
+# ---------------- two autopilots, one repo ----------------
+
+def test_second_autopilot_same_repo_other_drive_refused(env, tmp_path):
+    env.flag("chat_hang")
+    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools", LANE_TIMEOUT="30", SMOKE_TIMEOUT="30"),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lock = env.repo / ".git" / "avrone-autopilot.lock" / "pid"
+    deadline = time.time() + 60
+    while time.time() < deadline and not lock.exists():
+        time.sleep(0.2)
+    other = tmp_path / "drive2"; other.mkdir()
+    r = subprocess.run(["bash", str(env.repo / SCRIPT_REL)], env=env.env(DRIVE=str(other)),
+                       capture_output=True, text=True, timeout=60)
+    p.send_signal(signal.SIGTERM); p.communicate(timeout=60); env.kill_server()
+    assert r.returncode == 2 and "already using this repo" in out(r), out(r)
+
+
+def test_stale_repo_lock_recovered(env):
+    lk = env.repo / ".git" / "avrone-autopilot.lock"; lk.mkdir()
+    (lk / "pid").write_text("999999")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert not lk.exists()
+
+
+# ---------------- git crash leftovers ----------------
+
+def test_stale_index_lock_removed(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    (e.repo / ".git" / "index.lock").write_text("")
+    r = e.run()
+    assert r.returncode == 0, out(r)
+    assert "stale git index.lock" in out(r) and "def coerce_args" in (e.repo / "avrone/trinity.py").read_text()
+
+
+def test_detached_head_still_works(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    _git(e.repo, "checkout", "-q", "--detach")
+    r = e.run()
+    assert r.returncode == 0, out(r)
+    assert "def coerce_args" in (e.repo / "avrone/trinity.py").read_text()
+
+
+# ---------------- stripped / odd environments ----------------
+
+def test_home_unset(env):
+    r = env.run(HOME="__unset__")
+    assert r.returncode == 0, out(r)
+    assert "unbound variable" not in out(r)
+
+
+def test_c_locale(env):
+    r = env.run(LC_ALL="C", LANG="C")
+    assert r.returncode == 0, out(r)
+
+
+def test_bad_tmpdir(env):
+    r = env.run(TMPDIR="/nonexistent/tmp")
+    assert r.returncode == 0, out(r)
+
+
+@pytest.mark.parametrize("name", ['we$ird `x` "q"', "it's $(id) here", "a\\b"])
+def test_hostile_repo_and_drive_names_source_safely(tmp_path, base_repos, name):
+    e = Env(tmp_path, base_repos["patched"], drive_name="drv " + name, repo_name="repo " + name)
+    Path("/tmp/pwned_avrone").unlink(missing_ok=True)
+    r = e.run()
+    assert r.returncode == 0, out(r)
+    envsh = e.state / "env.sh"
+    assert sourced(envsh, "AVRONE_REPO_DIR") == str(e.repo)
+    assert sourced(envsh, "AVRONE_MCP_CONFIG") == str(e.state / "mcp.json")
+    assert not Path("/tmp/pwned_avrone").exists()
+
+
+# ---------------- long-running hygiene ----------------
+
+def test_old_runs_pruned(env):
+    runs = env.drive / "avrone-runs"; runs.mkdir(parents=True)
+    for i in range(8):
+        (runs / f"2025010{i % 10}-00000{i}-1").mkdir()
+    r = env.run(KEEP_RUNS="3")
+    assert r.returncode == 0, out(r)
+    left = sorted(p.name for p in runs.iterdir())
+    assert len(left) == 3 and "pruned 6 old run folder" in out(r)
+    assert any(n.startswith("20") and n > "2025" for n in left)
+
+
+def test_keep_runs_zero_keeps_everything(env):
+    runs = env.drive / "avrone-runs"; runs.mkdir(parents=True)
+    for i in range(5):
+        (runs / f"old-{i}").mkdir()
+    r = env.run(KEEP_RUNS="0")
+    assert r.returncode == 0 and len(list(runs.iterdir())) == 6
+
+
+def test_bad_keep_runs(env):
+    r = env.run(KEEP_RUNS="lots")
+    assert r.returncode == 1 and "KEEP_RUNS" in out(r)
+
+
+def test_drive_nearly_full_stops_before_work(env):
+    r = env.run(MIN_RUN_FREE_GB="999999", LANES="tools")
+    assert r.returncode == 1 and "nearly full" in out(r)
+    assert "lane tools start" not in out(r)
+    assert env.stage() == "7", "state must survive"
+
+
+def test_many_cycles_stay_stable(env):
+    r = env.run(LANES="tools", CYCLES="5", ONCE="0", timeout=300)
+    assert r.returncode == 0, out(r)
+    assert out(r).count("=== cycle") == 5 and "WARN: ollama is down" not in out(r)
+    assert len(list((env.drive / "avrone-runs").iterdir())) == 1
+
+
+@pytest.mark.parametrize("where", ["gate", "smoke"])
+def test_sigterm_during_long_foreground_step_is_immediate(env, where):
+    # bash defers traps until a foreground child exits; long steps must stay interruptible
+    kw = {"SKIP_GATE": "__unset__", "GATE_CMD": "sleep 300"} if where == "gate" else {"SMOKE_TIMEOUT": "300"}
+    if where == "smoke":
+        env.flag("chat_hang")
+    p = subprocess.Popen(["bash", str(env.repo / SCRIPT_REL)], env=env.env(**kw),
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    marker = "baseline gate" if where == "gate" else "smoke-testing"
+    buf, deadline = "", time.time() + 60
+    while time.time() < deadline and marker not in buf:
+        line = p.stdout.readline()
+        if not line: break
+        buf += line
+    time.sleep(1)
+    t0 = time.time()
+    p.send_signal(signal.SIGTERM)
+    o, _ = p.communicate(timeout=30)
+    env.kill_server()
+    assert time.time() - t0 < 10
+    logs = "".join(f.read_text() for f in (env.drive / "avrone-runs").glob("*/autopilot.log"))
+    assert p.returncode == 143 and "terminated" in logs

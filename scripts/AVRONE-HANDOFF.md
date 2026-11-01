@@ -148,6 +148,13 @@ inside the repo; refuses to run as root (`ALLOW_ROOT=1` to force); rejects shell
 refuses to fight a foreign hung listener on the port; times out a frozen warm-up (`WARM_TIMEOUT`,
 default 900s); and re-pulls the model if it is deleted mid-run.
 
+Long-run hygiene: a second autopilot on the same repo (even from another drive) exits 2; a stale
+git `index.lock` from a crashed git is cleared (refused if git is actually running); timeouts and
+Ctrl-C/kill take down the whole process tree (no orphaned pytest clones eating RAM), and TERM/INT
+act immediately even mid-gate or mid-smoke; old run folders are pruned (`KEEP_RUNS`, default 30,
+0 = keep all); it stops with state saved when the drive drops under `MIN_RUN_FREE_GB` (default 5);
+env.sh is shell-escaped so odd folder names ($, quotes, backticks) source safely.
+
 Useful switches: `MODEL=gpt-oss:120b` (default), `ONCE=1` (one cycle then stop),
 `CYCLES=N` (stop after N cycles; default: loop forever), `SKIP_GATE=1` (not recommended),
 `LANES="deepcov newmods tools robust"`.

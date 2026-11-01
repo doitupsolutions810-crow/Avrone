@@ -31,7 +31,7 @@ DRIVE="${DRIVE%/}"
 DRIVE_REAL="$(cd -P "$DRIVE" && pwd)"; REPO_REAL="$(cd -P "$REPO" && pwd)"
 [ "$DRIVE_REAL" = / ] && die "DRIVE must not be the filesystem root"
 case "$DRIVE_REAL/" in "$REPO_REAL"/*) die "DRIVE must not be inside the repo ($REPO) — state would end up in git";; esac
-[ "$DRIVE_REAL" = "$HOME" ] && die "DRIVE must not be your home folder — point it at the external drive"
+[ -n "${HOME:-}" ] && [ "$DRIVE_REAL" = "$(cd -P "$HOME" 2>/dev/null && pwd)" ] && die "DRIVE must not be your home folder — point it at the external drive"
 [ -w "$DRIVE" ] && touch "$DRIVE/.avrone-write-test" 2>/dev/null && rm -f "$DRIVE/.avrone-write-test" \
   || die "drive $DRIVE is not writable"
 
@@ -59,6 +59,7 @@ OUT="$RUNS/$(date +%Y%m%d-%H%M%S)-$$"; mkdir -p "$OUT" || die "cannot create $OU
 
 # ---------- single-instance lock (mkdir is atomic; works on macOS without flock) ----------
 LOCK="$STATE/.autopilot.lock"
+KEEP_RUNS="${KEEP_RUNS:-30}"; case "$KEEP_RUNS" in ''|*[!0-9]*) die "KEEP_RUNS must be an integer";; esac
 if ! mkdir "$LOCK" 2>/dev/null; then
   other="$(cat "$LOCK/pid" 2>/dev/null || true)"
   if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
@@ -75,12 +76,16 @@ check_drive(){   # on macOS an unplugged /Volumes/X must never be silently recre
 }
 
 OLLAMA_PID=""; LANE_PIDS=""; SLEEP_PID=""
+bg_wait(){ "$@" & local p=$!; wait "$p"; }   # TERM/INT act at once even during long steps
+descendants(){ local c; for c in $(pgrep -P "$1" 2>/dev/null); do descendants "$c"; echo "$c"; done; }
 cleanup(){
   local rc=$?
   for p in $LANE_PIDS $SLEEP_PID; do kill "$p" 2>/dev/null; done
-  pkill -P $$ 2>/dev/null   # any other child still holding our stdout
+  local tree; tree="$(descendants $$)"   # collect first, then kill: lanes -> timeout -> python -> pytest clones
+  [ -n "$tree" ] && { kill $tree 2>/dev/null; sleep 1; kill -9 $tree 2>/dev/null; }
   [ -n "$OLLAMA_PID" ] && kill "$OLLAMA_PID" 2>/dev/null
   [ -z "${LOCK_GONE:-}" ] && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
+  [ -n "${RLOCK:-}" ] && [ "$(cat "$RLOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$RLOCK"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -130,6 +135,12 @@ validate_state(){   # called at start and before every cycle: state on a USB dri
 }
 VALIDATED=""
 validate_state
+prune_runs(){ local all n d
+  all="$(ls -1d "$RUNS"/*/ 2>/dev/null | sort)"; n=$(printf '%s\n' "$all" | grep -c .)
+  [ "$KEEP_RUNS" -gt 0 ] && [ "$n" -gt "$KEEP_RUNS" ] || return 0
+  printf '%s\n' "$all" | head -n $((n-KEEP_RUNS)) | while IFS= read -r d; do
+    [ "${d%/}" = "$OUT" ] || rm -rf "${d%/}"; done
+  log "pruned $((n-KEEP_RUNS)) old run folder(s) (KEEP_RUNS=$KEEP_RUNS)"; }
 log "AVRONE autopilot  repo=$REPO  drive=$DRIVE  model=$MODEL  stage=$(read_stage)/$NB  pid=$$"
 
 # RAM sanity for the big models (warn only; Apple Silicon unified memory)
@@ -148,16 +159,32 @@ if command -v caffeinate >/dev/null; then caffeinate -ims -w $$ >/dev/null 2>&1 
 trap 'log "SIGHUP (terminal closed) — ignoring, still running; stop with: kill $$"' HUP
 BREW_OK=""
 need_brew(){ command -v brew >/dev/null || die "Homebrew is required to install $1 — get it at https://brew.sh"; }
-if command -v timeout >/dev/null; then TO=timeout
+if [ "${AUTOPILOT_TIMEOUT_IMPL:-}" = perl ]; then TO=perl_timeout
+elif command -v timeout >/dev/null; then TO=timeout
 elif command -v gtimeout >/dev/null; then TO=gtimeout
 elif command -v brew >/dev/null && brew install coreutils >/dev/null 2>&1 && command -v gtimeout >/dev/null; then TO=gtimeout
 else TO=perl_timeout; fi
-perl_timeout(){ local s="$1"; shift; perl -e 'my $s=shift; my $p=fork; if(!$p){exec @ARGV or exit 127} $SIG{ALRM}=sub{kill "TERM",$p; sleep 2; kill "KILL",$p; exit 124}; alarm $s; waitpid($p,0); exit($?>>8)' "$s" "$@"; }
+# child gets its own process group so a timeout also kills its grandchildren (pytest clones etc.)
+perl_timeout(){ local s="$1"; shift; perl -e 'my $s=shift; my $p=fork; if(!$p){setpgrp(0,0); exec @ARGV or exit 127} $SIG{ALRM}=sub{kill "-TERM",$p; sleep 2; kill "-KILL",$p; exit 124}; $SIG{TERM}=sub{kill "-TERM",$p; exit 143}; alarm $s; waitpid($p,0); exit($?>>8)' "$s" "$@"; }
 : "$BREW_OK"
 
 # ---------- 1. repo hygiene + carried patches ----------
 cd "$REPO" || die "cannot cd to $REPO"
 git rev-parse --git-dir >/dev/null 2>&1 || die "no git repo at $REPO"
+GITDIR="$(cd "$(git rev-parse --git-dir)" && pwd)"
+RLOCK="$GITDIR/avrone-autopilot.lock"
+if ! mkdir "$RLOCK" 2>/dev/null; then
+  rother="$(cat "$RLOCK/pid" 2>/dev/null)"
+  if [ -n "$rother" ] && [ "$rother" != "$$" ] && kill -0 "$rother" 2>/dev/null; then
+    RLOCK=""; log "another autopilot (pid $rother) is already using this repo (different drive?) — exiting"; exit 2
+  fi
+  rm -rf "$RLOCK"; mkdir "$RLOCK" 2>/dev/null || { RLOCK=""; log "lost the repo lock race — exiting"; exit 2; }
+fi
+echo $$ > "$RLOCK/pid"
+if [ -f "$GITDIR/index.lock" ]; then
+  if pgrep -x git >/dev/null 2>&1; then die "git is running on this machine and $GITDIR/index.lock exists — wait for it, then rerun"; fi
+  log "WARN: stale git index.lock (crashed git?) — removing it"; rm -f "$GITDIR/index.lock"
+fi
 [ -d "$(git rev-parse --git-dir)/rebase-apply" ] && { log "WARN: leftover git am in progress — aborting it"; git am --abort 2>/dev/null; }
 # agents/ is AVRONE's runtime per-agent home (agentfs: <workspace>/agents). It is recreated on every
 # run, so never delete it — keep it out of git via the clone-local exclude file instead.
@@ -207,7 +234,7 @@ ensure_model(){
   free_gb=$(df -Pk "$DRIVE" | awk 'NR==2{print int($4/1048576)}')
   [ "${free_gb:-0}" -ge "$need_gb" ] || die "not enough space on $DRIVE for $MODEL: ${free_gb}GB free, need ${need_gb}GB (set MIN_FREE_GB to override)"
   log "pulling $MODEL (large; ${free_gb}GB free)"
-  ok=""; for attempt in 1 2 3; do ollama pull "$MODEL" && { ok=1; break; }; log "WARN: pull attempt $attempt failed"; sleep $((attempt*5)); done
+  ok=""; for attempt in 1 2 3; do bg_wait ollama pull "$MODEL" && { ok=1; break; }; log "WARN: pull attempt $attempt failed"; sleep $((attempt*5)); done
   [ -n "$ok" ] || die "could not pull $MODEL after 3 attempts"
 }
 ensure_model
@@ -226,24 +253,25 @@ if [ -d .venv ] && ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_
 [ -f .venv/bin/activate ] || { rm -rf .venv; die "broken .venv (no activate) — rerun"; }
 # shellcheck disable=SC1091
 source .venv/bin/activate
-if [ "${AUTOPILOT_NO_INSTALL:-0}" != "1" ]; then pip install -q -e ".[dev]" > "$OUT/pip.log" 2>&1 || die "pip install failed (see $OUT/pip.log)"; fi
+if [ "${AUTOPILOT_NO_INSTALL:-0}" != "1" ]; then bg_wait pip install -q -e ".[dev]" > "$OUT/pip.log" 2>&1 || die "pip install failed (see $OUT/pip.log)"; fi
 if [ "${SKIP_GATE:-0}" != "1" ]; then
   GATE_CMD="${GATE_CMD:-python -m pytest -q -p no:cacheprovider -m 'not integration'}"
   log "baseline gate: $GATE_CMD"
-  if ! bash -c "$GATE_CMD" > "$OUT/baseline.txt" 2>&1; then
+  if ! bg_wait bash -c "$GATE_CMD" > "$OUT/baseline.txt" 2>&1; then
     log "baseline RED — fix main before evolving:"; tail -20 "$OUT/baseline.txt"; exit 1
   fi
   log "baseline: $(tail -1 "$OUT/baseline.txt")"
 fi
 
 # ---------- 4. coherent env for every bridge ----------
+q(){ printf '%q' "$1"; }   # paths may contain $, quotes, backticks, spaces: escape for safe sourcing
 cat > "$STATE/env.sh" <<EOF
-export AVRONE_PROVIDER=ollama AVRONE_LLM_BASE_URL="$OURL/v1"
-export AVRONE_LLM_MODEL="$MODEL" AVRONE_LEAD_MODEL="$MODEL" AVRONE_LLM_FALLBACKS=""
+export AVRONE_PROVIDER=ollama AVRONE_LLM_BASE_URL=$(q "$OURL/v1")
+export AVRONE_LLM_MODEL=$(q "$MODEL") AVRONE_LEAD_MODEL=$(q "$MODEL") AVRONE_LLM_FALLBACKS=""
 export AVRONE_LLM_TIMEOUT=900 AVRONE_LLM_RETRIES=2
 export AVRONE_RUNNER=local AVRONE_SELF_CHANGES=allow AVRONE_SELF_EVOLVE=allow
-export AVRONE_WORKSPACE="$REPO" AVRONE_REPO_DIR="$REPO" AVRONE_SKILLS_DIR="$REPO/skills" AVRONE_PLUGINS_DIR="$REPO/plugins"
-export AVRONE_MCP_CONFIG="$STATE/mcp.json"
+export AVRONE_WORKSPACE=$(q "$REPO") AVRONE_REPO_DIR=$(q "$REPO") AVRONE_SKILLS_DIR=$(q "$REPO/skills") AVRONE_PLUGINS_DIR=$(q "$REPO/plugins")
+export AVRONE_MCP_CONFIG=$(q "$STATE/mcp.json")
 export AVRONE_RECON_ALLOWLIST=127.0.0.1,localhost
 export AVRONE_BRIDGE_MAX_POSTS=1000 AVRONE_MAX_PARALLEL=2
 export NO_PROXY=127.0.0.1,localhost
@@ -272,7 +300,7 @@ reintro_step(){   # Track A: smoke-test the next batch; advance when coherent
   log "reintro stage $S/$NB — smoke-testing: $NEXT"
   P="Tool check. Reply ONLY with one JSON object {\"tool\":NAME,\"args\":{...}} per turn. Call each of these tools exactly once with small, safe, valid arguments (read each tool's args doc; use path '.', text 'hello', host 127.0.0.1 where needed): $NEXT. Guardrails: port_scan only 127.0.0.1 with authorized=true and <=5 ports; shell/priv_shell/priv_admin only read-only commands (id, uname -a, df -h); fs_delete only a file you created; docker_run/env_install only if available (an 'unavailable' error counts as exercised); bridge_post then bridge_read then bridge_reply on the same post; spawn one tiny sub-agent with a one-line task. Finish with one line per tool: NAME OK or FAIL."
   AVRONE_TOOLS_ONLY="$CUR,$NEXT" AVRONE_MAX_STEPS=$(( $(echo "$NEXT" | tr , '\n' | wc -l) * 2 + 6 )) \
-  AVRONE_DATA_DIR="$DATA/smoke" $TO "${SMOKE_TIMEOUT:-1800}" python -m avrone.cli chat "$P" > "$OUT/smoke-$S.txt" 2> "$OUT/smoke-$S.err"
+  AVRONE_DATA_DIR="$DATA/smoke" bg_wait $TO "${SMOKE_TIMEOUT:-1800}" python -m avrone.cli chat "$P" > "$OUT/smoke-$S.txt" 2> "$OUT/smoke-$S.err"
   python3 "$JUDGE" "$OUT/smoke-$S.err" "$NEXT" "$STATE/reintro-stage.txt" "$S" | tee -a "$OUT/autopilot.log"
 }
 
@@ -323,6 +351,9 @@ report(){
 n=0
 while :; do
   n=$((n+1)); log "=== cycle $n ==="
+  free_now=$(df -Pk "$DRIVE" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
+  [ "${free_now:-0}" -ge "${MIN_RUN_FREE_GB:-5}" ] || die "drive $DRIVE is nearly full (${free_now:-?}GB free, need ${MIN_RUN_FREE_GB:-5}GB) — free space and rerun; state is saved"
+  prune_runs
   check_drive
   validate_state
   ensure_ollama restart

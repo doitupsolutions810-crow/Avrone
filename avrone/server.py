@@ -411,9 +411,10 @@ async def research_debate(body: ResearchDebateIn, request: Request,
         "squad": squad_result,
         "review": review_result,
     }
+    result["source_files"] = source_files
     try:
         receipt = write_receipt(settings.data_dir, run_id=run_id, source=source,
-                                claim=claim, mode="deep", rounds=rounds, result=result)
+                                claim=claim, mode="squad_then_deep", rounds=rounds, result=result)
     except ResearchBridgeError as exc:
         raise HTTPException(500, f"council finished but receipt could not be written: {exc}") from None
     core().codex.emit(run_id, "research.receipt", "ResearchBridge",

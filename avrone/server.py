@@ -312,6 +312,7 @@ class ResearchDebateIn(BaseModel):
     commit_sha: str
     claim: str
     rounds: int = 2
+    source_paths: list[str] = []
 
 
 @app.post("/api/research/debate")
@@ -323,7 +324,7 @@ async def research_debate(body: ResearchDebateIn, request: Request,
     token or an authenticated reverse proxy; no credential is accepted from query params.
     """
     require_local(request, x_admin_token)
-    from .research_bridge import ResearchBridgeError, verify_public_commit, write_receipt
+    from .research_bridge import ResearchBridgeError, fetch_source_files, verify_public_commit, write_receipt
 
     claim = body.claim.strip()
     if not claim or len(claim) > 4000:
@@ -335,21 +336,33 @@ async def research_debate(body: ResearchDebateIn, request: Request,
         raise HTTPException(422, str(exc)) from None
 
     run_id = uuid.uuid4().hex[:12]
+    try:
+        source_files = await fetch_source_files(body.repository, body.commit_sha, body.source_paths)
+    except ResearchBridgeError as exc:
+        raise HTTPException(422, str(exc)) from None
+    fetched = [item for item in source_files if item.get("status") == "fetched"]
+    source_context = "\n\n".join(
+        f"### FILE {item['path']} (blob {item['blob_sha']}; truncated={item['truncated']})\n"
+        f"{item['content']}" for item in fetched
+    )
+    source_manifest = [{k: v for k, v in item.items() if k != "content"} for item in source_files]
     task = (
-        "Run an adversarial mathematical and software-research review. Treat the pinned repository "
-        "commit as context, not as proof. Assign distinct review angles to algebra, topology/domain "
-        "semantics, numerical analysis, and skeptical falsification. Seek explicit counterexamples; "
-        "separate observed source facts, derived results, assumptions, conjectures, and unverified claims. "
-        "Do not claim tests were run unless actual run evidence exists. Report disagreement and unresolved "
-        "proof obligations.\n\n"
+        "Run an adversarial mathematical and software-research review using the source snapshot below. "
+        "The source snapshot is read-only evidence at a pinned commit; it is not proof that repository "
+        "tests pass. Assign distinct review angles to algebra, topology/domain semantics, numerical analysis, "
+        "and skeptical falsification. Seek explicit counterexamples; separate observed source facts, derived "
+        "results, assumptions, conjectures, and unverified claims. Do not claim tests were run unless actual "
+        "run evidence exists. Report disagreement and unresolved proof obligations.\n\n"
         f"PINNED SOURCE: {source['repository']}@{source['commit_sha']} ({source['commit_url']})\n"
-        f"RESEARCH CLAIM: {claim}"
+        f"COMMIT MESSAGE: {source.get('commit_message', '')}\n"
+        f"CHANGED PATHS: {json.dumps(source.get('changed_files', []), ensure_ascii=False)}\n"
+        f"FETCHED SOURCE MANIFEST: {json.dumps(source_manifest, ensure_ascii=False)}\n\n"
+        f"RESEARCH CLAIM: {claim}\n\nSOURCE EXCERPTS:\n{source_context}"
     )
     first_answer = (
         "Initial claim supplied for adversarial review (not pre-verified): " + claim + "\n\n"
-        "Source identity was resolved by the GitHub public commit API at the exact SHA above. "
-        "No source code was executed by this endpoint. Inspect only source evidence available to the "
-        "connected agent tools; clearly say if repository content was not actually fetched."
+        "The endpoint resolved the exact public commit SHA and fetched the listed source excerpts at that SHA. "
+        "No source code was executed by this endpoint. Distinguish inspected text from execution/test evidence."
     )
     try:
         # First pass: planner + parallel workers + lead synthesis + bridge cross-examination.

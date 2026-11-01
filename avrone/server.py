@@ -352,11 +352,30 @@ async def research_debate(body: ResearchDebateIn, request: Request,
         "connected agent tools; clearly say if repository content was not actually fetched."
     )
     try:
-        result = await core().deep(task, first_answer, n=4, run_id=run_id, rounds=rounds)
+        # First pass: planner + parallel workers + lead synthesis + bridge cross-examination.
+        squad_result = await core().squad(task, n=4, run_id=run_id)
+        initial_answer = str(squad_result.get("answer") or "")
+        if not initial_answer.strip():
+            raise RuntimeError("squad returned no usable synthesis")
+        # Second pass: independent deep reviewers challenge the first synthesis.
+        review_run_id = run_id + "d"
+        review_result = await core().deep(
+            task, first_answer=initial_answer, n=4, run_id=review_run_id, rounds=rounds
+        )
+        final_answer = str(review_result.get("answer") or "")
+        result = {
+            "run_id": run_id,
+            "mode": "squad_then_deep",
+            "squad_run_id": run_id,
+            "review_run_id": review_run_id,
+            "answer": final_answer,
+            "squad": squad_result,
+            "review": review_result,
+        }
     except Exception as exc:
         core().codex.emit(run_id, "error", "ResearchBridge",
                           message=f"research council failed: {type(exc).__name__}")
-        raise HTTPException(502, "research council failed; inspect the AVRONE run log") from None
+        raise HTTPException(502, "research council failed; inspect the AVRONE run logs") from None
     if not isinstance(result, dict):
         result = {"run_id": run_id, "answer": str(result)}
     result.setdefault("run_id", run_id)

@@ -291,8 +291,15 @@ ollama_up(){ curl -s -m 5 "$OURL/api/version" 2>/dev/null | grep -q '"version"';
 http_code(){ curl -s -m 5 -o /dev/null -w '%{http_code}' "$OURL/api/version" 2>/dev/null; }
 port_open(){ python3 -c "import socket,sys;h,p=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(2);sys.exit(0 if s.connect_ex((h,int(p)))==0 else 1)" "$OHOST" 2>/dev/null; }
 OLLAMA_RESTARTS=0
+OLLAMA_FOREIGN=""   # 1 = the server answering on $OHOST was not started by this run (e.g. the Ollama menu-bar app)
 ensure_ollama(){
-  ollama_up && return 0
+  if ollama_up; then
+    if [ -z "$OLLAMA_PID" ] || ! kill -0 "$OLLAMA_PID" 2>/dev/null; then
+      [ -z "$OLLAMA_FOREIGN" ] && log "using an Ollama that was already running on $OHOST (not started by the autopilot)"
+      OLLAMA_FOREIGN=1; OLLAMA_PID=""
+    fi
+    return 0
+  fi
   [ "$1" = "restart" ] && { OLLAMA_RESTARTS=$((OLLAMA_RESTARTS+1)); log "WARN: ollama is down — restarting (#$OLLAMA_RESTARTS)"; }
   [ "$OLLAMA_RESTARTS" -gt 3 ] && die "ollama keeps dying (>3 restarts); see $DRIVE/ollama.log"
   [ -n "$OLLAMA_PID" ] && { kill "$OLLAMA_PID" 2>/dev/null; sleep 1; kill -9 "$OLLAMA_PID" 2>/dev/null; }
@@ -303,24 +310,89 @@ ensure_ollama(){
   log "starting ollama serve on $OHOST (ctx=$CTX)"
   nohup ollama serve >> "$DRIVE/ollama.log" 2>&1 &
   OLLAMA_PID=$!
-  for _ in $(seq 1 40); do ollama_up && return 0; kill -0 "$OLLAMA_PID" 2>/dev/null || break; sleep 1; done
+  OLLAMA_FOREIGN=""
+  for _ in $(seq 1 40); do
+    if ollama_up; then
+      # an answer on the port is not proof it is OUR serve: a racing Ollama app can win the bind and ours exits
+      sleep 1
+      kill -0 "$OLLAMA_PID" 2>/dev/null && return 0
+      log "WARN: our ollama serve exited but another Ollama came up on $OHOST — using it"; OLLAMA_PID=""; OLLAMA_FOREIGN=1; return 0
+    fi
+    kill -0 "$OLLAMA_PID" 2>/dev/null || break; sleep 1
+  done
+  # race: the Ollama app (or a second terminal) grabbed the port between our check and our serve
+  if ! kill -0 "$OLLAMA_PID" 2>/dev/null; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ollama_up; then log "WARN: our ollama serve exited but another Ollama came up on $OHOST — using it"; OLLAMA_PID=""; OLLAMA_FOREIGN=1; return 0; fi
+      sleep 1
+    done
+  fi
   die "ollama did not start; see $DRIVE/ollama.log"
 }
 ensure_ollama start
-has_model(){ local want="$MODEL"; case "$want" in *:*) ;; *) want="$want:latest";; esac
-  ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qxF -e "$MODEL" -e "$want"; }
+MODEL_LIST=""
+list_models(){   # a hung server must not hang us: `ollama list` gets a deadline
+  local rc; MODEL_LIST="$($TO "${LIST_TIMEOUT:-60}" ollama list 2>/dev/null)"; rc=$?
+  [ "$rc" = 124 ] || [ "$rc" = 137 ] && die "ollama is not answering 'ollama list' (hung for ${LIST_TIMEOUT:-60}s) — quit Ollama (pkill ollama) and rerun"
+  return 0; }
+listed(){ printf '%s\n' "$MODEL_LIST" | awk 'NR>1{print $1}' | grep -qxF -e "$1" -e "$1:latest"; }
+has_model(){ list_models; listed "$MODEL"; }
 ensure_model(){
   has_model && return 0
-  local need_gb free_gb ok attempt
+  local need_gb free_gb ok attempt plog
+  if [ -n "$OLLAMA_FOREIGN" ] && [ -z "${REUSE_OLLAMA:-}" ]; then
+    die "$MODEL is not in the Ollama that is already running (likely the Ollama app, which keeps models in ~/.ollama, not on $DRIVE). Quit the Ollama app and rerun so the autopilot starts its own, or set REUSE_OLLAMA=1 to download into that Ollama anyway"
+  fi
   need_gb="${MIN_FREE_GB:-80}"
-  free_gb=$(df -Pk "$DRIVE" | awk 'NR==2{print int($4/1048576)}')
-  [ "${free_gb:-0}" -ge "$need_gb" ] || die "not enough space on $DRIVE for $MODEL: ${free_gb}GB free, need ${need_gb}GB (set MIN_FREE_GB to override)"
-  log "pulling $MODEL (large; ${free_gb}GB free)"
-  ok=""; for attempt in 1 2 3; do bg_wait ollama pull "$MODEL" && { ok=1; break; }; log "WARN: pull attempt $attempt failed"; sleep $((attempt*5)); done
-  [ -n "$ok" ] || die "could not pull $MODEL after 3 attempts"
+  if [ -n "$OLLAMA_FOREIGN" ]; then log "WARN: REUSE_OLLAMA=1 — the download goes wherever that Ollama keeps models, not necessarily $DRIVE"
+  else
+    free_gb=$(df -Pk "$DRIVE" | awk 'NR==2{print int($4/1048576)}')
+    [ "${free_gb:-0}" -ge "$need_gb" ] || die "not enough space on $DRIVE for $MODEL: ${free_gb}GB free, need ${need_gb}GB (set MIN_FREE_GB to override)"
+  fi
+  plog="$OUT/pull.log"
+  log "pulling $MODEL (large${free_gb:+; ${free_gb}GB free}) — progress: tail -f $plog"
+  ok=""; for attempt in 1 2 3; do
+    if bg_wait ollama pull "$MODEL" >> "$plog" 2>&1; then
+      has_model && { ok=1; break; }
+      log "WARN: pull said success but $MODEL is not listed (attempt $attempt)"
+    else
+      # failures that no retry can fix: stop now with the real reason
+      if grep -qiE 'requires a newer version|newer version of ollama|please upgrade' "$plog"; then
+        die "$MODEL needs a newer Ollama — run: brew upgrade ollama (then rerun)"
+      elif grep -qiE 'file does not exist|manifest unknown|pull model manifest: (file does not exist|not found)|model .* not found' "$plog"; then
+        die "model '$MODEL' was not found in the Ollama library — check the name (e.g. gpt-oss:120b)"
+      elif grep -qiE 'no space left on device' "$plog"; then
+        die "ran out of disk space while downloading $MODEL — free space on $DRIVE and rerun (the partial download resumes)"
+      fi
+      log "WARN: pull attempt $attempt failed"
+    fi
+    sleep $((attempt*5))
+  done
+  if [ -z "$ok" ]; then
+    grep -qiE 'no such host|dial tcp|i/o timeout|connection refused|network is unreachable|TLS handshake' "$plog" \
+      && die "could not pull $MODEL after 3 attempts — the network looks down (see $plog)"
+    die "could not pull $MODEL after 3 attempts (see $plog)"
+  fi
+}
+RUN_MODEL="$MODEL"
+# an Ollama we did not start never saw OLLAMA_CONTEXT_LENGTH and may truncate AVRONE's ~5k-token prompts
+# to its default context; bake the context into a derived model so it holds whichever server answers
+ensure_ctx_model(){
+  RUN_MODEL="$MODEL"
+  [ -n "$OLLAMA_FOREIGN" ] || return 0
+  local d mf; d="avrone-$(printf '%s' "$MODEL" | tr 'A-Z:/+' 'a-z---'):ctx$CTX"
+  list_models; listed "$d" && { RUN_MODEL="$d"; return 0; }
+  mf="$STATE/Modelfile.ctx"; rm -f "$mf"
+  printf 'FROM %s\nPARAMETER num_ctx %s\n' "$MODEL" "$CTX" > "$mf"
+  if $TO 300 ollama create "$d" -f "$mf" >> "$OUT/autopilot.log" 2>&1; then
+    RUN_MODEL="$d"; log "context $CTX baked into $d (the running Ollama was not started with it)"
+  else
+    log "WARN: could not create $d — the running Ollama may use a short default context; quit the Ollama app and rerun for full context"
+  fi
 }
 ensure_model
-warm="$($TO "${WARM_TIMEOUT:-900}" ollama run "$MODEL" 'reply with the single word ready' </dev/null 2>/dev/null | tr -d '\n' | head -c 60)"
+ensure_ctx_model
+warm="$($TO "${WARM_TIMEOUT:-900}" ollama run "$RUN_MODEL" 'reply with the single word ready' </dev/null 2>/dev/null | tr -d '\n' | head -c 60)"
 [ -n "$warm" ] || die "$MODEL produced no output on warm-up within ${WARM_TIMEOUT:-900}s; check $DRIVE/ollama.log (out of memory?)"
 log "warming $MODEL: $warm"
 
@@ -349,7 +421,7 @@ fi
 q(){ printf '%q' "$1"; }   # paths may contain $, quotes, backticks, spaces: escape for safe sourcing
 cat > "$STATE/env.sh" <<EOF
 export AVRONE_PROVIDER=ollama AVRONE_LLM_BASE_URL=$(q "$OURL/v1")
-export AVRONE_LLM_MODEL=$(q "$MODEL") AVRONE_LEAD_MODEL=$(q "$MODEL") AVRONE_LLM_FALLBACKS=""
+export AVRONE_LLM_MODEL=$(q "$RUN_MODEL") AVRONE_LEAD_MODEL=$(q "$RUN_MODEL") AVRONE_LLM_FALLBACKS=""
 export AVRONE_LLM_TIMEOUT=900 AVRONE_LLM_RETRIES=2
 export AVRONE_RUNNER=local AVRONE_SELF_CHANGES=allow AVRONE_SELF_EVOLVE=allow
 export AVRONE_WORKSPACE=$(q "$REPO") AVRONE_REPO_DIR=$(q "$REPO") AVRONE_SKILLS_DIR=$(q "$REPO/skills") AVRONE_PLUGINS_DIR=$(q "$REPO/plugins")
@@ -440,6 +512,8 @@ while :; do
   validate_state
   ensure_ollama restart
   ensure_model
+  ensure_ctx_model
+  export AVRONE_LLM_MODEL="$RUN_MODEL" AVRONE_LEAD_MODEL="$RUN_MODEL"   # the server may have changed under us
   PHASE=smoke; reintro_step
   check_drive
   check_drive

@@ -201,3 +201,10 @@ merge without his word.
 - If you're in the middle of a merge, cherry-pick, revert, rebase, or bisect, the run refuses to start and changes nothing.
 - On a detached HEAD, the carried patches go onto a new `avrone-autopilot` branch instead of a commit that would get lost. Shallow clones and `git worktree` checkouts work.
 - Login/cron style starts: Homebrew bin folders are added to a stripped PATH. A missing HOME falls back to `$DRIVE/avrone-home`. A dead or read-only TMPDIR is dropped. A umask that blocks the owner is reset to 022.
+
+## Round 8 hardening (when Ollama itself misbehaves)
+- **If the Ollama app is already running:** the autopilot uses it but never downloads into it, since the app keeps models in ~/.ollama on the internal disk, not on $DRIVE. If the model is missing there, the run stops and tells you to quit the app. `REUSE_OLLAMA=1` overrides that.
+- **Context:** an Ollama the autopilot didn't start never got OLLAMA_CONTEXT_LENGTH. So the context is baked into a derived model, `avrone-<model>:ctx<CTX>` (FROM model + PARAMETER num_ctx), and AVRONE uses that. If that fails, the run warns and uses the base model.
+- **Startup race:** if the Ollama app grabs the port while our `ollama serve` is starting, ours exits. The autopilot detects this and treats the winner as not ours, instead of assuming it started it.
+- **Hung `ollama list`:** it now has a deadline (LIST_TIMEOUT, default 60s).
+- **Pull failures are classified.** "Needs newer Ollama", "model not found" and "disk full" stop right away with the fix. Network errors retry 3 times, then say the network looks down. A pull that exits 0 without the model showing up is counted as a failure. Pull progress goes to `$OUT/pull.log`.

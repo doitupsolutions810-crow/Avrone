@@ -37,6 +37,14 @@ log("ollama " + " ".join(sys.argv[1:]))
 models = os.path.join(D, "models")
 if cmd == "serve":
     if flag("serve_fail"): sys.exit(1)
+    if flag("serve_race"):
+        # another Ollama (the menu-bar app) grabs the port first; ours then dies with "address in use"
+        os.remove(os.path.join(D, "serve_race"))
+        import subprocess, time
+        subprocess.Popen([sys.argv[0], "serve"], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
+        print("Error: listen tcp: bind: address already in use", file=sys.stderr); sys.exit(1)
     open(os.path.join(D, "serve.pid"), "w").write(str(os.getpid()))
     host, port = os.environ["OLLAMA_HOST"].rsplit(":", 1)
     maxreq = int(open(os.path.join(D, "max_req")).read()) if flag("max_req") else 0
@@ -53,12 +61,22 @@ if cmd == "serve":
     srv = http.server.HTTPServer((host, int(port)), H)
     srv.serve_forever(); sys.exit(0)
 if cmd == "list":
+    if flag("list_hang"):
+        import time; time.sleep(300)
     print("NAME ID SIZE MODIFIED")
     if os.path.exists(models):
         for m in open(models).read().split():
             print(f"{m} abc 1GB now")
     sys.exit(0)
+if cmd == "create":
+    if flag("create_fail"): print("Error: create failed", file=sys.stderr); sys.exit(1)
+    mf = sys.argv[sys.argv.index("-f") + 1]
+    open(os.path.join(D, "created_modelfile"), "w").write(open(mf).read())
+    open(models, "a").write(sys.argv[2] + "\n"); sys.exit(0)
 if cmd == "pull":
+    if flag("pull_msg"):
+        print(open(os.path.join(D, "pull_msg")).read(), file=sys.stderr); sys.exit(1)
+    if flag("pull_noop"): sys.exit(0)
     if flag("pull_fail"): sys.exit(1)
     open(models, "a").write(sys.argv[2] + "\n"); sys.exit(0)
 if cmd == "run":
@@ -1814,3 +1832,140 @@ def test_hostile_umask(env, mask):
     assert r.returncode == 0, out(r)
     st = env.state / "reintro-stage.txt"
     assert st.exists() and os.access(st, os.R_OK | os.W_OK)
+
+
+# =====================================================================================
+# Round 8: talking to Ollama when Ollama misbehaves (foreign server, context, pulls, hangs)
+# =====================================================================================
+
+class _ForeignOllama:
+    """An Ollama the autopilot did not start (stands in for the Ollama menu-bar app)."""
+    def __init__(self, env):
+        self.env = env
+        self.p = subprocess.Popen([str(env.bin / "ollama"), "serve"], env=env.env(),
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", env.port), 0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+    def run(self, **kw):
+        r = subprocess.run([BASH, str(self.env.repo / SCRIPT_REL)], env=self.env.env(**kw),
+                           capture_output=True, text=True, timeout=180)
+        return r
+    def close(self):
+        self.p.kill(); self.p.wait()
+
+
+def _envsh(env): return (env.state / "env.sh").read_text()
+
+
+def test_foreign_ollama_gets_context_baked_in(env):
+    f = _ForeignOllama(env)
+    try:
+        r = f.run(CTX="32768")
+        assert f.p.poll() is None, "killed an Ollama it did not start"
+    finally:
+        f.close()
+    assert r.returncode == 0, out(r)
+    assert "ollama create avrone-stub-model:ctx32768" in env.calls()
+    assert "PARAMETER num_ctx 32768" in (env.stub / "created_modelfile").read_text()
+    assert "avrone-stub-model:ctx32768" in _envsh(env)
+
+
+def test_foreign_ollama_derived_model_reused_not_recreated(env):
+    (env.stub / "models").write_text("stub-model\navrone-stub-model:ctx32768\n")
+    f = _ForeignOllama(env)
+    try:
+        r = f.run(CTX="32768")
+    finally:
+        f.close()
+    assert r.returncode == 0, out(r)
+    assert "ollama create" not in env.calls()
+    assert "avrone-stub-model:ctx32768" in _envsh(env)
+
+
+def test_foreign_ollama_create_fails_falls_back(env):
+    env.flag("create_fail")
+    f = _ForeignOllama(env)
+    try:
+        r = f.run()
+    finally:
+        f.close()
+    assert r.returncode == 0, out(r)
+    assert "could not create" in out(r)
+    assert "AVRONE_LLM_MODEL=stub-model" in _envsh(env)
+
+
+def test_foreign_ollama_missing_model_never_downloads_to_internal_disk(env):
+    (env.stub / "models").write_text("")
+    f = _ForeignOllama(env)
+    try:
+        r = f.run()
+    finally:
+        f.close()
+    assert r.returncode == 1, out(r)
+    assert "Quit the Ollama app" in out(r)
+    assert "ollama pull" not in env.calls()
+
+
+def test_foreign_ollama_missing_model_reuse_opt_in(env):
+    (env.stub / "models").write_text("")
+    f = _ForeignOllama(env)
+    try:
+        r = f.run(REUSE_OLLAMA="1")
+    finally:
+        f.close()
+    assert r.returncode == 0, out(r)
+    assert "ollama pull stub-model" in env.calls()
+    assert "REUSE_OLLAMA=1" in out(r)
+
+
+def test_own_ollama_needs_no_derived_model(env):
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "ollama create" not in env.calls()
+    assert "AVRONE_LLM_MODEL=stub-model" in _envsh(env)
+
+
+def test_serve_race_with_ollama_app_reuses_winner(env):
+    env.flag("serve_race")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "another Ollama came up" in out(r)
+
+
+def test_hung_ollama_list_has_deadline(env):
+    env.flag("list_hang")
+    t0 = time.time()
+    r = env.run(LIST_TIMEOUT="3", timeout=120)
+    assert r.returncode == 1, out(r)
+    assert "not answering 'ollama list'" in out(r)
+    assert time.time() - t0 < 60
+
+
+def test_pull_success_but_model_missing(env):
+    (env.stub / "models").write_text("")
+    env.flag("pull_noop")
+    r = env.run(timeout=150)
+    assert r.returncode == 1, out(r)
+    assert "pull said success but" in out(r)
+    assert env.calls().count("ollama pull") == 3
+
+
+@pytest.mark.parametrize("msg,expect,pulls", [
+    ("Error: pull model manifest: 412: The model you are attempting to pull requires a newer version of Ollama.",
+     "brew upgrade ollama", 1),
+    ("Error: pull model manifest: file does not exist", "not found in the Ollama library", 1),
+    ("Error: write /Volumes/AI/ollama-models/blobs/sha256-partial: no space left on device", "ran out of disk space", 1),
+    ("Error: pull model manifest: Get \"https://registry.ollama.ai/v2/library/x/manifests/y\": dial tcp: lookup registry.ollama.ai: no such host",
+     "network looks down", 3),
+    ("Error: something odd happened", "after 3 attempts", 3),
+])
+def test_pull_failures_classified(env, msg, expect, pulls):
+    (env.stub / "models").write_text("")
+    env.flag("pull_msg", msg)
+    r = env.run(timeout=150)
+    assert r.returncode == 1, out(r)
+    assert expect in out(r)
+    assert env.calls().count("ollama pull") == pulls

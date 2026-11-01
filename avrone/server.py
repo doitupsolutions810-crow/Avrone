@@ -420,7 +420,8 @@ async def research_debate(body: ResearchDebateIn, request: Request,
         raise HTTPException(500, f"council finished but receipt could not be written: {exc}") from None
     core().codex.emit(run_id, "research.receipt", "ResearchBridge",
                       repository=source["repository"], commit_sha=source["commit_sha"],
-                      receipt_digest=receipt["result_digest_sha256"])
+                      receipt_digest=receipt["result_digest_sha256"],
+                      evidence_digest=receipt["evidence_digest_sha256"])
     return {
         "run_id": run_id,
         "source": source,
@@ -430,6 +431,7 @@ async def research_debate(body: ResearchDebateIn, request: Request,
             "schema": receipt["schema"],
             "run_id": run_id,
             "result_digest_sha256": receipt["result_digest_sha256"],
+            "evidence_digest_sha256": receipt["evidence_digest_sha256"],
             "verification_boundary": receipt["verification_boundary"],
             "url": f"/api/research/receipts/{run_id}",
         },

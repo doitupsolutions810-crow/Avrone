@@ -307,6 +307,97 @@ async def chat(body: ChatIn, request: Request, x_admin_token: str | None = Heade
     return {**res, **extra} if isinstance(res, dict) and extra else res
 
 
+class ResearchDebateIn(BaseModel):
+    repository: str
+    commit_sha: str
+    claim: str
+    rounds: int = 2
+
+
+@app.post("/api/research/debate")
+async def research_debate(body: ResearchDebateIn, request: Request,
+                          x_admin_token: str | None = Header(default=None)):
+    """Run a live adversarial research council against an exact public Git commit.
+
+    Same-origin local use is supported. Remote callers need the existing AVRONE admin
+    token or an authenticated reverse proxy; no credential is accepted from query params.
+    """
+    require_local(request, x_admin_token)
+    from .research_bridge import ResearchBridgeError, verify_public_commit, write_receipt
+
+    claim = body.claim.strip()
+    if not claim or len(claim) > 4000:
+        raise HTTPException(400, "claim must contain 1-4000 characters")
+    rounds = max(1, min(int(body.rounds), 3))
+    try:
+        source = await verify_public_commit(body.repository, body.commit_sha)
+    except ResearchBridgeError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    run_id = uuid.uuid4().hex[:12]
+    task = (
+        "Run an adversarial mathematical and software-research review. Treat the pinned repository "
+        "commit as context, not as proof. Assign distinct review angles to algebra, topology/domain "
+        "semantics, numerical analysis, and skeptical falsification. Seek explicit counterexamples; "
+        "separate observed source facts, derived results, assumptions, conjectures, and unverified claims. "
+        "Do not claim tests were run unless actual run evidence exists. Report disagreement and unresolved "
+        "proof obligations.\n\n"
+        f"PINNED SOURCE: {source['repository']}@{source['commit_sha']} ({source['commit_url']})\n"
+        f"RESEARCH CLAIM: {claim}"
+    )
+    first_answer = (
+        "Initial claim supplied for adversarial review (not pre-verified): " + claim + "\n\n"
+        "Source identity was resolved by the GitHub public commit API at the exact SHA above. "
+        "No source code was executed by this endpoint. Inspect only source evidence available to the "
+        "connected agent tools; clearly say if repository content was not actually fetched."
+    )
+    try:
+        result = await core().deep(task, first_answer, n=4, run_id=run_id, rounds=rounds)
+    except Exception as exc:
+        core().codex.emit(run_id, "error", "ResearchBridge",
+                          message=f"research council failed: {type(exc).__name__}")
+        raise HTTPException(502, "research council failed; inspect the AVRONE run log") from None
+    if not isinstance(result, dict):
+        result = {"run_id": run_id, "answer": str(result)}
+    result.setdefault("run_id", run_id)
+    try:
+        receipt = write_receipt(settings.data_dir, run_id=run_id, source=source,
+                                claim=claim, mode="deep", rounds=rounds, result=result)
+    except ResearchBridgeError as exc:
+        raise HTTPException(500, f"council finished but receipt could not be written: {exc}") from None
+    core().codex.emit(run_id, "research.receipt", "ResearchBridge",
+                      repository=source["repository"], commit_sha=source["commit_sha"],
+                      receipt_digest=receipt["result_digest_sha256"])
+    return {
+        "run_id": run_id,
+        "source": source,
+        "answer": result.get("answer", result),
+        "result": result,
+        "receipt": {
+            "schema": receipt["schema"],
+            "run_id": run_id,
+            "result_digest_sha256": receipt["result_digest_sha256"],
+            "verification_boundary": receipt["verification_boundary"],
+            "url": f"/api/research/receipts/{run_id}",
+        },
+        "verification": "source_commit_verified; agent conclusions remain unverified until independently checked",
+    }
+
+
+@app.get("/api/research/receipts/{run_id}")
+async def research_receipt(run_id: str, request: Request,
+                           x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
+    from .research_bridge import ResearchBridgeError, read_receipt
+    try:
+        receipt = read_receipt(settings.data_dir, run_id)
+    except ResearchBridgeError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if receipt is None:
+        raise HTTPException(404, "research receipt not found")
+    return receipt
+
+
 # ------------------------------------------------------------------ checkpoints (admin)
 def _ck_key(ck_id: str) -> str:
     from .checkpoint import CheckpointError, managed_path

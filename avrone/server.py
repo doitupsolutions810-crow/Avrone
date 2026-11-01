@@ -324,7 +324,7 @@ async def research_debate(body: ResearchDebateIn, request: Request,
     token or an authenticated reverse proxy; no credential is accepted from query params.
     """
     require_local(request, x_admin_token)
-    from .research_bridge import ResearchBridgeError, fetch_source_files, verify_public_commit, write_receipt
+    from .research_bridge import ResearchBridgeError, fetch_source_files, verify_github_commit, write_receipt
 
     claim = body.claim.strip()
     if not claim or len(claim) > 4000:
@@ -364,34 +364,53 @@ async def research_debate(body: ResearchDebateIn, request: Request,
         "The endpoint resolved the exact public commit SHA and fetched the listed source excerpts at that SHA. "
         "No source code was executed by this endpoint. Distinguish inspected text from execution/test evidence."
     )
+    squad_result = None
+    review_result = None
+    run_errors: list[str] = []
     try:
         # First pass: planner + parallel workers + lead synthesis + bridge cross-examination.
         squad_result = await core().squad(task, n=4, run_id=run_id)
-        initial_answer = str(squad_result.get("answer") or "")
-        if not initial_answer.strip():
-            raise RuntimeError("squad returned no usable synthesis")
-        # Second pass: independent deep reviewers challenge the first synthesis.
-        review_run_id = run_id + "d"
-        review_result = await core().deep(
-            task, first_answer=initial_answer, n=4, run_id=review_run_id, rounds=rounds
-        )
-        final_answer = str(review_result.get("answer") or "")
-        result = {
-            "run_id": run_id,
-            "mode": "squad_then_deep",
-            "squad_run_id": run_id,
-            "review_run_id": review_run_id,
-            "answer": final_answer,
-            "squad": squad_result,
-            "review": review_result,
-        }
     except Exception as exc:
+        run_errors.append(f"squad:{type(exc).__name__}")
         core().codex.emit(run_id, "error", "ResearchBridge",
-                          message=f"research council failed: {type(exc).__name__}")
-        raise HTTPException(502, "research council failed; inspect the AVRONE run logs") from None
-    if not isinstance(result, dict):
-        result = {"run_id": run_id, "answer": str(result)}
-    result.setdefault("run_id", run_id)
+                          message=f"squad phase failed: {type(exc).__name__}")
+    if squad_result is not None:
+        initial_answer = str(squad_result.get("answer") or "")
+        if initial_answer.strip():
+            try:
+                # Second pass: independent deep reviewers challenge the first synthesis.
+                review_run_id = run_id + "d"
+                review_result = await core().deep(
+                    task, first_answer=initial_answer, n=4, run_id=review_run_id, rounds=rounds
+                )
+            except Exception as exc:
+                run_errors.append(f"deep:{type(exc).__name__}")
+                core().codex.emit(run_id, "error", "ResearchBridge",
+                                  message=f"deep review phase failed: {type(exc).__name__}")
+        else:
+            run_errors.append("squad:empty_synthesis")
+    else:
+        review_run_id = run_id + "d"
+    final_answer = str(review_result.get("answer") or "") if review_result is not None else ""
+    if not final_answer and squad_result is not None:
+        final_answer = (
+            "PARTIAL RESULT — the squad synthesis is retained, but the independent deep-review phase "
+            "did not complete successfully. Do not treat this as a completed adversarial review.\n\n"
+            + str(squad_result.get("answer") or "")
+        )
+    elif not final_answer:
+        final_answer = "RUN FAILED before a usable squad synthesis was produced; inspect the AVRONE run log."
+    result = {
+        "run_id": run_id,
+        "mode": "squad_then_deep",
+        "squad_run_id": run_id if squad_result is not None else None,
+        "review_run_id": (run_id + "d") if review_result is not None else None,
+        "status": "complete" if review_result is not None else ("partial" if squad_result is not None else "failed"),
+        "errors": run_errors,
+        "answer": final_answer,
+        "squad": squad_result,
+        "review": review_result,
+    }
     try:
         receipt = write_receipt(settings.data_dir, run_id=run_id, source=source,
                                 claim=claim, mode="deep", rounds=rounds, result=result)
@@ -412,6 +431,8 @@ async def research_debate(body: ResearchDebateIn, request: Request,
             "verification_boundary": receipt["verification_boundary"],
             "url": f"/api/research/receipts/{run_id}",
         },
+        "status": result["status"],
+        "source_manifest": source_manifest,
         "verification": "source_commit_verified; agent conclusions remain unverified until independently checked",
     }
 

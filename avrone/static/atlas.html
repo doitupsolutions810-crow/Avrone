@@ -136,7 +136,7 @@ $('liveRunBtn').onclick=async function(){
   if(!response.ok)throw new Error(data.detail||('HTTP '+response.status));
   $('liveAnswer').textContent=typeof data.answer==='string'?data.answer:JSON.stringify(data.answer,null,2);
   liveState.receiptUrl=data.receipt&&data.receipt.url||null;
-  $('liveReceipt').textContent='Run '+data.run_id+' · '+data.source.repository+'@'+data.source.commit_sha+' · SHA-256 '+data.receipt.result_digest_sha256+' · '+data.verification;
+  $('liveReceipt').textContent='Run '+data.run_id+' · '+data.source.repository+'@'+data.source.commit_sha+' · result SHA-256 '+data.receipt.result_digest_sha256+' · evidence SHA-256 '+data.receipt.evidence_digest_sha256+' · '+data.verification;
   out.style.display='block';status.textContent='LIVE RUN RECORDED. Source commit identity was verified; agent conclusions remain unverified pending independent review.';
   S.lastLiveReceipt={run_id:data.run_id,source:data.source,receipt:data.receipt,verification:data.verification};
   renderLedger();

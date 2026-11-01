@@ -81,12 +81,12 @@ if [ "$(id -u)" = 0 ] && [ -z "${ALLOW_ROOT:-}" ]; then die "do not run as root/
 CYCLES="${CYCLES:-0}"; [ "${ONCE:-0}" = "1" ] && CYCLES=1
 case "$CYCLES" in ''|*[!0-9]*) die "CYCLES must be a non-negative integer (got '$CYCLES')";; esac
 # whole numbers only (no 1.5, 1h, -3, 1e3); caught now instead of as a cryptic test error hours into a run
-for _v in LANE_TIMEOUT SMOKE_TIMEOUT CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
   eval "_x=\${$_v-}"; [ -z "$_x" ] && continue
   case "$_x" in *[!0123456789]*) die "$_v must be a whole number (got '$_x')";; esac
   [ "${#_x}" -le 9 ] || die "$_v is too large (got '$_x')"
 done
-for _v in LANE_TIMEOUT SMOKE_TIMEOUT; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1 second"; done
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1 second"; done
 case "$CTX" in ''|*[!0-9]*) die "CTX must be an integer (got '$CTX')";; esac
 { [ "${#CTX}" -le 7 ] && [ "$CTX" -ge 2048 ] && [ "$CTX" -le 1048576 ]; } || die "CTX must be between 2048 and 1048576 (got $CTX)"
 OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; OHOST="${OHOST#https://}"; OHOST="${OHOST%%/*}"
@@ -332,10 +332,17 @@ ensure_ollama(){
 ensure_ollama start
 MODEL_LIST=""
 list_models(){   # a hung server must not hang us: `ollama list` gets a deadline
-  local rc; MODEL_LIST="$($TO "${LIST_TIMEOUT:-60}" ollama list 2>/dev/null)"; rc=$?
-  [ "$rc" = 124 ] || [ "$rc" = 137 ] && die "ollama is not answering 'ollama list' (hung for ${LIST_TIMEOUT:-60}s) — quit Ollama (pkill ollama) and rerun"
-  return 0; }
-listed(){ printf '%s\n' "$MODEL_LIST" | awk 'NR>1{print $1}' | grep -qxF -e "$1" -e "$1:latest"; }
+  local rc try
+  for try in 1 2 3; do
+    MODEL_LIST="$($TO "${LIST_TIMEOUT:-60}" ollama list 2>/dev/null)"; rc=$?
+    [ "$rc" = 124 ] || [ "$rc" = 137 ] && die "ollama is not answering 'ollama list' (hung for ${LIST_TIMEOUT:-60}s) — quit Ollama (pkill ollama) and rerun"
+    [ "$rc" = 0 ] && return 0
+    # a failed listing is NOT "model missing": treating it so would start a 65 GB re-download
+    sleep "$try"
+  done
+  die "'ollama list' keeps failing (exit $rc) — check $DRIVE/ollama.log; not re-downloading $MODEL on a failed listing"; }
+# skip the header by content, not position: a header-less listing must not hide the first model
+listed(){ printf '%s\n' "$MODEL_LIST" | awk '$1!="NAME"{print $1}' | grep -qxF -e "$1" -e "$1:latest"; }
 has_model(){ list_models; listed "$MODEL"; }
 ensure_model(){
   has_model && return 0
@@ -403,11 +410,31 @@ for c in python3.13 python3.12 python3.11 python3; do
 done
 if [ -z "$PY" ]; then need_brew python@3.12; log "installing python@3.12 (AVRONE needs >= 3.11)"; brew install python@3.12 || die "python install failed"; PY="$(brew --prefix)/bin/python3.12"; fi
 if [ -d .venv ] && ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null; then log "rebuilding old/broken .venv"; rm -rf .venv; fi
-[ -d .venv ] || "$PY" -m venv .venv || { rm -rf .venv; die "venv creation failed for $PY"; }
+if [ ! -d .venv ]; then
+  # an interpreter can pass the version check yet lack venv/ensurepip (stripped builds); try the others too
+  _made=""
+  for c in "$PY" python3.13 python3.12 python3.11 python3; do
+    command -v "$c" >/dev/null || continue
+    "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null || continue
+    if "$c" -m venv .venv >> "$OUT/venv.log" 2>&1 && [ -x .venv/bin/python ]; then _made="$c"; break; fi
+    rm -rf .venv; log "WARN: $c could not create a venv (see $OUT/venv.log) — trying another python"
+  done
+  [ -n "$_made" ] || die "venv creation failed for every python >= 3.11 (see $OUT/venv.log)"
+  [ "$_made" = "$PY" ] || PY="$_made"
+fi
 [ -f .venv/bin/activate ] || { rm -rf .venv; die "broken .venv (no activate) — rerun"; }
 # shellcheck disable=SC1091
 source .venv/bin/activate
-if [ "${AUTOPILOT_NO_INSTALL:-0}" != "1" ]; then bg_wait pip install -q -e ".[dev]" > "$OUT/pip.log" 2>&1 || die "pip install failed (see $OUT/pip.log)"; fi
+if [ "${AUTOPILOT_NO_INSTALL:-0}" != "1" ]; then
+  if ! bg_wait pip install -q -e ".[dev]" > "$OUT/pip.log" 2>&1; then
+    # offline (plane, captive wifi) with everything already installed is fine: say so and carry on
+    if .venv/bin/python -c 'import avrone, pytest, fastapi' 2>/dev/null; then
+      log "WARN: pip install failed (offline?) but AVRONE and its test deps are already installed — continuing (see $OUT/pip.log)"
+    else
+      die "pip install failed and AVRONE is not installed yet (see $OUT/pip.log) — connect to the internet for the first run"
+    fi
+  fi
+fi
 if [ "${SKIP_GATE:-0}" != "1" ]; then
   GATE_CMD="${GATE_CMD:-python -m pytest -q -p no:cacheprovider -m 'not integration'}"
   log "baseline gate: $GATE_CMD"

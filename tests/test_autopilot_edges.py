@@ -63,7 +63,10 @@ if cmd == "serve":
 if cmd == "list":
     if flag("list_hang"):
         import time; time.sleep(300)
-    print("NAME ID SIZE MODIFIED")
+    if flag("list_fail"):
+        print("Error: something went wrong, please see the ollama server logs", file=sys.stderr); sys.exit(1)
+    if not flag("list_noheader"):
+        print("NAME ID SIZE MODIFIED")
     if os.path.exists(models):
         for m in open(models).read().split():
             print(f"{m} abc 1GB now")
@@ -1969,3 +1972,124 @@ def test_pull_failures_classified(env, msg, expect, pulls):
     assert r.returncode == 1, out(r)
     assert expect in out(r)
     assert env.calls().count("ollama pull") == pulls
+
+
+# =====================================================================================
+# Round 9: listings that lie, offline restarts, settings added in round 8, odd model names
+# =====================================================================================
+
+@pytest.mark.parametrize("var", ["LIST_TIMEOUT", "WARM_TIMEOUT"])
+@pytest.mark.parametrize("val", ["abc", "-5", "1.5", "0", "9999999999"])
+def test_new_timeouts_validated(env, var, val):
+    r = env.run(**{var: val}, timeout=60)
+    assert r.returncode == 1, out(r)
+    assert var in out(r)
+    assert "ollama pull" not in env.calls()
+
+
+def test_failed_listing_never_triggers_redownload(env):
+    env.flag("list_fail")
+    r = env.run(timeout=90)
+    assert r.returncode == 1, out(r)
+    assert "keeps failing" in out(r)
+    assert "ollama pull" not in env.calls()
+    assert env.calls().count("ollama list") == 3
+
+
+def test_flaky_listing_recovers(env):
+    """first `ollama list` errors (server still loading), the retry succeeds"""
+    env.flag("list_fail")
+    fl = env.stub / "list_fail"
+    killer = subprocess.Popen(["bash", "-c", f"while ! grep -q 'ollama list' {env.stub}/calls.log 2>/dev/null; do sleep 0.05; done; rm -f {fl}"])
+    try:
+        r = env.run(timeout=90)
+    finally:
+        killer.kill()
+    assert r.returncode == 0, out(r)
+    assert "ollama pull" not in env.calls()
+
+
+def test_headerless_listing_does_not_hide_first_model(env):
+    env.flag("list_noheader")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "ollama pull" not in env.calls()
+
+
+def test_model_named_like_header_column_still_found(env):
+    (env.stub / "models").write_text("name-model:7b\n")
+    r = env.run(MODEL="name-model:7b")
+    assert r.returncode == 0, out(r)
+    assert "ollama pull" not in env.calls()
+
+
+def _failing_pip(env):
+    p = env.bin / "pip"
+    p.write_text("#!/bin/sh\necho 'ERROR: Could not find a version that satisfies the requirement setuptools (offline)' >&2\nexit 1\n")
+    p.chmod(0o755)
+
+
+def test_offline_rerun_with_deps_installed_continues(env):
+    _failing_pip(env)
+    r = env.run(AUTOPILOT_NO_INSTALL="0")
+    assert r.returncode == 0, out(r)
+    assert "offline?" in out(r)
+
+
+def test_offline_first_run_without_deps_fails_clearly(env):
+    _failing_pip(env)
+    vpy = env.repo / ".venv" / "bin" / "python"
+    vpy.unlink()
+    vpy.write_text(f'#!/bin/sh\ncase "$*" in *"import avrone"*) exit 1;; esac\nexec "{sys.executable}" "$@"\n')
+    vpy.chmod(0o755)
+    r = env.run(AUTOPILOT_NO_INSTALL="0")
+    assert r.returncode == 1, out(r)
+    assert "connect to the internet" in out(r)
+
+
+def test_dangling_venv_python_after_brew_upgrade_is_rebuilt(env):
+    vpy = env.repo / ".venv" / "bin" / "python"
+    vpy.unlink()
+    vpy.symlink_to("/opt/homebrew/Cellar/python@3.11/3.11.0/bin/python3.11-gone")
+    r = env.run()
+    assert "rebuilding old/broken .venv" in out(r)
+    assert (env.repo / ".venv" / "bin" / "activate").stat().st_size > 0
+
+
+def test_hf_style_model_gets_valid_derived_name(env):
+    m = "hf.co/Bartowski/Qwen2.5-Coder:Q4_K_M"
+    (env.stub / "models").write_text(m + "\n")
+    srv = subprocess.Popen([str(env.bin / "ollama"), "serve"], env=env.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", env.port), 0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+        r = subprocess.run([BASH, str(env.repo / SCRIPT_REL)], env=env.env(MODEL=m, CTX="16384"),
+                           capture_output=True, text=True, timeout=180)
+    finally:
+        srv.kill(); srv.wait()
+    assert r.returncode == 0, out(r)
+    d = "avrone-hf.co-bartowski-qwen2.5-coder-q4_k_m:ctx16384"
+    assert f"ollama create {d}" in env.calls()
+    assert d == d.lower() and d.count(":") == 1 and "/" not in d
+    assert f"FROM {m}" in (env.stub / "created_modelfile").read_text()
+
+
+def test_ctx_change_makes_new_derived_model(env):
+    (env.stub / "models").write_text("stub-model\navrone-stub-model:ctx8192\n")
+    srv = subprocess.Popen([str(env.bin / "ollama"), "serve"], env=env.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", env.port), 0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+        r = subprocess.run([BASH, str(env.repo / SCRIPT_REL)], env=env.env(CTX="32768"),
+                           capture_output=True, text=True, timeout=180)
+    finally:
+        srv.kill(); srv.wait()
+    assert r.returncode == 0, out(r)
+    assert "ollama create avrone-stub-model:ctx32768" in env.calls()
+    assert "avrone-stub-model:ctx32768" in (env.state / "env.sh").read_text()

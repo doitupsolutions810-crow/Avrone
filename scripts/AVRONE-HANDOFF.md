@@ -208,3 +208,10 @@ merge without his word.
 - **Startup race:** if the Ollama app grabs the port while our `ollama serve` is starting, ours exits. The autopilot detects this and treats the winner as not ours, instead of assuming it started it.
 - **Hung `ollama list`:** it now has a deadline (LIST_TIMEOUT, default 60s).
 - **Pull failures are classified.** "Needs newer Ollama", "model not found" and "disk full" stop right away with the fix. Network errors retry 3 times, then say the network looks down. A pull that exits 0 without the model showing up is counted as a failure. Pull progress goes to `$OUT/pull.log`.
+
+## Round 9 hardening (listings that lie, offline reruns)
+- **A failed `ollama list` no longer means "model missing".** It retries 3 times, then stops, so it never starts a 65 GB re-download because of a server hiccup.
+- **The listing header is skipped by its content, not its position.** A listing with no header can't hide the first model.
+- **LIST_TIMEOUT and WARM_TIMEOUT are validated** as whole numbers ≥ 1, the same as the other settings.
+- **Offline reruns:** if pip fails but AVRONE, pytest and fastapi are already installed, the run warns and continues. On a first run with nothing installed, it stops and says to connect to the internet.
+- **venv creation:** if the first python ≥ 3.11 can't create a venv (a stripped build), the others are tried. A .venv whose python link was broken by `brew upgrade` gets rebuilt.

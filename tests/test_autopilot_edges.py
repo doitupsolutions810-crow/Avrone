@@ -107,10 +107,14 @@ case " $* " in *" avrone.cli chat "*)
   if [ -e "$STUB_DIR/chat_flood" ]; then head -c 3000000 /dev/zero | tr '\0' 'x'; head -c 3000000 /dev/zero | tr '\0' 'y' >&2; fi
   [ -e "$STUB_DIR/chat_crash" ] && { echo "Traceback: boom" >&2; exit 3; }
   [ -e "$STUB_DIR/chat_rm_runs" ] && rm -rf "$DRIVE/avrone-runs"
+  [ -e "$STUB_DIR/chat_git_reset" ] && git reset -q --hard "$(cat "$STUB_DIR/chat_git_reset")" >/dev/null 2>&1
+  [ -e "$STUB_DIR/chat_git_commit" ] && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m "crow pulled" >/dev/null 2>&1
+  [ -e "$STUB_DIR/chat_modnotfound" ] && { printf 'Traceback (most recent call last):\n  File "x"\nModuleNotFoundError: No module named %s\n\n' "'newdep'" >&2; exit 1; }
   case "${AVRONE_DATA_DIR:-}" in *lane-*)
     if [ -e "$STUB_DIR/chat_err_text" ]; then
       printf '%s\n' "task: Land TWO accepted." "tool.call a evolve_propose {}" "tool.result a def x(): return 'ACCEPTED (tests pass'" "agent.done a evolve_propose was ACCEPTED, accepted, Accepted" >&2
     fi
+    [ -e "$STUB_DIR/chat_crash_lanes" ] && { echo "lane boom" >&2; exit 3; }
     if [ -e "$STUB_DIR/chat_fake_accept" ]; then
       mkdir -p "$AVRONE_DATA_DIR/evolve"
       echo '{"pid": "p-new-ok", "passed": true}' > "$AVRONE_DATA_DIR/evolve/p-new-ok.json"
@@ -2207,3 +2211,86 @@ def test_round10_settings_validated(env, var, val):
     assert r.returncode == 1, out(r)
     assert var in out(r)
     assert not os.path.exists("/tmp/pwned-r10")
+
+
+# =====================================================================================
+# Round 11: crash loops, and the repo changing under a running loop
+# =====================================================================================
+
+def test_crash_loop_stops_with_the_real_error(env):
+    env.flag("chat_modnotfound")
+    r = env.run(LANES="tools", CYCLES="0", ONCE="0", timeout=150)
+    assert r.returncode == 1, out(r)
+    assert "crashed on every run for 3 cycles" in out(r)
+    assert "ModuleNotFoundError: No module named 'newdep'" in out(r)
+    assert out(r).count("=== cycle") == 3
+
+
+def test_crash_limit_setting(env):
+    env.flag("chat_modnotfound")
+    r = env.run(LANES="tools", CYCLES="0", ONCE="0", CRASH_LIMIT="1", timeout=90)
+    assert r.returncode == 1 and "for 1 cycles" in out(r) and out(r).count("=== cycle") == 1
+
+
+def test_crash_loop_breaker_counts_smoke_alone(env):
+    # no lanes selected: the smoke run alone crashing every cycle still trips the breaker
+    env.flag("chat_modnotfound")
+    r = env.run(LANES="", CYCLES="0", ONCE="0", CRASH_LIMIT="2", timeout=90)
+    assert r.returncode == 1 and "crashed on every run for 2 cycles" in out(r)
+
+
+def test_timeouts_are_not_crashes(env):
+    env.flag("chat_hang")
+    r = env.run(LANES="tools", CYCLES="2", ONCE="0", CRASH_LIMIT="1", SMOKE_TIMEOUT="2", LANE_TIMEOUT="2", timeout=120)
+    assert r.returncode == 0, out(r)
+    assert "crashed on every run" not in out(r)
+
+
+def test_healthy_runs_never_trip_the_breaker(env):
+    env.flag("chat_smoke_pass")
+    r = env.run(LANES="tools", CYCLES="3", ONCE="0", CRASH_LIMIT="1")
+    assert r.returncode == 0, out(r)
+    assert "every agent run crashed" not in out(r)
+
+
+def test_completed_reintro_with_no_lanes_is_not_a_crash(env):
+    env.state.mkdir(parents=True); (env.state / "reintro-stage.txt").write_text("9")
+    env.flag("chat_modnotfound")
+    r = env.run(LANES="", CYCLES="3", ONCE="0", CRASH_LIMIT="1")
+    assert r.returncode == 0, out(r)
+    assert "reintro complete" in out(r)
+
+
+@pytest.mark.parametrize("val", ["0", "x", "2+2", "a[$(touch /tmp/pwned-r11)]"])
+def test_crash_limit_validated(env, val):
+    r = env.run(CRASH_LIMIT=val, timeout=60)
+    assert r.returncode == 1 and "CRASH_LIMIT" in out(r)
+    assert not os.path.exists("/tmp/pwned-r11")
+
+
+def test_repo_head_moving_mid_run_is_logged(env):
+    env.flag("chat_git_commit")
+    r = env.run(LANES="tools", CYCLES="2", ONCE="0")
+    assert r.returncode == 0, out(r)
+    assert "repo HEAD moved" in out(r)
+
+
+def test_patches_vanishing_mid_run_stops(base_repos, tmp_path):
+    e = Env(tmp_path, base_repos["unpatched"])
+    try:
+        base = _git(e.repo, "rev-parse", "HEAD").stdout.strip()
+        e.flag("chat_git_reset", base)
+        r = e.run(CYCLES="2", ONCE="0")
+        assert r.returncode == 1, out(r)
+        assert "carried patches are gone" in out(r)
+        assert out(r).count("=== cycle") == 2
+    finally:
+        e.kill_server()
+
+
+def test_partial_crash_does_not_trip_the_breaker(env):
+    # smoke works, every lane crashes: not EVERY run crashed, so the loop keeps going
+    env.flag("chat_crash_lanes")
+    r = env.run(LANES="tools robust", CYCLES="3", ONCE="0", CRASH_LIMIT="1")
+    assert r.returncode == 0, out(r)
+    assert out(r).count("lane tools rc=3") == 3 and "every agent run crashed" not in out(r)

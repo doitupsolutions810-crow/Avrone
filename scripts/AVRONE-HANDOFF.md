@@ -223,3 +223,8 @@ merge without his word.
 - **Deleting the run folder mid-run is survivable.** It's recreated, but only while the drive is still mounted.
 - **ollama.log is rotated** once it passes OLLAMA_LOG_MAX_MB (default 50) when the autopilot starts Ollama, so weeks of request logs can't fill the drive. One old copy is kept as ollama.log.1.
 - **REPORT_TIMEOUT and OLLAMA_LOG_MAX_MB are validated** before they ever reach shell arithmetic, where text like `a[$(cmd)]` would otherwise run.
+
+## Round 11 hardening (crash loops, the repo changing mid-run)
+- **The run stops if AVRONE crashes on every start.** When every agent run in a cycle exits with an error (timeouts don't count), CRASH_LIMIT cycles in a row (default 3), the autopilot stops. It prints the last error line, for example `ModuleNotFoundError: No module named 'x'` after a `git pull` added a dependency. Rerun to reinstall. Partial failures, such as a lane crashing while the smoke works, never trip it.
+- **Pulling or checking out in the repo mid-run is noticed.** The autopilot logs that HEAD moved and lanes test the new code. If the carried patches are gone, it stops instead of quietly giving every lane all tools. Rerun to re-apply them.
+- **CRASH_LIMIT is validated** like every other numeric setting.

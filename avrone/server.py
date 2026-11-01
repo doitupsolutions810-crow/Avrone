@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 
 import asyncio
 import logging
@@ -331,7 +332,7 @@ async def research_debate(body: ResearchDebateIn, request: Request,
         raise HTTPException(400, "claim must contain 1-4000 characters")
     rounds = max(1, min(int(body.rounds), 3))
     try:
-        source = await verify_public_commit(body.repository, body.commit_sha)
+        source = await verify_github_commit(body.repository, body.commit_sha)
     except ResearchBridgeError as exc:
         raise HTTPException(422, str(exc)) from None
 

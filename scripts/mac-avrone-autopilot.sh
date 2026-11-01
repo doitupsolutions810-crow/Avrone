@@ -25,6 +25,23 @@ set -uo pipefail
 SELF="$0"   # follow symlinks (e.g. linked into /usr/local/bin) to find the real repo — readlink -f is not on old macOS
 while [ -L "$SELF" ]; do _t="$(readlink "$SELF")"; case "$_t" in /*) SELF="$_t";; *) SELF="$(dirname "$SELF")/$_t";; esac; done
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+# a developer shell can carry settings that silently redirect or break the tools we drive
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_COMMON_DIR
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONEXECUTABLE PYTHONOPTIMIZE PYTHONWARNINGS PYTHONINSPECT __PYVENV_LAUNCHER__
+unset PIP_USER PIP_TARGET PIP_PREFIX PIP_REQUIRE_VIRTUALENV PYTEST_ADDOPTS PYTEST_PLUGINS
+# global git settings that make unattended commits fail (gpg/ssh signing waits for a pinentry that never comes,
+# a hooksPath hook rejects agent commits, autocrlf rewrites patches). GIT_CONFIG_COUNT reaches every child git,
+# including AVRONE's own evolve commits; it outranks ~/.gitconfig and needs git >= 2.31 (Xcode ships 2.39+).
+export GIT_CONFIG_COUNT=6 \
+  GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+  GIT_CONFIG_KEY_1=tag.gpgsign    GIT_CONFIG_VALUE_1=false \
+  GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2=/dev/null \
+  GIT_CONFIG_KEY_3=core.autocrlf  GIT_CONFIG_VALUE_3=false \
+  GIT_CONFIG_KEY_4=am.threeWay    GIT_CONFIG_VALUE_4=true \
+  GIT_CONFIG_KEY_5=advice.detachedHead GIT_CONFIG_VALUE_5=false
+export GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat PAGER=cat
+# explicit letters: in a UTF-8 locale old bash (macOS 3.2) lets [A-Za-z] match accented and other letters
+AZ='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 OUT=""
 log(){ local m; m="[$(date +%H:%M:%S)] $*"; if [ -n "$OUT" ]; then echo "$m" | tee -a "$OUT/autopilot.log"; else echo "$m"; fi; }
 die(){ log "FATAL: $*"; exit 1; }
@@ -48,16 +65,23 @@ case "$DRIVE_REAL/" in "$REPO_REAL"/*) die "DRIVE must not be inside the repo ($
 MODEL="${MODEL:-gpt-oss:120b}"; CTX="${CTX:-32768}"
 LANES="${LANES-deepcov newmods tools robust}"; LANE_TIMEOUT="${LANE_TIMEOUT:-3600}"
 # MODEL/LANES end up inside env.sh (sourced later) — allow only plain identifiers, never shell syntax
-case "$MODEL" in ''|*[!A-Za-z0-9._:/+-]*) die "MODEL has illegal characters: '$MODEL'";; esac
+case "$MODEL" in ''|*[!$AZ._:/+-]*) die "MODEL has illegal characters: '$MODEL'";; esac
 for _l in ${LANES-}; do case "$_l" in deepcov|newmods|tools|robust) ;; *) die "unknown lane '$_l' (valid: deepcov newmods tools robust)";; esac; done
 if [ "$(id -u)" = 0 ] && [ -z "${ALLOW_ROOT:-}" ]; then die "do not run as root/sudo — files on the drive would become root-owned (set ALLOW_ROOT=1 to force)"; fi
 CYCLES="${CYCLES:-0}"; [ "${ONCE:-0}" = "1" ] && CYCLES=1
 case "$CYCLES" in ''|*[!0-9]*) die "CYCLES must be a non-negative integer (got '$CYCLES')";; esac
+# whole numbers only (no 1.5, 1h, -3, 1e3); caught now instead of as a cryptic test error hours into a run
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
+  eval "_x=\${$_v-}"; [ -z "$_x" ] && continue
+  case "$_x" in *[!0123456789]*) die "$_v must be a whole number (got '$_x')";; esac
+  [ "${#_x}" -le 9 ] || die "$_v is too large (got '$_x')"
+done
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1 second"; done
 case "$CTX" in ''|*[!0-9]*) die "CTX must be an integer (got '$CTX')";; esac
 { [ "${#CTX}" -le 7 ] && [ "$CTX" -ge 2048 ] && [ "$CTX" -le 1048576 ]; } || die "CTX must be between 2048 and 1048576 (got $CTX)"
 OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; OHOST="${OHOST#https://}"; OHOST="${OHOST%%/*}"
 case "$OHOST" in *:*) ;; '') OHOST=127.0.0.1:11434;; *) OHOST="$OHOST:11434";; esac
-case "$OHOST" in *[!A-Za-z0-9.:_-]*) die "OLLAMA_HOST has illegal characters: '$OHOST'";; esac
+case "$OHOST" in *[!$AZ.:_-]*) die "OLLAMA_HOST has illegal characters: '$OHOST'";; esac
 export OLLAMA_HOST="$OHOST"
 command -v git >/dev/null || die "git is required (xcode-select --install)"
 command -v python3 >/dev/null || die "python3 is required"
@@ -165,7 +189,8 @@ validate_state(){   # called at start and before every cycle: state on a USB dri
 VALIDATED=""
 validate_state
 prune_runs(){ local all n d
-  all="$(ls -1d "$RUNS"/*/ 2>/dev/null | sort)"; n=$(printf '%s\n' "$all" | grep -c .)
+  # oldest first by modification time; run names are local wall-clock and repeat during the DST fall-back hour
+  all="$(ls -1dtr "$RUNS"/*/ 2>/dev/null)"; n=$(printf '%s\n' "$all" | grep -c .)
   [ "$KEEP_RUNS" -gt 0 ] && [ "$n" -gt "$KEEP_RUNS" ] || return 0
   printf '%s\n' "$all" | head -n $((n-KEEP_RUNS)) | while IFS= read -r d; do
     [ "${d%/}" = "$OUT" ] || rm -rf "${d%/}"; done
@@ -227,8 +252,14 @@ if ! { grep -q "def apply_tool_focus" avrone/bootstrap.py && grep -q "def coerce
     die "uncommitted changes in tracked files — commit or stash them first (nothing was touched)"
   fi
   log "applying carried patches (TOOLS_ONLY, coerce_args)"
-  ls "$STATE_SRC"/patches/*.patch >/dev/null 2>&1 || die "patches missing from $STATE_SRC/patches"
-  git -c user.name=avrone -c user.email=avrone@local am --3way "$STATE_SRC"/patches/*.patch >> "$OUT/patch.log" 2>&1 \
+  PATCHES=""
+  for _p in "$STATE_SRC"/patches/*.patch; do
+    case "${_p##*/}" in ._*|.*) continue;; esac   # AppleDouble / hidden files from exFAT drives or Finder
+    [ -f "$_p" ] && PATCHES="$PATCHES $(printf '%q' "$_p")"
+  done
+  [ -n "$PATCHES" ] || die "patches missing from $STATE_SRC/patches"
+  eval "set -- $PATCHES"
+  git -c user.name=avrone -c user.email=avrone@local am --3way "$@" >> "$OUT/patch.log" 2>&1 \
     || { git am --abort 2>/dev/null; die "patch apply failed (see $OUT/patch.log) — tree restored, resolve manually"; }
   { grep -q "def apply_tool_focus" avrone/bootstrap.py && grep -q "def coerce_args" avrone/trinity.py; } || die "patches applied but symbols still missing"
 fi

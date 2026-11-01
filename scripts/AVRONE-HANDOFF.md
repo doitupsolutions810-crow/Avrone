@@ -186,3 +186,11 @@ merge without his word.
 - SIGHUP or SIGUSR1 during a lane pair no longer cuts the wait short (bash `wait` returns early on any trapped signal). `kill -USR1 <pid>` logs a status line (cycle, phase, stage, lanes). SIGQUIT cleans up like SIGTERM (exit 131).
 - Symlinked state files on the drive are removed, never written through. A multi-line stage file ("6\n7") is treated as corrupt instead of read as 67; leading zeros are normalized.
 - Fuzzed: 300 random smoke logs, unicode tool names, a 20 MB stage file, a JSON recursion bomb, random binary plan files, corrupt patch files, 500+ character drive paths.
+
+## Round 6 hardening (developer Mac, exFAT drive, DST, bad settings)
+- Global git settings no longer break unattended commits: commit/tag signing, a global hooksPath with failing hooks, and autocrlf are overridden via GIT_CONFIG_COUNT for the autopilot and every child git, including AVRONE's evolve commits. Stray GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE are ignored.
+- Hostile Python/pytest env is scrubbed: PYTHONHOME, PYTHONPATH (including a shadow `avrone` package), PYTHONWARNINGS=error, PYTHONOPTIMIZE, PYTEST_ADDOPTS=--pdb, PIP_USER. Conda/venv leftovers and a bogus TZ are harmless.
+- macOS AppleDouble `._*` files (from exFAT/FAT drives) are never fed to `git am`. Spotlight, Trashes, and fseventsd folders on the drive are harmless.
+- Old runs are pruned by age, not name, so the repeated hour at the DST fall-back can't delete the newest run.
+- LANE_TIMEOUT, SMOKE_TIMEOUT, CYCLE_SLEEP, MIN_FREE_GB, MIN_RUN_FREE_GB, and KEEP_RUNS must be whole numbers; anything else fails before Ollama starts, instead of hours in.
+- MODEL validation uses explicit ASCII so old bash in a UTF-8 locale can't let accented letters through.

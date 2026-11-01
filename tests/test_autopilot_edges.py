@@ -1465,3 +1465,156 @@ def test_very_long_drive_path(tmp_path, base_repos):
     r = e.run(DRIVE=str(deep))
     assert r.returncode == 0, out(r)
     assert sourced(deep / "avrone-state" / "env.sh", "AVRONE_MCP_CONFIG") == str(deep / "avrone-state" / "mcp.json")
+
+
+# =====================================================================================
+# Round 6: a real developer Mac + exFAT USB drive + DST + garbage settings
+# =====================================================================================
+
+def _gate_out(env):
+    return "".join(f.read_text(errors="replace") for f in (env.drive / "avrone-runs").glob("*/baseline.txt"))
+
+
+def _gitcfg(tmp_path, body):
+    f = tmp_path / "global.gitconfig"; f.write_text(body); return str(f)
+
+
+SIGNING = "[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n"
+
+
+def test_global_gpgsign_does_not_break_patch_apply(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    r = e.run(GIT_CONFIG_GLOBAL=_gitcfg(tmp_path, SIGNING))
+    assert r.returncode == 0, out(r)
+    assert "applying carried patches" in out(r)
+
+
+def test_global_gpgsign_does_not_break_child_commits(env, tmp_path):
+    # AVRONE's evolve commits run as children; they must inherit the signing override
+    gate = ('d=$(mktemp -d) && cd "$d" && git init -q && '
+            'git -c user.name=a -c user.email=a@a commit -q --allow-empty -m probe && echo CHILD_COMMIT_OK')
+    r = env.run(GIT_CONFIG_GLOBAL=_gitcfg(tmp_path, SIGNING), SKIP_GATE="0", GATE_CMD=gate)
+    assert r.returncode == 0, out(r)
+    assert "CHILD_COMMIT_OK" in _gate_out(env)
+
+
+def test_global_failing_hooks_ignored(tmp_path, base_repos):
+    hooks = tmp_path / "hooks"; hooks.mkdir()
+    for h in ("pre-commit", "commit-msg", "applypatch-msg", "pre-applypatch", "post-applypatch"):
+        (hooks / h).write_text("#!/bin/sh\necho HOOK_RAN >&2\nexit 1\n"); (hooks / h).chmod(0o755)
+    e = Env(tmp_path, base_repos["unpatched"])
+    r = e.run(GIT_CONFIG_GLOBAL=_gitcfg(tmp_path, f"[core]\n\thooksPath = {hooks}\n"))
+    assert r.returncode == 0, out(r)
+
+
+def test_global_autocrlf_true(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    r = e.run(GIT_CONFIG_GLOBAL=_gitcfg(tmp_path, "[core]\n\tautocrlf = true\n"))
+    assert r.returncode == 0, out(r)
+
+
+def test_no_global_git_identity(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    r = e.run(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", EMAIL="__unset__")
+    assert r.returncode == 0, out(r)
+
+
+def test_stray_git_dir_env_is_ignored(env, tmp_path):
+    other = tmp_path / "victim-repo"; other.mkdir(); _git(other, "init", "-q")
+    before = sorted(p.name for p in (other / ".git").iterdir())
+    r = env.run(GIT_DIR=str(other / ".git"), GIT_WORK_TREE=str(other), GIT_INDEX_FILE=str(tmp_path / "idx"))
+    assert r.returncode == 0, out(r)
+    assert sorted(p.name for p in (other / ".git").iterdir()) == before
+    assert not (tmp_path / "idx").exists()
+
+
+@pytest.mark.parametrize("var,val", [
+    ("PYTHONHOME", "/nonexistent/python-home"),
+    ("PYTHONWARNINGS", "error"),
+    ("PYTHONOPTIMIZE", "2"),
+    ("PYTEST_ADDOPTS", "--pdb -x"),
+    ("PIP_USER", "1"),
+    ("PIP_REQUIRE_VIRTUALENV", "1"),
+    ("PYTHONSTARTUP", "/nonexistent/startup.py"),
+    ("VIRTUAL_ENV", "/nonexistent/venv"),
+    ("CONDA_PREFIX", "/nonexistent/conda"),
+    ("TZ", "Mars/Olympus_Mons"),
+])
+def test_hostile_shell_env(env, var, val):
+    gate = 'test -z "${PYTHONHOME-}${PYTHONWARNINGS-}${PYTHONOPTIMIZE-}${PYTEST_ADDOPTS-}${PIP_USER-}" && echo GATE_ENV_CLEAN'
+    r = env.run(**{var: val}, SKIP_GATE="0", GATE_CMD=gate)
+    assert r.returncode == 0, out(r)
+    assert "GATE_ENV_CLEAN" in _gate_out(env)
+
+
+def test_pythonpath_shadow_package_ignored(env, tmp_path):
+    shadow = tmp_path / "shadow" / "avrone"; shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("raise SystemExit('SHADOWED_AVRONE')\n")
+    env.flag("chat_smoke_pass")
+    r = env.run(PYTHONPATH=str(shadow.parent))
+    assert r.returncode == 0, out(r)
+    assert "SHADOWED_AVRONE" not in out(r)
+    assert "SHADOWED_AVRONE" not in "".join(f.read_text(errors="replace") for f in (env.drive / "avrone-runs").rglob("*.err"))
+
+
+# ---------------- exFAT / FAT USB drive quirks ----------------
+
+def test_appledouble_patch_files_ignored(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    pd = e.repo / "scripts/avrone-state/patches"
+    for p in sorted(pd.glob("*.patch")):
+        (pd / ("._" + p.name)).write_bytes(b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        " + os.urandom(64))
+    _git(e.repo, "add", "-A"); _git(e.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "appledouble")
+    r = e.run()
+    assert r.returncode == 0, out(r)
+    assert "patch apply failed" not in out(r)
+
+
+def test_macos_drive_metadata_dirs_harmless(env):
+    for d in (".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems"):
+        (env.drive / d).mkdir(parents=True, exist_ok=True)
+    env.state.mkdir(parents=True, exist_ok=True)
+    (env.state / "._reintro-stage.txt").write_bytes(b"\x00\x05\x16\x07junk")
+    (env.drive / "avrone-runs").mkdir(exist_ok=True)
+    (env.drive / "avrone-runs" / "._20261101-010000-1").write_bytes(b"\x00\x05\x16\x07")
+    r = env.run(KEEP_RUNS="1")
+    assert r.returncode == 0, out(r)
+    assert env.stage() == "7"
+
+
+# ---------------- DST fall-back: prune by age, never by name ----------------
+
+def test_prune_uses_age_not_name_across_dst(env):
+    runs = env.drive / "avrone-runs"; runs.mkdir(parents=True)
+    now = time.time()
+    # 01:59 EDT happened first; after fall-back the clock read 01:05 again (EST) for the newer run
+    first = runs / "20261101-015900-111"; first.mkdir(); (first / "MERGE_ME.md").write_text("older")
+    second = runs / "20261101-010500-222"; second.mkdir(); (second / "MERGE_ME.md").write_text("newer")
+    os.utime(first, (now - 7200, now - 7200)); os.utime(second, (now - 600, now - 600))
+    r = env.run(KEEP_RUNS="2")
+    assert r.returncode == 0, out(r)
+    assert second.exists(), "the newest earlier run was pruned because its name sorted first"
+    assert not first.exists()
+
+
+# ---------------- every numeric setting validated before anything starts ----------------
+
+@pytest.mark.parametrize("var,val", [
+    ("LANE_TIMEOUT", "1h"), ("LANE_TIMEOUT", "0"), ("LANE_TIMEOUT", "9999999999"),
+    ("SMOKE_TIMEOUT", "0"), ("SMOKE_TIMEOUT", "30s"),
+    ("CYCLE_SLEEP", "-1"), ("CYCLE_SLEEP", "0.5"),
+    ("MIN_FREE_GB", "1.5"), ("MIN_FREE_GB", "eighty"),
+    ("MIN_RUN_FREE_GB", "abc"), ("MIN_RUN_FREE_GB", " 5"),
+    ("KEEP_RUNS", "1e3"), ("KEEP_RUNS", "-2"),
+])
+def test_bad_numeric_setting_fails_fast(env, var, val):
+    r = env.run(**{var: val})
+    assert r.returncode == 1, out(r)
+    assert var in out(r)
+    assert "ollama serve" not in env.calls(), "should fail before starting anything"
+
+
+@pytest.mark.parametrize("model", ["gpt-\u00f6ss:20b", "qwen\u00e9:7b", "\uff47pt:1", "m\u0131stral:7b"])
+def test_non_ascii_model_rejected_in_utf8_locale(env, model):
+    r = env.run(MODEL=model, LANG="C.UTF-8", LC_ALL="C.UTF-8")
+    assert r.returncode == 1 and "MODEL has illegal characters" in out(r), out(r)

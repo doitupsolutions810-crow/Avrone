@@ -9,6 +9,7 @@ from avrone.research_bridge import (
     ResearchBridgeError,
     read_receipt,
     validate_source,
+    fetch_source_files,
     write_receipt,
 )
 
@@ -48,3 +49,15 @@ def test_receipt_binds_source_run_and_result_digest(tmp_path):
 def test_receipt_path_is_not_traversable(tmp_path):
     with pytest.raises(ResearchBridgeError):
         read_receipt(tmp_path, "../secret")
+
+
+@pytest.mark.asyncio
+async def test_source_ingestion_rejects_path_traversal_before_network():
+    with pytest.raises(ResearchBridgeError):
+        await fetch_source_files("owner/repo", "a" * 40, ["../secrets.txt"])
+
+
+@pytest.mark.asyncio
+async def test_source_ingestion_caps_requested_file_count():
+    with pytest.raises(ResearchBridgeError):
+        await fetch_source_files("owner/repo", "a" * 40, ["f" + str(i) for i in range(6)])

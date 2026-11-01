@@ -194,3 +194,10 @@ merge without his word.
 - Old runs are pruned by age, not name, so the repeated hour at the DST fall-back can't delete the newest run.
 - LANE_TIMEOUT, SMOKE_TIMEOUT, CYCLE_SLEEP, MIN_FREE_GB, MIN_RUN_FREE_GB, and KEEP_RUNS must be whole numbers; anything else fails before Ollama starts, instead of hours in.
 - MODEL validation uses explicit ASCII so old bash in a UTF-8 locale can't let accented letters through.
+
+## Round 7 hardening (port owners, model tags, unfinished git work, launchd env)
+- A different program on the Ollama port (a dev server, an AirPlay-style 403, an empty 500) is detected as "not Ollama" and the run stops with advice to set OLLAMA_HOST. Before this fix, any HTTP reply counted as Ollama.
+- MODEL=gpt-oss now matches `gpt-oss:latest` in `ollama list`, so it no longer re-pulls a model that's already there. Other tags (`:7b`, `:120b-q8`) still don't count as a match.
+- If you're in the middle of a merge, cherry-pick, revert, rebase, or bisect, the run refuses to start and changes nothing.
+- On a detached HEAD, the carried patches go onto a new `avrone-autopilot` branch instead of a commit that would get lost. Shallow clones and `git worktree` checkouts work.
+- Login/cron style starts: Homebrew bin folders are added to a stripped PATH. A missing HOME falls back to `$DRIVE/avrone-home`. A dead or read-only TMPDIR is dropped. A umask that blocks the owner is reset to 022.

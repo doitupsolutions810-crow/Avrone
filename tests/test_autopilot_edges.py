@@ -1618,3 +1618,199 @@ def test_bad_numeric_setting_fails_fast(env, var, val):
 def test_non_ascii_model_rejected_in_utf8_locale(env, model):
     r = env.run(MODEL=model, LANG="C.UTF-8", LC_ALL="C.UTF-8")
     assert r.returncode == 1 and "MODEL has illegal characters" in out(r), out(r)
+
+
+# =====================================================================================
+# Round 7: foreign port owners, model tags, unfinished git work, odd checkouts, launchd env
+# =====================================================================================
+
+def _foreign_server(port, status, body, ctype="text/html"):
+    import http.server, threading
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status); self.send_header("Content-Type", ctype); self.end_headers()
+            self.wfile.write(body)
+        do_POST = do_GET
+        def log_message(self, *a): pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@pytest.mark.parametrize("status,body,ctype", [
+    (404, b"<html>Not Found</html>", "text/html"),
+    (200, b"hello from some dev server", "text/plain"),
+    (200, b'{"ok":true}', "application/json"),
+    (403, b"AirPlay", "text/plain"),
+    (500, b"", "text/plain"),
+])
+def test_foreign_service_on_ollama_port(env, status, body, ctype):
+    srv = _foreign_server(env.port, status, body, ctype)
+    try:
+        r = env.run(timeout=90)
+    finally:
+        srv.shutdown(); srv.server_close()
+    assert r.returncode == 1, out(r)
+    assert "not Ollama" in out(r)
+    assert "ollama pull" not in env.calls() and "ollama serve" not in env.calls()
+
+
+def test_untagged_model_matches_latest_no_repull(env):
+    (env.stub / "models").write_text("stub-model:latest\n")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "ollama pull" not in env.calls(), "re-pulled a model that was already present as :latest"
+
+
+def test_untagged_model_does_not_match_other_tag(env):
+    (env.stub / "models").write_text("stub-model:7b\n")
+    r = env.run()
+    assert r.returncode == 0, out(r)
+    assert "ollama pull stub-model" in env.calls()
+
+
+def test_tagged_model_does_not_match_prefix(env):
+    (env.stub / "models").write_text("stub-model:120b-q8\n")
+    r = env.run(MODEL="stub-model:120b")
+    assert r.returncode == 0, out(r)
+    assert "ollama pull stub-model:120b" in env.calls()
+
+
+# ---------------- a user's unfinished git work is never built on top of ----------------
+
+@pytest.mark.parametrize("marker,word", [
+    ("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"),
+    ("rebase-merge", "rebase"),
+])
+@pytest.mark.parametrize("which", ["patched", "unpatched"])
+def test_git_mid_operation_refused(tmp_path, base_repos, marker, word, which):
+    e = Env(tmp_path, base_repos[which])
+    head = _git(e.repo, "rev-parse", "HEAD").stdout.strip()
+    m = e.repo / ".git" / marker
+    if marker == "rebase-merge":
+        m.mkdir(); (m / "head-name").write_text("refs/heads/main\n")
+    else:
+        m.write_text(head + "\n")
+    r = e.run()
+    assert r.returncode == 1, out(r)
+    assert f"middle of a {word}" in out(r)
+    assert _git(e.repo, "rev-parse", "HEAD").stdout.strip() == head
+    assert m.exists(), "the user's in-progress operation was destroyed"
+
+
+def test_real_bisect_in_progress_refused(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["unpatched"])
+    head = _git(e.repo, "rev-parse", "HEAD").stdout.strip()
+    _git(e.repo, "bisect", "start", "HEAD", "HEAD~3")
+    mid = _git(e.repo, "rev-parse", "HEAD").stdout.strip()
+    r = e.run()
+    assert r.returncode == 1 and "middle of a bisect" in out(r), out(r)
+    assert _git(e.repo, "rev-parse", "HEAD").stdout.strip() == mid
+    assert head  # sanity
+
+
+@pytest.mark.parametrize("branch_exists", [False, True])
+def test_detached_head_unpatched_gets_a_branch(tmp_path, base_repos, branch_exists):
+    e = Env(tmp_path, base_repos["unpatched"])
+    _git(e.repo, "checkout", "-q", "--detach")
+    if branch_exists:
+        _git(e.repo, "branch", "avrone-autopilot")
+    r = e.run()
+    assert r.returncode == 0, out(r)
+    assert "created branch avrone-autopilot" in out(r)
+    br = _git(e.repo, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert br.startswith("avrone-autopilot") and (br != "avrone-autopilot") == branch_exists
+    # the patch commits live on that branch, not on a dangling HEAD
+    assert "coerce_args" in (e.repo / "avrone/trinity.py").read_text()
+
+
+def test_detached_head_patched_runs(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["patched"])
+    _git(e.repo, "checkout", "-q", "--detach")
+    r = e.run()
+    assert r.returncode == 0, out(r)
+
+
+def test_shallow_clone_applies_patches(tmp_path, base_repos):
+    src = tmp_path / "shallow-src"
+    r0 = subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{base_repos['unpatched']}", str(src)],
+                        capture_output=True, text=True)
+    if r0.returncode:
+        pytest.skip(r0.stderr)
+    shutil.copytree(base_repos["unpatched"] / "scripts", src / "scripts", dirs_exist_ok=True)
+    _git(src, "config", "user.email", "t@t"); _git(src, "config", "user.name", "t")
+    e = Env(tmp_path, src)
+    r = e.run()
+    assert r.returncode == 0, out(r)
+    assert "applying carried patches" in out(r)
+
+
+def test_git_worktree_checkout(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["patched"])
+    wt = tmp_path / "wt"
+    assert _git(e.repo, "worktree", "add", "-q", "-b", "wt-branch", str(wt)).returncode == 0
+    shutil.copytree(e.repo / "scripts", wt / "scripts", dirs_exist_ok=True)
+    shutil.copytree(e.repo / ".venv", wt / ".venv", symlinks=True)
+    assert (wt / ".git").is_file()
+    r = subprocess.run([BASH, str(wt / SCRIPT_REL)], cwd=tmp_path, env=e.env(), capture_output=True, text=True, timeout=180)
+    e.kill_server()
+    assert r.returncode == 0, out(r)
+
+
+def test_repo_without_git_dir(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["patched"])
+    shutil.rmtree(e.repo / ".git")
+    r = e.run()
+    assert r.returncode == 1 and "no git repo" in out(r), out(r)
+
+
+# ---------------- launchd / cron style environments ----------------
+
+def test_launchd_minimal_path_finds_homebrew(tmp_path, base_repos):
+    e = Env(tmp_path, base_repos["patched"])
+    pfx = tmp_path / "fake-homebrew"; (pfx / "bin").mkdir(parents=True)
+    shutil.move(str(e.bin / "ollama"), str(pfx / "bin" / "ollama"))
+    env = e.env(PATH=f"{e.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+                AUTOPILOT_BREW_PREFIXES=f"{pfx} {Path(sys.executable).resolve().parent.parent}")
+    r = subprocess.run([BASH, str(e.repo / SCRIPT_REL)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=180)
+    e.kill_server()
+    assert r.returncode == 0, out(r)
+    assert "brew install" not in e.calls(), "reinstalled ollama that Homebrew already had"
+
+
+@pytest.mark.parametrize("home", ["__unset__", "/nonexistent/home/crow", ""])
+def test_home_unset_or_missing(env, home):
+    r = env.run(HOME=home)
+    assert r.returncode == 0, out(r)
+    assert "HOME was unset or missing" in out(r)
+    assert (env.drive / "avrone-home").is_dir()
+
+
+def test_readonly_home(env, tmp_path):
+    h = tmp_path / "ro-home"; h.mkdir(); h.chmod(0o555)
+    try:
+        r = env.run(HOME=str(h))
+    finally:
+        h.chmod(0o755)
+    assert r.returncode == 0, out(r)
+
+
+@pytest.mark.parametrize("tmpdir", ["/nonexistent/tmp", "RO"])
+def test_bad_tmpdir(env, tmp_path, tmpdir):
+    if tmpdir == "RO":
+        d = tmp_path / "ro-tmp"; d.mkdir(); d.chmod(0o555); tmpdir = str(d)
+    gate = 'python -c "import tempfile; tempfile.mkstemp(); print(\'TMP_OK\')"'
+    r = env.run(TMPDIR=tmpdir, SKIP_GATE="0", GATE_CMD=gate)
+    assert r.returncode == 0, out(r)
+    assert "TMP_OK" in _gate_out(env)
+
+
+@pytest.mark.parametrize("mask", ["0277", "0377", "0777", "0077"])
+def test_hostile_umask(env, mask):
+    env.flag("chat_smoke_pass")
+    r = subprocess.run([BASH, "-c", f'umask {mask}; exec "$0" "$1"', BASH, str(env.repo / SCRIPT_REL)],
+                       cwd=env.tmp, env=env.env(), capture_output=True, text=True, timeout=180)
+    env.kill_server()
+    assert r.returncode == 0, out(r)
+    st = env.state / "reintro-stage.txt"
+    assert st.exists() and os.access(st, os.R_OK | os.W_OK)

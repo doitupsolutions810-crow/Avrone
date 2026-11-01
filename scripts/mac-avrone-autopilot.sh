@@ -40,6 +40,14 @@ export GIT_CONFIG_COUNT=6 \
   GIT_CONFIG_KEY_4=am.threeWay    GIT_CONFIG_VALUE_4=true \
   GIT_CONFIG_KEY_5=advice.detachedHead GIT_CONFIG_VALUE_5=false
 export GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat PAGER=cat
+# launchd/cron start us with PATH=/usr/bin:/bin:/usr/sbin:/sbin, which hides Homebrew (and so ollama/python3.11+)
+for _bp in ${AUTOPILOT_BREW_PREFIXES:-/opt/homebrew /usr/local}; do
+  [ -d "$_bp/bin" ] && case ":$PATH:" in *":$_bp/bin:"*) ;; *) PATH="$PATH:$_bp/bin";; esac
+done; export PATH
+# a TMPDIR that is gone (old volume, deleted folder) breaks mktemp, pip and pytest in confusing ways
+if [ -n "${TMPDIR:-}" ] && { [ ! -d "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; }; then unset TMPDIR; fi
+# a umask that removes the owner's own write/read bits would make every state file we write unusable
+case "$(umask)" in *[1-7]??) umask 022;; esac
 # explicit letters: in a UTF-8 locale old bash (macOS 3.2) lets [A-Za-z] match accented and other letters
 AZ='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 OUT=""
@@ -56,6 +64,8 @@ fi
 DRIVE="${DRIVE%/}"
 [ -d "$DRIVE" ] || die "drive $DRIVE is not mounted / does not exist"
 DRIVE_REAL="$(cd -P "$DRIVE" && pwd)"; REPO_REAL="$(cd -P "$REPO" && pwd)"
+# launchd jobs can run with HOME unset or pointing nowhere; git, pip and ollama all need a real one
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then HOME="$DRIVE/avrone-home"; mkdir -p "$HOME" 2>/dev/null; export HOME; log "WARN: HOME was unset or missing — using $HOME"; fi
 [ "$DRIVE_REAL" = / ] && die "DRIVE must not be the filesystem root"
 case "$DRIVE_REAL/" in "$REPO_REAL"/*) die "DRIVE must not be inside the repo ($REPO) — state would end up in git";; esac
 [ -n "${HOME:-}" ] && [ "$DRIVE_REAL" = "$(cd -P "$HOME" 2>/dev/null && pwd)" ] && die "DRIVE must not be your home folder — point it at the external drive"
@@ -239,6 +249,9 @@ if [ -f "$GITDIR/index.lock" ]; then
   if pgrep -x git >/dev/null 2>&1; then die "git is running on this machine and $GITDIR/index.lock exists — wait for it, then rerun"; fi
   log "WARN: stale git index.lock (crashed git?) — removing it"; rm -f "$GITDIR/index.lock"
 fi
+for _op in MERGE_HEAD:merge CHERRY_PICK_HEAD:cherry-pick REVERT_HEAD:revert BISECT_LOG:bisect rebase-merge:rebase; do
+  [ -e "$GITDIR/${_op%%:*}" ] && die "git is in the middle of a ${_op#*:} in $REPO — finish or abort it first (git ${_op#*:} --abort / git bisect reset); nothing was touched"
+done
 [ -d "$(git rev-parse --git-dir)/rebase-apply" ] && { log "WARN: leftover git am in progress — aborting it"; git am --abort 2>/dev/null; }
 # agents/ is AVRONE's runtime per-agent home (agentfs: <workspace>/agents). It is recreated on every
 # run, so never delete it — keep it out of git via the clone-local exclude file instead.
@@ -250,6 +263,11 @@ if ! { grep -q "def apply_tool_focus" avrone/bootstrap.py && grep -q "def coerce
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     git status --short --untracked-files=no | head -10
     die "uncommitted changes in tracked files — commit or stash them first (nothing was touched)"
+  fi
+  if ! git symbolic-ref -q HEAD >/dev/null; then   # detached HEAD: commits made here are lost on the next checkout
+    _br=avrone-autopilot; git show-ref -q --verify "refs/heads/$_br" && _br="avrone-autopilot-$(date +%Y%m%d-%H%M%S)"
+    git checkout -q -b "$_br" || die "repo is on a detached HEAD and branch $_br could not be created"
+    log "WARN: repo was on a detached HEAD — created branch $_br so the patch commits are kept"
   fi
   log "applying carried patches (TOOLS_ONLY, coerce_args)"
   PATCHES=""
@@ -269,7 +287,8 @@ command -v ollama >/dev/null || { need_brew ollama; log "installing ollama"; bre
 export OLLAMA_MODELS="$DRIVE/ollama-models" OLLAMA_CONTEXT_LENGTH="$CTX" OLLAMA_KEEP_ALIVE=2h
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-2}"
 command -v launchctl >/dev/null && { launchctl setenv OLLAMA_MODELS "$OLLAMA_MODELS" 2>/dev/null; launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX" 2>/dev/null; }
-ollama_up(){ curl -s -m 5 "$OURL/api/version" >/dev/null 2>&1; }
+ollama_up(){ curl -s -m 5 "$OURL/api/version" 2>/dev/null | grep -q '"version"'; }
+http_code(){ curl -s -m 5 -o /dev/null -w '%{http_code}' "$OURL/api/version" 2>/dev/null; }
 port_open(){ python3 -c "import socket,sys;h,p=sys.argv[1].rsplit(':',1);s=socket.socket();s.settimeout(2);sys.exit(0 if s.connect_ex((h,int(p)))==0 else 1)" "$OHOST" 2>/dev/null; }
 OLLAMA_RESTARTS=0
 ensure_ollama(){
@@ -278,6 +297,7 @@ ensure_ollama(){
   [ "$OLLAMA_RESTARTS" -gt 3 ] && die "ollama keeps dying (>3 restarts); see $DRIVE/ollama.log"
   [ -n "$OLLAMA_PID" ] && { kill "$OLLAMA_PID" 2>/dev/null; sleep 1; kill -9 "$OLLAMA_PID" 2>/dev/null; }
   if port_open; then
+    case "$(http_code)" in 000|'') ;; *) die "another program (not Ollama) is using $OHOST — quit it, or set OLLAMA_HOST=127.0.0.1:11435 and rerun";; esac
     die "something on $OHOST accepts connections but does not answer (hung ollama?) — quit it (pkill ollama / quit the Ollama app) and rerun"
   fi
   log "starting ollama serve on $OHOST (ctx=$CTX)"
@@ -287,8 +307,10 @@ ensure_ollama(){
   die "ollama did not start; see $DRIVE/ollama.log"
 }
 ensure_ollama start
+has_model(){ local want="$MODEL"; case "$want" in *:*) ;; *) want="$want:latest";; esac
+  ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qxF -e "$MODEL" -e "$want"; }
 ensure_model(){
-  ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qxF "$MODEL" && return 0
+  has_model && return 0
   local need_gb free_gb ok attempt
   need_gb="${MIN_FREE_GB:-80}"
   free_gb=$(df -Pk "$DRIVE" | awk 'NR==2{print int($4/1048576)}')

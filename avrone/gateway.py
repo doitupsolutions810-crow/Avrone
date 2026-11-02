@@ -12,6 +12,7 @@ gateway moves to the next healthy upstream. An upstream that fails repeatedly is
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -137,9 +138,26 @@ class Gateway:
             # Permanent for this upstream (bad request, auth): don't retry it, but fail over.
             raise _Permanent(f"{up.provider} {r.status_code}: {r.text[:300]}")
         try:
-            return r.json()["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, ValueError, TypeError) as e:
+            choice = r.json()["choices"][0]
+            msg = choice["message"]
+            content = msg.get("content") or ""
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
             raise _Retry(f"{up.provider} bad response: {r.text[:200]}", r) from e
+        if not isinstance(content, str):
+            content = str(content)
+        if content.strip():
+            return content
+        # gpt-oss on Ollama: the action sometimes comes back as a parsed native tool call with
+        # empty content. AVRONE's actions are JSON text, so rewrite it into that form instead of
+        # handing the agent an empty reply.
+        synth = tool_calls_as_action(msg.get("tool_calls"))
+        if synth:
+            return synth
+        if choice.get("finish_reason") == "length":
+            # Every token went to reasoning: retrying gives the same result. Say why plainly.
+            raise _Permanent(f"{up.provider} 200: empty reply, output truncated (finish_reason=length); "
+                             f"the context window or max tokens is too small for this model")
+        return content
 
     async def chat(self, messages: list[dict[str, str]], model: str | None = None,
                    temperature: float = 0.7, session: str | None = None, lead: bool = False) -> str:
@@ -209,6 +227,43 @@ def with_plain_text_nudge(messages: list[dict[str, str]]) -> list[dict[str, str]
     else:
         out.insert(0, {"role": "system", "content": PLAIN_TEXT_NUDGE})
     return out
+
+
+def _tool_name(raw: Any) -> str:
+    name = str(raw or "").strip()
+    # gpt-oss namespaces: "functions.shell", "repo_browser.shell", "assistant<|channel|>commentary to=functions.shell"
+    name = name.split("to=")[-1].strip()
+    name = name.rsplit(".", 1)[-1]
+    name = name.split("<|", 1)[0].strip()
+    return name
+
+
+def tool_calls_as_action(tool_calls: Any) -> str:
+    """OpenAI-style message.tool_calls -> AVRONE's JSON action text ("" when unusable)."""
+    if not isinstance(tool_calls, list):
+        return ""
+    actions: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = _tool_name(fn.get("name"))
+        if not name:
+            continue
+        args: Any = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except ValueError:
+                args = {"_raw": args}
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            args = {"_raw": args}
+        actions.append({"tool": name, "args": args})
+    if not actions:
+        return ""
+    return json.dumps(actions[0] if len(actions) == 1 else {"tools": actions})
 
 
 class _Retry(RuntimeError):

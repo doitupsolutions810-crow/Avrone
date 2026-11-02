@@ -238,3 +238,10 @@ merge without his word.
 ## Round 13 hardening (gpt-oss tool-call 500s)
 - **AVRONE gateway, `avrone/gateway.py`:** gpt-oss on Ollama sometimes answers HTTP 500 "error parsing tool call", when the model writes into its native tool channel. AVRONE never uses native tools, so it now detects that error and sends the retry with a plain-text instruction folded into the system prompt. It never mutates the caller's messages and adds the instruction only once. Other 500s retry exactly as before. Tests: tests/test_gateway_toolparse.py.
 - **Smoke judge:** the 5xx HINT now also reads the gateway's error spelling (`ollama 500: ...`), not just the legacy `Model backend error 500`. Round 12's hint would have missed real gateway errors.
+
+## Round 14 hardening (gpt-oss reply shapes)
+- **Native tool calls with empty content:** Ollama sometimes parses gpt-oss's action into `message.tool_calls` and leaves `content` empty. The gateway now rewrites those calls into AVRONE's JSON action (`{"tool","args"}`, or `{"tools":[...]}` for several). It strips gpt-oss namespaces (`functions.shell`, `repo_browser.shell`, `... to=functions.shell`) and accepts arguments as a string or an object. Unparseable arguments are kept as `{"_raw": ...}`, never dropped. When the reply has text, the text wins.
+- **Truncated empty reply:** empty content with `finish_reason=length` means every token went to reasoning. It now fails right away with a plain reason instead of silently returning "" (retrying would truncate the same way). Partial text with `length` is still returned.
+- Hardened against a non-dict `message` and non-string `content`.
+- **Smoke judge:** a held batch whose log shows `finish_reason=length` gets a HINT to raise CTX. It no longer reads as a tool failure.
+- Tests: tests/test_gateway_toolcalls.py (18), plus 2 judge tests. Mutation check: 10 of the 20 fail on round 13. The others are guards.

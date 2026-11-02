@@ -48,6 +48,14 @@ def _unknown_line(line: str) -> bool:
     return m is None or m.group(1) in ("tool.result", "error")
 
 
+TRUNC = re.compile(r"finish_reason=length")
+
+
+def truncations(log: str) -> int:
+    """Empty replies cut off by the context/max-token limit (gpt-oss spent it all on reasoning)."""
+    return len(TRUNC.findall(log))
+
+
 def backend_errors(log: str) -> int:
     """5xx answers from the model server (e.g. Ollama failing to parse a gpt-oss tool call)."""
     return len(BACKEND.findall(log))
@@ -81,6 +89,10 @@ def main(argv: list[str]) -> int:
     if be and not passed:
         print(f"  smoke: HINT the model server answered 5xx {be}x — the model/server is failing (e.g. Ollama "
               f"can't parse the model's tool call), not the tools; check {errlog} and ollama.log")
+    tr = truncations(log)
+    if tr and not passed:
+        print(f"  smoke: HINT {tr} model replies were cut off (finish_reason=length) — raise CTX "
+              f"(the num_ctx the autopilot builds into the model), not the tools")
     if passed:
         try:
             new = str(int(stage_s) + 1)

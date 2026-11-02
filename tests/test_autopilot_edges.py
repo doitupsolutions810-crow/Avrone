@@ -2405,3 +2405,20 @@ class TestJudgeGatewayErrors:
         # "127.0.0.1:11500" or "ollama:11500" must not read as a 5xx answer
         log = _ev("error", "ollama unreachable: All connection attempts failed http://127.0.0.1:11500")
         assert "HINT" not in _judge(tmp_path, log, "a")[0]
+
+
+# =====================================================================================
+# Round 14: truncated (finish_reason=length) replies get their own hint
+# =====================================================================================
+
+class TestJudgeTruncation:
+    def test_truncation_hint_on_hold(self, tmp_path):
+        msg = ("All upstreams failed (ollama:fail): ollama 200: empty reply, output truncated "
+               "(finish_reason=length); the context window or max tokens is too small for this model")
+        out_ = _judge(tmp_path, _ev("error", msg), "a")[0]
+        assert "HOLD" in out_ and "cut off" in out_ and "CTX" in out_
+        assert "5xx" not in out_  # a 200 is not a server failure
+
+    def test_no_truncation_hint_when_advancing(self, tmp_path):
+        log = _ev("tool.call", "a") + _ev("error", "x finish_reason=length")
+        assert "cut off" not in _judge(tmp_path, log, "a")[0]

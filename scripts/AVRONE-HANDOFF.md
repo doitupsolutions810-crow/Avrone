@@ -251,3 +251,13 @@ merge without his word.
 - **Reasoning text:** JSON inside `<think>`/`<thinking>`/`<reasoning>` blocks, and in a leaked gpt-oss harmony `analysis` channel, loses to the answer's own action. It's used only when the answer has none, as before. Harmony control tokens are stripped.
 - **Bounded:** at most 4000 decode attempts and 0.3 s, so a pathological reply can't stall an agent. Non-text input returns None instead of raising.
 - Tests: tests/test_parse_action_robust.py (23). The existing fuzz, core, and toolcall parser tests still pass. Mutation check: 15 of the 23 fail on round 14.
+
+## Round 16 hardening (action normalizing)
+- **`normalize_action` / `normalize_call` (avrone/trinity.py)** run on every parsed action, batch entries included, before the arg checks. They fix JSON that parses but misses AVRONE's format the way gpt-oss and qwen do:
+  - `"tool": "functions.shell"` (also `tools.`, `function.`, `repo_browser.` prefixes and stray spaces) becomes `shell`, but only when the bare name is a registered tool.
+  - Args under `arguments`, `parameters`, `params`, or `input` move to `args`. A real `args` key still wins.
+  - Args sent as a JSON-encoded string are decoded when they decode to an object. Anything else is left for the normal ARG ERROR.
+  - A `"final": null` or empty final beside a tool call is dropped, so the tool runs. Before, the run ended with the literal result "None".
+  - A lone `{"final": null}` now yields "" rather than "None". A structured final (object, list, or number) keeps its JSON form instead of a Python repr.
+  - The caller's dict is never mutated.
+- Tests: tests/test_action_normalize.py (26), including real agent-loop runs where the shell tool executes. Mutation check with identity stubs on round 15: 21 of 26 fail, including all 4 loop tests.

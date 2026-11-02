@@ -351,6 +351,70 @@ def coerce_args(registry: Any, tool: str, action: dict[str, Any], args: Any) -> 
     return out if out != {} else args
 
 
+# Keys local models use for a call's arguments when they mimic other tool-call formats.
+ARGS_KEYS = ("arguments", "parameters", "params", "input")
+_TOOL_PREFIXES = ("functions.", "function.", "tools.", "tool.", "functions:", "repo_browser.")
+
+
+def normalize_call(registry: Any, call: Any) -> Any:
+    """Repair one {"tool", "args"} call the way gpt-oss/qwen actually miss the format.
+
+    - tool name with a namespace prefix ("functions.shell") or stray spaces, when the bare
+      name is a registered tool;
+    - args under "arguments"/"parameters"/"params"/"input" instead of "args";
+    - args sent as a JSON-encoded string ('{"cmd": "ls"}').
+    Returns a new dict; anything it can't repair is passed through for the normal checks."""
+    if not isinstance(call, dict):
+        return call
+    out = dict(call)
+    tool = out.get("tool")
+    if isinstance(tool, str):
+        name = tool.strip()
+        has = getattr(registry, "get", None)
+        if callable(has) and has(name) is None:
+            for pre in _TOOL_PREFIXES:
+                if name.startswith(pre) and has(name[len(pre):].strip()) is not None:
+                    name = name[len(pre):].strip()
+                    break
+        out["tool"] = name
+    if out.get("args") is None:
+        for k in ARGS_KEYS:
+            if k in out and isinstance(out[k], (dict, str)):
+                out["args"] = out.pop(k)
+                break
+    args = out.get("args")
+    if isinstance(args, str) and args.strip().startswith("{"):
+        try:
+            decoded = json.loads(args)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            out["args"] = decoded
+    return out
+
+
+def normalize_action(registry: Any, action: dict[str, Any]) -> dict[str, Any]:
+    """Repair a parsed action before it runs (see normalize_call).
+
+    A "final" that is null or empty beside a real tool call is noise from models that fill
+    every key ({"tool": "shell", "args": {...}, "final": null}): the tool runs instead of the
+    run ending with "None". A non-string final keeps its JSON form instead of a Python repr."""
+    out = normalize_call(registry, action)
+    has_call = bool(out.get("tool")) or bool(out.get("tools"))
+    if "final" in out:
+        f = out["final"]
+        if has_call and (f is None or (isinstance(f, str) and not f.strip())):
+            del out["final"]
+        elif not isinstance(f, str) and f is not None:
+            try:
+                out["final"] = json.dumps(f, ensure_ascii=False)
+            except (TypeError, ValueError):
+                out["final"] = str(f)
+    if isinstance(out.get("tools"), list):
+        out["tools"] = [normalize_call(registry, c) for c in out["tools"]]
+    return out
+
+
 DEFAULT_MAX_CALLS_PER_TURN = 4
 HARD_MAX_CALLS_PER_TURN = 8
 # After this many consecutive ARG ERRORs from one agent, stop blocking its calls on the
@@ -560,8 +624,9 @@ class TrinityCore:
                 # Genuine prose answer: accept it as the final result.
                 result = reply.strip()
                 break
+            action = normalize_action(self.tools, action)
             if "final" in action:
-                result = str(action["final"])
+                result = "" if action["final"] is None else str(action["final"])
                 break
             if "tools" in action and "tool" not in action:
                 calls = action.get("tools")

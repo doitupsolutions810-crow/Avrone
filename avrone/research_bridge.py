@@ -6,6 +6,9 @@ It records what the system actually observed; it does not certify mathematical t
 from __future__ import annotations
 
 import hashlib
+import hmac
+import math
+import stat
 import json
 import os
 import re
@@ -120,9 +123,17 @@ async def fetch_source_files(repository: str, commit_sha: str, paths: list[str])
                 obj = response.json()
                 if obj.get("type") != "file" or obj.get("encoding") != "base64":
                     raise ValueError("not a base64 file")
-                raw_bytes = base64.b64decode(obj["content"], validate=False)
+                encoded_content = obj["content"]
+                if not isinstance(encoded_content, str) or len(encoded_content) > 1_400_000:
+                    raise ValueError("encoded source exceeds limit")
+                raw_bytes = base64.b64decode(encoded_content, validate=True)
+                if len(raw_bytes) > 1_000_000:
+                    raise ValueError("source file exceeds 1 MB")
                 text_content = raw_bytes.decode("utf-8")
-                blob_sha = str(obj["sha"])
+                blob_sha = str(obj["sha"]).lower()
+                expected_blob_sha = hashlib.sha1(b"blob " + str(len(raw_bytes)).encode("ascii") + b"\\0" + raw_bytes).hexdigest()
+                if not re.fullmatch(r"[0-9a-f]{40}", blob_sha) or not hmac.compare_digest(blob_sha, expected_blob_sha):
+                    raise ValueError("Git blob SHA-1 mismatch")
             except (ValueError, KeyError, TypeError, UnicodeDecodeError):
                 results.append({"path": path, "status": "non_text_or_unreadable"})
                 continue
@@ -199,15 +210,62 @@ def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
 
 
 def read_receipt(data_dir: Path, run_id: str) -> dict[str, Any] | None:
+    """Read and cryptographically revalidate a bounded receipt without following symlinks."""
     if not _RUN_RE.fullmatch(run_id):
         raise ResearchBridgeError("invalid run id")
-    path = Path(data_dir) / "research_receipts" / f"{run_id}.json"
+    directory = Path(data_dir) / "research_receipts"
+    dir_fd = None
+    file_fd = None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        dir_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            file_fd = os.open(f"{run_id}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2_100_000:
+            raise ResearchBridgeError("receipt is not a regular file or exceeds the 2.1 MB read limit")
+        chunks = []
+        remaining = 2_100_001
+        while remaining:
+            chunk = os.read(file_fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > 2_100_000:
+            raise ResearchBridgeError("receipt exceeds the 2.1 MB read limit")
+        value = json.loads(raw.decode("utf-8"), parse_constant=lambda item: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
     except FileNotFoundError:
         return None
-    except (OSError, ValueError):
-        raise ResearchBridgeError("receipt file could not be read or parsed") from None
+    except ResearchBridgeError:
+        raise
+    except (OSError, ValueError, UnicodeDecodeError):
+        raise ResearchBridgeError("receipt file could not be safely read or parsed") from None
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
+
     if not isinstance(value, dict) or value.get("schema") != "avrone.research-receipt.v1":
         raise ResearchBridgeError("receipt schema is invalid")
+    binding_keys = ("schema", "run_id", "source", "claim", "mode", "rounds_requested", "result_digest_sha256")
+    if value.get("run_id") != run_id or any(key not in value for key in binding_keys):
+        raise ResearchBridgeError("receipt binding is incomplete or mismatched")
+    result = value.get("result")
+    try:
+        result_digest = hashlib.sha256(_canonical_json(result)).hexdigest()
+        if not hmac.compare_digest(str(value.get("result_digest_sha256", "")), result_digest):
+            raise ResearchBridgeError("receipt result digest verification failed")
+        binding = {key: value[key] for key in binding_keys}
+        evidence_digest = hashlib.sha256(_canonical_json(binding)).hexdigest()
+        if not hmac.compare_digest(str(value.get("evidence_digest_sha256", "")), evidence_digest):
+            raise ResearchBridgeError("receipt evidence digest verification failed")
+        created = float(value["created_at_unix"])
+        if not math.isfinite(created):
+            raise ValueError("invalid timestamp")
+    except (KeyError, TypeError, ValueError):
+        raise ResearchBridgeError("receipt integrity metadata is invalid") from None
     return value

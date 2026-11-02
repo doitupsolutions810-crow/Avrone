@@ -31,6 +31,8 @@ class ResearchBridgeError(ValueError):
 
 
 def validate_source(repository: str, commit_sha: str) -> tuple[str, str]:
+    if not isinstance(repository, str) or not isinstance(commit_sha, str):
+        raise ResearchBridgeError("repository and commit_sha must be strings")
     repository = repository.strip()
     commit_sha = commit_sha.strip().lower()
     if not _REPO_RE.fullmatch(repository) or repository.startswith(".") or ".." in repository:
@@ -94,6 +96,8 @@ async def fetch_source_files(repository: str, commit_sha: str, paths: list[str])
         raise ResearchBridgeError("source_paths accepts at most 5 files per run")
     clean_paths: list[str] = []
     for raw in paths:
+        if not isinstance(raw, str):
+            raise ResearchBridgeError("source paths must be strings")
         path = raw.strip().strip("/")
         parts = path.split("/")
         if (not path or len(path) > 240 or any(p in ("", ".", "..") for p in parts)
@@ -151,14 +155,29 @@ async def fetch_source_files(repository: str, commit_sha: str, paths: list[str])
 
 
 def _canonical_json(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    try:
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        raise ResearchBridgeError("value is not valid canonical JSON") from None
 
 
 def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
                   claim: str, mode: str, rounds: int, result: dict[str, Any]) -> dict[str, Any]:
     """Persist an atomic receipt binding source SHA, live run id, and result digest."""
-    if not _RUN_RE.fullmatch(run_id):
+    if not isinstance(run_id, str) or not _RUN_RE.fullmatch(run_id):
         raise ResearchBridgeError("invalid run id for receipt")
+    if not isinstance(source, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in source.items()):
+        raise ResearchBridgeError("receipt source must be a string-to-string mapping")
+    if not isinstance(claim, str) or not claim or len(claim) > 4000:
+        raise ResearchBridgeError("receipt claim must contain 1-4000 characters")
+    if not isinstance(mode, str) or not mode or len(mode) > 64:
+        raise ResearchBridgeError("receipt mode must be a non-empty string of at most 64 characters")
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 3:
+        raise ResearchBridgeError("receipt rounds must be an integer from 1 to 3")
+    if not isinstance(result, dict):
+        raise ResearchBridgeError("receipt result must be an object")
     answer = result.get("answer")
     if not isinstance(answer, str):
         answer = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
@@ -211,7 +230,7 @@ def write_receipt(data_dir: Path, *, run_id: str, source: dict[str, str],
 
 def read_receipt(data_dir: Path, run_id: str) -> dict[str, Any] | None:
     """Read and cryptographically revalidate a bounded receipt without following symlinks."""
-    if not _RUN_RE.fullmatch(run_id):
+    if not isinstance(run_id, str) or not _RUN_RE.fullmatch(run_id):
         raise ResearchBridgeError("invalid run id")
     directory = Path(data_dir) / "research_receipts"
     dir_fd = None
@@ -254,7 +273,17 @@ def read_receipt(data_dir: Path, run_id: str) -> dict[str, Any] | None:
     binding_keys = ("schema", "run_id", "source", "claim", "mode", "rounds_requested", "result_digest_sha256")
     if value.get("run_id") != run_id or any(key not in value for key in binding_keys):
         raise ResearchBridgeError("receipt binding is incomplete or mismatched")
+    if (not isinstance(value.get("source"), dict)
+            or not all(isinstance(k, str) and isinstance(v, str) for k, v in value["source"].items())
+            or not isinstance(value.get("claim"), str) or not value["claim"]
+            or not isinstance(value.get("mode"), str) or not value["mode"]
+            or isinstance(value.get("rounds_requested"), bool)
+            or not isinstance(value.get("rounds_requested"), int)
+            or not 1 <= value["rounds_requested"] <= 3):
+        raise ResearchBridgeError("receipt binding fields have invalid types or values")
     result = value.get("result")
+    if not isinstance(result, dict):
+        raise ResearchBridgeError("receipt result must be an object")
     try:
         result_digest = hashlib.sha256(_canonical_json(result)).hexdigest()
         if not hmac.compare_digest(str(value.get("result_digest_sha256", "")), result_digest):

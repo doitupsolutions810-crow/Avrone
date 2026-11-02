@@ -268,3 +268,9 @@ merge without his word.
 - **Identical-call loops:** the same tool, args, and output 3 times in a row (`REPEAT_CALL_LIMIT`) adds a note to the tool result telling the agent to change approach or finish, and logs `tool.repeat`. Nothing is blocked. The counter resets on any different call.
 - **Tool output cap:** `AVRONE_TOOL_OUTPUT_MAX` (default 20000 chars, clamped to 1000–500000) is a central safety net for tools that don't cap their own output, such as MCP and plugins. It keeps the head and the tail, where errors usually are.
 - Tests: tests/test_agent_loop_guards.py (22). Mutation on round 16 with stubs: 18 of 22 fail, including every loop-behavior test.
+
+## Round 18 hardening (out of turns, context budget)
+- **Out of turns:** the last "give your final result" reply went back raw. A model answering `{"final": "..."}` returned literal JSON, a tool call returned the call itself, and None or empty returned nothing. `out_of_turns_result` unwraps a final (structured finals become JSON), never returns a tool call, and falls back to a clear "[agent ran out of turns (N steps) without a final answer]" message. Logs `agent.out_of_turns`.
+- **Context budget:** Ollama silently cuts an over-long prompt from the front, which drops the system prompt with its tool docs and JSON format. `AVRONE_CONTEXT_CHARS` (default 120000, clamped to 8000–2000000) now elides the oldest tool-result bodies before each turn, logging `context.compact`. The system prompt, the first user turn, every assistant turn, operator notes, and the newest 4 messages are never touched.
+- Inbox notes that aren't strings no longer crash the loop.
+- Tests: tests/test_agent_loop_context.py (22). Mutation on round 17 with stubs: 16 of 22 fail, including all 3 out-of-turns loop runs and the context-budget loop run.

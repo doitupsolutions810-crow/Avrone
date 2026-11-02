@@ -459,6 +459,61 @@ def reply_text(reply: Any) -> str:
     return str(reply)
 
 
+DEFAULT_CONTEXT_CHARS = 120000
+CONTEXT_KEEP_TAIL = 4  # newest messages never elided
+ELIDED = "[older tool output elided to fit the context window]"
+
+
+def context_chars() -> int:
+    """AVRONE_CONTEXT_CHARS (default 120000), clamped to 8000..2000000; junk = default.
+    Ollama silently cuts an over-long prompt from the FRONT, which drops the system prompt
+    (the tool docs and the JSON action format) and leaves the agent improvising."""
+    try:
+        n = int(os.environ.get("AVRONE_CONTEXT_CHARS", DEFAULT_CONTEXT_CHARS))
+    except (TypeError, ValueError):
+        n = DEFAULT_CONTEXT_CHARS
+    return max(8000, min(n, 2000000))
+
+
+def compact_messages(messages: list[dict[str, Any]], limit: int) -> int:
+    """Elide the oldest tool-result bodies, in place, until the history fits in limit chars.
+    The system prompt, the first user turn, and the newest CONTEXT_KEEP_TAIL messages are
+    never touched, and assistant turns are kept, so the agent still sees what it did.
+    Returns how many messages were elided."""
+    def size() -> int:
+        return sum(len(m.get("content") or "") for m in messages if isinstance(m, dict))
+    if size() <= limit:
+        return 0
+    n = 0
+    for i in range(2, max(2, len(messages) - CONTEXT_KEEP_TAIL)):
+        m = messages[i]
+        c = m.get("content") if isinstance(m, dict) else None
+        if m.get("role") != "user" or not isinstance(c, str) or not c.startswith("TOOL RESULT"):
+            continue
+        head = c.split("\n", 1)[0]
+        new = f"{head}\n{ELIDED}"
+        if len(new) >= len(c):
+            continue
+        m["content"] = new
+        n += 1
+        if size() <= limit:
+            break
+    return n
+
+
+def out_of_turns_result(reply: Any, name: str, steps: int) -> str:
+    """The answer to the last "out of turns" turn. Models often answer in the JSON action
+    format anyway: take a final's text, and never hand back a raw tool call or nothing."""
+    text = reply_text(reply).strip()
+    action = parse_action(text) if text else None
+    if isinstance(action, dict):
+        if "final" in action and action["final"] not in (None, ""):
+            f = action["final"]
+            return f if isinstance(f, str) else json.dumps(f, ensure_ascii=False, default=str)
+        text = ""
+    return text or f"[{name} ran out of turns ({steps} steps) without a final answer]"
+
+
 def _call_key(tool: Any, args: Any, out: str) -> str | None:
     try:
         return json.dumps([tool, args, out], sort_keys=True, default=str)
@@ -653,7 +708,10 @@ class TrinityCore:
         budget = {"arg_errors": 0, "spent": 0}  # consecutive ARG ERRORs; spent = stop validating
         for step in range(self.settings.max_steps):
             for note in self.inbox.pop(name, []):
-                messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
+                messages.append({"role": "user", "content": reply_text(note) + "\nAct on this now, inside your own environment."})
+            elided = compact_messages(messages, context_chars())
+            if elided:
+                self.codex.emit(run_id, "context.compact", name, elided=elided, step=step)
             reply = reply_text(await self._chat(messages, session=f"avrone:{run_id}:{name}"))
             messages.append({"role": "assistant", "content": reply})
             if not reply.strip():
@@ -727,7 +785,10 @@ class TrinityCore:
             messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}{note}"})
         else:
             messages.append({"role": "user", "content": "Out of turns. Give your final result now as plain text."})
-            result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
+            compact_messages(messages, context_chars())
+            self.codex.emit(run_id, "agent.out_of_turns", name, steps=self.settings.max_steps)
+            result = out_of_turns_result(await self._chat(messages, session=f"avrone:{run_id}:{name}"),
+                                         name, self.settings.max_steps)
         return result
 
     def _prechecked(self, run_id: str, name: str, calls: list[Any], step: int,

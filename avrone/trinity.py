@@ -415,6 +415,57 @@ def normalize_action(registry: Any, action: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+DEFAULT_TOOL_OUTPUT_MAX = 20000
+REPEAT_CALL_LIMIT = 3  # same tool + args + output this many times in a row = the agent is looping
+
+
+def tool_output_max() -> int:
+    """AVRONE_TOOL_OUTPUT_MAX (default 20000 chars), clamped to 1000..500000; junk = default.
+    A safety net for tools (MCP, plugins) that don't cap their own output, so one huge result
+    can't blow the model's context window and wedge the agent."""
+    try:
+        n = int(os.environ.get("AVRONE_TOOL_OUTPUT_MAX", DEFAULT_TOOL_OUTPUT_MAX))
+    except (TypeError, ValueError):
+        n = DEFAULT_TOOL_OUTPUT_MAX
+    return max(1000, min(n, 500000))
+
+
+def clip_output(out: str, limit: int) -> str:
+    """Keep the head and the tail (errors usually sit at the end) of an over-long tool output."""
+    if len(out) <= limit:
+        return out
+    marker = f"\n...[{len(out) - limit} chars cut; {len(out)} total]...\n"
+    head = (limit * 2) // 3
+    tail = max(0, limit - head)
+    return out[:head] + marker + (out[-tail:] if tail else "")
+
+
+def reply_text(reply: Any) -> str:
+    """The model's reply as text. A client returning None, bytes, or an OpenAI-style message
+    dict must not crash the agent loop with a TypeError."""
+    if isinstance(reply, str):
+        return reply
+    if reply is None:
+        return ""
+    if isinstance(reply, (bytes, bytearray)):
+        return bytes(reply).decode("utf-8", "replace")
+    if isinstance(reply, dict):
+        c = reply.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(reply.get("message"), dict) and isinstance(reply["message"].get("content"), str):
+            return reply["message"]["content"]
+        return json.dumps(reply, ensure_ascii=False, default=str)
+    return str(reply)
+
+
+def _call_key(tool: Any, args: Any, out: str) -> str | None:
+    try:
+        return json.dumps([tool, args, out], sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
 DEFAULT_MAX_CALLS_PER_TURN = 4
 HARD_MAX_CALLS_PER_TURN = 8
 # After this many consecutive ARG ERRORs from one agent, stop blocking its calls on the
@@ -598,12 +649,26 @@ class TrinityCore:
                           messages: list[dict[str, str]]) -> str:
         result = ""
         nudges = 0
+        repeats, last_key = 0, None
         budget = {"arg_errors": 0, "spent": 0}  # consecutive ARG ERRORs; spent = stop validating
         for step in range(self.settings.max_steps):
             for note in self.inbox.pop(name, []):
                 messages.append({"role": "user", "content": note + "\nAct on this now, inside your own environment."})
-            reply = await self._chat(messages, session=f"avrone:{run_id}:{name}")
+            reply = reply_text(await self._chat(messages, session=f"avrone:{run_id}:{name}"))
             messages.append({"role": "assistant", "content": reply})
+            if not reply.strip():
+                # An empty turn (gpt-oss does this after a long tool result, or when all its
+                # tokens went to reasoning) is not an answer: accepting it ends the agent with
+                # nothing. Ask again, bounded like the malformed-action nudge.
+                if nudges < 2:
+                    nudges += 1
+                    self.codex.emit(run_id, "action.empty", name, step=step)
+                    messages.append({"role": "user", "content": (
+                        "Your last message was empty. Reply with ONE JSON object: "
+                        "{\"tool\": ..., \"args\": ...} or {\"final\": ...}.")})
+                    continue
+                result = ""
+                break
             action = parse_action(reply)
             if action is None:
                 # A reply that clearly MEANT to call a tool (a json fence or a "tool"/"final"
@@ -650,7 +715,16 @@ class TrinityCore:
                 continue
             [call] = self._prechecked(run_id, name, [action], step, budget)
             tool, out = await self._one_call(run_id, name, ctx, call, step, budget)
-            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
+            key = _call_key(tool, call.get("args"), out)
+            repeats = repeats + 1 if key is not None and key == last_key else 1
+            last_key = key
+            note = ""
+            if repeats >= REPEAT_CALL_LIMIT:
+                self.codex.emit(run_id, "tool.repeat", name, tool=tool, count=repeats, step=step)
+                note = (f"\n\nNOTE: this is the {repeats}th identical call in a row with the same "
+                        "result. Repeating it will not change anything: try a different approach "
+                        "or give your final answer now.")
+            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}{note}"})
         else:
             messages.append({"role": "user", "content": "Out of turns. Give your final result now as plain text."})
             result = await self._chat(messages, session=f"avrone:{run_id}:{name}")
@@ -701,6 +775,7 @@ class TrinityCore:
             except Exception as e:  # a crash in one call is that call's result, never the turn's
                 out = f"ERROR: {type(e).__name__}: {e}"
             out = out if isinstance(out, str) else str(out)
+        out = clip_output(out, tool_output_max())
         try:
             ctx.recent_calls.append((tool, args, out[:2000]))  # ctxspawn ring buffer
         except AttributeError:  # pragma: no cover - foreign ctx objects

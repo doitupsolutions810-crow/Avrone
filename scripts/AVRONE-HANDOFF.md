@@ -261,3 +261,10 @@ merge without his word.
   - A lone `{"final": null}` now yields "" rather than "None". A structured final (object, list, or number) keeps its JSON form instead of a Python repr.
   - The caller's dict is never mutated.
 - Tests: tests/test_action_normalize.py (26), including real agent-loop runs where the shell tool executes. Mutation check with identity stubs on round 15: 21 of 26 fail, including all 4 loop tests.
+
+## Round 17 hardening (agent-loop guards)
+- **Empty turns:** an empty or whitespace reply used to end the agent at once with no result. gpt-oss does this after long tool output, or when all its tokens go to reasoning. Now it gets a nudge, sharing the 2-nudge budget with malformed actions, and logs `action.empty`. Endless empty turns still stop after 3 calls.
+- **Non-text replies:** a client returning None, bytes, or a message dict crashed the agent with a TypeError. `reply_text` now turns the reply into text first.
+- **Identical-call loops:** the same tool, args, and output 3 times in a row (`REPEAT_CALL_LIMIT`) adds a note to the tool result telling the agent to change approach or finish, and logs `tool.repeat`. Nothing is blocked. The counter resets on any different call.
+- **Tool output cap:** `AVRONE_TOOL_OUTPUT_MAX` (default 20000 chars, clamped to 1000–500000) is a central safety net for tools that don't cap their own output, such as MCP and plugins. It keeps the head and the tail, where errors usually are.
+- Tests: tests/test_agent_loop_guards.py (22). Mutation on round 16 with stubs: 18 of 22 fail, including every loop-behavior test.

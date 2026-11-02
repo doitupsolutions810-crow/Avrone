@@ -228,3 +228,9 @@ merge without his word.
 - **The run stops if AVRONE crashes on every start.** When every agent run in a cycle exits with an error (timeouts don't count), CRASH_LIMIT cycles in a row (default 3), the autopilot stops. It prints the last error line, for example `ModuleNotFoundError: No module named 'x'` after a `git pull` added a dependency. Rerun to reinstall. Partial failures, such as a lane crashing while the smoke works, never trip it.
 - **Pulling or checking out in the repo mid-run is noticed.** The autopilot logs that HEAD moved and lanes test the new code. If the carried patches are gone, it stops instead of quietly giving every lane all tools. Rerun to re-apply them.
 - **CRASH_LIMIT is validated** like every other numeric setting.
+
+## Round 12 hardening (smoke judge honesty, stalled reintro)
+- **The judge reads only real event lines.** A stage now advances only on genuine `[run] tool.call agent tool` lines. Before, text like "tool.call x port_scan" inside a tool's output (an agent cat-ing a log or test file, or echoing it) or inside the agent's own narration counted as a call. Lane `calls=` uses the same rule.
+- **Unknown-tool and malformed counts ignore narration.** An agent saying "no unknown tool errors" no longer counts against the batch. Real `ERROR: unknown tool` results and `action.malformed` events still count.
+- **The judge flags model server errors.** When a batch HOLDs and the log shows `Model backend error 5xx` (for example Ollama failing to parse a gpt-oss tool call), the judge prints a HINT that the model or server is failing, not the tools.
+- **A stalled reintro is reported.** If the same stage HOLDs for STALL_CYCLES cycles (default 5), the log warns with the batch and the smoke log to read, and MERGE_ME.md shows `STUCK for N cycles`. Any progress resets the count. STALL_CYCLES is validated.

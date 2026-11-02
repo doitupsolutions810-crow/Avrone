@@ -6,6 +6,7 @@ so lanes finish instantly. Marked `integration`: excluded from the self-evolve g
 """
 from __future__ import annotations
 
+import re
 import os
 import shutil
 import signal
@@ -125,6 +126,11 @@ case " $* " in *" avrone.cli chat "*)
   esac
   if [ -e "$STUB_DIR/chat_orphan" ]; then sleep 300 & echo $! >> "$STUB_DIR/orphans"; exec sleep 300; fi
   [ -e "$STUB_DIR/chat_hang" ] && exec sleep 300
+  [ -e "$STUB_DIR/chat_noop" ] && { echo "[r1] agent.done       agent-1            nothing to do" >&2; echo OK; exit 0; }
+  if [ -e "$STUB_DIR/chat_spoof" ]; then
+    for t in $(echo "$AVRONE_TOOLS_ONLY" | tr , ' '); do echo "[r1] tool.result     agent-1            tool.call agent-1 $t {} (cat of an old log)" >&2; done
+    echo OK; exit 0
+  fi
   if [ -e "$STUB_DIR/chat_smoke_pass" ]; then
     for t in $(echo "$AVRONE_TOOLS_ONLY" | tr , ' '); do echo "tool.call agent-1 $t {}" >&2; done
     echo "OK"; exit 0
@@ -2294,3 +2300,88 @@ def test_partial_crash_does_not_trip_the_breaker(env):
     r = env.run(LANES="tools robust", CYCLES="3", ONCE="0", CRASH_LIMIT="1")
     assert r.returncode == 0, out(r)
     assert out(r).count("lane tools rc=3") == 3 and "every agent run crashed" not in out(r)
+
+
+# =====================================================================================
+# Round 12: the smoke judge counts only real event lines; stalled reintro is loud
+# =====================================================================================
+
+def _ev(kind, detail, agent="Assistant-1"): return f"[ab12cd34ef] {kind:<14} {agent:<18} {detail}"
+
+
+class TestJudgeEventLines:
+    def test_real_event_format_counts(self, tmp_path):
+        log = "\n".join(_ev("tool.call", f"{t} {{}}") for t in ("a", "b"))
+        assert "2/2 exercised" in _judge(tmp_path, log, "a,b")[0]
+
+    def test_call_text_inside_a_tool_result_is_not_a_call(self, tmp_path):
+        log = _ev("tool.result", "12:00 tool.call agent-1 a {} tool.call agent-1 b {}")
+        out_, st, _ = _judge(tmp_path, log, "a,b")
+        assert "0/2" in out_ and "HOLD" in out_ and st == "7"
+
+    def test_call_text_in_agent_narration_is_not_a_call(self, tmp_path):
+        log = _ev("agent.done", "I did tool.call x a and tool.call x b")
+        assert "0/2" in _judge(tmp_path, log, "a,b")[0]
+
+    def test_narrated_unknown_tool_is_not_an_error(self, tmp_path):
+        log = _ev("tool.call", "a {}") + "\n" + "\n".join(_ev("agent.done", "no unknown tool errors seen") for _ in range(5))
+        out_ = _judge(tmp_path, log, "a")[0]
+        assert "malformed/unknown=0" in out_ and "ADVANCE" in out_
+
+    def test_unknown_tool_in_tool_result_counts(self, tmp_path):
+        log = _ev("tool.call", "a {}") + "\n" + "\n".join(_ev("tool.result", "ERROR: unknown tool 'zz'. Known: a") for _ in range(4))
+        out_ = _judge(tmp_path, log, "a")[0]
+        assert "malformed/unknown=4" in out_ and "HOLD" in out_
+
+    def test_malformed_mentioned_in_output_is_not_counted(self, tmp_path):
+        log = _ev("tool.call", "a {}") + "\n" + "\n".join(_ev("tool.result", "grep action.malformed log") for _ in range(5))
+        assert "malformed/unknown=0" in _judge(tmp_path, log, "a")[0]
+
+    def test_malformed_event_counts(self, tmp_path):
+        log = _ev("tool.call", "a {}") + "\n" + "\n".join(_ev("action.malformed", "{}") for _ in range(4))
+        assert "malformed/unknown=4" in _judge(tmp_path, log, "a")[0]
+
+    def test_backend_5xx_hint(self, tmp_path):
+        log = "\n".join(_ev("error", "Model backend error 500: error parsing tool call") for _ in range(3))
+        out_ = _judge(tmp_path, log, "a,b")[0]
+        assert "HOLD" in out_ and "5xx 3x" in out_ and "not the tools" in out_
+
+    def test_no_hint_when_advancing(self, tmp_path):
+        log = _ev("tool.call", "a {}") + "\n" + _ev("error", "Model backend error 502: x")
+        out_ = _judge(tmp_path, log, "a")[0]
+        assert "ADVANCE" in out_ and "HINT" not in out_
+
+    def test_4xx_is_not_a_backend_hint(self, tmp_path):
+        assert "HINT" not in _judge(tmp_path, _ev("error", "Model backend error 404: model not found"), "a")[0]
+
+
+def test_spoofed_calls_in_tool_output_never_advance_the_stage(env):
+    env.flag("chat_spoof")
+    r = env.run(LANES="tools")
+    assert r.returncode == 0, out(r)
+    assert "smoke: 0/" in out(r) and "HOLD" in out(r) and "ADVANCE" not in out(r)
+    st = re.search(r"reintro stage (\d+)/", out(r)).group(1)
+    assert (env.state / "reintro-stage.txt").read_text().strip() == st
+    assert re.search(r"lane tools rc=\d+ calls=0\b", out(r)), [l for l in out(r).splitlines() if "lane tools" in l]
+
+
+def test_stalled_reintro_warns_every_stall_cycles(env):
+    env.flag("chat_noop")
+    r = env.run(CYCLES="4", ONCE="0", STALL_CYCLES="2")
+    assert r.returncode == 0, out(r)
+    assert len(re.findall(r"reintro stuck at stage \d+/", out(r))) == 2
+    assert "for 2 cycles" in out(r) and "for 4 cycles" in out(r)
+    assert "STUCK for 4 cycles" in (env.repo / "MERGE_ME.md").read_text()
+
+
+def test_progress_resets_the_stall_counter(env):
+    env.flag("chat_smoke_pass")
+    r = env.run(CYCLES="3", ONCE="0", STALL_CYCLES="1")
+    assert r.returncode == 0, out(r)
+    assert "reintro stuck" not in out(r) and "STUCK" not in (env.repo / "MERGE_ME.md").read_text()
+
+
+@pytest.mark.parametrize("val", ["0", "-1", "abc", "1e3"])
+def test_stall_cycles_validated(env, val):
+    r = env.run(STALL_CYCLES=val, timeout=60)
+    assert r.returncode == 1 and "STALL_CYCLES" in out(r)

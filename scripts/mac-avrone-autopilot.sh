@@ -17,7 +17,7 @@ if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 # Env:    MODEL (gpt-oss:120b)  CTX (32768)  ONCE=1  CYCLES=N (0 = forever)  CYCLE_SLEEP (30)
 #         LANES ("deepcov newmods tools robust")  LANE_TIMEOUT (3600)  SMOKE_TIMEOUT (1800)
 #         SKIP_GATE=1  GATE_CMD (override the baseline gate)  MIN_FREE_GB (80, checked before a pull)
-#         REPORT_TIMEOUT (120)  OLLAMA_LOG_MAX_MB (50, rotate ollama.log above this)  CRASH_LIMIT (3)
+#         REPORT_TIMEOUT (120)  OLLAMA_LOG_MAX_MB (50, rotate ollama.log above this)  CRASH_LIMIT (3)  STALL_CYCLES (5)
 #         OLLAMA_HOST (127.0.0.1:11434)  AUTOPILOT_NO_INSTALL=1 (skip pip; for tests)
 # Exit:   0 done · 1 config/precondition error · 2 already running · 130/143 interrupted
 set -uo pipefail
@@ -88,12 +88,12 @@ if [ "$(id -u)" = 0 ] && [ -z "${ALLOW_ROOT:-}" ]; then die "do not run as root/
 CYCLES="${CYCLES:-0}"; [ "${ONCE:-0}" = "1" ] && CYCLES=1
 case "$CYCLES" in ''|*[!0-9]*) die "CYCLES must be a non-negative integer (got '$CYCLES')";; esac
 # whole numbers only (no 1.5, 1h, -3, 1e3); caught now instead of as a cryptic test error hours into a run
-for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT REPORT_TIMEOUT OLLAMA_LOG_MAX_MB CRASH_LIMIT CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT REPORT_TIMEOUT OLLAMA_LOG_MAX_MB CRASH_LIMIT STALL_CYCLES CYCLE_SLEEP MIN_FREE_GB MIN_RUN_FREE_GB KEEP_RUNS; do
   eval "_x=\${$_v-}"; [ -z "$_x" ] && continue
   case "$_x" in *[!0123456789]*) die "$_v must be a whole number (got '$_x')";; esac
   [ "${#_x}" -le 9 ] || die "$_v is too large (got '$_x')"
 done
-for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT REPORT_TIMEOUT OLLAMA_LOG_MAX_MB CRASH_LIMIT; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1"; done
+for _v in LANE_TIMEOUT SMOKE_TIMEOUT WARM_TIMEOUT LIST_TIMEOUT REPORT_TIMEOUT OLLAMA_LOG_MAX_MB CRASH_LIMIT STALL_CYCLES; do eval "_x=\${$_v-1}"; [ "$_x" -gt 0 ] || die "$_v must be at least 1"; done
 case "$CTX" in ''|*[!0-9]*) die "CTX must be an integer (got '$CTX')";; esac
 { [ "${#CTX}" -le 7 ] && [ "$CTX" -ge 2048 ] && [ "$CTX" -le 1048576 ]; } || die "CTX must be between 2048 and 1048576 (got $CTX)"
 OHOST="${OLLAMA_HOST:-127.0.0.1:11434}"; OHOST="${OHOST#http://}"; OHOST="${OHOST#https://}"; OHOST="${OHOST%%/*}"
@@ -512,7 +512,15 @@ reintro_step(){   # Track A: smoke-test the next batch; advance when coherent
   AVRONE_DATA_DIR="$DATA/smoke" bg_wait $TO "${SMOKE_TIMEOUT:-1800}" python -m avrone.cli chat "$P" > "$OUT/smoke-$S.txt" 2> "$OUT/smoke-$S.err"
   note_rc $? "$OUT/smoke-$S.err"
   python3 "$JUDGE" "$OUT/smoke-$S.err" "$NEXT" "$STATE/reintro-stage.txt" "$S" | tee -a "$OUT/autopilot.log"
+  # a stage that HOLDs forever is silent progress loss: say so loudly every STALL_CYCLES holds
+  if [ "$(read_stage)" = "$S" ]; then
+    [ "$S" = "$HOLD_STAGE" ] && HOLDS=$((HOLDS+1)) || { HOLD_STAGE="$S"; HOLDS=1; }
+    if [ $((HOLDS % ${STALL_CYCLES:-5})) = 0 ]; then
+      log "WARN: reintro stuck at stage $S/$NB for $HOLDS cycles (batch: $NEXT) — read $OUT/smoke-$S.err; the model may not handle these tools"
+    fi
+  else HOLD_STAGE=""; HOLDS=0; fi
 }
+HOLD_STAGE=""; HOLDS=0
 
 COMMON='You are one lane of the AVRONE self-improvement squad. Reply ONLY with one JSON object {"tool":NAME,"args":{...}} per turn. Start with evolve_list; if it already shows two ACCEPTED proposals for your lane goal, finish. Read only real paths you have seen in a listing (list_files/read_file; if paths are prefixed shared/ in listings, evolve_propose paths are repo-relative WITHOUT shared/). Rules: create NEW files only, small and genuinely useful, stdlib or installed deps, offline tests only (patch network). Never write repo files with write_file/edit_file — put them only in evolve_propose {"goal":..., "edits":[{"path":..., "content":FULL FILE}]}. The harness runs the full non-integration suite in an isolated clone and keeps it only if ALL tests pass. If REJECTED, read the test tail, fix YOUR file, resubmit. You may run python/shell to test locally first, and post findings to the learning bridge (bridge_post) so other lanes see them. Finish after two ACCEPTED, then call evolve_list and report each id + status. Your lane: '
 
@@ -527,7 +535,7 @@ lane(){   # Track B — exits with the agent's rc (254 = lane not selected) so t
   AVRONE_TOOLS_ONLY="$CUR" AVRONE_MAX_STEPS=96 AVRONE_DATA_DIR="$d" \
     $TO "$LANE_TIMEOUT" python -m avrone.cli chat "$COMMON$2" --json "$OUT/$1.json" > "$OUT/$1.txt" 2> "$OUT/$1.err"
   rc=$?
-  log "lane $1 rc=$rc$([ "$rc" = 124 ] && echo ' (timed out)') calls=$(grep -c 'tool.call' "$OUT/$1.err" 2>/dev/null || echo 0) $(lane_counts "$d")"
+  log "lane $1 rc=$rc$([ "$rc" = 124 ] && echo ' (timed out)') calls=$(grep -cE '^[[:space:]]*(\[[^]]*\])?[[:space:]]*tool[.]call[[:space:]]' "$OUT/$1.err" 2>/dev/null || echo 0) $(lane_counts "$d")"
   return "$rc"
 }
 # proposals/accepted come from the proposal records this lane wrote, not from grepping its log:
@@ -590,7 +598,7 @@ report(){
   local tmp="$OUT/MERGE_ME.md.tmp" d
   { echo "# AVRONE — accepted proposals awaiting review"; echo
     echo "Generated $(date). Review with: AVRONE_DATA_DIR=<lane data dir> python -m avrone.cli evolve diff <id>. Do NOT merge without Crow's go-ahead."; echo
-    echo "Reintro stage: $(read_stage)/$NB"; echo; echo '```'
+    echo "Reintro stage: $(read_stage)/$NB$([ "${HOLDS:-0}" -ge "${STALL_CYCLES:-5}" ] && echo " — STUCK for $HOLDS cycles, see smoke-$HOLD_STAGE.err")"; echo; echo '```'
     for d in "$DATA"/lane-*; do [ -d "$d" ] || continue; echo "## $d"
       # a stuck record (network volume, FIFO, locked file) must not freeze the whole loop at report time
       AVRONE_DATA_DIR="$d" $TO "${REPORT_TIMEOUT:-120}" python -m avrone.cli evolve 2>/dev/null </dev/null \

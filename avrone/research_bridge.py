@@ -98,7 +98,9 @@ async def fetch_source_files(repository: str, commit_sha: str, paths: list[str])
     for raw in paths:
         if not isinstance(raw, str):
             raise ResearchBridgeError("source paths must be strings")
-        path = raw.strip().strip("/")
+        path = raw.strip()
+        if path.startswith("/") or path.endswith("/"):
+            raise ResearchBridgeError("source paths must be relative file paths")
         parts = path.split("/")
         if (not path or len(path) > 240 or any(p in ("", ".", "..") for p in parts)
                 or not re.fullmatch(r"[A-Za-z0-9_.@/-]+", path)):
@@ -152,6 +154,15 @@ async def fetch_source_files(repository: str, commit_sha: str, paths: list[str])
     if not any(item.get("status") == "fetched" for item in results):
         raise ResearchBridgeError("none of the requested source files could be fetched at the pinned SHA")
     return results
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -255,7 +266,11 @@ def read_receipt(data_dir: Path, run_id: str) -> dict[str, Any] | None:
         raw = b"".join(chunks)
         if len(raw) > 2_100_000:
             raise ResearchBridgeError("receipt exceeds the 2.1 MB read limit")
-        value = json.loads(raw.decode("utf-8"), parse_constant=lambda item: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+        value = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=lambda item: (_ for _ in ()).throw(ValueError("non-finite JSON number")),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
     except FileNotFoundError:
         return None
     except ResearchBridgeError:

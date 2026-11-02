@@ -150,12 +150,14 @@ class Gateway:
         route: list[str] = []
         errors: list[str] = []
         healthy = [u for u in self.upstreams if u.healthy()] or self.upstreams  # all open: try anyway
+        nudge = False
         for up in healthy:
             use_model = model or (up.lead_model if lead and up.lead_model else up.model)
             per_up_tries = max(1, self.s.llm_retries) if up is healthy[0] else 1
             for attempt in range(per_up_tries):
                 try:
-                    out = await self._request(up, messages, use_model, temperature, session)
+                    msgs = with_plain_text_nudge(messages) if nudge else messages
+                    out = await self._request(up, msgs, use_model, temperature, session)
                     up.record(True, self.threshold, self.cooldown)
                     route.append(f"{up.provider}:ok")
                     self.last_route = route
@@ -167,6 +169,9 @@ class Gateway:
                 except _Retry as e:
                     up.record(False, self.threshold, self.cooldown)
                     errors.append(str(e))
+                    r = e.response
+                    if r is not None and is_tool_parse_error(r.status_code, r.text):
+                        nudge = True
                     if attempt < per_up_tries - 1:
                         await asyncio.sleep(_delay(e.response, self.s.llm_backoff, attempt))
                 except (httpx.ConnectError, httpx.ConnectTimeout) as e:
@@ -178,6 +183,32 @@ class Gateway:
             route.append(f"{up.provider}:fail")
         self.last_route = route
         raise LLMError(f"All upstreams failed ({' -> '.join(route)}): {' | '.join(errors[-4:])}")
+
+
+# gpt-oss on Ollama: when the model writes its answer into the "commentary"/tool channel, Ollama
+# tries to parse it as a native tool call and answers 500 ("error parsing tool call ..."). AVRONE
+# never sends native tools; its actions are JSON in plain message text. Re-sending the identical
+# request often fails the same way, so the retry carries an explicit plain-text instruction.
+TOOL_PARSE_ERR = ("parsing tool call", "parse tool call", "tool call parsing", "tool_call",
+                  "harmony", "unexpected end of json input")
+PLAIN_TEXT_NUDGE = ("IMPORTANT: do NOT use native function/tool calling. Write your whole reply, "
+                    "including any JSON action object, as ordinary message text in the final answer.")
+
+
+def is_tool_parse_error(status: int, text: str) -> bool:
+    t = (text or "").lower()
+    return status >= 500 and any(k in t for k in TOOL_PARSE_ERR)
+
+
+def with_plain_text_nudge(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """A copy of messages whose system prompt carries the plain-text instruction (never mutates)."""
+    out = [dict(m) for m in messages]
+    if out and out[0].get("role") == "system":
+        if PLAIN_TEXT_NUDGE not in str(out[0].get("content", "")):
+            out[0]["content"] = f"{out[0].get('content') or ''}\n\n{PLAIN_TEXT_NUDGE}".strip()
+    else:
+        out.insert(0, {"role": "system", "content": PLAIN_TEXT_NUDGE})
+    return out
 
 
 class _Retry(RuntimeError):

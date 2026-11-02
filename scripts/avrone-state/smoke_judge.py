@@ -23,7 +23,9 @@ CALL = re.compile(_PFX + r"tool\.call[ \t]+\S+[ \t]+([A-Za-z0-9_]+)", re.M)
 MALFORMED = re.compile(_PFX + r"action\.malformed\b", re.M)
 EVENT = re.compile(_PFX + r"([a-z]+\.[a-z_.]+)[ \t]", re.M)
 UNKNOWN = re.compile(r"unknown tool", re.I)
-BACKEND = re.compile(r"Model backend error (5\d\d)")
+# both error spellings: the legacy client ("Model backend error 500: ...") and the gateway
+# ("All upstreams failed (ollama:fail): ollama 500: ..." — one per failed attempt)
+BACKEND = re.compile(r"(?:Model backend error|\b(?:ollama|openclaw|xai|openai|openrouter|custom)) (5\d\d)\b")
 MIN_FRACTION = 0.6
 MAX_BAD = 3
 

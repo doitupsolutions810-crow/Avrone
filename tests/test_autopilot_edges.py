@@ -2385,3 +2385,23 @@ def test_progress_resets_the_stall_counter(env):
 def test_stall_cycles_validated(env, val):
     r = env.run(STALL_CYCLES=val, timeout=60)
     assert r.returncode == 1 and "STALL_CYCLES" in out(r)
+
+
+# =====================================================================================
+# Round 13: the 5xx hint must also read the gateway's error spelling
+# =====================================================================================
+
+class TestJudgeGatewayErrors:
+    def test_gateway_spelling_triggers_the_hint(self, tmp_path):
+        msg = ("All upstreams failed (ollama:fail): ollama 500: {\"error\":\"error parsing tool call\"} | "
+               "ollama 500: {\"error\":\"error parsing tool call\"}")
+        out_ = _judge(tmp_path, _ev("error", msg), "a")[0]
+        assert "HOLD" in out_ and "5xx 2x" in out_
+
+    def test_gateway_4xx_no_hint(self, tmp_path):
+        assert "HINT" not in _judge(tmp_path, _ev("error", "All upstreams failed (ollama:fail): ollama 404: no model"), "a")[0]
+
+    def test_port_number_is_not_a_status(self, tmp_path):
+        # "127.0.0.1:11500" or "ollama:11500" must not read as a 5xx answer
+        log = _ev("error", "ollama unreachable: All connection attempts failed http://127.0.0.1:11500")
+        assert "HINT" not in _judge(tmp_path, log, "a")[0]

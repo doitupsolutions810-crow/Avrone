@@ -234,3 +234,7 @@ merge without his word.
 - **Unknown-tool and malformed counts ignore narration.** An agent saying "no unknown tool errors" no longer counts against the batch. Real `ERROR: unknown tool` results and `action.malformed` events still count.
 - **The judge flags model server errors.** When a batch HOLDs and the log shows `Model backend error 5xx` (for example Ollama failing to parse a gpt-oss tool call), the judge prints a HINT that the model or server is failing, not the tools.
 - **A stalled reintro is reported.** If the same stage HOLDs for STALL_CYCLES cycles (default 5), the log warns with the batch and the smoke log to read, and MERGE_ME.md shows `STUCK for N cycles`. Any progress resets the count. STALL_CYCLES is validated.
+
+## Round 13 hardening (gpt-oss tool-call 500s)
+- **AVRONE gateway, `avrone/gateway.py`:** gpt-oss on Ollama sometimes answers HTTP 500 "error parsing tool call", when the model writes into its native tool channel. AVRONE never uses native tools, so it now detects that error and sends the retry with a plain-text instruction folded into the system prompt. It never mutates the caller's messages and adds the instruction only once. Other 500s retry exactly as before. Tests: tests/test_gateway_toolparse.py.
+- **Smoke judge:** the 5xx HINT now also reads the gateway's error spelling (`ollama 500: ...`), not just the legacy `Model backend error 500`. Round 12's hint would have missed real gateway errors.

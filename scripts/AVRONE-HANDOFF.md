@@ -245,3 +245,9 @@ merge without his word.
 - Hardened against a non-dict `message` and non-string `content`.
 - **Smoke judge:** a held batch whose log shows `finish_reason=length` gets a HINT to raise CTX. It no longer reads as a tool failure.
 - Tests: tests/test_gateway_toolcalls.py (18), plus 2 judge tests. Mutation check: 10 of the 20 fail on round 13. The others are guards.
+
+## Round 15 hardening (action parsing)
+- **`parse_action` (avrone/trinity.py) rewritten.** The old parser used one greedy `\{.*\}` regex, so a reply broke whenever its prose had a brace (`run {x} then {"tool":...}`), the model repeated its action, or it showed example args before the action. Each of those counted as `action.malformed`, which HOLDs the smoke and burns evolve cycles. The new parser decodes with `raw_decode` at each `{` and takes the first object that is an action. It accepts any fence tag (`jsonc`, `JSON`, `python` blocks are skipped), and it finds a complete action inside a truncated outer object.
+- **Reasoning text:** JSON inside `<think>`/`<thinking>`/`<reasoning>` blocks, and in a leaked gpt-oss harmony `analysis` channel, loses to the answer's own action. It's used only when the answer has none, as before. Harmony control tokens are stripped.
+- **Bounded:** at most 4000 decode attempts and 0.3 s, so a pathological reply can't stall an agent. Non-text input returns None instead of raising.
+- Tests: tests/test_parse_action_robust.py (23). The existing fuzz, core, and toolcall parser tests still pass. Mutation check: 15 of the 23 fail on round 14.

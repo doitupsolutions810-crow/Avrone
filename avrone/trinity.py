@@ -268,20 +268,60 @@ class AgentContext:
     recent_calls: deque = field(default_factory=lambda: deque(maxlen=RECENT_CALLS))  # (tool, args, output)
 
 
-def parse_action(text: str) -> dict[str, Any] | None:
-    """Pull the JSON action out of a model reply (fenced or bare)."""
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    candidates = [m.group(1)] if m else []
-    b = re.search(r"\{.*\}", text, re.S)
-    if b:
-        candidates.append(b.group(0))
-    for c in candidates:
+_THINK = re.compile(r"<(think|thinking|reasoning)>.*?(?:</\1>|$)", re.S | re.I)
+# gpt-oss harmony text leaking through a server that doesn't parse it: drop the analysis channel,
+# keep the final/commentary message, and drop the remaining <|...|> control tokens.
+_HARMONY_ANALYSIS = re.compile(r"<\|channel\|>\s*analysis\s*<\|message\|>.*?(?=<\|(?:end|start|channel)\|>|$)", re.S)
+_HARMONY_TOKEN = re.compile(r"<\|[a-z_]+\|>")
+_FENCE = re.compile(r"```[A-Za-z0-9_+-]*[ \t]*\n?(.*?)```", re.S)
+_DECODER = json.JSONDecoder()
+_MAX_DECODE_TRIES = 4000  # bounds the scan of a pathological reply (thousands of broken objects)
+_MAX_DECODE_SECONDS = 0.3
+
+
+def _is_action(obj: Any) -> bool:
+    return isinstance(obj, dict) and ("tool" in obj or "final" in obj or "tools" in obj)
+
+
+def _first_action(text: str) -> dict[str, Any] | None:
+    """The first JSON object in text that is an action, decoding at every '{' (no greedy regex)."""
+    i = text.find("{")
+    tries = 0
+    deadline = time.monotonic() + _MAX_DECODE_SECONDS
+    while i != -1 and tries < _MAX_DECODE_TRIES:
+        tries += 1
+        if tries % 64 == 0 and time.monotonic() > deadline:
+            break
         try:
-            obj = json.loads(c)
-            if isinstance(obj, dict) and ("tool" in obj or "final" in obj or "tools" in obj):
-                return obj
+            obj, end = _DECODER.raw_decode(text, i)
         except json.JSONDecodeError:
+            i = text.find("{", i + 1)
             continue
+        if _is_action(obj):
+            return obj
+        i = text.find("{", end)  # skip past the whole non-action object: keeps the scan linear
+    return None
+
+
+def parse_action(text: str) -> dict[str, Any] | None:
+    """Pull the JSON action out of a model reply (fenced or bare).
+
+    Robust to: prose with braces around the action, several objects, nested args, any fence
+    language tag, <think> blocks (their JSON is ignored when the answer has its own), and leaked
+    gpt-oss harmony tokens."""
+    if not isinstance(text, str) or "{" not in text:
+        return None
+    clean = _THINK.sub(" ", text)
+    clean = _HARMONY_ANALYSIS.sub(" ", clean)
+    clean = _HARMONY_TOKEN.sub(" ", clean)
+    for source in ((clean,) if clean == text else (clean, text)):  # visible answer first; reasoning last
+        for m in _FENCE.finditer(source):
+            obj = _first_action(m.group(1))
+            if obj is not None:
+                return obj
+        obj = _first_action(source)
+        if obj is not None:
+            return obj
     return None
 
 

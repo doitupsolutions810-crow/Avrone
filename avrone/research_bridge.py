@@ -266,6 +266,8 @@ def read_receipt(data_dir: Path, run_id: str) -> dict[str, Any] | None:
         created = float(value["created_at_unix"])
         if not math.isfinite(created):
             raise ValueError("invalid timestamp")
+    except ResearchBridgeError:
+        raise
     except (KeyError, TypeError, ValueError):
         raise ResearchBridgeError("receipt integrity metadata is invalid") from None
     return value

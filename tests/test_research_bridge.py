@@ -64,3 +64,58 @@ async def test_source_ingestion_rejects_path_traversal_before_network():
 async def test_source_ingestion_caps_requested_file_count():
     with pytest.raises(ResearchBridgeError):
         await fetch_source_files("owner/repo", "a" * 40, ["f" + str(i) for i in range(6)])
+
+
+def _write_valid_test_receipt(tmp_path, run_id="secure-run"):
+    result = {"answer": "verified", "agents": ["skeptic"]}
+    receipt = write_receipt(
+        tmp_path, run_id=run_id,
+        source={"repository": "owner/repo", "commit_sha": "a" * 40,
+                "verification": "github_commit_api_exact_sha"},
+        claim="test claim", mode="deep", rounds=2, result=result,
+    )
+    return tmp_path / "research_receipts" / f"{run_id}.json", receipt
+
+
+def test_receipt_rejects_modified_result(tmp_path):
+    path, receipt = _write_valid_test_receipt(tmp_path)
+    stored = json.loads(path.read_text())
+    stored["result"]["answer"] = "tampered"
+    path.write_text(json.dumps(stored))
+    with pytest.raises(ResearchBridgeError, match="result digest"):
+        read_receipt(tmp_path, "secure-run")
+
+
+def test_receipt_rejects_modified_evidence_binding(tmp_path):
+    path, receipt = _write_valid_test_receipt(tmp_path)
+    stored = json.loads(path.read_text())
+    stored["claim"] = "different claim"
+    path.write_text(json.dumps(stored))
+    with pytest.raises(ResearchBridgeError, match="evidence digest"):
+        read_receipt(tmp_path, "secure-run")
+
+
+def test_receipt_rejects_symlink(tmp_path):
+    path, receipt = _write_valid_test_receipt(tmp_path)
+    real = tmp_path / "outside.json"
+    real.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(real)
+    with pytest.raises(ResearchBridgeError):
+        read_receipt(tmp_path, "secure-run")
+
+
+def test_receipt_rejects_oversized_file(tmp_path):
+    directory = tmp_path / "research_receipts"
+    directory.mkdir()
+    (directory / "huge.json").write_bytes(b" " * 2_100_001)
+    with pytest.raises(ResearchBridgeError, match="size limit"):
+        read_receipt(tmp_path, "huge")
+
+
+def test_receipt_rejects_non_finite_json(tmp_path):
+    directory = tmp_path / "research_receipts"
+    directory.mkdir()
+    (directory / "nan.json").write_text('{"schema":"avrone.research-receipt.v1","value":NaN}')
+    with pytest.raises(ResearchBridgeError):
+        read_receipt(tmp_path, "nan")

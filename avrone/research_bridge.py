@@ -131,7 +131,7 @@ async def fetch_source_files(repository: str, commit_sha: str, paths: list[str])
                     raise ValueError("source file exceeds 1 MB")
                 text_content = raw_bytes.decode("utf-8")
                 blob_sha = str(obj["sha"]).lower()
-                expected_blob_sha = hashlib.sha1(b"blob " + str(len(raw_bytes)).encode("ascii") + b"\\0" + raw_bytes).hexdigest()
+                expected_blob_sha = hashlib.sha1(b"blob " + str(len(raw_bytes)).encode("ascii") + b"\0" + raw_bytes).hexdigest()
                 if not re.fullmatch(r"[0-9a-f]{40}", blob_sha) or not hmac.compare_digest(blob_sha, expected_blob_sha):
                     raise ValueError("Git blob SHA-1 mismatch")
             except (ValueError, KeyError, TypeError, UnicodeDecodeError):

@@ -1030,7 +1030,11 @@ class TrinityCore:
                 try:
                     dispatcher = SwarmDispatcher(swarm, outbox)
                     existing = outbox.get_by_correlation(correlation)
-                    if existing: return dispatcher.retry(existing["message_id"])
+                    if existing:
+                        previous_objective = (existing.get("request", {}).get("payload", {}).get("objective"))
+                        if previous_objective != task:
+                            raise RuntimeError("Swarm correlation ID is already bound to a different objective")
+                        return dispatcher.retry(existing["message_id"])
                     delegated = authority.delegate(parent_capability=parent["capability"], parent_signature=parent["signature"],
                         audience=swarm.audience, rights=[dict(ACTION)], ttl_seconds=120, correlation_id=correlation)
                     signed = swarm.build_request(payload={"objective":task}, capability=delegated["capability"],

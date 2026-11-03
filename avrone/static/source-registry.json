@@ -378,7 +378,7 @@
   "local_changes": [
     {
       "path": "integrations/grok-bot/README.md",
-      "sha256": "4fdd80d7e0e3237216aa29e935f1af8aa6667fcb784a48f383b5d6ff865e1e55",
+      "sha256": "dd6344561a6bbfe2b3c0e3f583ab67908000ef289ac0acb33b563a9dd825e1c2",
       "upstream_sha256": "3f7d5090b53d319a85b8217348637d5b2f6f13439a4ddada23f62a87192c3f4c",
       "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
     },
@@ -474,6 +474,11 @@
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
+      "path": "avrone/bridge.py",
+      "sha256": "da5bf83882dc9ab141084fc30d02e67b8da68ff02ae76e2195244a6477a54245",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
       "path": "avrone/grokbot.py",
       "sha256": "5486f6dc1cc55254c9b378c90a882e621ab27fd391e7be564e35c2a066e30670",
       "source": "local integration against the pinned AVRONE baseline"
@@ -511,6 +516,21 @@
     {
       "path": "compose.grok.yml",
       "sha256": "1ad95e5aff940d42508d0480314774dd4e0d65a23f5a2ecc83de1fcdaeacdc2c",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "docs/REPOSITORY_UPGRADE_REVIEW.json",
+      "sha256": "a89d7a653b70c3c74c1fa4b63d285b5357b895f970f79c98a312a11384d4f35e",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "docs/SWARM_VALIDATION.md",
+      "sha256": "a13b41e6c981a3a5d4eece53881a8fc4fb0435bfbe6d175b98373668afa1164d",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "docs/UPGRADE_REVIEW.md",
+      "sha256": "4d77269d8206440274ed798d0efcf6fe3fc7d50ae7c07c45c8858e6599fab2aa",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
@@ -559,6 +579,11 @@
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
+      "path": "scripts/verify-grok-bridge.sh",
+      "sha256": "b084451fa42ed1ec6a0ca58368bf269a18386040fb43644f57531aa92584e920",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
       "path": "scripts/verify-source-registry.py",
       "sha256": "696b1e47fcc5ccbb54416d5087d863799b004ff6ce88d8dde7dd7693cb30997e",
       "source": "local integration against the pinned AVRONE baseline"
@@ -571,6 +596,11 @@
     {
       "path": "tests/test_bridge_adversarial.py",
       "sha256": "5939f57905cd2a71c31c80b3cb93ca2266384b51e7e698b4d37b477016882b94",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_bridge_chaos.py",
+      "sha256": "09bf00ab3be181ed4267392d359b57cc55b1627e0638cac76ce3803017c96281",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
@@ -603,5 +633,32 @@
       "sha256": "e000d1f0757cb4d59eb6e572a0cef50b427b9c616422e48b921b07359d3ff62a",
       "source": "local integration against the pinned AVRONE baseline"
     }
-  ]
+  ],
+  "upstream_updates": [
+    {
+      "id": "avrone-bridge-chaos-20261103",
+      "repository": "https://github.com/doitupsolutions810-crow/Avrone",
+      "revision": "9bb0e750aa40947f7f78b6ef41dcfa9afe6ae202",
+      "based_on": "9036ff6adc67655211357ab5bed38051c11cc999",
+      "resources": [
+        "avrone/bridge.py",
+        "tests/test_bridge_chaos.py",
+        "scripts/verify-grok-bridge.sh"
+      ],
+      "role": "cross-process bridge journal and crash recovery"
+    }
+  ],
+  "repository_review": {
+    "date": "2026-11-03",
+    "catalog": "docs/REPOSITORY_UPGRADE_REVIEW.json",
+    "decisions": "docs/UPGRADE_REVIEW.md",
+    "validation": "docs/SWARM_VALIDATION.md",
+    "scope": {
+      "repositories": 38,
+      "branches": 356,
+      "pull_requests": 278,
+      "recent_default_branch_commits": 442,
+      "max_commits_per_repository": 30
+    }
+  }
 }

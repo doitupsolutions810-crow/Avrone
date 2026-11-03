@@ -214,3 +214,12 @@ machine they fail at preflight with a diagnostic.
 The orchestration core is a port of [Avrone](https://github.com/doitupsolutions810-crow/Avrone)
 (Python) into this Node.js runtime — trinity.py → `src/agents/trinity.js`,
 governor.py → `src/agents/governor.js`, codex.py → `src/agents/codex.js`.
+
+## Integrated launch and endpoint preflight
+
+Use the root [INTEGRATION.md](../../INTEGRATION.md) for the combined profile,
+credentials and authenticated research endpoint. `scripts/verify-grok-bridge.sh`
+at the repository root performs a bounded, read-only status probe of both APIs;
+it establishes reachability only. The council uses `/api/bridge/research` with a
+correlation ID and a research credential. Actual delegation, model execution and
+receipt verification remain separate live checks.

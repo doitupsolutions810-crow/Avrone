@@ -582,6 +582,28 @@ def test_authority_request_rejects_duplicate_json_keys_even_with_matching_digest
     box.close()
 
 
+def test_authority_request_rejects_rehashed_nonfinite_and_oversized_records(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare_authority_request("ca-corr-1", authority_request())
+
+    malformed_records = [
+        b'{"correlation_id":"ca-corr-1","requester_assertion":{"signature":"sig"},"value":NaN}',
+        (b'{"correlation_id":"ca-corr-1","requester_assertion":{"signature":"sig"},"padding":"'
+         + b"x" * (256 * 1024) + b'"}'),
+    ]
+    for raw in malformed_records:
+        digest = hashlib.sha256(raw).hexdigest()
+        with box._lock:
+            box._db.execute(
+                "UPDATE authority_delegations SET request_json=?,request_sha256=? WHERE correlation_id=?",
+                (raw, digest, "ca-corr-1"),
+            )
+        with pytest.raises(InvalidOutboxRecord):
+            box.get_authority_request("ca-corr-1")
+
+    box.close()
+
+
 def test_authority_request_invalid_correlation_type_fails_closed(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     with pytest.raises(InvalidOutboxRecord):

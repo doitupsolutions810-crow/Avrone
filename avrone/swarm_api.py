@@ -1,6 +1,7 @@
 """Operator-authenticated, explicit Swarm enqueue and exact-request retry API."""
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from pathlib import Path

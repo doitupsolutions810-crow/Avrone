@@ -122,3 +122,28 @@ def test_extra_fields_and_bad_ids_are_rejected(tmp_path):
         bad = body(message_id="../escape")
         assert http.post("/api/swarm/enqueue", json=bad, headers=headers).status_code == 422
         assert http.post("/api/swarm/retry/../escape", headers=headers).status_code in (404, 405, 422)
+
+
+def test_status_and_retry_routes_are_operator_guarded(tmp_path):
+    app, _ = setup(tmp_path)
+    with TestClient(app) as http:
+        assert http.get("/api/swarm/requests/msg-1").status_code == 403
+        assert http.post("/api/swarm/retry/msg-1").status_code == 403
+
+
+def test_retry_unknown_message_returns_404(tmp_path):
+    app, _ = setup(tmp_path)
+    with TestClient(app) as http:
+        r = http.post("/api/swarm/retry/missing", headers={"X-Admin-Token": "operator-token"})
+        assert r.status_code == 404
+
+
+def test_existing_queued_request_is_not_sent_twice(tmp_path):
+    app, client = setup(tmp_path)
+    with TestClient(app) as http:
+        headers = {"X-Admin-Token": "operator-token"}
+        first = http.post("/api/swarm/enqueue", json=body(), headers=headers)
+        assert first.status_code == 202
+        second = http.post("/api/swarm/enqueue", json=body(), headers=headers)
+        assert second.status_code == 202 and second.json()["state"] == "queued"
+        assert len(client.calls) == 1

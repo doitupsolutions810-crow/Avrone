@@ -344,6 +344,55 @@ def test_concurrent_duplicate_dispatches_send_only_once(tmp_path):
     box.close()
 
 
+def test_cross_connection_stale_owner_cannot_commit_queue_result(tmp_path):
+    path = tmp_path / "outbox.sqlite3"
+    original = SwarmOutbox(path)
+    successor_box = SwarmOutbox(path)
+    original.prepare(request())
+    stale_owner = original.claim_dispatch("msg-1", lease_seconds=30)
+
+    successor_box._db.execute(
+        "UPDATE dispatch_leases SET lease_until=0 WHERE message_id='msg-1'"
+    )
+    current_owner = successor_box.claim_dispatch("msg-1", lease_seconds=30)
+    assert current_owner and current_owner != stale_owner
+
+    receipt = {"message_id": "msg-1", "signature": "verified"}
+    with pytest.raises(DispatchLeaseLost):
+        original.mark_queued("msg-1", receipt, owner_token=stale_owner)
+    assert original.get("msg-1")["state"] == "pending"
+
+    assert successor_box.mark_queued(
+        "msg-1", receipt, owner_token=current_owner
+    )["state"] == "queued"
+    original.close()
+    successor_box.close()
+
+
+def test_cross_connection_stale_owner_cannot_commit_rejection(tmp_path):
+    path = tmp_path / "outbox.sqlite3"
+    original = SwarmOutbox(path)
+    successor_box = SwarmOutbox(path)
+    original.prepare(request())
+    stale_owner = original.claim_dispatch("msg-1", lease_seconds=30)
+
+    successor_box._db.execute(
+        "UPDATE dispatch_leases SET lease_until=0 WHERE message_id='msg-1'"
+    )
+    current_owner = successor_box.claim_dispatch("msg-1", lease_seconds=30)
+    assert current_owner and current_owner != stale_owner
+
+    with pytest.raises(DispatchLeaseLost):
+        original.mark_rejected("msg-1", "http_403", owner_token=stale_owner)
+    assert original.get("msg-1")["state"] == "pending"
+
+    assert successor_box.mark_rejected(
+        "msg-1", "http_403", owner_token=current_owner
+    )["state"] == "rejected"
+    original.close()
+    successor_box.close()
+
+
 def test_expired_dispatch_owner_cannot_commit_a_queue_result(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     box.prepare(request())

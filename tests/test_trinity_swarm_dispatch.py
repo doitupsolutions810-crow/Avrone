@@ -98,3 +98,59 @@ async def test_queue_acceptance_is_not_reported_as_completion(monkeypatch, tmp_p
     assert result["status"] == "disabled"
     assert "completed" not in result["answer"].lower()
     assert result["agents"] == []
+
+
+@pytest.mark.asyncio
+async def test_reused_correlation_with_different_objective_is_rejected(monkeypatch, tmp_path):
+    import avrone.swarm_client as client_module
+    import avrone.swarm_outbox as outbox_module
+    parent = tmp_path / "parent.json"
+    parent.write_text('{"capability":{"id":"parent"},"signature":"sig"}')
+    parent.chmod(0o600)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(parent))
+    monkeypatch.setattr(client_module.CapabilityAuthorityClient, "from_env", classmethod(lambda cls: object()))
+    monkeypatch.setattr(client_module.SwarmClient, "from_env", classmethod(lambda cls: SimpleNamespace(audience="swarm")))
+    class FakeOutbox:
+        def get_by_correlation(self, correlation):
+            return {"request": {"payload": {"objective": "different objective"}}}
+        def close(self): pass
+    monkeypatch.setattr(outbox_module.SwarmOutbox, "from_env", classmethod(lambda cls: FakeOutbox()))
+    class ForbiddenDispatcher:
+        def __init__(self, *args): pass
+        def retry(self, *args): raise AssertionError("must not retry another objective")
+    monkeypatch.setattr(outbox_module, "SwarmDispatcher", ForbiddenDispatcher)
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+    result = await core._dispatch_swarm("new objective", "run-7", "stable-id")
+    assert result["status"] == "disabled"
+    assert "different objective" in result["swarm"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_reused_correlation_retries_persisted_request_without_delegation(monkeypatch, tmp_path):
+    import avrone.swarm_client as client_module
+    import avrone.swarm_outbox as outbox_module
+    parent = tmp_path / "parent.json"
+    parent.write_text('{"capability":{"id":"parent"},"signature":"sig"}')
+    parent.chmod(0o600)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(parent))
+    monkeypatch.setattr(client_module.CapabilityAuthorityClient, "from_env", classmethod(lambda cls: (_ for _ in ()).throw(AssertionError("must not redelegate"))))
+    monkeypatch.setattr(client_module.SwarmClient, "from_env", classmethod(lambda cls: SimpleNamespace(audience="swarm")))
+    class FakeOutbox:
+        def get_by_correlation(self, correlation):
+            return {"request": {"payload": {"objective": "same objective"}}, "message_id": "stable-message"}
+        def close(self): pass
+    monkeypatch.setattr(outbox_module.SwarmOutbox, "from_env", classmethod(lambda cls: FakeOutbox()))
+    class FakeDispatcher:
+        def __init__(self, *args): pass
+        def retry(self, message_id):
+            assert message_id == "stable-message"
+            return {"state": "queued", "message_id": message_id}
+    monkeypatch.setattr(outbox_module, "SwarmDispatcher", FakeDispatcher)
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+    result = await core._dispatch_swarm("same objective", "run-8", "stable-id")
+    assert result["status"] == "queued"
+    assert "completion" in result["answer"]

@@ -299,3 +299,37 @@ def test_mark_queued_requires_receipt_object(tmp_path):
         with pytest.raises(InvalidOutboxRecord):
             box.mark_queued("msg-1", bad)
     box.close()
+
+
+def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
+    barrier = threading.Barrier(2)
+    class Client:
+        calls = 0
+        lock = threading.Lock()
+        def send_request(self, req):
+            with self.lock:
+                self.calls += 1
+            barrier.wait(timeout=3)
+            return {"job": {"id": "job-1", "status": "queued"},
+                    "receipt": {"message_id": "msg-1", "signature": "same-signed-receipt"}}
+        def verify_receipt(self, receipt, req):
+            assert receipt["message_id"] == req["envelope"]["message_id"]
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    client = Client(); dispatcher = SwarmDispatcher(client, box)
+    results = []; errors = []
+    def submit():
+        try:
+            results.append(dispatcher.submit_request(request()))
+        except Exception as exc:
+            errors.append(exc)
+    threads = [threading.Thread(target=submit) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert not errors and len(results) == 2
+    assert all(result["state"] == "queued" for result in results)
+    assert client.calls == 2
+    assert len(box.pending()) == 0
+    assert box.get("msg-1")["state"] == "queued"
+    box.close()

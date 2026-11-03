@@ -446,3 +446,29 @@ merge without his word.
 - **Slow dashboard:** events dropped because a subscriber's queue was full are counted per subscriber. When the queue has room, that subscriber gets one `stream.gap` event (`missed: N`) ahead of the next event.
 - **Stalled dashboard:** each WebSocket send is bounded by `AVRONE_WS_SEND_TIMEOUT` (default 30 s, clamped 1..600). A client that stops reading is closed with code 1008 and its subscriber slot is freed. Before, 64 stalled clients locked everyone out of the HUD.
 - Tests: tests/test_codex_stream_robust.py (67). Mutation on round 33: 48 of 67 fail.
+
+## Round 35: MCP client against misbehaving servers (avrone/mcp_client.py)
+- **HTTP total deadline:** `request()` now has a wall-clock limit of the server's timeout. httpx's timeout only applies per read, so an SSE stream sending keep-alives or a trickle of progress events held a tool call open forever.
+- **Size caps:** `AVRONE_MCP_MAX_RESPONSE_BYTES` (default 32 MiB, clamped 64 KiB..1 GiB) caps one HTTP body, one SSE event, and one stdio line. Before, an endless `data:` stream grew memory without limit. Error bodies are read at most 4 KiB.
+- **SSE parsing per spec:** exactly one leading space is stripped. A bare `data` line counts as data. Lookalike fields (`database:`) and `:` comment lines are ignored.
+- **Server-to-client requests inside the stream:** a ping gets `{}`, and any other method gets -32601, sent as a separate POST. Before, they were ignored, and a server waiting on its ping stalled the call. A failure sending that reply doesn't break the call.
+- **Session ids:** an `Mcp-Session-Id` that isn't visible ASCII, or is over 1024 characters, is ignored with a warning. Before, it was echoed back: httpx refused the header on every later call, and it was a header-injection path.
+- **Session expiry:** after a 404 on a live session, `MCPClient` starts a new session once and retries, as the spec says. Before, every tool on that server failed until AVRONE restarted. A plain 404 is not retried.
+- **stdio:**
+  - Lines over the cap are discarded up to their newline. The requests waiting at that moment fail with the reason, and the connection keeps going. Before, a ValueError killed the reader and later calls hung until their timeout.
+  - Deep-nesting and 5000-digit-integer lines are skipped.
+  - list, dict, or bool ids no longer kill the reader.
+  - A BrokenPipe or ConnectionReset during the write/exit race is an MCPError, not a raw exception past the tool wrapper.
+- **Config:**
+  - String `args` are split shell-style. Before, `"-y srv"` became one argument per character.
+  - `timeout` "abc", NaN, 0, or negative falls back to the default; other values are clamped 1..3600.
+  - Non-object `headers`, `env`, or `mcpServers` give a clear error.
+- **Results:** non-object initialize/list/call results are tolerated.
+  - A bad `protocolVersion` (list, number, CR/LF) falls back to the default, so it never becomes a header.
+  - Non-string tool names are skipped. Before, they aborted the whole manager start for every server.
+  - A repeated or cyclic `nextCursor` stops paging (a repeated cursor used to be requested 100 times), and duplicate tools are listed once.
+  - A string `content` is no longer printed one character per line.
+  - A string `required` in a schema is no longer split into characters.
+  - Error codes that aren't integers become None.
+- **Tool name collisions:** `a b`, `a_b`, `a?b`, and servers whose names sanitize alike get `_2`/`_3` suffixes. Before, `register()` silently replaced the earlier tool. Name parts are trimmed to 64 characters.
+- Tests: tests/test_mcp_client_robust.py (117), including a real subprocess stdio server. One older test was updated: `test_list_tools_pagination_guard_and_empty_call` now expects a repeated cursor to stop after 2 calls, not 100.

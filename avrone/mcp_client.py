@@ -24,7 +24,9 @@ import contextlib
 import json
 import logging
 import os
+import math
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -43,14 +45,86 @@ DEFAULT_TIMEOUT = float(os.getenv("AVRONE_MCP_TIMEOUT", "60"))
 class MCPError(RuntimeError):
     """A JSON-RPC error or transport failure talking to an MCP server."""
 
-    def __init__(self, message: str, code: int | None = None, data: Any = None):
+    def __init__(self, message: str, code: int | None = None, data: Any = None,
+                 session_expired: bool = False):
         super().__init__(message)
         self.code = code
         self.data = data
+        self.session_expired = session_expired
 
 
-def _safe_part(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_\-.]", "_", s) or "_"
+def _safe_part(s: Any) -> str:
+    return re.sub(r"[^A-Za-z0-9_\-.]", "_", str(s))[:64] or "_"
+
+
+DEFAULT_MAX_RESPONSE, MIN_MAX_RESPONSE, HARD_MAX_RESPONSE = 32 * 1024 * 1024, 64 * 1024, 1024 * 1024 * 1024
+
+
+def max_response_bytes() -> int:
+    """Largest MCP reply accepted, in bytes (AVRONE_MCP_MAX_RESPONSE_BYTES): one HTTP body, one SSE
+    event, or one stdio line. A server streaming without end used to grow memory without limit."""
+    try:
+        n = int(os.environ.get("AVRONE_MCP_MAX_RESPONSE_BYTES", "").strip() or DEFAULT_MAX_RESPONSE)
+    except ValueError:
+        n = DEFAULT_MAX_RESPONSE
+    return max(MIN_MAX_RESPONSE, min(HARD_MAX_RESPONSE, n))
+
+
+def clamp_timeout(v: Any, default: float = 60.0) -> float:
+    """A per-server timeout from mcp.json: a number of seconds in 1..3600. "abc", NaN, 0 and negatives
+    fall back to the default instead of raising or waiting forever."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(f) or f <= 0:
+        return default
+    return max(1.0, min(3600.0, f))
+
+
+def coerce_args(v: Any) -> list[str]:
+    """mcp.json "args". A string used to be split into single characters ("-y srv" ran
+    `cmd - y   s r v`); a string is now split like a shell would, a scalar becomes one arg."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        try:
+            return shlex.split(v)
+        except ValueError:
+            return v.split()
+    if isinstance(v, (list, tuple)):
+        return [str(a) for a in v if a is not None]
+    return [str(v)]
+
+
+def coerce_str_map(v: Any, what: str) -> dict[str, str]:
+    """mcp.json "headers"/"env": a JSON object of strings. Anything else raises a clear MCPError."""
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise MCPError(f"'{what}' must be an object of strings, not {type(v).__name__}")
+    return {str(k): ("" if x is None else str(x)) for k, x in v.items()}
+
+
+_SESSION_ID_RE = re.compile(r"[\x21-\x7e]{1,1024}")
+
+
+def _valid_session_id(sid: str) -> bool:
+    """MCP session ids are visible ASCII (spec). A CR/LF or non-ASCII id would be sent back as a
+    header: httpx raises on it (every later call failed) and it is a header-injection vector."""
+    return bool(_SESSION_ID_RE.fullmatch(sid))
+
+
+def _hashable_id(v: Any) -> bool:
+    return isinstance(v, (int, str)) and not isinstance(v, bool)
+
+
+def _client_reply(m: dict) -> dict:
+    """The answer to a server->client request: pong for ping, method-not-found for the rest."""
+    if m.get("method") == "ping":
+        return {"jsonrpc": "2.0", "id": m["id"], "result": {}}
+    return {"jsonrpc": "2.0", "id": m["id"],
+            "error": {"code": -32601, "message": "Method not supported by client"}}
 
 
 # --------------------------------------------------------------------------- transports
@@ -65,8 +139,8 @@ class StdioTransport(_Transport):
     def __init__(self, command: str, args: list[str] | None = None, env: dict[str, str] | None = None,
                  cwd: str | None = None):
         self.command = command
-        self.args = [str(a) for a in (args or [])]
-        self.env = {k: str(v) for k, v in (env or {}).items()}
+        self.args = coerce_args(args)
+        self.env = coerce_str_map(env, "env")
         self.cwd = cwd
         self.proc: asyncio.subprocess.Process | None = None
         self._id = 0
@@ -75,12 +149,14 @@ class StdioTransport(_Transport):
         self._stderr_task: asyncio.Task | None = None
         self._write_lock = asyncio.Lock()
         self.stderr_tail: list[str] = []
+        self._limit = max_response_bytes()
 
     async def connect(self) -> None:
         env = {**os.environ, **self.env}
+        self._limit = max_response_bytes()
         self.proc = await asyncio.create_subprocess_exec(
             self.command, *self.args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=env, cwd=self.cwd, limit=16 * 1024 * 1024)
+            stderr=asyncio.subprocess.PIPE, env=env, cwd=self.cwd, limit=self._limit)
         self._reader = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
@@ -96,50 +172,93 @@ class StdioTransport(_Transport):
     async def _read_loop(self) -> None:
         assert self.proc and self.proc.stdout
         try:
-            async for raw in self.proc.stdout:
+            async for raw in self._lines():
                 line = raw.decode(errors="replace").strip()
                 if not line:
                     continue
                 try:
                     msg = json.loads(line)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):  # junk, deep nesting, a 5000-digit number
                     log.debug("mcp non-JSON stdout line ignored: %s", line[:200])
                     continue
                 for m in (msg if isinstance(msg, list) else [msg]):
-                    await self._dispatch(m)
+                    try:
+                        await self._dispatch(m)
+                    except MCPError as e:  # replying to a server request after it exited
+                        log.debug("mcp reply failed: %s", e)
         except Exception as e:  # pragma: no cover
             log.debug("mcp stdio reader stopped: %s", e)
         finally:
-            err = MCPError("MCP server process exited" + (
-                f": {self.stderr_tail[-1]}" if self.stderr_tail else ""))
-            for fut in self._pending.values():
-                if not fut.done():
-                    fut.set_exception(err)
-            self._pending.clear()
+            self._fail_pending(MCPError("MCP server process exited" + (
+                f": {self.stderr_tail[-1]}" if self.stderr_tail else "")))
+
+    async def _lines(self):
+        """stdout lines, each at most self._limit bytes. A longer line used to kill the reader (the
+        StreamReader raised ValueError): every pending request then failed as "process exited" and
+        later ones hung until their timeout. Now the long line is discarded up to its newline, the
+        requests waiting at that moment fail with the reason (the reply can't be matched to an id),
+        and the connection keeps going."""
+        assert self.proc and self.proc.stdout
+        buf = bytearray()
+        discarding = False
+        while True:
+            chunk = await self.proc.stdout.read(65536)
+            if not chunk:
+                if buf and not discarding:
+                    yield bytes(buf)
+                return
+            buf += chunk
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    if len(buf) > self._limit:
+                        if not discarding:
+                            discarding = True
+                            self._fail_pending(MCPError(
+                                f"MCP server sent a reply line over {self._limit} bytes; it was dropped"))
+                        buf.clear()
+                    break
+                line, buf = bytes(buf[:nl]), buf[nl + 1:]
+                if discarding:
+                    discarding = False  # this was the tail of the long line
+                    continue
+                if len(line) > self._limit:
+                    self._fail_pending(MCPError(
+                        f"MCP server sent a reply line over {self._limit} bytes; it was dropped"))
+                    continue
+                yield line
+
+    def _fail_pending(self, err: MCPError) -> None:
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(err)
+        self._pending.clear()
 
     async def _dispatch(self, m: Any) -> None:
-        if not isinstance(m, dict):
-            return
-        if "id" in m and ("result" in m or "error" in m):
+        if not isinstance(m, dict) or "id" not in m:
+            return  # notifications (logging, progress, list_changed) are ignored
+        if not _hashable_id(m["id"]):
+            return  # a list/dict/bool id used to raise TypeError here and kill the reader
+        if "result" in m or "error" in m:
             fut = self._pending.pop(m["id"], None)
             if fut and not fut.done():
                 fut.set_result(m)
-        elif "method" in m and "id" in m:
+        elif isinstance(m.get("method"), str):
             # Server->client request (ping, sampling, roots...). Answer ping, decline the rest.
-            if m["method"] == "ping":
-                await self._send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
-            else:
-                await self._send({"jsonrpc": "2.0", "id": m["id"],
-                                  "error": {"code": -32601, "message": "Method not supported by client"}})
-        # notifications (logging, progress, list_changed) are ignored
+            await self._send(_client_reply(m))
 
     async def _send(self, obj: dict) -> None:
         if not self.proc or not self.proc.stdin or self.proc.returncode is not None:
             raise MCPError("MCP server process is not running")
         data = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
         async with self._write_lock:
-            self.proc.stdin.write(data)
-            await self.proc.stdin.drain()
+            try:
+                self.proc.stdin.write(data)
+                await self.proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError) as e:
+                # the server died between the returncode check and the write: this used to escape
+                # as a raw BrokenPipeError past the tool wrapper (which only catches MCPError)
+                raise MCPError(f"MCP server process is not running ({type(e).__name__})")
 
     async def request(self, method: str, params: dict | None, timeout: float) -> Any:
         self._id += 1
@@ -191,7 +310,7 @@ class HTTPTransport(_Transport):
 
     def __init__(self, url: str, headers: dict[str, str] | None = None):
         self.url = url
-        self.headers = {k: str(v) for k, v in (headers or {}).items()}
+        self.headers = coerce_str_map(headers, "headers")
         self.session_id: str | None = None
         self.protocol_version: str | None = None
         self._id = 0
@@ -216,31 +335,46 @@ class HTTPTransport(_Transport):
                                        timeout=timeout) as r:
             sid = r.headers.get("mcp-session-id")
             if sid:
-                self.session_id = sid
+                if _valid_session_id(sid):
+                    self.session_id = sid
+                else:
+                    log.warning("MCP server sent an invalid Mcp-Session-Id (%d chars); ignored", len(sid))
             if r.status_code == 404 and self.session_id and body.get("method") != "initialize":
-                raise MCPError("MCP session expired (HTTP 404)", code=404)
+                raise MCPError("MCP session expired (HTTP 404)", code=404, session_expired=True)
             if r.status_code >= 400:
-                text = (await r.aread()).decode(errors="replace")
+                text = (await self._read_capped(r, 4096)).decode(errors="replace")
                 raise MCPError(f"HTTP {r.status_code}: {text[:300]}", code=r.status_code)
             if want_id is None:  # notification: 202 Accepted, nothing to read
                 return None
+            cap = max_response_bytes()
             ctype = r.headers.get("content-type", "").lower()
             if "text/event-stream" in ctype:
                 data_lines: list[str] = []
+                size = 0
                 async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip())
-                    elif line == "" and data_lines:
-                        payload, data_lines = "\n".join(data_lines), []
-                        found = _match_response(payload, want_id)
-                        if found is not None:
-                            return found
+                    if line.startswith(":"):
+                        continue  # comment / keep-alive
+                    field, colon, value = line.partition(":")
+                    if field == "data" and (colon or line == "data"):
+                        if value.startswith(" "):
+                            value = value[1:]  # SSE strips exactly one space
+                        size += len(value) + 1
+                        if size > cap:
+                            raise MCPError(f"MCP event larger than {cap} bytes "
+                                           "(AVRONE_MCP_MAX_RESPONSE_BYTES)")
+                        data_lines.append(value)
+                    elif line == "":
+                        if data_lines:
+                            payload, data_lines, size = "\n".join(data_lines), [], 0
+                            found = await self._handle_event(payload, want_id)
+                            if found is not None:
+                                return found
                 if data_lines:
-                    found = _match_response("\n".join(data_lines), want_id)
+                    found = await self._handle_event("\n".join(data_lines), want_id)
                     if found is not None:
                         return found
                 raise MCPError("event stream ended without a response")
-            raw = await r.aread()
+            raw = await self._read_capped(r, cap, strict=True)
             if not raw.strip():
                 raise MCPError("empty response body")
             found = _match_response(raw.decode(errors="replace"), want_id)
@@ -248,13 +382,45 @@ class HTTPTransport(_Transport):
                 raise MCPError("no matching JSON-RPC response in body")
             return found
 
+    @staticmethod
+    async def _read_capped(r: httpx.Response, cap: int, strict: bool = False) -> bytes:
+        buf = bytearray()
+        async for chunk in r.aiter_bytes():
+            buf += chunk
+            if len(buf) > cap:
+                if strict:
+                    raise MCPError(f"MCP response larger than {cap} bytes (AVRONE_MCP_MAX_RESPONSE_BYTES)")
+                return bytes(buf[:cap])
+        return bytes(buf)
+
+    async def _handle_event(self, payload: str, want_id: int) -> dict | None:
+        """One SSE event: our response, or a server->client request to answer (the server may block
+        on it, e.g. a ping, until it gets one), or noise."""
+        found = _match_response(payload, want_id)
+        if found is not None:
+            return found
+        try:
+            obj = json.loads(payload)
+        except (ValueError, RecursionError):
+            return None
+        for m in (obj if isinstance(obj, list) else [obj]):
+            if (isinstance(m, dict) and isinstance(m.get("method"), str) and "id" in m
+                    and _hashable_id(m["id"]) and "result" not in m and "error" not in m):
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self._post(_client_reply(m), 10, None), 10)
+        return None
+
     async def request(self, method: str, params: dict | None, timeout: float) -> Any:
         self._id += 1
         msg: dict[str, Any] = {"jsonrpc": "2.0", "id": self._id, "method": method}
         if params is not None:
             msg["params"] = params
         try:
-            resp = await self._post(msg, timeout, self._id)
+            # httpx's timeout is per read: an SSE stream sending keep-alives (or a trickle of
+            # progress events) every few seconds used to hold the call open forever
+            resp = await asyncio.wait_for(self._post(msg, timeout, self._id), timeout)
+        except asyncio.TimeoutError:
+            raise MCPError(f"timeout waiting for {method} ({timeout:g}s)")
         except httpx.HTTPError as e:
             raise MCPError(f"{type(e).__name__}: {e}")
         return _unwrap(resp)
@@ -281,7 +447,7 @@ class HTTPTransport(_Transport):
 def _match_response(payload: str, want_id: int) -> dict | None:
     try:
         obj = json.loads(payload)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # junk, very deep nesting, an over-long integer
         return None
     for m in (obj if isinstance(obj, list) else [obj]):
         if isinstance(m, dict) and m.get("id") == want_id and ("result" in m or "error" in m):
@@ -292,8 +458,16 @@ def _match_response(payload: str, want_id: int) -> dict | None:
 def _unwrap(resp: dict) -> Any:
     if "error" in resp and resp["error"] is not None:
         err = resp["error"] if isinstance(resp["error"], dict) else {"message": str(resp["error"])}
-        raise MCPError(str(err.get("message", "error")), err.get("code"), err.get("data"))
+        code = err.get("code")
+        if isinstance(code, bool) or not isinstance(code, int):
+            code = None
+        raise MCPError(str(err.get("message", "error"))[:2000], code, err.get("data"))
     return resp.get("result")
+
+
+def _obj(v: Any) -> dict[str, Any]:
+    """A result that should be a JSON object; a list/string/number from a broken server reads as {}."""
+    return v if isinstance(v, dict) else {}
 
 
 # --------------------------------------------------------------------------- client
@@ -303,7 +477,7 @@ class MCPClient:
     def __init__(self, name: str, config: dict[str, Any], timeout: float = DEFAULT_TIMEOUT):
         self.name = name
         self.config = config
-        self.timeout = float(config.get("timeout", timeout))
+        self.timeout = clamp_timeout(config.get("timeout", timeout), clamp_timeout(timeout))
         if config.get("url"):
             self.transport: _Transport = HTTPTransport(str(config["url"]), config.get("headers"))
             self.kind = "http"
@@ -323,38 +497,67 @@ class MCPClient:
         await self.initialize()
 
     async def initialize(self) -> dict[str, Any]:
-        res = await self.transport.request("initialize", {
+        res = _obj(await self.transport.request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": CLIENT_INFO,
-        }, timeout=self.timeout) or {}
-        version = res.get("protocolVersion") or PROTOCOL_VERSION
+        }, timeout=self.timeout))
+        version = res.get("protocolVersion")
+        if not isinstance(version, str) or not re.fullmatch(r"[\x21-\x7e]{1,64}", version):
+            version = PROTOCOL_VERSION  # it goes back out as a header: never a list, number or CR/LF
         if version not in SUPPORTED_VERSIONS:
             log.warning("MCP server %s negotiated unknown protocol %s; continuing", self.name, version)
         self.protocol_version = version
         if isinstance(self.transport, HTTPTransport):
             self.transport.protocol_version = version
-        self.server_info = res.get("serverInfo") or {}
-        self.capabilities = res.get("capabilities") or {}
+        self.server_info = _obj(res.get("serverInfo"))
+        self.capabilities = _obj(res.get("capabilities"))
         await self.transport.notify("notifications/initialized")
         return res
+
+    async def _request(self, method: str, params: dict | None, timeout: float) -> Any:
+        """A request that survives one HTTP session expiry: the spec says a 404 on a session means
+        start a new one. Before, every tool on that server failed until AVRONE restarted."""
+        try:
+            return await self.transport.request(method, params, timeout=timeout)
+        except MCPError as e:
+            if not (e.session_expired and isinstance(self.transport, HTTPTransport)):
+                raise
+        log.info("MCP server %s: session expired, starting a new one", self.name)
+        self.transport.session_id = None
+        await self.initialize()
+        return await self.transport.request(method, params, timeout=timeout)
 
     async def list_tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
+        names: set[str] = set()
         for _ in range(100):  # pagination guard
             params = {"cursor": cursor} if cursor else {}
-            res = await self.transport.request("tools/list", params, timeout=self.timeout) or {}
-            tools.extend(t for t in res.get("tools", []) if isinstance(t, dict) and t.get("name"))
+            res = _obj(await self._request("tools/list", params, timeout=self.timeout))
+            page = res.get("tools")
+            if isinstance(page, list):
+                # a non-string name (42, ["x"]) used to raise in registration and abort the whole
+                # manager start, taking every other server's tools down with it
+                for t in page:
+                    if (isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"].strip()
+                            and t["name"] not in names):  # a page repeated by the server lists once
+                        names.add(t["name"])
+                        tools.append(t)
             cursor = res.get("nextCursor")
-            if not cursor:
-                break
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                break  # a server repeating its cursor used to be asked 100 times for the same page
+            seen_cursors.add(cursor)
         self.tools = tools
         return tools
 
     async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> str:
-        res = await self.transport.request("tools/call", {"name": tool, "arguments": arguments or {}},
-                                           timeout=self.timeout) or {}
+        res = await self._request("tools/call", {"name": tool, "arguments": arguments or {}},
+                                  timeout=self.timeout)
+        if not isinstance(res, dict):
+            return "(no content)" if res is None else f"ERROR (from MCP tool {self.name}/{tool}): " \
+                f"malformed result {json.dumps(res, default=str)[:300]}"
         text = format_content(res)
         if res.get("isError"):
             return f"ERROR (from MCP tool {self.name}/{tool}): {text}"
@@ -371,7 +574,12 @@ class MCPClient:
 def format_content(result: dict[str, Any]) -> str:
     """Flatten an MCP CallToolResult into text for an agent."""
     parts: list[str] = []
-    for c in result.get("content") or []:
+    content = result.get("content")
+    if isinstance(content, (str, dict)):
+        content = [content if isinstance(content, dict) else {"type": "text", "text": content}]
+    elif not isinstance(content, list):
+        content = []  # a bare string used to come out one character per line
+    for c in content:
         if not isinstance(c, dict):
             parts.append(str(c))
             continue
@@ -383,7 +591,7 @@ def format_content(result: dict[str, Any]) -> str:
         elif kind == "audio":
             parts.append(f"[audio: {c.get('mimeType', 'unknown')} omitted]")
         elif kind == "resource":
-            r = c.get("resource") or {}
+            r = _obj(c.get("resource"))
             if "text" in r:
                 parts.append(f"[resource {r.get('uri', '')}]\n{r['text']}")
             else:
@@ -405,16 +613,20 @@ def args_doc_from_schema(schema: dict[str, Any] | None, limit: int = 300) -> str
     """Compact '{"path": str, "depth"?: int}' style doc from a JSON Schema."""
     if not isinstance(schema, dict):
         return "{}"
-    props = schema.get("properties") or {}
-    required = set(schema.get("required") or [])
+    props = schema.get("properties")
+    props = props if isinstance(props, dict) else {}
+    req = schema.get("required")
+    # a bare string ("path") used to become set("path") = {"p","a","t","h"}
+    required = {str(x) for x in req if isinstance(x, (str, int))} if isinstance(req, list) else (
+        {req} if isinstance(req, str) else set())
     items = []
     for key, spec in props.items():
         spec = spec if isinstance(spec, dict) else {}
         t = spec.get("type")
         if isinstance(t, list):
             t = "|".join(_TYPE_MAP.get(x, str(x)) for x in t if x != "null") or "any"
-        elif "enum" in spec:
-            t = "|".join(json.dumps(v) for v in spec["enum"][:6])
+        elif isinstance(spec.get("enum"), list) and spec["enum"]:
+            t = "|".join(json.dumps(v, default=str) for v in spec["enum"][:6])
         else:
             t = _TYPE_MAP.get(t, "any") if t else "any"
         items.append(f'"{key}"{"" if key in required else "?"}: {t}')
@@ -431,6 +643,8 @@ def load_config(path: str | os.PathLike | None = None) -> dict[str, dict[str, An
         return {}
     data = json.loads(p.read_text() or "{}")
     servers = data.get("mcpServers", data.get("servers", {})) if isinstance(data, dict) else {}
+    if not isinstance(servers, dict):
+        raise ValueError(f"mcpServers must be an object of servers, not {type(servers).__name__}")
     return {str(k): v for k, v in servers.items()
             if isinstance(v, dict) and not v.get("disabled")}
 
@@ -477,17 +691,24 @@ class MCPManager:
             return
         self.clients[name] = client
         count = 0
+        mine = set(self._registered)
         for t in tools:
-            tool_name = f"mcp__{_safe_part(name)}__{_safe_part(t['name'])}"
+            base = f"mcp__{_safe_part(name)}__{_safe_part(t['name'])}"
+            tool_name, n = base, 2
+            # "a b" and "a_b" (or two servers that sanitize alike) used to map to one name, and
+            # register() silently replaced the first tool with the second
+            while tool_name in mine or registry.get(tool_name) is not None:
+                tool_name, n = f"{base}_{n}", n + 1
             try:
                 registry.register(Tool(
                     name=tool_name,
-                    description=(t.get("description") or t.get("title") or f"MCP tool {t['name']} on {name}").strip().replace("\n", " ")[:500],
+                    description=str(t.get("description") or t.get("title") or f"MCP tool {t['name']} on {name}").strip().replace("\n", " ")[:500],
                     args_doc=args_doc_from_schema(t.get("inputSchema")),
                     fn=self._make_fn(client, t["name"]),
                     source=f"mcp:{name}",
                 ))
                 self._registered.append(tool_name)
+                mine.add(tool_name)
                 count += 1
             except ValueError as e:
                 log.warning("skipping MCP tool %s/%s: %s", name, t.get("name"), e)

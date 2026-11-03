@@ -520,7 +520,8 @@ def test_list_tools_pagination_guard_and_empty_call():
     c = MCPClient("s", {"command": "x"})
     c.transport = Loop()
     tools = run(c.list_tools())
-    assert c.transport.n == 100 and len(tools) == 100
+    # round 35: a repeated cursor ends paging at once, and the repeated tool is listed once
+    assert c.transport.n == 2 and len(tools) == 1
     assert run(c.call_tool("t")) == "(no content)"
 
 

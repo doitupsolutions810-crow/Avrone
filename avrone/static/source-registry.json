@@ -465,7 +465,7 @@
     },
     {
       "path": "MASTER_PROMPT.md",
-      "sha256": "6a43df35681624208bd0ccb6b33341a165397056fb02ac88436c60c682b6d488",
+      "sha256": "c73a904c6e643c550a585d0ae51050f87646d0384ceb319803131f06a3ba36e7",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
@@ -490,7 +490,7 @@
     },
     {
       "path": "avrone/server.py",
-      "sha256": "d1c474a8d1b27df17ec39070a4dabd9a6805bb468be6c6bfe31fa62bb820dabe",
+      "sha256": "c2c416df9c0955daaa9ce176487a67e032d521756ac6d247de2b6e74dc50f347",
       "source": "Adapted from AVRONE PR 20 at 8cca4083eb94da32240a17a5a7ce87db519cdf7b, with local strict JSON and durable cross-process fan-in fixes; 180 tests passed"
     },
     {
@@ -730,7 +730,7 @@
     },
     {
       "path": "tests/test_blackboard_api.py",
-      "sha256": "5d5f7f38d23cb75d58bcb2fc11ff14e434eedc6c3aacdd453e8d4ed0b16f0325",
+      "sha256": "8d4d0b37bbc434a6901cf582219f2a833c35682c53c94056ee0a8697704423ea",
       "source": "Adapted from AVRONE PR 20 at 8cca4083eb94da32240a17a5a7ce87db519cdf7b, with local strict JSON and durable cross-process fan-in fixes; 180 tests passed"
     },
     {
@@ -745,13 +745,18 @@
     },
     {
       "path": "docs/FUSION_SWARM_VALIDATION.md",
-      "sha256": "1c28e88f19d3df49da5b3497abbf188365e5b90d66bf7c83fe50a9fec44a8574",
+      "sha256": "8e0beaa555221501bed49f49af092b64b088f791a3f18b5950a46851bf7b9c5c",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "tests/test_swarm_client_delegation.py",
       "sha256": "293cb3326d26e75d72578b9843967748c0441b795ca382eb21486a8b26f64561",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
+    },
+    {
+      "path": "tests/test_http_body_limit.py",
+      "sha256": "18bf87ad92c10ba2d62d6a0619f472781dc914612e4e8a5ba743c4236584ca84",
+      "source": "Actual TCP regression for bounded Fusion blackboard refusal"
     }
   ],
   "upstream_updates": [
@@ -887,6 +892,14 @@
       "id": "swarm-replay-leases-20261103",
       "report": "docs/FUSION_SWARM_VALIDATION.md",
       "python_passed": 122,
+      "full_suite": false
+    },
+    {
+      "id": "real-http-transport-20261103",
+      "report": "docs/FUSION_SWARM_VALIDATION.md",
+      "python_passed": 97,
+      "relay_cycles": 50,
+      "cross_repository_assertions": 21,
       "full_suite": false
     }
   ]

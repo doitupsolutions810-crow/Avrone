@@ -173,7 +173,7 @@ def test_oversize_is_413_before_the_token_is_checked(client, monkeypatch):
     r = client.post("/api/blackboard", content=b"x" * 4097, headers={"X-Admin-Token": "nope"})
     assert r.status_code == 413
     assert r.json() == {"detail": "request body too large (max 4096 bytes)"}
-    assert r.headers.get("connection") == "close"
+    assert r.headers.get("connection") != "close"
     assert seen == []  # the route, and therefore auth, never ran
     assert _ids(client)["count"] == 0
     seen.clear()
@@ -218,7 +218,7 @@ def test_blackboard_cap_does_not_shrink_other_routes():
     assert chat[0]["status"] == 200
     assert board[0]["status"] == 413
     assert json.loads(board[1]["body"]) == {"detail": "request body too large (max 4096 bytes)"}
-    assert (b"connection", b"close") in board[0]["headers"]
+    assert (b"connection", b"close") not in board[0]["headers"]
 
 
 def test_chunked_oversize_is_413_before_auth(client, monkeypatch):

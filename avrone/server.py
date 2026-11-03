@@ -221,8 +221,11 @@ class BodyLimit:
             detail = f"request body too large (max {limit} bytes; AVRONE_MAX_BODY_BYTES)"
         body = json.dumps({"detail": detail}).encode()
         await send({"type": "http.response.start", "status": 413,
-                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
-                                (b"connection", b"close")]})
+                    # Let the HTTP server drain/discard unread frames. Forcing
+                    # a socket close here can reset a real TCP connection while
+                    # the client is still sending, truncating the 413 response.
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
         await send({"type": "http.response.body", "body": body})
 
 

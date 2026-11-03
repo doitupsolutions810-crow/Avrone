@@ -238,3 +238,61 @@ async def test_ca_timeout_restart_reuses_exact_persisted_assertion(monkeypatch, 
     assert len(authority.calls) == 2
     assert authority.calls[0]["requester_assertion"] == authority.calls[1]["requester_assertion"] == persisted
     assert authority.calls[0]["correlation_id"] == authority.calls[1]["correlation_id"] == "stable-ca-correlation"
+
+
+@pytest.mark.asyncio
+async def test_parent_capability_symlink_is_rejected(monkeypatch, tmp_path):
+    target = tmp_path / "real.json"
+    target.write_text('{"capability":{"id":"parent"},"signature":"sig"}')
+    target.chmod(0o600)
+    link = tmp_path / "parent.json"
+    link.symlink_to(target)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(link))
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+    result = await core._dispatch_swarm("objective", "run-symlink")
+    assert result["status"] == "disabled"
+    assert result["agents"] == []
+
+
+@pytest.mark.asyncio
+async def test_parent_capability_group_readable_file_is_rejected(monkeypatch, tmp_path):
+    parent = tmp_path / "parent.json"
+    parent.write_text('{"capability":{"id":"parent"},"signature":"sig"}')
+    parent.chmod(0o640)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(parent))
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+    result = await core._dispatch_swarm("objective", "run-mode")
+    assert result["status"] == "disabled"
+    assert "mode-0600" in result["swarm"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_parent_capability_duplicate_json_keys_are_rejected(monkeypatch, tmp_path):
+    parent = tmp_path / "parent.json"
+    parent.write_text('{"capability":{"id":"parent"},"signature":"sig","signature":"attacker"}')
+    parent.chmod(0o600)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(parent))
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+    result = await core._dispatch_swarm("objective", "run-duplicate")
+    assert result["status"] == "disabled"
+    assert "duplicate" in result["swarm"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_parent_capability_oversized_file_is_rejected(monkeypatch, tmp_path):
+    parent = tmp_path / "parent.json"
+    parent.write_text('{"capability":{"id":"parent"},"signature":"' + ("x" * 66000) + '"}')
+    parent.chmod(0o600)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(parent))
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+    result = await core._dispatch_swarm("objective", "run-size")
+    assert result["status"] == "disabled"
+    assert "64 KiB" in result["swarm"]["reason"]

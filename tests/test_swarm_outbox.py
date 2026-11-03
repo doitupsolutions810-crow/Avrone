@@ -234,3 +234,22 @@ def test_retry_returns_stored_queue_receipt_without_resending(tmp_path):
     result = dispatcher.retry("msg-1")
     assert result["state"] == "queued" and client.calls == 1
     box.close()
+
+
+def test_corrupt_stored_receipt_is_detected(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"})
+    box._db.execute("UPDATE swarm_outbox SET receipt_json=? WHERE message_id='msg-1'", (b'{"tampered":true}',))
+    with pytest.raises(InvalidOutboxRecord, match="receipt digest"):
+        box.get("msg-1")
+    box.close()
+
+
+def test_request_shape_requires_payload_capability_and_signature(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    for field, value in [("payload", []), ("capability", []), ("capability_signature", ""), ("envelope", {"message_id":"m","correlation_id":"c"})]:
+        bad = request(); bad[field] = value
+        with pytest.raises(InvalidOutboxRecord):
+            box.prepare(bad)
+    box.close()

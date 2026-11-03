@@ -68,6 +68,51 @@ def test_missing_and_wrong_token_are_401(client):
     assert _ids(client) == {"posts": [], "count": 0}  # nothing was stored
 
 
+def test_previous_token_is_exact_and_untrimmed(monkeypatch):
+    """Rotation grace is the raw env value. Spaces are part of the secret."""
+    assert server._exact_token("old-token ", "old-token ") is True
+    assert server._exact_token("old-token", "old-token ") is False
+    assert server._exact_token(" old-token ", "old-token ") is False
+    assert server._exact_token("old-token-x", "old-token") is False
+    assert server._exact_token("old-toke", "old-token") is False
+    assert server._exact_token("", "") is False
+    assert server._exact_token(None, "old-token") is False
+    assert server._exact_token(" ", " ") is True
+    assert server._exact_token("é-token", "é-token") is True
+    assert server._exact_token("e-token", "é-token") is False
+    monkeypatch.setenv("AVRONE_ADMIN_TOKEN_PREVIOUS", " grace ")
+    from avrone.config import Settings
+    assert Settings().admin_token_previous == " grace "
+    monkeypatch.delenv("AVRONE_ADMIN_TOKEN_PREVIOUS", raising=False)
+    assert Settings().admin_token_previous == ""
+
+
+def test_previous_admin_token_opens_blackboard_only(client, monkeypatch):
+    previous = "old-token "
+    monkeypatch.setattr(server.settings, "admin_token_previous", previous)
+    prev = {"X-Admin-Token": previous}
+    trimmed = {"X-Admin-Token": "old-token"}
+    padded = {"X-Admin-Token": " old-token "}
+    assert client.get("/api/blackboard", headers=prev).status_code == 200
+    posted = _post(client, {"id": "grace-1", "text": "during rotation", "ts": 8}, headers=prev)
+    assert posted.status_code == 200
+    assert posted.json() == {"posted": True, "duplicate": False, "id": "grace-1"}
+    assert _ids(client)["posts"][0]["text"] == "during rotation"
+    # The current token still works, and neither a trim nor a neighbor does.
+    assert client.get("/api/blackboard", headers=AUTH).status_code == 200
+    assert client.get("/api/blackboard", headers=trimmed).status_code == 401
+    assert client.get("/api/blackboard", headers=padded).status_code == 401
+    assert client.get("/api/blackboard", headers={"X-Admin-Token": "test-token "}).status_code == 401
+    # Other admin routes ignore the grace token.
+    assert client.post("/api/terminal", json={"cmd": "echo hi"}, headers=prev).status_code == 401
+    assert client.get("/api/fleet", headers=prev).status_code == 401
+    assert client.post("/api/terminal", json={"cmd": "echo hi"}, headers=AUTH).status_code == 200
+    # Unset current token still disables the route, even with a previous secret.
+    monkeypatch.setattr(server.settings, "admin_token", "")
+    assert client.get("/api/blackboard", headers=prev).status_code == 403
+    assert _post(client, {"text": "no"}, headers=prev).status_code == 403
+
+
 def test_open_reads_stay_open_but_blackboard_does_not(client):
     """AVRONE_PUBLIC_ACCESS=all lets /api/runs through. The blackboard still wants the token."""
     assert client.get("/api/status").status_code == 200
@@ -91,13 +136,13 @@ def test_admin_off_is_403_and_oversize_still_413(client, monkeypatch):
 
 def test_oversize_is_413_before_the_token_is_checked(client, monkeypatch):
     seen = []
-    real = server.require_admin
+    real = server.require_blackboard_admin
 
     def spy(token):
         seen.append(token)
         return real(token)
 
-    monkeypatch.setattr(server, "require_admin", spy)
+    monkeypatch.setattr(server, "require_blackboard_admin", spy)
     r = client.post("/api/blackboard", content=b"x" * 4097, headers={"X-Admin-Token": "nope"})
     assert r.status_code == 413
     assert r.json() == {"detail": "request body too large (max 4096 bytes)"}
@@ -151,7 +196,7 @@ def test_blackboard_cap_does_not_shrink_other_routes():
 
 def test_chunked_oversize_is_413_before_auth(client, monkeypatch):
     seen = []
-    monkeypatch.setattr(server, "require_admin", lambda token: seen.append(token))
+    monkeypatch.setattr(server, "require_blackboard_admin", lambda token: seen.append(token))
 
     def gen():
         yield b'{"id":"should-not-store","text":"'

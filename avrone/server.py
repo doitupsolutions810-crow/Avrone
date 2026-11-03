@@ -59,6 +59,33 @@ def require_admin(token: str | None) -> None:
         raise HTTPException(401, "Bad admin token")
 
 
+def _exact_token(presented: str | None, expected: str) -> bool:
+    """True when ``presented`` is exactly ``expected``. Neither side is trimmed.
+
+    UTF-8 bytes, not ``str``, so the compare is constant-time for any token.
+    ``hmac.compare_digest`` on str rejects non-ASCII. An empty expected never
+    matches, including an empty header.
+    """
+    if presented is None or not isinstance(presented, str) or expected == "":
+        return False
+    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+def require_blackboard_admin(token: str | None) -> None:
+    """Admin token for /api/blackboard, plus AVRONE_ADMIN_TOKEN_PREVIOUS.
+
+    The previous token is a rotation grace for this route only. Other admin
+    routes keep require_admin and ignore it. The route stays off when the
+    current token is unset, even if a previous token is set.
+    """
+    if not settings.admin_token:
+        raise HTTPException(403, "Admin access is off. Set AVRONE_ADMIN_TOKEN to enable it.")
+    current_ok = _exact_token(token, settings.admin_token)
+    previous_ok = _exact_token(token, settings.admin_token_previous)
+    if not (current_ok or previous_ok):
+        raise HTTPException(401, "Bad admin token")
+
+
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 ACCESS_POLICIES = ("loopback", "admin", "all")
 
@@ -588,7 +615,7 @@ async def run_log(run_id: str, request: Request, x_admin_token: str | None = Hea
 @app.get(FUSION_BLACKBOARD_PATH)
 async def blackboard_get(since: str | None = None, x_admin_token: str | None = Header(default=None)):
     """Fan-in of this node's bridge posts, oldest first. Admin token, not loopback."""
-    require_admin(x_admin_token)
+    require_blackboard_admin(x_admin_token)
     from .bridge import blackboard_posts
     posts = await asyncio.to_thread(blackboard_posts, core(), since)
     return {"posts": posts, "count": len(posts)}
@@ -600,7 +627,7 @@ async def blackboard_write(request: Request, x_admin_token: str | None = Header(
     raw = await request.body()
     if len(raw) > FUSION_BLACKBOARD_MAX_BODY:
         raise HTTPException(413, f"request body too large (max {FUSION_BLACKBOARD_MAX_BODY} bytes)")
-    require_admin(x_admin_token)
+    require_blackboard_admin(x_admin_token)
     if not raw:
         raise HTTPException(400, "body must be JSON")
     try:

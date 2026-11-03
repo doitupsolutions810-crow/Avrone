@@ -728,7 +728,7 @@ class TrinityCore:
         except Exception:  # a bad checkpoint path must not sink the run
             return None, run_id, None
 
-    async def _dispatch_swarm(self, task: str, run_id: str, checkpoint: Any = None,
+    async def _dispatch_swarm(self, task: str, run_id: str,
                               correlation_id: str | None = None) -> dict[str, Any]:
         """Submit one objective to external Swarm; never fall back to local execution."""
         if self._privileged_run():
@@ -770,8 +770,7 @@ class TrinityCore:
                         correlation_id=correlation_id or ("avrone-" + run_id),
                         job_id=(result.get("job") or {}).get("id") if isinstance(result.get("job"), dict) else None)
         self.codex.emit(run_id, "run.done", "Trinity", answer=answer, status=status)
-        if checkpoint is not None and status in {"queued", "rejected"}:
-            checkpoint.put("result", out)
+        # The outbox is authoritative; re-enter it on resume to verify the signed receipt.
         return out
     # ------------------------------------------------------------ the squad
     async def plan(self, run_id: str, task: str, n: int) -> list[dict[str, str]]:
@@ -805,7 +804,7 @@ class TrinityCore:
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", squad_size=n)
         dispatch_mode = (dispatch or os.getenv("AVRONE_SQUAD_DISPATCH", "local")).strip().lower()
         if dispatch_mode == "swarm":
-            return await self._dispatch_swarm(task, run_id, ck, swarm_correlation_id)
+            return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
         if dispatch_mode not in {"local", "network", "hybrid"}:
             raise ValueError("dispatch must be local, network, hybrid, or swarm")
         subtasks = ck.get("subtasks") if ck is not None else None

@@ -465,8 +465,8 @@
     },
     {
       "path": "MASTER_PROMPT.md",
-      "sha256": "bf87f14d4a568c66233de85333c127c4eda422b86339d0f9ef815130d704e577",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "f8bb3e2a52af23db16c963b38c16e4682c207027110270462226589bb7171782",
+      "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
     },
     {
       "path": "README.md",
@@ -520,8 +520,8 @@
     },
     {
       "path": "docs/REPOSITORY_UPGRADE_REVIEW.json",
-      "sha256": "a89d7a653b70c3c74c1fa4b63d285b5357b895f970f79c98a312a11384d4f35e",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "46d9b04874c2be5f9c6daded426d9a43b69594ccfc797f1543cdf4be894a1a8f",
+      "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
     },
     {
       "path": "docs/SWARM_VALIDATION.md",
@@ -530,8 +530,8 @@
     },
     {
       "path": "docs/UPGRADE_REVIEW.md",
-      "sha256": "4d77269d8206440274ed798d0efcf6fe3fc7d50ae7c07c45c8858e6599fab2aa",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "9088f2cf74922432de75652f57f69fd0e8b5d34b4f9781b8945dfc08962b5525",
+      "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
     },
     {
       "path": "integrations/grok-bot/browser-service/Dockerfile",
@@ -685,8 +685,8 @@
     },
     {
       "path": "docs/EXTENDED_SWARM_VALIDATION.md",
-      "sha256": "4cb58fdb8ce71d6cceb5d7a5f9ac9b540ef22aacfd767f035524d9291347577f",
-      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
+      "sha256": "bae4d59429032ce517f08ee9bcbbac8e62fa75a9d4308b6febdf48796f2c5984",
+      "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
     },
     {
       "path": "avrone/fleet.py",
@@ -712,6 +712,11 @@
       "path": "tests/test_swarm_concurrency.py",
       "sha256": "2f81e083c0d5d2cbecc0a189af6be50cd46da079427fea8a7eef85e5a1a172d6",
       "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
+    },
+    {
+      "path": "tools/make_master_prompt.py",
+      "sha256": "5241a5a9a602f8307812029c69922ee8b1009216cb8634f23bb9c22c1fcf1421",
+      "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
     }
   ],
   "upstream_updates": [
@@ -768,10 +773,10 @@
     "decisions": "docs/UPGRADE_REVIEW.md",
     "validation": "docs/SWARM_VALIDATION.md",
     "scope": {
-      "repositories": 38,
-      "branches": 356,
-      "pull_requests": 278,
-      "recent_default_branch_commits": 442,
+      "repositories": 39,
+      "branches": 366,
+      "pull_requests": 286,
+      "recent_default_branch_commits": 447,
       "max_commits_per_repository": 30
     }
   },
@@ -794,6 +799,22 @@
       "report": "docs/EXTENDED_SWARM_VALIDATION.md",
       "python_passed": 133,
       "full_suite": false
+    },
+    {
+      "id": "generated-inventory-20261103",
+      "report": "docs/EXTENDED_SWARM_VALIDATION.md",
+      "python_passed": 2,
+      "full_suite": false,
+      "prior_full_run": {
+        "passed": 3867,
+        "failed": 1,
+        "skipped": 7,
+        "sole_failure": "stale generated MASTER_PROMPT.md"
+      },
+      "coverage": {
+        "covered_statements": 13030,
+        "total_statements": 13306
+      }
     }
   ]
 }

@@ -1,8 +1,8 @@
 # Repository upgrade review — November 3, 2026
 
-The inventory checked 38 accessible repositories, 356 branch heads, 278 open and closed pull-request records, and 442 recent default-branch commits. Branch and PR collections were paginated to exhaustion; commit history was limited to the most recent 30 commits per repository. One repository had no commits. This is an upgrade review, not an exhaustive audit of every historical file or commit.
+The inventory checked 39 accessible repositories, 366 branch heads, 286 open and closed pull-request records, and 447 recent default-branch commits. Branch and PR collections were paginated to exhaustion; commit history was limited to the most recent 30 commits per repository. One repository had no commits. This is an upgrade review, not an exhaustive audit of every historical file or commit.
 
-The public repository snapshots, PR head/base revisions and commit subjects are recorded in [REPOSITORY_UPGRADE_REVIEW.json](REPOSITORY_UPGRADE_REVIEW.json). That catalog contains the 16 public repositories. Review decisions below use revision-pinned public sources. The source registry hashes the local catalog and implementation resources.
+The public repository snapshots, PR head/base revisions and commit subjects are recorded in [REPOSITORY_UPGRADE_REVIEW.json](REPOSITORY_UPGRADE_REVIEW.json). That catalog contains the 17 public repositories. Review decisions below use revision-pinned public sources. The source registry hashes the local catalog and implementation resources.
 
 | Reviewed source | Finding and integration decision |
 | --- | --- |
@@ -17,3 +17,14 @@ The public repository snapshots, PR head/base revisions and commit subjects are 
 | Great Scale | Reviewed all 125 PR records, 130 branches and the recent commit window. Retain the separation between revision evidence, mathematical embeddings and observed execution. The Atlas remains a separate reviewed feature branch. |
 
 New changes are published to the AVRONE integration branch after their targeted validation. The validation record distinguishes queue/HTTP execution, model test doubles and live model deployment.
+
+## Additional proposals inspected in the refreshed survey
+
+| Revision-pinned proposal | Decision for this validation round |
+| --- | --- |
+| [AVRONE PR #19](https://github.com/doitupsolutions810-crow/Avrone/pull/19), `12be1b765656e58e81a7123ccd7f3085235f0814` | Reviewed routing, Authority assertion persistence, correlation lookup and proposed tests. This is a separate unexecuted proposal, with a draft Authority dependency; retain it for validation rather than importing it wholesale into the passing runtime. The active signed path in this round is the operator-authenticated `/api/swarm/enqueue` API. |
+| [Capability Authority PR #16](https://github.com/doitupsolutions810-crow/capability-authority/pull/16), `e81be6abca27aee8fc52784d128e2e6b147e5f03`, and PR #17, `20f227642f6896d2a4390ec564607d65edd931ff` | Delegation issuance and durable correlation reconciliation are open proposals. Signed receipt acceptance does not establish deployed issuance or completed specialist execution. |
+| [AVRONE PR #20](https://github.com/doitupsolutions810-crow/Avrone/pull/20), `aa3f77b3638b02f0f537364a6862ccf41de4d938` | Reviewed blackboard fan-in, rotation-grace authentication, 4096-byte admission and tests. This adds another external contract and remains a separate reviewed proposal in this round. |
+| [Fusion Bridge](https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge), main `966c6c78bfb0e3fc466b221fb2f34a06521c189a`, PR #1 `8c5ea85e973c52631cd9fc1b14e4392f19a1f14c` | Newly discovered repository. Main's documented `/api/events` forwarding differs from the reviewed peer contracts; PR #1 corrects the relay and depends on the blackboard/CycleKernal adapters. Its existence is recorded, not claimed as an activated bridge. |
+
+The refreshed public catalog preserves all retrieved branch and PR head/base revisions. Its 30-commit window is explicit; it is not a claim to have audited every historical file.

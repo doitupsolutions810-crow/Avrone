@@ -39,3 +39,17 @@ Swarm network and SQLite work now run in FastAPI's worker pool. Dispatcher initi
 After repair: **133 passed** in 3.36 seconds across the Swarm API/concurrency/outbox/Authority/provisioning tests and server/access-policy regressions. The suite includes eight simultaneous first requests, eight duplicate requests, a deliberately stalled send with a responsive health probe, preserved lifespan cleanup, and all three public-access policies.
 
 Reproduce: `python -m pytest -q tests/test_swarm_concurrency.py tests/test_swarm_api.py tests/test_swarm_outbox.py tests/test_swarm_authority_client.py tests/test_swarm_provisioning.py tests/test_server_edges.py tests/test_robust_v027_access.py`.
+
+## Round 4: complete suite and generated inventory
+
+An unfiltered four-worker run finished with **3,867 passed, 7 skipped and 1 failed**, in **639.18 seconds**. The sole failure was `test_committed_prompt_is_current`: the committed generated prompt predated the signed Swarm modules and the new test files. No runtime test failed in that run.
+
+Regenerated `MASTER_PROMPT.md` and corrected its generator so it asks operators to measure the current test/coverage results rather than advertising stale fixed pass/skip counts or a 99% coverage expectation. The generator also distinguishes an observed runner-ID-0/no-steps CI failure from an unverified explanation for that failure. Its two existing integrity tests pass after regeneration.
+
+Measured statement coverage from the full run: **97.9257%**, or **13,030 / 13,306** statements. This includes the recently added signing client; the old 99.53% figure covered a smaller source tree and is not the current coverage figure.
+
+Syntax/format admission passed for **273 Python files, 56 JavaScript files, 6 shell scripts and 8 JSON files**, plus the Node console's inline JavaScript block.
+
+The refreshed repository survey covers **39 repositories, 366 branch heads, 286 PR records and 447 recent default-branch commits**. Branch/PR lists were paginated to exhaustion. Default-branch commit history remains limited to 30 per repository. Public resource pins and proposal decisions are recorded in `REPOSITORY_UPGRADE_REVIEW.json` and `UPGRADE_REVIEW.md`.
+
+A final unfiltered run after the generated-document correction is recorded below when complete.

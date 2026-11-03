@@ -69,6 +69,145 @@ class UnknownOutcome(SwarmError):
         self.correlation_id = request.get("envelope", {}).get("correlation_id")
 
 
+class AuthorityRejected(SwarmError):
+    def __init__(self, detail: Any):
+        super().__init__(f"Capability Authority rejected delegation: {detail}")
+        self.detail = detail
+
+
+class DelegationUnknownOutcome(SwarmError):
+    """Retry the same delegation correlation; the Authority may already have persisted it."""
+    def __init__(self, message: str, args: dict[str, Any]):
+        super().__init__(message)
+        self.args_for_retry = args
+        self.correlation_id = args["correlation_id"]
+
+
+class CapabilityAuthorityClient:
+    def __init__(
+        self, *, endpoint: str, requester: str, authority_issuer: str,
+        requester_private_key_pem: bytes | str, authority_public_key_b64: str,
+        http_client: httpx.Client | None = None, allow_insecure_http: bool = False,
+    ):
+        parsed = httpx.URL(endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.host:
+            raise ValueError("Capability Authority endpoint must be an absolute HTTP(S) URL")
+        if parsed.scheme == "http" and parsed.host not in {"localhost", "127.0.0.1", "::1"} and not allow_insecure_http:
+            raise ValueError("non-loopback Capability Authority endpoints require HTTPS")
+        self.endpoint = endpoint.rstrip("/") + "/v1/capabilities/delegate"
+        self.requester, self.authority_issuer = requester, authority_issuer
+        private_bytes = requester_private_key_pem.encode() if isinstance(requester_private_key_pem, str) else requester_private_key_pem
+        self._requester_key = serialization.load_pem_private_key(private_bytes, password=None)
+        if not isinstance(self._requester_key, Ed25519PrivateKey):
+            raise ValueError("requester assertion signing key must be Ed25519")
+        self._authority_key = Ed25519PublicKey.from_public_bytes(_b64(authority_public_key_b64, 32))
+        self._http = http_client or httpx.Client()
+
+    def _assertion(self, now: datetime | None = None) -> dict[str, Any]:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("assertion clock must be timezone-aware")
+        unsigned = {
+            "schema": "capability-authority.delegation-assertion/v1",
+            "issuer": self.requester,
+            "subject": self.requester,
+            "audience": self.authority_issuer,
+            "jti": str(uuid4()),
+            "issued_at": _iso(current),
+            "expires_at": _iso(current + timedelta(seconds=30)),
+        }
+        return {**unsigned, "signature": base64.b64encode(self._requester_key.sign(_jcs(unsigned))).decode("ascii")}
+
+    def _verify_parent(self, parent: dict[str, Any], signature: str, rights: list[dict[str, str]], now: datetime) -> None:
+        if not isinstance(parent, dict) or parent.get("issuer") != self.authority_issuer or parent.get("audience") != self.requester:
+            raise ValueError("parent capability issuer/audience mismatch")
+        if not isinstance(parent.get("id"), str) or not parent["id"].strip():
+            raise ValueError("parent capability id is required")
+        issued, expires = parent.get("issued_at"), parent.get("expires_at")
+        if isinstance(issued, bool) or isinstance(expires, bool) or not isinstance(issued, (int, float)) or not isinstance(expires, (int, float)):
+            raise ValueError("parent capability timestamps must be numbers")
+        if not math.isfinite(issued) or not math.isfinite(expires) or issued > now.timestamp() + 30 or expires <= now.timestamp() or expires <= issued:
+            raise ValueError("parent capability is expired or invalid")
+        parent_rights = parent.get("rights")
+        if not isinstance(parent_rights, list):
+            raise ValueError("parent capability rights are invalid")
+        allowed = {(r.get("type"), r.get("resource"), r.get("method")) for r in parent_rights if isinstance(r, dict)}
+        for right in rights:
+            if not isinstance(right, dict) or set(right) != {"type", "resource", "method"}:
+                raise ValueError("delegated right schema is invalid")
+            if (right.get("type"), right.get("resource"), right.get("method")) not in allowed:
+                raise ValueError("delegated rights exceed parent capability")
+        try:
+            self._authority_key.verify(_b64(signature, 64), _jcs(parent))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("invalid parent Capability Authority signature") from exc
+
+    def _verify_child(self, child: dict[str, Any], signature: str, parent: dict[str, Any], audience: str, rights: list[dict[str, str]], ttl_seconds: int, now: datetime) -> None:
+        try:
+            self._authority_key.verify(_b64(signature, 64), _jcs(child))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("invalid delegated capability signature") from exc
+        if child.get("issuer") != self.authority_issuer or child.get("audience") != audience or child.get("parent_id") != parent["id"]:
+            raise ValueError("delegated capability identity or parent binding mismatch")
+        if child.get("rights") != rights or child.get("constraints") != parent.get("constraints"):
+            raise ValueError("delegated capability rights or constraints mismatch")
+        parent_depth = parent.get("delegation_depth", 0)
+        if isinstance(parent_depth, bool) or not isinstance(parent_depth, int) or child.get("delegation_depth") != parent_depth + 1:
+            raise ValueError("delegated capability depth mismatch")
+        issued, expires = child.get("issued_at"), child.get("expires_at")
+        parent_expiry = parent.get("expires_at")
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (issued, expires, parent_expiry)):
+            raise ValueError("delegated capability timestamps are invalid")
+        if issued > now.timestamp() + 30 or expires <= now.timestamp() or expires <= issued or expires > parent_expiry or expires - issued > min(ttl_seconds, 300):
+            raise ValueError("delegated capability lifetime exceeds parent or request")
+
+    def delegate(
+        self, *, parent_capability: dict[str, Any], parent_signature: str,
+        audience: str, rights: list[dict[str, str]], ttl_seconds: int = 120,
+        correlation_id: str | None = None, timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= 300:
+            raise ValueError("delegated ttl_seconds must be an integer in 1..300")
+        if not isinstance(audience, str) or not audience.strip():
+            raise ValueError("delegated audience is required")
+        if not isinstance(rights, list) or not rights:
+            raise ValueError("delegated rights are required")
+        correlation = correlation_id or str(uuid4())
+        if not isinstance(correlation, str) or not correlation.strip() or len(correlation) > 128:
+            raise ValueError("correlation_id must contain 1..128 characters")
+        current = datetime.now(timezone.utc)
+        self._verify_parent(parent_capability, parent_signature, rights, current)
+        args = {
+            "parent_capability": parent_capability, "parent_signature": parent_signature,
+            "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,
+            "correlation_id": correlation,
+        }
+        request = {"requester_assertion": self._assertion(current), **args}
+        try:
+            response = self._http.post(self.endpoint, json=request, timeout=timeout)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise DelegationUnknownOutcome(f"Capability Authority transport outcome is unknown: {exc}", args) from exc
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise DelegationUnknownOutcome("Capability Authority returned non-JSON response", args) from exc
+        if response.status_code >= 500:
+            raise DelegationUnknownOutcome(f"Capability Authority returned ambiguous status {response.status_code}", args)
+        if response.status_code >= 400 or body.get("status") != "ok":
+            raise AuthorityRejected(body)
+        try:
+            child, signature = body["capability"], body["signature"]
+            self._verify_child(child, signature, parent_capability, audience, rights, ttl_seconds, current)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DelegationUnknownOutcome(f"delegated capability could not be independently verified: {exc}", args) from exc
+        return body
+
+    def retry(self, unknown: DelegationUnknownOutcome, *, timeout: float = 10.0) -> dict[str, Any]:
+        if not isinstance(unknown, DelegationUnknownOutcome):
+            raise TypeError("retry requires the DelegationUnknownOutcome from the original attempt")
+        return self.delegate(**unknown.args_for_retry, timeout=timeout)
+
+
 class SwarmClient:
     def __init__(
         self, *, endpoint: str, issuer: str, audience: str,

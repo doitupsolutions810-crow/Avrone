@@ -164,13 +164,14 @@ def test_existing_queued_request_is_not_sent_twice(tmp_path):
 class FakeAuthority:
     def __init__(self, outcome=None):
         self.calls = []
-        self.outcome = outcome
+        self.outcomes = list(outcome) if isinstance(outcome, list) else [outcome]
         self._http = SimpleNamespace(close=lambda: None)
 
     def delegate(self, **kwargs):
         self.calls.append(kwargs)
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
+        outcome = self.outcomes.pop(0) if self.outcomes else None
+        if isinstance(outcome, BaseException):
+            raise outcome
         return {"status": "ok", "correlation_id": kwargs["correlation_id"],
                 "capability": {"id": "delegated-cap-1", "audience": kwargs["audience"],
                                "rights": kwargs["rights"]},
@@ -264,3 +265,34 @@ def test_auto_delegation_retry_does_not_mint_twice_after_swarm_outbox_exists(tmp
     assert first.status_code == second.status_code == 202
     assert len(authority.calls) == 1
     assert len(client.calls) == 1
+
+
+def test_authority_timeout_retry_keeps_both_stable_ids(tmp_path):
+    authority = FakeAuthority([
+        DelegationUnknownOutcome("timeout", {"correlation_id": "auto-corr-1"}),
+        None,
+    ])
+    app, client = setup(tmp_path, authority=authority,
+                        parent=({"id": "root-parent"}, "root-signature"))
+    with TestClient(app) as http:
+        headers = {"X-Admin-Token": "operator-token"}
+        request = auto_body(message_id="auto-msg-1", correlation_id="auto-corr-1")
+        first = http.post("/api/swarm/enqueue", json=request, headers=headers)
+        assert first.status_code == 202 and first.json()["state"] == "delegation_unknown"
+        assert client.calls == []
+        second = http.post("/api/swarm/enqueue", json=request, headers=headers)
+        assert second.status_code == 202 and second.json()["state"] == "queued"
+    assert len(authority.calls) == 2
+    assert [call["correlation_id"] for call in authority.calls] == ["auto-corr-1", "auto-corr-1"]
+    assert len(client.calls) == 1
+    assert json.loads(client.calls[0])["envelope"]["message_id"] == "auto-msg-1"
+
+
+def test_auto_delegation_without_parent_file_fails_closed(tmp_path):
+    authority = FakeAuthority()
+    app, client = setup(tmp_path, authority=authority, parent=None)
+    with TestClient(app) as http:
+        result = http.post("/api/swarm/enqueue", json=auto_body(),
+                           headers={"X-Admin-Token": "operator-token"})
+    assert result.status_code == 503
+    assert authority.calls == [] and client.calls == []

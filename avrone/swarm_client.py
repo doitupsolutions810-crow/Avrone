@@ -360,7 +360,7 @@ class SwarmClient:
             raise ValueError('Swarm envelope schema mismatch')
         if envelope.get('schema') != ENVELOPE_SCHEMA or envelope.get('issuer') != self.issuer or envelope.get('audience') != self.audience:
             raise ValueError('Swarm envelope identity mismatch')
-        if not isinstance(envelope.get('message_id'), str) or not envelope['message_id'].strip() or not isinstance(envelope.get('correlation_id'), str) or not envelope['correlation_id'].strip():
+        if not isinstance(envelope.get('message_id'), str) or not envelope['message_id'].strip() or len(envelope['message_id']) > 128 or not isinstance(envelope.get('correlation_id'), str) or not envelope['correlation_id'].strip() or len(envelope['correlation_id']) > 128:
             raise ValueError('Swarm message_id and correlation_id are required')
         if payload.get('action') != ACTION or not isinstance(payload.get('objective'), str) or not payload['objective'].strip() or len(payload['objective']) > 2000:
             raise ValueError('Swarm payload action/objective is invalid')
@@ -378,6 +378,8 @@ class SwarmClient:
         if not isinstance(capability, dict) or envelope.get('capability_id') != capability.get('id'):
             raise ValueError('Swarm envelope capability binding mismatch')
         self._verify_capability(capability, request['capability_signature'], current)
+        if expires.timestamp() > float(capability['expires_at']):
+            raise ValueError('Swarm envelope outlives its capability')
         unsigned = {key: value for key, value in envelope.items() if key != 'signature'}
         try:
             self._issuer_key.public_key().verify(_b64(envelope['signature'], 64), _jcs(unsigned))

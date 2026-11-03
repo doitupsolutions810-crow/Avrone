@@ -1,4 +1,5 @@
 import json
+import hashlib
 import stat
 import threading
 
@@ -439,4 +440,39 @@ def test_concurrent_authority_prepare_is_idempotent(tmp_path):
     assert not errors and len(results) == 8
     assert len({item["request_sha256"] for item in results}) == 1
     assert box.get_authority_request("ca-corr-1")["request"] == authority_request()
+    box.close()
+
+
+def test_authority_request_rejects_non_finite_json_and_oversize(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    bad = authority_request()
+    bad["ttl_seconds"] = float("nan")
+    with pytest.raises(InvalidOutboxRecord, match="finite UTF-8 JSON"):
+        box.prepare_authority_request("ca-corr-1", bad)
+    huge = authority_request()
+    huge["payload_padding"] = "x" * (256 * 1024)
+    with pytest.raises(InvalidOutboxRecord, match="size limit"):
+        box.prepare_authority_request("ca-corr-1", huge)
+    box.close()
+
+
+def test_authority_request_rejects_duplicate_json_keys_even_with_matching_digest(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare_authority_request("ca-corr-1", authority_request())
+    raw = b'{"correlation_id":"ca-corr-1","correlation_id":"attacker"}'
+    digest = hashlib.sha256(raw).hexdigest()
+    with box._lock:
+        box._db.execute("UPDATE authority_delegations SET request_json=?,request_sha256=? WHERE correlation_id=?",
+                        (raw, digest, "ca-corr-1"))
+    with pytest.raises(InvalidOutboxRecord, match="duplicate JSON key"):
+        box.get_authority_request("ca-corr-1")
+    box.close()
+
+
+def test_authority_request_invalid_correlation_type_fails_closed(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    with pytest.raises(InvalidOutboxRecord):
+        box.get_authority_request(None)
+    with pytest.raises(InvalidOutboxRecord):
+        box.prepare_authority_request(7, authority_request())
     box.close()

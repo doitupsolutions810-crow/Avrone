@@ -23,7 +23,7 @@ This contract replaces implicit repository coupling with explicit, versioned int
 
 This is the first control slice, not a claim that it represents all 36 candidate repositories. The full repository inventory must be reconciled against actual branch tips before adding more participants.
 
-## Signing and canonicalization\n\nThe cross-language signing profile is defined in [signing-profile-v1.md](signing-profile-v1.md). All producers and consumers MUST use RFC 8785 JCS and Ed25519 with independently pinned public keys.\n\n## Mandatory envelope
+## Producer client\n\nSee [docs/swarm-client.md](../docs/swarm-client.md) for the AVRONE request signer, capability verification, signed receipt verifier, and exact-retry behavior.\n\n## Signing and canonicalization\n\nThe cross-language signing profile is defined in [signing-profile-v1.md](signing-profile-v1.md). All producers and consumers MUST use RFC 8785 JCS and Ed25519 with independently pinned public keys.\n\n## Mandatory envelope
 
 Every cross-repository request must carry:
 - `schema`: immutable, versioned schema identifier.

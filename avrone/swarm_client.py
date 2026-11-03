@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import math
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import uuid4
+
+import httpx
+import rfc8785
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
+ACTION = {"type": "Execute", "resource": "swarm.jobs", "method": "POST"}
+ENVELOPE_SCHEMA = "avrone.message-envelope/v1"
+RECEIPT_FIELDS = {
+    "message_id", "correlation_id", "capability_id", "issuer", "executor",
+    "action", "resource", "method", "outcome", "timestamp", "payload_digest",
+    "previous_receipt_digest", "signature",
+}
+
+
+def _jcs(value: Any) -> bytes:
+    return rfc8785.dumps(value)
+
+
+def _digest(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(_jcs(value)).hexdigest()
+
+
+def _b64(value: str, size: int) -> bytes:
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception as exc:
+        raise ValueError("signature/key must be canonical base64") from exc
+    if len(raw) != size or base64.b64encode(raw).decode("ascii") != value:
+        raise ValueError("signature/key has invalid length or encoding")
+    return raw
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class SwarmError(RuntimeError):
+    pass
+
+
+class SwarmRejected(SwarmError):
+    def __init__(self, status_code: int, detail: Any):
+        super().__init__(f"Swarm rejected request ({status_code}): {detail}")
+        self.status_code, self.detail = status_code, detail
+
+
+class ReplayConflict(SwarmRejected):
+    pass
+
+
+class UnknownOutcome(SwarmError):
+    """Retry this exact signed request only. Never mint a new id after a timeout."""
+    def __init__(self, message: str, request: dict[str, Any]):
+        super().__init__(message)
+        self.request = request
+        self.message_id = request.get("envelope", {}).get("message_id")
+        self.correlation_id = request.get("envelope", {}).get("correlation_id")
+
+
+class SwarmClient:
+    def __init__(
+        self, *, endpoint: str, issuer: str, audience: str,
+        capability_authority_issuer: str, issuer_private_key_pem: bytes | str,
+        capability_authority_public_key_b64: str,
+        swarm_receipt_public_key_pem: bytes | str,
+        http_client: httpx.Client | None = None,
+    ):
+        self.endpoint = endpoint.rstrip("/") + "/api/integration/enqueue"
+        self.issuer, self.audience = issuer, audience
+        self.capability_authority_issuer = capability_authority_issuer
+        private_bytes = issuer_private_key_pem.encode() if isinstance(issuer_private_key_pem, str) else issuer_private_key_pem
+        self._issuer_key = serialization.load_pem_private_key(private_bytes, password=None)
+        if not isinstance(self._issuer_key, Ed25519PrivateKey):
+            raise ValueError("AVRONE issuer signing key must be Ed25519")
+        self._ca_key = Ed25519PublicKey.from_public_bytes(_b64(capability_authority_public_key_b64, 32))
+        public_bytes = swarm_receipt_public_key_pem.encode() if isinstance(swarm_receipt_public_key_pem, str) else swarm_receipt_public_key_pem
+        self._receipt_key = serialization.load_pem_public_key(public_bytes)
+        if not isinstance(self._receipt_key, Ed25519PublicKey):
+            raise ValueError("Swarm receipt verification key must be Ed25519")
+        self._http = http_client or httpx.Client()
+
+    def _verify_capability(self, capability: dict[str, Any], signature: str, now: datetime) -> None:
+        if not isinstance(capability, dict) or capability.get("issuer") != self.capability_authority_issuer or capability.get("audience") != self.audience:
+            raise ValueError("capability issuer/audience mismatch")
+        if not isinstance(capability.get("id"), str) or not capability["id"].strip():
+            raise ValueError("capability id is required")
+        issued, expires = capability.get("issued_at"), capability.get("expires_at")
+        if isinstance(issued, bool) or isinstance(expires, bool) or not isinstance(issued, (int, float)) or not isinstance(expires, (int, float)):
+            raise ValueError("capability timestamps must be numbers")
+        if not math.isfinite(issued) or not math.isfinite(expires):
+            raise ValueError("capability timestamps must be finite")
+        now_seconds = now.timestamp()
+        if issued > now_seconds + 30 or expires <= now_seconds or expires <= issued or expires - issued > 300:
+            raise ValueError("capability is expired, premature, or exceeds maximum lifetime")
+        rights = capability.get("rights")
+        if not isinstance(rights, list) or not any(
+            isinstance(right, dict) and set(right) == {"type", "resource", "method"}
+            and all(right.get(key) == ACTION[key] for key in ACTION) for right in rights
+        ):
+            raise ValueError("capability does not authorize exact Execute:swarm.jobs:POST")
+        try:
+            self._ca_key.verify(_b64(signature, 64), _jcs(capability))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("invalid Capability Authority signature") from exc
+
+    def build_request(
+        self, *, payload: dict[str, Any], capability: dict[str, Any],
+        capability_signature: str, ttl_seconds: int = 300,
+        message_id: str | None = None, correlation_id: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= 300:
+            raise ValueError("ttl_seconds must be an integer in 1..300")
+        if not isinstance(payload, dict) or not isinstance(payload.get("objective"), str) or not payload["objective"].strip() or len(payload["objective"]) > 2000:
+            raise ValueError("payload.objective must contain 1..2000 characters")
+        payload = dict(payload)
+        if "action" in payload and payload["action"] != ACTION:
+            raise ValueError("payload action must be exact Execute:swarm.jobs:POST")
+        payload["action"] = dict(ACTION)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        self._verify_capability(capability, capability_signature, current)
+        expires = min(current + timedelta(seconds=ttl_seconds), datetime.fromtimestamp(float(capability["expires_at"]), timezone.utc))
+        if expires <= current:
+            raise ValueError("capability expires before envelope can be issued")
+        unsigned = {
+            "schema": ENVELOPE_SCHEMA, "message_id": message_id or str(uuid4()),
+            "correlation_id": correlation_id or str(uuid4()), "issued_at": _iso(current),
+            "expires_at": _iso(expires), "issuer": self.issuer, "audience": self.audience,
+            "capability_id": capability["id"], "payload_digest": _digest(payload),
+        }
+        signature = base64.b64encode(self._issuer_key.sign(_jcs(unsigned))).decode("ascii")
+        return {"envelope": {**unsigned, "signature": signature}, "payload": payload,
+                "capability": capability, "capability_signature": capability_signature}
+
+    def verify_receipt(self, receipt: dict[str, Any], request: dict[str, Any]) -> None:
+        if not isinstance(receipt, dict) or set(receipt) != RECEIPT_FIELDS:
+            raise ValueError("receipt schema mismatch")
+        unsigned = {key: value for key, value in receipt.items() if key != "signature"}
+        try:
+            self._receipt_key.verify(_b64(receipt["signature"], 64), _jcs(unsigned))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("invalid Swarm receipt signature") from exc
+        envelope, payload = request["envelope"], request["payload"]
+        if receipt["message_id"] != envelope["message_id"] or receipt["correlation_id"] != envelope["correlation_id"]:
+            raise ValueError("receipt message/correlation id mismatch")
+        if receipt["capability_id"] != envelope["capability_id"] or receipt["payload_digest"] != envelope["payload_digest"] or _digest(payload) != receipt["payload_digest"]:
+            raise ValueError("receipt capability/payload digest mismatch")
+        if receipt["issuer"] != self.issuer or receipt["executor"] != self.audience or receipt["action"] != "Execute:swarm.jobs:POST":
+            raise ValueError("receipt issuer/executor/action mismatch")
+        if receipt["resource"] != ACTION["resource"] or receipt["method"] != ACTION["method"] or receipt["outcome"] != "succeeded":
+            raise ValueError("receipt does not attest successful enqueue")
+        timestamp = datetime.fromisoformat(receipt["timestamp"].replace("Z", "+00:00"))
+        if _iso(timestamp) != receipt["timestamp"]:
+            raise ValueError("receipt timestamp is not canonical UTC")
+
+    def send_request(self, request: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
+        try:
+            response = self._http.post(self.endpoint, json=request, timeout=timeout)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise UnknownOutcome(f"Swarm transport outcome is unknown: {exc}", request) from exc
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise UnknownOutcome("Swarm returned a non-JSON response", request) from exc
+        if response.status_code == 409:
+            raise ReplayConflict(409, body)
+        if response.status_code >= 500:
+            raise UnknownOutcome(f"Swarm returned ambiguous server status {response.status_code}", request)
+        if response.status_code >= 400:
+            raise SwarmRejected(response.status_code, body)
+        try:
+            job, receipt = body["job"], body["receipt"]
+            if not isinstance(job.get("id"), str) or job.get("status") not in {"queued", "running", "completed", "failed"}:
+                raise ValueError("invalid job response")
+            self.verify_receipt(receipt, request)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise UnknownOutcome(f"Swarm response could not be independently verified: {exc}", request) from exc
+        return body
+
+    def enqueue(self, *, payload: dict[str, Any], capability: dict[str, Any], capability_signature: str, **kwargs: Any) -> dict[str, Any]:
+        request = self.build_request(payload=payload, capability=capability, capability_signature=capability_signature, **kwargs)
+        return self.send_request(request)
+
+    def retry(self, unknown: UnknownOutcome, *, timeout: float = 10.0) -> dict[str, Any]:
+        if not isinstance(unknown, UnknownOutcome):
+            raise TypeError("retry requires the UnknownOutcome from the original attempt")
+        return self.send_request(unknown.request, timeout=timeout)

@@ -650,7 +650,7 @@
     },
     {
       "path": "avrone/swarm_outbox.py",
-      "sha256": "7371200b57671d24f97e53d920e6e7864819be8ae1092b0619186ad537b26e59",
+      "sha256": "afc52a51b09b4d18c833a4058ed8a3032c94ce6ba7614970d70ced04fab42d09",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
@@ -745,7 +745,7 @@
     },
     {
       "path": "docs/FUSION_SWARM_VALIDATION.md",
-      "sha256": "4142a7f89875bba483f41422608326497761731b0435183877e5993df39bb75f",
+      "sha256": "02d39ac79945c55d10f603b5cc6ae7b005a48f97c4c99325c29d7c12065107be",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
@@ -755,7 +755,7 @@
     },
     {
       "path": "tests/test_http_body_limit.py",
-      "sha256": "18bf87ad92c10ba2d62d6a0619f472781dc914612e4e8a5ba743c4236584ca84",
+      "sha256": "55ecda40bfb2ecdeffc5b336046d6c797782af27fdc8789a987a9656ed44913f",
       "source": "Actual TCP regression for bounded Fusion blackboard refusal"
     },
     {
@@ -765,17 +765,17 @@
     },
     {
       "path": "tests/test_swarm_runtime.py",
-      "sha256": "37f4ed30a4fc84d6f351a64c3d6994bafdd15b7c2f11010eecdb564a52d7ece6",
+      "sha256": "1c2b12cd0226f2df84678b6ae1eea7d514a5936728da36851ea7564338ef8a07",
       "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
     },
     {
       "path": "tests/test_trinity_swarm_dispatch.py",
-      "sha256": "682f899950d3a77625785dc685abf4cdf512b0588af7df751b0b00daab1f477f",
+      "sha256": "1434c5bef43c63ddbdfc95dd6426d071f3dfb4eade1b92dcfeab96d1819166a6",
       "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
     },
     {
       "path": "docs/SWARM_DISPATCH.md",
-      "sha256": "e1e8c251ea13d9fdccaf0bb2418be583cb61d37d276cd271939036e583e585a5",
+      "sha256": "ea802923802f0abdd732283cc2b91844f39f18dc4d0211bbaeaf07bc291a16e6",
       "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
     }
   ],
@@ -939,6 +939,14 @@
       "report": "docs/FUSION_SWARM_VALIDATION.md",
       "python_passed": 259,
       "full_suite": false
+    },
+    {
+      "id": "checkpoint-submission-identity-20261103",
+      "report": "docs/FUSION_SWARM_VALIDATION.md",
+      "python_passed": 273,
+      "python_skipped": 0,
+      "full_suite": false,
+      "baseline_failures_reproduced": 2
     }
   ]
 }

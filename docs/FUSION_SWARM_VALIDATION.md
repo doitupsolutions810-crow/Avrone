@@ -41,3 +41,11 @@ The shared submission boundary now routes `squad(..., dispatch="swarm")`, `/api/
 The Authority assertion is persisted before I/O and kept unchanged after a timeout. Existing enqueues bypass redelegation. Public chat never grants access to the signer; Swarm dispatch requires the current operator token. Privileged tasks are refused before opening signing configuration. Queue/pending events do not emit `run.done`, and deep mode cannot treat a queued first wave as an answer. Conflicting identity/task reuse and audience changes fail closed. See [SWARM_DISPATCH.md](SWARM_DISPATCH.md) for configuration and retry semantics.
 
 The normal local/network/hybrid paths remain covered by the existing checkpoint/netsquad tests. Actual deployed Authority issuance and specialist completion are still unverified; the runtime has no supplied live Swarm credentials. The next unfiltered regression supersedes these focused counts for the final tree.
+
+## Further checkpoint retry edge cases
+
+The first unfiltered extension run at `dd1e7258d38b4f0ab7e9d2dbddb31f037ea9f1e5` passed **4,009 tests**, with one optional QR-decoder skip and **97.64097%** statement coverage (13,576 / 13,904 statements). The installed vision extra now supplies `zxing-cpp` 3.1.1 and its QR round-trip test passes.
+
+Two additional adversarial tests then reproduced duplicate-enqueue identities when a checkpoint’s squad size changed or a previously supplied custom correlation ID was omitted. Checkpoint-to-submission binding now lives in the durable SQLite database, with a digest binding the scope, correlation and objective. Corrupt/deleted best-effort checkpoint files cannot remint an enqueue; changing an explicit correlation or the bound objective is refused. The scope binds the final pathname so atomic replacement of a leaf symlink also retains identity. Real TCP regression tests are marked as integration tests for the separate self-evolution gate.
+
+The repaired Swarm/CLI/checkpoint/QR selection passes **273 tests** in **6.66 seconds**, with no skips. The following final unfiltered run tests the repaired runtime.

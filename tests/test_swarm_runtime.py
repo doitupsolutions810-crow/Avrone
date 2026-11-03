@@ -199,3 +199,31 @@ def test_dispatcher_closes_client_when_database_open_fails(tmp_path, monkeypatch
         with swarm_runtime.open_dispatcher(tmp_path):
             raise AssertionError("unavailable storage must not yield a dispatcher")
     assert closed == [True]
+
+
+def test_checkpoint_binding_survives_connection_restart_and_cannot_be_rebound(tmp_path):
+    path = tmp_path / "outbox.db"
+    first = SwarmOutbox(path)
+    assert first.checkpoint_correlation("scope", "objective", correlation_id="chosen", default_correlation_id="default") == "chosen"
+    first.close()
+    second = SwarmOutbox(path)
+    try:
+        assert second.checkpoint_correlation("scope", "objective", correlation_id=None, default_correlation_id="new-run") == "chosen"
+        with pytest.raises(RequestConflict):
+            second.checkpoint_correlation("scope", "objective", correlation_id="new-id", default_correlation_id="new-run")
+        with pytest.raises(RequestConflict):
+            second.checkpoint_correlation("scope", "other objective", correlation_id=None, default_correlation_id="new-run")
+    finally:
+        second.close()
+
+
+@pytest.mark.parametrize("mutation", ["binding_sha256='corrupt'", "correlation_id='another-valid-id'"])
+def test_checkpoint_binding_corruption_fails_closed(tmp_path, mutation):
+    box = SwarmOutbox(tmp_path / "outbox.db")
+    try:
+        box.checkpoint_correlation("scope", "objective", correlation_id="chosen", default_correlation_id="default")
+        box._db.execute("UPDATE checkpoint_submissions SET " + mutation)
+        with pytest.raises(InvalidOutboxRecord):
+            box.checkpoint_correlation("scope", "objective", correlation_id=None, default_correlation_id="default")
+    finally:
+        box.close()

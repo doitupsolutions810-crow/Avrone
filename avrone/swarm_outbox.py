@@ -121,6 +121,12 @@ class SwarmOutbox:
             intent_json BLOB NOT NULL,
             intent_sha256 TEXT NOT NULL
         )""")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS checkpoint_submissions (
+            scope_id TEXT PRIMARY KEY,
+            correlation_id TEXT NOT NULL,
+            binding_json BLOB NOT NULL,
+            binding_sha256 TEXT NOT NULL
+        )""")
         self._db.execute("""CREATE TABLE IF NOT EXISTS dispatch_leases (
             message_id TEXT PRIMARY KEY,
             owner_token TEXT NOT NULL,
@@ -172,6 +178,57 @@ class SwarmOutbox:
                     self._db.execute("ROLLBACK")
                 raise
             self._fsync_files()
+
+    def checkpoint_correlation(self, scope_id: str, objective: str, *,
+                               correlation_id: str | None, default_correlation_id: str) -> str:
+        """Keep a checkpoint's submission identity in the durable queue database.
+
+        Local checkpoint files are best effort and may be cleared when worker
+        count changes. Neither that nor corruption may remint a queued objective.
+        """
+        for value in (scope_id, default_correlation_id):
+            if not isinstance(value, str) or not _ID.fullmatch(value):
+                raise InvalidOutboxRecord("checkpoint submission identity is invalid")
+        if correlation_id is not None and (not isinstance(correlation_id, str)
+                                            or not _ID.fullmatch(correlation_id)):
+            raise InvalidOutboxRecord("checkpoint correlation id is invalid")
+        if not isinstance(objective, str) or not objective.strip() or len(objective) > 2000:
+            raise InvalidOutboxRecord("submission objective must contain 1..2000 characters")
+        chosen = correlation_id if correlation_id is not None else default_correlation_id
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT correlation_id,binding_json,binding_sha256 FROM checkpoint_submissions WHERE scope_id=?",
+                    (scope_id,)).fetchone()
+                if row is not None:
+                    raw = bytes(row[1])
+                    if len(raw) > 16 * 1024 or hashlib.sha256(raw).hexdigest() != row[2]:
+                        raise InvalidOutboxRecord("stored checkpoint binding digest mismatch")
+                    binding = _decode(raw, label="stored checkpoint binding")
+                    if (not isinstance(binding, dict) or set(binding) != {"scope_id", "correlation_id", "objective"}
+                            or binding.get("scope_id") != scope_id or binding.get("correlation_id") != row[0]):
+                        raise InvalidOutboxRecord("stored checkpoint binding identity mismatch")
+                    if binding["objective"] != objective.strip():
+                        raise RequestConflict("checkpoint already belongs to a different objective")
+                    if not isinstance(row[0], str) or not _ID.fullmatch(row[0]):
+                        raise InvalidOutboxRecord("stored checkpoint correlation is invalid")
+                    if correlation_id is not None and correlation_id != row[0]:
+                        raise RequestConflict("checkpoint already belongs to another correlation id")
+                    chosen = row[0]
+                else:
+                    raw = _json_bytes({"scope_id": scope_id, "correlation_id": chosen,
+                                       "objective": objective.strip()}, 16 * 1024)
+                    digest = hashlib.sha256(raw).hexdigest()
+                    self._db.execute("INSERT INTO checkpoint_submissions VALUES(?,?,?,?)",
+                                     (scope_id, chosen, raw, digest))
+                self._db.execute("COMMIT")
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+            self._fsync_files()
+        return chosen
 
     def prepare_authority_request(self, correlation_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Persist the exact signed CA request before network I/O; retries reuse identical bytes."""

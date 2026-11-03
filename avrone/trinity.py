@@ -1019,7 +1019,8 @@ class TrinityCore:
         return subtasks
 
     async def _dispatch_swarm(self, task: str, run_id: str,
-                              correlation_id: str | None = None) -> dict[str, Any]:
+                              correlation_id: str | None = None,
+                              submission_scope: str | None = None) -> dict[str, Any]:
         """Queue through the signed durable boundary; never fall back to local agents."""
         if self._privileged_run():
             result = {"state": "rejected", "reason": "privileged_run_cannot_be_exported"}
@@ -1029,22 +1030,31 @@ class TrinityCore:
             from .swarm_runtime import open_dispatcher, submit_objective
             import sqlite3
 
-            correlation_id = correlation_id or "trinity:" + run_id
-            if (not isinstance(correlation_id, str)
-                    or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", correlation_id)):
+            default_correlation = "trinity:" + run_id
+            proposed_correlation = default_correlation if correlation_id is None else correlation_id
+            if (not isinstance(proposed_correlation, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", proposed_correlation)):
                 result = {"state": "rejected", "reason": "invalid_correlation_id"}
             else:
-                message_id = "trinity-" + hashlib.sha256(correlation_id.encode()).hexdigest()[:40]
+                identity = {}
 
                 def send():
                     with open_dispatcher(Path(self.settings.data_dir)) as target:
-                        return submit_objective(target, task, message_id, correlation_id)
+                        chosen = proposed_correlation
+                        if submission_scope is not None:
+                            chosen = target.outbox.checkpoint_correlation(
+                                submission_scope, task, correlation_id=correlation_id,
+                                default_correlation_id=default_correlation,
+                            )
+                        identity.update(correlation_id=chosen,
+                                        message_id="trinity-" + hashlib.sha256(chosen.encode()).hexdigest()[:40])
+                        return submit_objective(target, task, **identity)
 
                 try:
                     result = await asyncio.to_thread(send)
                 except DelegationUnknownOutcome:
                     result = {"state": "delegation_unknown", "retryable": True,
-                              "message_id": message_id, "correlation_id": correlation_id,
+                              **identity,
                               "reason": "authority_outcome_unknown"}
                 except AuthorityRejected:
                     result = {"state": "rejected", "reason": "authority_rejected"}
@@ -1088,10 +1098,16 @@ class TrinityCore:
         ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
         if mode == "swarm":
             run_id = run_id or uuid.uuid4().hex[:10]
+            scope = None
             if ck is not None:
+                # Atomic checkpoint replacement replaces the final pathname,
+                # including a leaf symlink. Bind its name, not its old target.
+                scope_path = ck.path.parent.resolve() / ck.path.name
+                scope_key = str(scope_path) + "\0" + ck.prefix
+                scope = "checkpoint:" + hashlib.sha256(scope_key.encode()).hexdigest()
                 ck.begin(task, "squad", run_id, n=n)
             self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", dispatch="swarm")
-            return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
+            return await self._dispatch_swarm(task, run_id, swarm_correlation_id, scope)
         if isinstance(done, dict):
             return done
         run_id = run_id or uuid.uuid4().hex[:10]

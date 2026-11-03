@@ -7,6 +7,9 @@ import sys
 import time
 
 import httpx
+import pytest
+
+pytestmark = pytest.mark.integration
 
 
 def test_oversize_responses_are_complete_and_connection_recovers(tmp_path):

@@ -115,12 +115,65 @@ async def test_missing_trust_configuration_returns_bounded_reason(tmp_path, monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("correlation", ["../bad", "bad\n", "a" * 129])
+@pytest.mark.parametrize("correlation", ["../bad", "bad\n", "a" * 129, "", 0])
 async def test_invalid_correlation_is_refused_without_network(tmp_path, monkeypatch, correlation):
     core, client, authority = make_core(tmp_path, monkeypatch)
     result = await core.squad("objective", dispatch="swarm", swarm_correlation_id=correlation)
     assert result["status"] == "rejected"
     assert not client.calls and not authority.calls
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_size_change_keeps_one_queued_objective(tmp_path, monkeypatch):
+    core, client, authority = make_core(tmp_path / "data", monkeypatch)
+    checkpoint = tmp_path / "run.json"
+    first = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm")
+    core.settings.squad_size = 8
+    second = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm")
+    assert first["swarm"]["message_id"] == second["swarm"]["message_id"]
+    assert len(client.calls) == len(authority.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_remembers_explicit_correlation_without_repeating_argument(tmp_path, monkeypatch):
+    core, client, authority = make_core(tmp_path / "data", monkeypatch)
+    checkpoint = tmp_path / "run.json"
+    first = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm", swarm_correlation_id="chosen-id")
+    second = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm")
+    assert first["swarm"]["message_id"] == second["swarm"]["message_id"]
+    assert len(client.calls) == len(authority.calls) == 1
+    rejected = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm", swarm_correlation_id="new-id")
+    assert rejected["status"] == "rejected"
+    assert len(client.calls) == len(authority.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_corrupt_or_deleted_local_checkpoint_cannot_remint_queue_identity(tmp_path, monkeypatch):
+    core, client, authority = make_core(tmp_path / "data", monkeypatch)
+    checkpoint = tmp_path / "run.json"
+    first = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm", swarm_correlation_id="chosen-id")
+    checkpoint.write_text("{broken JSON")
+    second = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm")
+    checkpoint.unlink()
+    third = await core.squad("objective", checkpoint=checkpoint, dispatch="swarm")
+    assert first["swarm"]["message_id"] == second["swarm"]["message_id"] == third["swarm"]["message_id"]
+    assert len(client.calls) == len(authority.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_atomic_replacement_of_checkpoint_leaf_symlink_keeps_queue_identity(tmp_path, monkeypatch):
+    core, client, authority = make_core(tmp_path / "data", monkeypatch)
+    target = tmp_path / "original.json"
+    Checkpoint(target).begin("objective", "squad", "original-run", n=2)
+    alias = tmp_path / "checkpoint.json"
+    alias.symlink_to(target)
+    first = await core.squad("objective", checkpoint=alias, dispatch="swarm")
+    assert alias.is_symlink()
+    core.settings.squad_size = 7
+    second = await core.squad("objective", checkpoint=alias, dispatch="swarm")
+    assert not alias.is_symlink()
+    assert first["swarm"]["message_id"] == second["swarm"]["message_id"]
+    assert len(client.calls) == len(authority.calls) == 1
 
 
 @pytest.mark.asyncio

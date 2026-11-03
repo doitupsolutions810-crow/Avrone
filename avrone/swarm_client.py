@@ -234,13 +234,15 @@ class CapabilityAuthorityClient:
                     or expires_at - issued_at > timedelta(seconds=30)
                     or issued_at > current + timedelta(seconds=30)):
                 raise ValueError("requester assertion timestamps are invalid")
-            if expires_at <= current and not allow_expired_parent_replay:
-                raise ValueError("requester assertion is expired")
             self._requester_key.public_key().verify(signature_bytes, _jcs(unsigned_assertion))
         except (InvalidSignature, TypeError, KeyError, AttributeError) as exc:
             raise ValueError("requester_assertion signature verification failed") from exc
         except (ValueError, OverflowError) as exc:
+            if str(exc) == "requester assertion timestamps are invalid":
+                raise
             raise ValueError("requester_assertion timestamps or signature encoding are invalid") from exc
+        if expires_at <= current and not allow_expired_parent_replay:
+            raise ValueError("requester assertion is expired")
         args = {
             "parent_capability": parent_capability, "parent_signature": parent_signature,
             "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,

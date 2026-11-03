@@ -685,8 +685,28 @@
     },
     {
       "path": "docs/EXTENDED_SWARM_VALIDATION.md",
-      "sha256": "5c72ed8951757090c63fc90fe1cfa440315acc449c95ba26722bc0face8f6b0a",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "2e8dd86c2abf3562a8e1e31c6d969b9cc2b7fb6b8434ba4ced3e6d188f9a7d5c",
+      "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
+    },
+    {
+      "path": "avrone/fleet.py",
+      "sha256": "f07a2d82ac5935004ab05458e49602b82601159a590c8cee623f2fa35e426143",
+      "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
+    },
+    {
+      "path": "avrone/jobqueue.py",
+      "sha256": "7a66e0fcc0da2f7117ab237e15298589b7e18025fa917979b3772205a7bf3afb",
+      "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
+    },
+    {
+      "path": "tests/test_jobqueue_robust.py",
+      "sha256": "7643521cb9933de929abb8b8478939ef1c30e026335a35030340365cb32546a0",
+      "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
+    },
+    {
+      "path": "tests/test_queue_lease_edges.py",
+      "sha256": "c983971a228ee034e49d6e55a9b2fb3d7ae1856a4f0296320e90b6017a22bf6d",
+      "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
     }
   ],
   "upstream_updates": [
@@ -725,6 +745,16 @@
         "tests/test_swarm_provisioning.py"
       ],
       "role": "signed Swarm enqueue, exact retry, Authority delegation and provisioning; lifecycle repair tested locally"
+    },
+    {
+      "id": "daemon-queue-lease-recovery-20261103",
+      "repository": "https://github.com/doitupsolutions810-crow/Avrone",
+      "revision": "267259656eae89ab6e2cda1d697afd7e90723c10",
+      "resources": [
+        "avrone/jobqueue.py",
+        "tests/test_jobqueue_robust.py"
+      ],
+      "role": "Queue recovery and migration reference, adapted with strict expiry, cancellation and finite JSON boundary fixes"
     }
   ],
   "repository_review": {
@@ -746,6 +776,12 @@
       "report": "docs/EXTENDED_SWARM_VALIDATION.md",
       "python_passed": 114,
       "node_passed": 49,
+      "full_suite": false
+    },
+    {
+      "id": "queue-leases-20261103",
+      "report": "docs/EXTENDED_SWARM_VALIDATION.md",
+      "python_passed": 163,
       "full_suite": false
     }
   ]

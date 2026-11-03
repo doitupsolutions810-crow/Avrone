@@ -17,3 +17,15 @@ The Registry now includes the signed Swarm resources, their exact content hashes
 Runtime reference: [FastAPI lifespan documentation](https://fastapi.tiangolo.com/advanced/events/). Dependency versions were read from the installed environment.
 
 Protocol tests use explicit HTTP/model doubles where indicated. Docker, a physical Mac, and an actual model-backed deployment have not been exercised in this environment. Queue acceptance is not task completion.
+
+## Round 2: recoverable, fenced queue execution
+
+Adapted the daemon queue and its regression suite from AVRONE revision `267259656eae89ab6e2cda1d697afd7e90723c10` (round 29 queue work retained in the round 31 checkpoint). New boundary tests first produced **33 failures and 2 passes** against that implementation. They reproduced expired-owner writes, invalid UTF-8/non-finite/non-object payloads, escaping that exceeded result budgets, terminal-result replacement, abandoned in-flight claims, missing rollback after a failed COMMIT, lost-lease work continuing, and invalid fleet jobs reaching execution.
+
+The integration now gives each attempt a fresh token, checks lease ownership inside the SQLite transaction, maintains heartbeats, cancels handlers after ownership loss, drains and releases a claim interrupted by shutdown, quarantines poison rows, and recovers the worker after claim/failure-storage errors. Result truncation preserves valid bounded UTF-8 JSON. Existing local tokenless callers remain compatible for running jobs; background workers always supply their claim token, and terminal jobs cannot be overwritten.
+
+The fleet queue validates kind and text fields before dispatch, and a local deep job now invokes the deep runtime instead of silently running an ordinary squad.
+
+Final queue/fleet selection: **163 passed** in 8.24 seconds, including the four-connection repeated claim race, old-schema migration, long jobs spanning multiple leases, cancellation during a real SQLite thread operation, Unicode/size cases and cross-connection stale-owner fencing.
+
+Reproduce: `python -m pytest -q tests/test_queue_lease_edges.py tests/test_jobqueue_robust.py tests/test_queue_inbox.py tests/test_jobqueue_shutdown.py tests/test_fleet_edges.py tests/test_fleet_gateway.py tests/test_robust_v021_state.py::test_jobqueue_two_queues_on_one_file_never_double_claim`.

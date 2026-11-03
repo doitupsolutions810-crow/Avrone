@@ -308,27 +308,118 @@ def _iter_files(root: Path, skip: set[Path] | None = None):
 
 # --------------------------------------------------------------------------- edit_file
 
+def _truthy(v: Any) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "y", "on", "all")
+    return bool(v)
+
+
+def _rstrip_lines(s: str) -> str:
+    return "\n".join(line.rstrip() for line in s.split("\n"))
+
+
+def _loose_span(text: str, old: str) -> list[tuple[int, int]]:
+    """Spans of `text` whose lines equal `old`'s lines up to trailing whitespace. Line-aligned
+    only (old must cover whole lines), so it can never splice into the middle of a line."""
+    olines = [ln.rstrip() for ln in old.strip("\n").split("\n")]
+    if not any(olines):
+        return []
+    lines = text.split("\n")
+    starts, pos = [], 0
+    for ln in lines:
+        starts.append(pos)
+        pos += len(ln) + 1
+    k, spans = len(olines), []
+    for i in range(len(lines) - k + 1):
+        if all(lines[i + j].rstrip() == olines[j] for j in range(k)):
+            end = starts[i + k - 1] + len(lines[i + k - 1])
+            spans.append((starts[i], end))
+    return spans
+
+
+def _nearest_hint(text: str, old: str) -> str:
+    import difflib
+    first = next((ln.strip() for ln in old.split("\n") if ln.strip()), "")
+    if not first:
+        return ""
+    lines = text.split("\n")
+    best = difflib.get_close_matches(first, [ln.strip() for ln in lines], n=1, cutoff=0.6)
+    if not best:
+        return ""
+    idx = next(i for i, ln in enumerate(lines) if ln.strip() == best[0])
+    return f"; closest line is {idx + 1}: {lines[idx].strip()[:120]!r} (read_file the file and copy the exact text)"
+
+
 async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    r = fsunify.resolve(ctx, str(args.get("path", "")), "edit_file")
+    """Exact, unique replace, hardened (round 25): bytes outside the edit survive untouched
+    (a latin-1 or mixed file was silently rewritten with U+FFFD everywhere before), CRLF files
+    match an LF `old`, trailing-whitespace drift matches line-aligned, a miss names the closest
+    line, binary files and directories are refused, replace_all is opt-in, writes are atomic
+    and keep the file's mode."""
+    from .tools import atomic_write_bytes
+    raw_path = str(args.get("path") or "").strip()
+    if not raw_path:
+        return "ERROR: edit_file needs a file path"
+    r = fsunify.resolve(ctx, raw_path, "edit_file")
     p = r.path
+    if p.is_dir():
+        return f"ERROR: {raw_path} is a directory, not a file"
     if not p.is_file():
-        return f"ERROR: {args.get('path')} not found"
-    old, new = str(args.get("old", "")), str(args.get("new", ""))
+        return f"ERROR: {raw_path} not found"
+    old = args.get("old")
+    new = args.get("new")
+    old = "" if old is None else str(old)
+    new = "" if new is None else str(new)
     if not old:
         return "ERROR: 'old' must be a non-empty string"
-    text = p.read_text(errors="replace")
-    n = text.count(old)
+    if old == new:
+        return "ERROR: 'old' and 'new' are identical; nothing to change"
+    data = p.read_bytes()
     name = fsunify.display(ctx, p)
-    if n == 0:
-        return f"ERROR: 'old' text not found in {name}"
-    if n > 1:
-        return f"ERROR: 'old' text matches {n} times in {name}; include more context to make it unique"
+    if b"\x00" in data[:8192]:
+        return f"ERROR: {name} is a binary file; edit it with shell instead"
+    # surrogateescape: undecodable bytes round-trip exactly instead of becoming U+FFFD
+    text = data.decode("utf-8", "surrogateescape")
+    new = re.sub(r"[\ud800-\udfff]", "\ufffd", new)
+    old = re.sub(r"[\ud800-\udfff]", "\ufffd", old)
+    replace_all = _truthy(args.get("replace_all"))
+    crlf = "\r\n" in text and "\r\n" not in old
+    if crlf:
+        old_c, new_c = old.replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n")
+    else:
+        old_c, new_c = old, new
+    how = ""
+    n = text.count(old_c)
+    if n == 0 and crlf and old in text:  # an LF fragment that happens to sit on one line
+        old_c, new_c, n = old, new, text.count(old)
+    if n:
+        if n > 1 and not replace_all:
+            return (f"ERROR: 'old' text matches {n} times in {name}; include more context to make it "
+                    "unique, or pass replace_all=true")
+        out = text.replace(old_c, new_c) if replace_all else text.replace(old_c, new_c, 1)
+        count = n if replace_all else 1
+    else:
+        work = text.replace("\r\n", "\n") if crlf else text
+        spans = _loose_span(work, old)
+        if not spans:
+            return f"ERROR: 'old' text not found in {name}{_nearest_hint(work, old)}"
+        if len(spans) > 1 and not replace_all:
+            return (f"ERROR: 'old' text matches {len(spans)} times in {name} (ignoring trailing "
+                    "whitespace); include more context, or pass replace_all=true")
+        repl = new.replace("\r\n", "\n").strip("\n") if old.strip("\n") != old else new.replace("\r\n", "\n")
+        for s0, e0 in reversed(spans if replace_all else spans[:1]):
+            work = work[:s0] + repl + work[e0:]
+        out = work.replace("\n", "\r\n") if crlf else work
+        count = len(spans) if replace_all else 1
+        how = ", matched ignoring trailing whitespace"
+    blob = out.encode("utf-8", "surrogateescape")
     if r.in_agent:
         from .agentfs_tools import quota_write
-        quota_write(ctx, r.root, p, text.replace(old, new, 1).encode("utf-8"), tool="edit_file")
+        quota_write(ctx, r.root, p, blob, tool="edit_file")
     else:
-        p.write_text(text.replace(old, new, 1))
-    return f"edited {name} (1 replacement)"
+        atomic_write_bytes(p, blob)
+    plural = "replacement" if count == 1 else "replacements"
+    return f"edited {name} ({count} {plural}{how})"
 
 
 # --------------------------------------------------------------------------- http_request

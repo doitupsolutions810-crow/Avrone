@@ -47,7 +47,8 @@ CORE_SCHEMAS: dict[str, dict[str, dict[str, str]]] = {
     "python": {"required": {"code": "str"}},
     "read_file": {"required": {"path": "str"}, "optional": {"offset": "int|str"}},
     "write_file": {"required": {"path": "str", "content": "str|dict|list"}},
-    "edit_file": {"required": {"path": "str", "old": "str", "new": "str"}},
+    "edit_file": {"required": {"path": "str", "old": "str", "new": "str"},
+                  "optional": {"replace_all": "bool|str"}},
     "fetch": {"required": {"url": "str"}},
     "web_search": {"required": {"query": "str"}, "optional": {"max_results": "int"}},
     "spawn": {"required": {"task": "str"}, "optional": {"role": "str", "context": "str", "focus": "str",
@@ -278,6 +279,33 @@ def write_content(raw: Any) -> str:
     return re.sub(r"[\ud800-\udfff]", "\ufffd", text)
 
 
+def atomic_write_bytes(p: Path, data: bytes) -> None:
+    """Write `data` to `p` atomically (tmp + os.replace). Keeps an existing file's permission
+    bits (mkstemp creates 0600, which would strip a script's exec bit and hide it from other
+    users); a new file gets the normal 0666 & ~umask."""
+    import os as _os
+    import stat as _stat
+    import tempfile as _tempfile
+    try:
+        mode = _stat.S_IMODE(p.stat().st_mode)
+    except OSError:
+        um = _os.umask(0)
+        _os.umask(um)
+        mode = 0o666 & ~um
+    fd, tmp = _tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
+    try:
+        with _os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        _os.chmod(tmp, mode)
+        _os.replace(tmp, p)
+    except BaseException:
+        try:
+            _os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 async def t_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
     """Bounded, honest read: never loads a huge file whole, says when it truncated and how to
     page on (offset), refuses binary instead of returning NUL soup, and lists a directory
@@ -319,8 +347,6 @@ async def t_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    import os as _os
-    import tempfile as _tempfile
     from . import fsunify
     raw_path = str(args.get("path") or "").strip()
     if not raw_path or raw_path.endswith(("/", "\\")):
@@ -336,17 +362,7 @@ async def t_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return f"wrote {fsunify.display(ctx, p)} ({size} bytes; agent dir {used}/{quota} bytes)"
     p.parent.mkdir(parents=True, exist_ok=True)
     # atomic: a crash or full disk mid-write never leaves a half-written file behind
-    fd, tmp = _tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
-    try:
-        with _os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            fh.write(content)
-        _os.replace(tmp, p)
-    except BaseException:
-        try:
-            _os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_write_bytes(p, content.encode("utf-8"))
     if r.unified:
         return f"wrote {fsunify.display(ctx, p)} ({p.stat().st_size} bytes)"
     return f"wrote {p.relative_to(ctx.core.runner.workspace.resolve())} ({p.stat().st_size} bytes)"

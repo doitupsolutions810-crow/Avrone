@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
 import shutil
 import threading
 from pathlib import Path
@@ -159,6 +160,12 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
                 try:
                     with os.fdopen(fd, "wb") as f:
                         f.write(data)
+                    try:  # overwrite keeps the old file's mode (a chmod +x script stays runnable)
+                        old_mode = stat.S_IMODE(os.lstat(p).st_mode) if p.exists() and not p.is_symlink() else None
+                    except OSError:
+                        old_mode = None
+                    if old_mode is not None:
+                        os.chmod(tmp, old_mode | 0o600)
                     os.replace(tmp, p)
                 except BaseException:
                     try:

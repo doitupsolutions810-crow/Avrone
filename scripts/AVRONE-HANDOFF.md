@@ -345,3 +345,13 @@ merge without his word.
   - HTML entities are unescaped.
   - Timeouts, connect errors, bad URLs, and an unknown charset each get a clear message.
 - Tests: tests/test_core_file_tools.py (51). Mutation on round 23: 38 of 51 fail.
+
+## Round 25: edit_file and file modes (branch avrone-a12lr-daemon)
+- **Data-loss fix:** edit_file used to read with errors="replace" and write the whole file back, so one edit turned every non-UTF-8 byte (in latin-1 or mixed files) into U+FFFD. It now round-trips with surrogateescape. Bytes outside the edit, and any BOM, survive exactly.
+- **CRLF files:** an LF `old` or `new` matches and is written back as CRLF. A CRLF `new` isn't doubled.
+- **Trailing-whitespace drift:** a line-aligned match that ignores trailing whitespace, used only when the exact match fails. It never splices mid-line, and an ambiguous match is refused.
+- **Misses:** a miss names the closest line (difflib) so the model can copy the exact text.
+- **Refusals:** binary files, directories, empty paths, and an identical `old`/`new` are refused. `new=None` deletes the text. A lone surrogate becomes U+FFFD.
+- **replace_all:** opt-in. Accepts "true", "yes", "1", or "all" as strings.
+- **File modes:** writes are atomic, and an overwrite keeps the existing file's mode. Round 24's mkstemp made shared files 0600 and stripped exec bits. agentfs quota_write had the same problem; it now keeps the old mode on overwrite. New shared files get 0666 & ~umask.
+- Tests: tests/test_edit_file_robust.py (55, plus 1 skip, run on both legacy and agent-dir contexts). Mutation on round 24: 41 of 55 fail.

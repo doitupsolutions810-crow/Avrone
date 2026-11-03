@@ -253,3 +253,49 @@ def test_request_shape_requires_payload_capability_and_signature(tmp_path):
         with pytest.raises(InvalidOutboxRecord):
             box.prepare(bad)
     box.close()
+
+
+def test_remote_completed_state_never_becomes_local_task_completion(tmp_path):
+    class Client:
+        def send_request(self, req):
+            return {"job": {"id": "job-1", "status": "completed"},
+                    "receipt": {"message_id": "msg-1", "signature": "verified"}}
+        def verify_receipt(self, receipt, req): pass
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    result = SwarmDispatcher(Client(), box).submit_request(request())
+    assert result["state"] == "queued"
+    assert "completed" not in result
+    box.close()
+
+
+def test_rejected_retry_is_terminal_and_does_not_resend(tmp_path):
+    from avrone.swarm_client import SwarmRejected
+    class Client:
+        calls = 0
+        def send_request(self, req):
+            self.calls += 1
+            raise SwarmRejected(403, "denied")
+        def verify_receipt(self, receipt, req): pass
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    client = Client(); dispatcher = SwarmDispatcher(client, box)
+    assert dispatcher.submit_request(request())["state"] == "rejected"
+    assert dispatcher.retry("msg-1")["state"] == "rejected"
+    assert client.calls == 1
+    box.close()
+
+
+def test_get_rejects_invalid_message_id(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    for bad in [None, "", "../secret", "x" * 129, 3]:
+        with pytest.raises(InvalidOutboxRecord):
+            box.get(bad)
+    box.close()
+
+
+def test_mark_queued_requires_receipt_object(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    for bad in [None, [], "receipt", 1]:
+        with pytest.raises(InvalidOutboxRecord):
+            box.mark_queued("msg-1", bad)
+    box.close()

@@ -302,3 +302,15 @@ merge without his word.
 - **Retry-After:** accepts an HTTP-date as well as seconds. A past date gives 0, NaN or junk is ignored, and the delay is still capped at 30 s.
 - Unusable bodies (empty choices, HTML, arrays) still give "bad response" and retry, as before.
 - Tests: tests/test_gateway_response_shapes.py (36). Mutation on round 20: 19 of 36 fail. The rest are pass-through guards.
+
+## Round 22 hardening (outbound request body). Branch: avrone-a12lr-daemon
+- From round 22 on, work goes to the `avrone-a12lr-daemon` branch (Crow, 2026-11-02). `main` stays at round 21 (ae0c2ee).
+- **`sanitize_messages()`** runs on every request body (gateway and the legacy `llm.LLM` path):
+  - Lone surrogates (bytes decoded with surrogateescape, or a cut emoji) become U+FFFD. Before, httpx raised UnicodeEncodeError locally, the same way on every upstream.
+  - NUL bytes are dropped.
+  - Content that is None, a number, bytes, a part list, or a dict always becomes a string.
+  - Roles are normalised: developer→system, human→user, ai/model/bot→assistant, function→tool, anything unknown→user.
+  - A tool-role message with no `tool_call_id` becomes a user "TOOL RESULT:" message, so strict servers don't return 400.
+  - Extra keys are dropped. A valid `name` is kept. Junk entries are skipped, and the caller's list is never mutated.
+- **`safe_temperature()`**: NaN or inf (which made the JSON invalid) and non-numbers fall back to 0.7. Other values are clamped to 0–2.
+- Tests: tests/test_gateway_outbound.py (43). Mutation on round 21: 35 of 43 fail.

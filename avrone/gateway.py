@@ -124,7 +124,8 @@ class Gateway:
             headers["x-openclaw-session-key"] = session
         if up.provider == "openrouter":
             headers["X-Title"] = "AVRONE"
-        body = {"model": model or up.model, "messages": messages, "temperature": temperature}
+        body = {"model": model or up.model, "messages": sanitize_messages(messages),
+                "temperature": safe_temperature(temperature)}
         url = up.base_url.rstrip("/") + "/chat/completions"
         kw: dict[str, Any] = {"timeout": self.s.llm_timeout}
         if HTTP_TRANSPORT is not None:
@@ -382,6 +383,81 @@ def tool_calls_as_action(tool_calls: Any, finish_reason: Any = None) -> str:
     if finals and len(actions) > 1:
         actions = [a for a in actions if "final" not in a]  # tools first; the agent finishes later
     return json.dumps(actions[0] if len(actions) == 1 else {"tools": actions}, default=str)
+
+
+_ROLES = {"system", "user", "assistant", "tool"}
+_ROLE_ALIASES = {"developer": "system", "human": "user", "ai": "assistant", "model": "assistant",
+                 "bot": "assistant", "function": "tool"}
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
+_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def clean_text(text: str) -> str:
+    """Make text safe to JSON-encode as UTF-8 and to tokenize: lone surrogates (from bytes
+    decoded with surrogateescape, or a cut emoji) become U+FFFD instead of raising
+    UnicodeEncodeError inside httpx; NUL bytes are dropped (llama.cpp/Ollama and many proxies
+    choke on them)."""
+    if _SURROGATE.search(text):
+        text = _SURROGATE.sub("\ufffd", text)
+    if "\x00" in text:
+        text = text.replace("\x00", "")
+    return text
+
+
+def sanitize_messages(messages: Any) -> list[dict[str, Any]]:
+    """The outbound chat history, made acceptable to any OpenAI-compatible server.
+    Before round 22 one lone surrogate in a tool result crashed the request locally (not
+    retryable, every upstream the same), a None content was sent as null (Ollama 400), and a
+    tool-role message without tool_call_id was rejected by strict servers."""
+    if isinstance(messages, dict):
+        messages = [messages]
+    if not isinstance(messages, (list, tuple)):
+        messages = [] if messages is None else [{"role": "user", "content": str(messages)}]
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m, str):
+            m = {"role": "user", "content": m}
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "user").strip().lower()
+        role = _ROLE_ALIASES.get(role, role)
+        if role not in _ROLES:
+            role = "user"
+        raw = m.get("content")
+        if isinstance(raw, str):
+            content = raw
+        elif raw is None:
+            content = ""
+        elif isinstance(raw, (list, tuple, dict)) and content_text(raw):
+            content = content_text(raw)
+        elif isinstance(raw, (dict, list, tuple)):
+            content = json.dumps(raw, default=str, ensure_ascii=False)
+        else:
+            content = content_text(raw)
+        content = clean_text(content)
+        clean: dict[str, Any] = {"role": role, "content": content}
+        if role == "tool":
+            tcid = m.get("tool_call_id")
+            if isinstance(tcid, str) and tcid.strip():
+                clean["tool_call_id"] = tcid
+            else:
+                clean = {"role": "user", "content": content if content.startswith("TOOL RESULT")
+                         else f"TOOL RESULT:\n{content}"}
+        name = m.get("name")
+        if isinstance(name, str) and _NAME_OK.match(name) and role in ("user", "assistant", "system"):
+            clean["name"] = name
+        out.append(clean)
+    return out
+
+
+def safe_temperature(t: Any, default: float = 0.7) -> float:
+    try:
+        v = float(t)
+    except (TypeError, ValueError):
+        return default
+    if v != v or v in (float("inf"), float("-inf")):
+        return default
+    return min(2.0, max(0.0, v))
 
 
 class _UpstreamError(ValueError):

@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 import os
 import shutil
+import shlex
+from avrone.tools_hostview import proc_namespace_visible
 import signal
 import socket
 import stat
@@ -194,7 +196,10 @@ class Env:
         shutil.rmtree(self.repo / ".venv", ignore_errors=True)
         venv.mkdir(parents=True)
         (venv / "activate").write_text("")
-        (venv / "python").symlink_to(sys.executable)
+        # Executing a symlink from this synthetic venv loses the real venv's
+        # site-packages on some Python builds. Keep the selected interpreter.
+        (venv / "python").write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+        (venv / "python").chmod(0o755)
         self.drive = tmp / drive_name
         self.drive.mkdir()
         self.stub = tmp / "stub"; self.stub.mkdir()
@@ -770,7 +775,7 @@ def test_dirty_tree_fine_when_no_patch_needed(env):
 
 
 def test_git_missing(env, tmp_path):
-    r = env.run(PATH=f"{env.bin}:{path_without(tmp_path, 'git')}")
+    r = env.run(PATH=f"{env.bin}:{path_without(tmp_path, 'git')}", AUTOPILOT_BREW_PREFIXES=str(tmp_path / "no-brew"))
     assert r.returncode == 1 and "git is required" in out(r)
 
 
@@ -1096,6 +1101,8 @@ def test_lane_timeout_kills_grandchildren(env, impl):
         _reap(pids)
 
 
+@pytest.mark.skipif(os.path.isdir("/proc") and not proc_namespace_visible(),
+                    reason="procfs describes another PID namespace; pgrep cleanup verification is unavailable")
 def test_sigterm_kills_whole_tree(env):
     env.flag("chat_orphan")
     p = subprocess.Popen([BASH, str(env.repo / SCRIPT_REL)], env=env.env(LANES="tools"),

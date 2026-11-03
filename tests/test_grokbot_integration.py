@@ -86,7 +86,7 @@ class Core:
 
     async def squad(self, message, n, run_id):
         return {"run_id": run_id, "answer": "AVRONE report" if self.complete else "Model backend error: unavailable",
-                "agents": [{"role": "Worker", "result": "Measured report"}] if self.complete else []}
+                "agents": [{"role": f"Worker-{i}", "result": "Measured report"} for i in range(n)] if self.complete else []}
 
     async def _chat(self, *args, **kwargs):
         return "Lead compared both independent reports."

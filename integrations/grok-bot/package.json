@@ -5,7 +5,7 @@
   "main": "src/server.js",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test tests/avrone-tool.test.js tests/compose-env.test.js tests/model-chain.test.js tests/tool-trace.test.js tests/trinity.unit.test.js tests/voice.test.js tests/research-bridge.test.js",
+    "test": "node --test tests/avrone-tool.test.js tests/compose-env.test.js tests/model-chain.test.js tests/tool-trace.test.js tests/trinity.unit.test.js tests/voice.test.js tests/research-bridge.test.js tests/bridge-edge.test.js",
     "check": "node scripts/check-inline-js.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"

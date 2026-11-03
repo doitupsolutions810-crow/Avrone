@@ -14,12 +14,14 @@ export function newRunId() {
 }
 
 export function emit(runId, kind, data = {}) {
-  if (!runId) return;
+  if (!runId) return false;
   try {
     appendFileSync(`${RUNS_DIR}/${runId}.jsonl`,
       JSON.stringify({ ts: new Date().toISOString(), kind, ...data }) + "\n");
+    return true;
   } catch (e) {
     console.warn(`[codex] emit failed for ${runId}/${kind}: ${e.message}`);
+    return false;
   }
 }
 

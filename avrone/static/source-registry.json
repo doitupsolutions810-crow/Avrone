@@ -396,9 +396,15 @@
     },
     {
       "path": "integrations/grok-bot/package.json",
-      "sha256": "f50241fa48cc7ac8145fd7387e4d700ca1f8ad57d2fda7bf9edcd7877325959b",
+      "sha256": "13dbc77404562b86053ade2f9c13e1c2defd235100e321b9b5b4e988e6fd40dd",
       "upstream_sha256": "684219478b153c2742d7572636f75269017aa6bc365fdcd7e1771681a74a9e1a",
       "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/src/agents/codex.js",
+      "sha256": "a02933954f9dd7c5f23fee513876a0997d26e4e9882cece907c8c29a340d201c",
+      "upstream_sha256": "9beee485b1024ea7c6dddfee96abbcc4ef35dc1b193b3dc644b16ab58f8607dc",
+      "reason": "Authenticated bridge validation, bounded evidence, durable audit acknowledgements and adversarial contract corrections."
     },
     {
       "path": "integrations/grok-bot/src/router.js",
@@ -408,7 +414,7 @@
     },
     {
       "path": "integrations/grok-bot/src/tools/avrone.js",
-      "sha256": "282f065be378d3595d64bb2b2bb795cd83dc645e0292944d5d4c00a06ea51636",
+      "sha256": "4a5d0d8b4e7936b19c5ac41d8bea1fccc7323b28c938e4bde3e6f7c82fa5fa9e",
       "upstream_sha256": "35c7bd25359b74711eb7d667474a8b85c0f9bc35c5000e44b8acd15a50b3fbdc",
       "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
     },
@@ -443,18 +449,23 @@
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
+      "path": "EDGE_CASE_VALIDATION.md",
+      "sha256": "8206c285978f8231d4c16a66744ac37b5a6e1400221dde4c55475e458e3199a5",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
       "path": "INTEGRATION.md",
       "sha256": "e0307268c41935426f691f685919006f022cd99d118285441b2f1bd60874b2f4",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
       "path": "INTEGRATION_VALIDATION.md",
-      "sha256": "2930f09ac99a79fbe4f6bbf0e8bb2d5ef474b1b9141bae70596d3dda508546c2",
+      "sha256": "addc1de761a2100f8a13d99165b6b13641c85e13a987fbccf770b72ac253ee48",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
       "path": "MASTER_PROMPT.md",
-      "sha256": "ee6c1cee1bdc216cee896c981bf706c247776b34d9b6a35a771c74fd93b4bcbd",
+      "sha256": "bf87f14d4a568c66233de85333c127c4eda422b86339d0f9ef815130d704e577",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
@@ -464,12 +475,12 @@
     },
     {
       "path": "avrone/grokbot.py",
-      "sha256": "b1f8f57a2de9c01ac86a5f98ccaa53e209de04b66257df7cda9ee40765511f6c",
+      "sha256": "5486f6dc1cc55254c9b378c90a882e621ab27fd391e7be564e35c2a066e30670",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
       "path": "avrone/integration.py",
-      "sha256": "a29ef2b2cbd69579b128c9286083e919ac38ccdbf451966fa1cc18ea9922fc84",
+      "sha256": "3fedd17b8cb2dc8a1da90e969875b73a5658a1c45fd82ff8cdf1253b17fa63ad",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
@@ -513,8 +524,18 @@
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
+      "path": "integrations/grok-bot/src/tools/bridge-values.js",
+      "sha256": "6b5d80ac40a788942b76c525cdb631afcc7b46adce572e9eb3cb4c78f4749f13",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
       "path": "integrations/grok-bot/src/tools/research-bridge.js",
-      "sha256": "8c0216a4956525a9405fd84834b7b435b1419044730ff24489cd51532bd1fbe7",
+      "sha256": "d4298731d2b02f5c10a21f31a73840049e6befb53f8f71d7ccae0689c27c5f74",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "integrations/grok-bot/tests/bridge-edge.test.js",
+      "sha256": "80e135d8927d52d2a26e3ca24d66885a6e42e1a2c50ee158ed467f75e35ed1c1",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
@@ -533,18 +554,33 @@
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
+      "path": "scripts/mac-avrone-autopilot.sh",
+      "sha256": "86cdd6afb6cc49e9c9440142b2b7aa9631ff2ead184a5f4c0eb714aebe68a4b1",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
       "path": "scripts/verify-source-registry.py",
       "sha256": "696b1e47fcc5ccbb54416d5087d863799b004ff6ce88d8dde7dd7693cb30997e",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
       "path": "tests/test_autopilot_edges.py",
-      "sha256": "34d8a4f1d58d5fa1a8c0644c9aa90d87727a36fb8fb594d3621078de3d5afc50",
+      "sha256": "5541fb5226bf7f97416d754f4f75c03eeeb0d383165f06deb9a5d6f940d1e1cd",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_bridge_adversarial.py",
+      "sha256": "5939f57905cd2a71c31c80b3cb93ca2266384b51e7e698b4d37b477016882b94",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_bridge_wire.py",
+      "sha256": "85767804d9dfadd237bb4225c21c7312b30e0c3bd7665ffbd78ea4e421e6731a",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
       "path": "tests/test_grokbot_integration.py",
-      "sha256": "79f2763257e99cf641b021ffd054e1fcc89716e70313130d263bc4deb8be3613",
+      "sha256": "c898e439d7a7424f57872b7a4541abb1c203e2fdbd3d11ebb9d3f26d5dd348c6",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {

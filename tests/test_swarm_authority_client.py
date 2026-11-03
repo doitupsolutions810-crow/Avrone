@@ -262,3 +262,60 @@ def test_authority_client_from_env_uses_pinned_files_and_key(tmp_path, monkeypat
     assert client.requester == REQUESTER
     assert client.authority_issuer == BROKER
     assert isinstance(client._requester_key, Ed25519PrivateKey)
+
+
+def test_swarm_client_from_env_loads_bounded_private_files(tmp_path, monkeypatch):
+    from avrone.swarm_client import SwarmClient
+    tmp_path.chmod(0o700)
+    issuer = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    receipt = Ed25519PrivateKey.generate()
+    issuer_file = tmp_path / "issuer.pem"
+    receipt_file = tmp_path / "receipt.pub"
+    issuer_file.write_bytes(pem_private(issuer))
+    receipt_file.write_bytes(receipt.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ))
+    issuer_file.chmod(0o600)
+    receipt_file.chmod(0o600)
+    monkeypatch.setenv("AVRONE_SWARM_URL", "https://swarm.example.internal")
+    monkeypatch.setenv("AVRONE_SWARM_ISSUER", "spiffe://prod/agent/avrone-swarm-producer")
+    monkeypatch.setenv("AVRONE_SWARM_AUDIENCE", SWARM)
+    monkeypatch.setenv("AVRONE_SWARM_ISSUER_KEY_FILE", str(issuer_file))
+    monkeypatch.setenv("AVRONE_SWARM_CA_PUBLIC_KEY_B64", b64_public(ca.public_key()))
+    monkeypatch.setenv("AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE", str(receipt_file))
+    client = SwarmClient.from_env()
+    assert isinstance(client._issuer_key, Ed25519PrivateKey)
+    assert isinstance(client._receipt_key, Ed25519PublicKey)
+    client._http.close()
+
+
+def test_swarm_client_from_env_rejects_permissive_or_symlinked_keys(tmp_path, monkeypatch):
+    from avrone.swarm_client import SwarmClient
+    tmp_path.chmod(0o700)
+    issuer = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    issuer_file = tmp_path / "issuer.pem"
+    receipt_real = tmp_path / "receipt-real.pub"
+    receipt_link = tmp_path / "receipt.pub"
+    issuer_file.write_bytes(pem_private(issuer))
+    receipt_real.write_bytes(issuer.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ))
+    issuer_file.chmod(0o644)
+    receipt_real.chmod(0o600)
+    receipt_link.symlink_to(receipt_real)
+    for key, value in {
+        "AVRONE_SWARM_URL": "https://swarm.example.internal",
+        "AVRONE_SWARM_ISSUER": "spiffe://prod/agent/avrone-swarm-producer",
+        "AVRONE_SWARM_AUDIENCE": SWARM,
+        "AVRONE_SWARM_ISSUER_KEY_FILE": str(issuer_file),
+        "AVRONE_SWARM_CA_PUBLIC_KEY_B64": b64_public(ca.public_key()),
+        "AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE": str(receipt_link),
+    }.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(RuntimeError, match="0600"):
+        SwarmClient.from_env()
+    issuer_file.chmod(0o600)
+    with pytest.raises(RuntimeError, match="symlink"):
+        SwarmClient.from_env()

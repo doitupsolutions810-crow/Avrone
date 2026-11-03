@@ -79,10 +79,11 @@ def main(argv=None):
             "AVRONE_SECRET_DIR", "AVRONE_CA_URL", "AVRONE_CA_PUBLIC_KEY_B64",
             "AVRONE_SWARM_URL", "AVRONE_SWARM_ISSUER",
         )
-        missing = [name for name in required if not os.environ.get(name)]
+        configured = lambda name: os.environ.get(name) or env.get(name, "")
+        missing = [name for name in required if not configured(name)]
         if missing:
             raise SystemExit("Swarm profile is missing configuration: " + ", ".join(missing))
-        secret_dir = Path(os.environ["AVRONE_SECRET_DIR"]).expanduser()
+        secret_dir = Path(configured("AVRONE_SECRET_DIR")).expanduser()
         if secret_dir.is_symlink() or not secret_dir.is_dir() or (secret_dir.stat().st_mode & 0o077):
             raise SystemExit("AVRONE_SECRET_DIR must be a non-symlink mode-0700 directory")
         expected_files = (

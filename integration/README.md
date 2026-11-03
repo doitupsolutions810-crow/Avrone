@@ -23,7 +23,7 @@ This contract replaces implicit repository coupling with explicit, versioned int
 
 This is the first control slice, not a claim that it represents all 36 candidate repositories. The full repository inventory must be reconciled against actual branch tips before adding more participants.
 
-## Mandatory envelope
+## Signing and canonicalization\n\nThe cross-language signing profile is defined in [signing-profile-v1.md](signing-profile-v1.md). All producers and consumers MUST use RFC 8785 JCS and Ed25519 with independently pinned public keys.\n\n## Mandatory envelope
 
 Every cross-repository request must carry:
 - `schema`: immutable, versioned schema identifier.

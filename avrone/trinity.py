@@ -1036,6 +1036,7 @@ class TrinityCore:
                             raise RuntimeError("Swarm correlation ID is already bound to a different objective")
                         return dispatcher.retry(existing["message_id"])
                     authority_record = outbox.get_authority_request(correlation)
+                    authority_replay = authority_record is not None
                     if authority_record is None:
                         ca_request = {
                             "parent_capability": parent["capability"],
@@ -1048,7 +1049,10 @@ class TrinityCore:
                         }
                         authority_record = outbox.prepare_authority_request(correlation, ca_request)
                     # Reuse the exact assertion/JTI and request bytes after an ambiguous CA timeout.
-                    delegated = authority.delegate(**authority_record["request"])
+                    # A stored request may be replayed after its parent expires, but the CA
+                    # only returns a prior matching child and refuses first-time issuance.
+                    delegated = authority.delegate(**authority_record["request"],
+                        allow_expired_parent_replay=authority_replay)
                     signed = swarm.build_request(payload={"objective":task}, capability=delegated["capability"],
                         capability_signature=delegated["signature"], correlation_id=correlation)
                     return dispatcher.submit_request(signed)

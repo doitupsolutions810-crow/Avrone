@@ -302,15 +302,13 @@ def test_mark_queued_requires_receipt_object(tmp_path):
     box.close()
 
 
-def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
-    barrier = threading.Barrier(2)
+def test_concurrent_duplicate_dispatches_send_only_once(tmp_path):
     class Client:
         calls = 0
         lock = threading.Lock()
         def send_request(self, req):
             with self.lock:
                 self.calls += 1
-            barrier.wait(timeout=3)
             return {"job": {"id": "job-1", "status": "queued"},
                     "receipt": {"message_id": "msg-1", "signature": "same-signed-receipt"}}
         def verify_receipt(self, receipt, req):
@@ -329,10 +327,54 @@ def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
     for thread in threads:
         thread.join(timeout=5)
     assert not errors and len(results) == 2
-    assert all(result["state"] == "queued" for result in results)
-    assert client.calls == 2
+    assert all(result["state"] in {"queued", "unknown"} for result in results)
+    assert any(result["state"] == "queued" for result in results)
+    assert client.calls == 1
     assert len(box.pending()) == 0
     assert box.get("msg-1")["state"] == "queued"
+    box.close()
+
+
+def test_dispatch_lease_blocks_concurrent_sender_and_recovers_after_expiry(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    first = box.claim_dispatch("msg-1", lease_seconds=30)
+    assert isinstance(first, str) and len(first) == 48
+    assert box.claim_dispatch("msg-1", lease_seconds=30) is None
+    box._db.execute("UPDATE dispatch_leases SET lease_until=0 WHERE message_id='msg-1'")
+    second = box.claim_dispatch("msg-1", lease_seconds=30)
+    assert isinstance(second, str) and second != first
+    assert box.release_dispatch("msg-1", first) is False
+    assert box.release_dispatch("msg-1", second) is True
+    box.close()
+
+
+@pytest.mark.parametrize("bad", [True, 0, -1, 601, 1.5, "30"])
+def test_dispatch_lease_duration_is_bounded(tmp_path, bad):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    with pytest.raises(ValueError):
+        box.claim_dispatch("msg-1", bad)
+    box.close()
+
+
+def test_dispatcher_does_not_send_when_another_worker_owns_lease(tmp_path):
+    class Client:
+        calls = 0
+        def send_request(self, req):
+            self.calls += 1
+            raise AssertionError("a second worker must not send while the lease is active")
+        def verify_receipt(self, receipt, req):
+            raise AssertionError("no receipt expected")
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    owner = box.claim_dispatch("msg-1")
+    client = Client()
+    result = SwarmDispatcher(client, box).retry("msg-1")
+    assert result["state"] == "unknown"
+    assert result["reason"] == "dispatch is already in progress"
+    assert client.calls == 0
+    assert box.release_dispatch("msg-1", owner)
     box.close()
 
 

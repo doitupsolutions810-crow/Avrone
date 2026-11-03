@@ -105,6 +105,19 @@ class SwarmOutbox:
         os.chmod(self.path, 0o600)
         self._fsync_files()
 
+    @classmethod
+    def from_env(cls) -> "SwarmOutbox":
+        return cls(os.getenv("AVRONE_SWARM_OUTBOX_DB", "./data/swarm-outbox.sqlite3"))
+
+    def get_by_correlation(self, correlation_id: str) -> dict[str, Any] | None:
+        if not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id):
+            raise InvalidOutboxRecord("correlation id is invalid")
+        with self._lock:
+            rows = self._db.execute("SELECT message_id FROM swarm_outbox WHERE correlation_id=? ORDER BY created_at DESC LIMIT 2",
+                                    (correlation_id,)).fetchall()
+        if len(rows) > 1: raise RequestConflict("correlation id maps to multiple requests")
+        return self.get(rows[0][0]) if rows else None
+
     def _fsync_files(self) -> None:
         for candidate in (self.path, Path(str(self.path) + "-wal")):
             try:

@@ -15,6 +15,43 @@ Provision these values through a secret manager or protected environment file. D
 - `AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE`: mounted Swarm Ed25519 receipt-verification public-key PEM.
 - `AVRONE_SWARM_ALLOW_HTTP=1`: development-only override for non-loopback HTTP; never set in production.
 
+## Obtain the child capability through the Authority
+
+When the parent capability addressed to AVRONE is available, use `CapabilityAuthorityClient` to obtain the exact Swarm child capability. The Authority verifies AVRONE's signed 30-second requester assertion against its independently pinned public key, checks the parent capability, and persists the child issuance receipt before returning it.
+
+Additional protected configuration:
+
+- `AVRONE_CA_URL`: Capability Authority base URL (HTTPS off-loopback).
+- `AVRONE_CA_ISSUER`: pinned Authority issuer, normally `spiffe://prod/broker`.
+- `AVRONE_CA_REQUESTER_ID`: AVRONE workload SPIFFE identity.
+- `AVRONE_CA_REQUESTER_KEY_FILE`: AVRONE Ed25519 private key, mounted from the secret manager.
+- `AVRONE_CA_PUBLIC_KEY_B64`: independently pinned raw Authority Ed25519 public key.
+- `AVRONE_CA_ALLOW_HTTP=1`: development-only loopback override.
+
+```python
+from avrone.swarm_client import CapabilityAuthorityClient, SwarmClient
+
+authority = CapabilityAuthorityClient(
+    endpoint=ca_url,
+    requester=avrone_spiffe_id,
+    authority_issuer=ca_issuer,
+    requester_private_key_pem=avrone_private_key_pem,
+    authority_public_key_b64=ca_public_key_b64,
+)
+swarm = SwarmClient.from_env()
+result = swarm.enqueue_with_delegation(
+    authority_client=authority,
+    parent_capability=parent_capability,
+    parent_signature=parent_signature,
+    payload={"objective": "run the approved specialist task"},
+    delegation_correlation_id="stable-job-correlation-id",
+)
+```
+
+Use a stable `delegation_correlation_id` for retries. If the Authority response is lost, call `authority.retry(unknown)` with the returned `DelegationUnknownOutcome`; it refreshes the short-lived requester assertion but preserves the correlation ID so the Authority returns the same persisted child capability. Never generate a new correlation ID for an ambiguous delegation result.
+
+The Authority allowlist and public-key mount must be provisioned independently. This client does not mint parent capabilities and does not enable caller override.
+
 ## Use
 
 ```python

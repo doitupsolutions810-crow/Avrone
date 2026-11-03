@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avrone.invalid/schemas/message-envelope-v1.schema.json",
+  "title": "AVRONE signed integration envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "message_id", "correlation_id", "issued_at", "expires_at",
+    "issuer", "audience", "capability_id", "payload_digest", "signature"
+  ],
+  "properties": {
+    "schema": { "const": "avrone.message-envelope/v1" },
+    "message_id": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "issuer": { "type": "string", "minLength": 1 },
+    "audience": { "type": "string", "minLength": 1 },
+    "capability_id": { "type": "string", "minLength": 1 },
+    "payload_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "signature": { "type": "string", "minLength": 16 }
+  }
+}

@@ -31,6 +31,7 @@ import os
 import time
 import json
 import re
+import stat
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -996,6 +997,55 @@ class TrinityCore:
         except Exception:  # a bad checkpoint path must not sink the run
             return None, run_id, None
 
+    async def _dispatch_swarm(self, task: str, run_id: str,
+                              correlation_id: str | None = None) -> dict[str, Any]:
+        """Submit one objective to external Swarm; never fall back to local execution."""
+        if self._privileged_run():
+            result = {"status": "rejected", "reason": "privileged AVRONE runs cannot be dispatched to Swarm"}
+        else:
+            def submit() -> dict[str, Any]:
+                from .swarm_client import CapabilityAuthorityClient, SwarmClient
+                from .swarm_outbox import SwarmOutbox
+                parent_file = os.getenv("AVRONE_CA_PARENT_CAPABILITY_FILE", "")
+                if not parent_file:
+                    raise RuntimeError("AVRONE_CA_PARENT_CAPABILITY_FILE is not configured")
+                parent_path = Path(parent_file)
+                if parent_path.is_symlink() or not parent_path.is_file() or parent_path.stat().st_size > 65536:
+                    raise RuntimeError("AVRONE parent capability file must be a regular file under 64 KiB")
+                if stat.S_IMODE(parent_path.stat().st_mode) & 0o077:
+                    raise RuntimeError("AVRONE parent capability file must have mode 0600 or stricter")
+                parent = json.loads(parent_path.read_text("utf-8"))
+                if not isinstance(parent, dict) or set(parent) != {"capability", "signature"} or not isinstance(parent.get("capability"), dict) or not isinstance(parent.get("signature"), str):
+                    raise RuntimeError("AVRONE parent capability file has an invalid schema")
+                authority = CapabilityAuthorityClient.from_env()
+                swarm = SwarmClient.from_env()
+                outbox = SwarmOutbox.from_env()
+                return outbox.submit(
+                    task=task,
+                    correlation_id=correlation_id or ("avrone-" + run_id),
+                    parent_capability=parent["capability"],
+                    parent_signature=parent["signature"],
+                    authority_client=authority,
+                    swarm_client=swarm,
+                )
+            try:
+                result = await asyncio.to_thread(submit)
+            except Exception as exc:
+                result = {"status": "disabled", "reason": f"{type(exc).__name__}: {exc}"}
+        status = result.get("status", "unknown")
+        if status == "queued":
+            answer = "Swarm accepted the job into its durable queue. The specialist roles have not yet completed."
+        elif status == "pending":
+            answer = "Swarm submission is pending reconciliation. No local fallback was started. Retry this same run/correlation to resume the durable outbox."
+        else:
+            answer = "Swarm dispatch did not start local execution: " + str(result.get("reason", result.get("error", status)))
+        out = {"run_id": run_id, "status": status, "answer": answer, "agents": [], "swarm": result}
+        self.codex.emit(run_id, "swarm.dispatch", "Trinity", status=status,
+                        correlation_id=correlation_id or ("avrone-" + run_id),
+                        job_id=(result.get("job") or {}).get("id") if isinstance(result.get("job"), dict) else None)
+        self.codex.emit(run_id, "run.done", "Trinity", answer=answer, status=status)
+        # The outbox is authoritative; re-enter it on resume to verify the signed receipt.
+        return out
     # ------------------------------------------------------------ the squad
     async def plan(self, run_id: str, task: str, n: int) -> list[dict[str, str]]:
         self.codex.emit(run_id, "lead.plan", "Planner", squad_size=n)
@@ -1009,22 +1059,28 @@ class TrinityCore:
 
     async def squad(self, task: str, n: int | None = None, run_id: str | None = None,
                     checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None,
-                    dispatch: str | None = None) -> dict[str, Any]:
+                    dispatch: str | None = None,
+                    swarm_correlation_id: str | None = None) -> dict[str, Any]:
         """Plan, run the squad in parallel, merge with the lead.
 
-        `dispatch` (local|network|hybrid) overrides AVRONE_SQUAD_DISPATCH for this run (netsquad).
+        `dispatch` (local|network|hybrid|swarm) overrides AVRONE_SQUAD_DISPATCH for this run. Swarm is an explicit remote queue submission with a durable outbox; it never falls back to local execution.
 
         With `checkpoint` (a path or Checkpoint), the plan, every finished worker result and
         the final result are recorded; calling again with the same task and file resumes:
         finished workers are not re-run and a finished run is returned as is."""
         n = max(1, min(n or self.settings.squad_size, 8))
         ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
-        if isinstance(done, dict):
+        dispatch_mode = (dispatch or os.getenv("AVRONE_SQUAD_DISPATCH", "local")).strip().lower()
+        if dispatch_mode not in {"local", "network", "hybrid", "swarm"}:
+            raise ValueError("dispatch must be local, network, hybrid, or swarm")
+        if isinstance(done, dict) and dispatch_mode != "swarm":
             return done
         run_id = run_id or uuid.uuid4().hex[:10]
         if ck is not None:
             ck.begin(task, "squad", run_id, n=n)
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", squad_size=n)
+        if dispatch_mode == "swarm":
+            return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
         subtasks = ck.get("subtasks") if ck is not None else None
         if ck is not None and isinstance(subtasks, list) and subtasks:
             finished = sum(1 for i in range(len(subtasks)) if isinstance(ck.get(f"worker.{i}"), str))

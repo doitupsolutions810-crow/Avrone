@@ -262,7 +262,7 @@ def test_overlong_member_name_is_packerror_not_oserror(tmp_path):
     rel = "n" * 300  # > NAME_MAX on every common filesystem
     files = [(rel, b"x")]
     bundle = _tar([("manifest.json", _manifest(files)), ("memory.json", b"[]"), ("home/" + rel, b"x")])
-    with pytest.raises(PackError, match="could not install"):
+    with pytest.raises(PackError, match="could not install|too long"):
         agentpack.import_pack(tmp_path / "ws", tmp_path / "data", bundle, "rx")
     root = agentfs.agents_root(tmp_path / "ws")
     assert not (root / "builder").exists() and not list(root.glob(".import-*"))

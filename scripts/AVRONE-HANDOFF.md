@@ -423,3 +423,13 @@ merge without his word.
 - **Full namespace:** an incoming NEW key whose ts is not newer than the oldest kept key is skipped. Before, it evicted a newer memory, was evicted itself right after, and was still reported as "merged".
 - **memory_sync `keys`:** a bare string (`"db"`) is now one key. It used to be iterated into `{"d","b"}` and synced the wrong memories. A number counts as one key, and junk returns an error.
 - Tests: tests/test_memory_sync_robust.py (67). Mutation on round 31: 43 of 67 fail. The other 24 are guards that pass on both versions.
+
+## Round 33: agent migration packs (avrone/agentpack.py)
+- **Mac case collisions:** `fold_path()` (NFC + casefold) catches pack paths that are the same file on case-insensitive APFS or exFAT. Example: `Notes.md` and `notes.md`, or NFD and NFC `café`. Before, the second write silently replaced the first, and the import reported success with a file missing. The file-vs-directory conflict check also ignores case now (`Tools` vs `tools/run.sh`).
+- **Path hygiene:** control characters (newline, ESC, DEL, CR) in pack paths are refused. A component over 255 bytes, or a whole path over 1000 bytes, is refused up front with a clear message, instead of failing mid-install with an OSError.
+- **Executable bits:** export records `mode: 0o755` for any file with an exec bit, and import restores it. Before, migrated scripts and tools landed as 0644 and stopped running. Only 0644 or 0755 is accepted (setuid, setgid and world-writable are refused). Old packs without `mode` still import.
+- **mtimes:** clamped to 1970..2242 on install, and a `utime` failure (exFAT's 1980 floor, OverflowError) is ignored as cosmetic. Before, an OverflowError escaped as a 500.
+- **Export under churn:** a file deleted during the walk is skipped. A file that vanishes or can't be read before packing raises a PackError naming it, instead of an uncaught FileNotFoundError or PermissionError.
+- Tests: tests/test_agentpack_robust.py (45). Mutation on round 32: 28 of 45 fail. The other 17 are guards that pass on both versions.
+- Updated tests/test_robust_v020_homes.py::test_overlong_member_name: a 300-byte name is now refused up front ("too long"), not mid-install. It still raises a PackError and leaves no residue.
+- Gate: 4072 passed (4071 plus the updated test, rerun alone), 2 skipped. Edge suite: bash 3.2 ran shards 1 and 3 (89+89), bash 5 ran shards 0 and 2 (90+89), 357 total.

@@ -42,6 +42,7 @@ import stat as _st
 import tarfile
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,9 @@ MANIFEST, MEMORY = "manifest.json", "memory.json"
 HOME_PREFIX = "home/"
 MAX_MEMBERS = 20000
 INDEX_DIR = "agentpacks"
+NAME_MAX_BYTES = 255       # one path component (APFS, ext4, exFAT)
+PATH_MAX_BYTES = 1000      # whole relative path, under macOS PATH_MAX (1024) with room for the root
+MTIME_MIN, MTIME_MAX = 0, 2**33  # 1970 .. year 2242: a wider manifest value is clamped on install
 
 
 class PackError(ValueError):
@@ -124,7 +128,10 @@ def _walk(root: Path) -> list[tuple[str, Path, os.stat_result]]:
     for cur, dirs, files in os.walk(root, followlinks=False):
         for name in sorted(dirs) + sorted(files):
             p = Path(cur) / name
-            st = os.lstat(p)
+            try:
+                st = os.lstat(p)
+            except FileNotFoundError:  # deleted while we walked: a busy agent, not an error
+                continue
             rel = p.relative_to(root).as_posix()
             if os.path.islink(p):
                 raise PackError(f"refusing symlink in agent home: {rel}")
@@ -190,12 +197,20 @@ def export_pack(workspace: Path, data_dir: Path, agent_id: str, origin: str, hom
     blobs: list[tuple[str, bytes, int]] = []
     entries = []
     for rel, p, st in files:
-        data = p.read_bytes()
+        try:
+            data = p.read_bytes()
+        except FileNotFoundError:
+            raise PackError(f"{rel} vanished while packing; retry when the agent is idle") from None
+        except OSError as e:  # unreadable file: name it instead of failing the whole migrate with a 500
+            raise PackError(f"cannot read {rel}: {type(e).__name__}: {e.strerror or e}") from None
         if len(data) != st.st_size:
             raise PackError(f"{rel} changed while packing")
         mt = int(st.st_mtime)
         blobs.append((HOME_PREFIX + rel, data, mt))
-        entries.append({"path": rel, "size": len(data), "sha256": _sha(data), "mtime": mt})
+        ent = {"path": rel, "size": len(data), "sha256": _sha(data), "mtime": mt}
+        if st.st_mode & 0o111:  # executable scripts/tools stay executable on the other node
+            ent["mode"] = 0o755
+        entries.append(ent)
     mem = _memory_records(data_dir, sid)
     mem_bytes = json.dumps(mem, sort_keys=True, separators=(",", ":")).encode()
     if created is None:
@@ -221,7 +236,22 @@ def _check_rel(rel: str) -> str:
     parts = rel.split("/")
     if any(p in ("", ".", "..") for p in parts) or "\\" in rel:
         raise PackError(f"path traversal in pack: {rel!r}")
+    if any(ord(c) < 32 or ord(c) == 127 for c in rel):
+        # newline/escape bytes in a file name break every log line and terminal listing that shows it
+        raise PackError(f"control character in pack path: {rel!r}")
+    try:
+        raw = rel.encode("utf-8")
+    except UnicodeEncodeError:
+        raise PackError(f"pack path is not valid UTF-8: {rel!r}") from None
+    if len(raw) > PATH_MAX_BYTES or any(len(p.encode()) > NAME_MAX_BYTES for p in parts):
+        raise PackError(f"pack path too long for the target filesystem: {rel[:80]!r}...")
     return rel
+
+
+def fold_path(rel: str) -> str:
+    """How a case-insensitive, normalization-insensitive filesystem (macOS APFS/HFS+ default,
+    exFAT) sees a path: NFC + casefold."""
+    return unicodedata.normalize("NFC", rel).casefold()
 
 
 def zlib_error() -> type[Exception]:
@@ -330,6 +360,9 @@ def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict
             raise PackError(f"duplicate manifest entry {rel!r}")
         if isinstance(e.get("size"), bool) or not isinstance(e.get("size"), int):
             raise PackError(f"bad size for {rel!r}")
+        md = e.get("mode")
+        if md is not None and (isinstance(md, bool) or md not in (0o644, 0o755)):
+            raise PackError(f"bad mode for {rel!r} (only 0644 or 0755)")
         mt = e.get("mtime")
         if mt is not None and (isinstance(mt, bool) or not isinstance(mt, int) or not -2**40 < mt < 2**40):
             raise PackError(f"bad mtime for {rel!r}")
@@ -344,10 +377,19 @@ def read_pack(bundle: bytes) -> tuple[dict[str, Any], list[dict[str, Any]], dict
         total += len(data)
     if total > quota:
         raise PackError(f"pack holds {total} bytes; over the agent-fs quota of {quota} bytes")
-    for rel in blobs:  # a file may not also be a directory ("a" and "a/b")
+    folded: dict[str, str] = {}
+    for rel in blobs:
+        f = fold_path(rel)
+        if f in folded:
+            # on a Mac (case-insensitive APFS) "Notes.md" and "notes.md" are ONE file: the second
+            # write silently replaced the first, so the import "succeeded" with a file missing
+            raise PackError(f"path conflict in pack: {folded[f]!r} and {rel!r} are the same file on a "
+                            "case-insensitive filesystem (macOS); rename one on the sending node")
+        folded[f] = rel
+    for rel in blobs:  # a file may not also be a directory ("a" and "a/b"), in any case
         parts = rel.split("/")
         for i in range(1, len(parts)):
-            if "/".join(parts[:i]) in blobs:
+            if fold_path("/".join(parts[:i])) in folded:
                 raise PackError(f"path conflict in pack: {rel!r} is under a file")
     if not 0 <= manifest["created"] < 2**40:
         raise PackError("bad created in manifest")
@@ -421,8 +463,14 @@ def _install(root: Path, workspace: Path, data_dir: Path, manifest: dict[str, An
                 raise PackError(f"path escapes the agent dir: {rel!r}")
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
+            if by_path[rel].get("mode") == 0o755:
+                os.chmod(dest, 0o755)
             mt = int(by_path[rel].get("mtime") or manifest["created"])
-            os.utime(dest, (mt, mt))
+            mt = max(MTIME_MIN, min(MTIME_MAX, mt))
+            try:  # a timestamp the filesystem can't hold (exFAT starts in 1980) is cosmetic, not fatal
+                os.utime(dest, (mt, mt))
+            except (OSError, OverflowError, ValueError):
+                pass
         if target.exists():
             old = root / f".old-{aid}-{os.getpid()}-{secrets.token_hex(6)}"
             os.replace(target, old)

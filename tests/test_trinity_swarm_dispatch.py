@@ -21,8 +21,8 @@ async def test_explicit_swarm_dispatch_bypasses_local_planner_and_workers(monkey
     core.codex = FakeCodex()
     core._ck_open = lambda *args, **kwargs: (None, args[3], None)
     called = {}
-    async def dispatch(task, run_id, checkpoint, correlation_id):
-        called.update(task=task, run_id=run_id, checkpoint=checkpoint, correlation_id=correlation_id)
+    async def dispatch(task, run_id, correlation_id):
+        called.update(task=task, run_id=run_id, correlation_id=correlation_id)
         return {"run_id": run_id, "status": "queued", "answer": "queued", "agents": []}
     async def forbidden(*args, **kwargs):
         raise AssertionError("local planner must not run during explicit Swarm dispatch")
@@ -31,7 +31,7 @@ async def test_explicit_swarm_dispatch_bypasses_local_planner_and_workers(monkey
     core.run_agent = forbidden
     result = await core.squad("task", run_id="run-1", dispatch="swarm", swarm_correlation_id="corr-1")
     assert result["status"] == "queued"
-    assert called == {"task": "task", "run_id": "run-1", "checkpoint": None, "correlation_id": "corr-1"}
+    assert called == {"task": "task", "run_id": "run-1", "correlation_id": "corr-1"}
 
 
 @pytest.mark.asyncio

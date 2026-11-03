@@ -565,6 +565,8 @@ def test_events_websocket_disconnect_unsubscribes(monkeypatch):
         async def send_json(self, data):
             raise WebSocketDisconnect(1000)
 
+        send_text = send_json  # round 34: the stream sends strict JSON text
+
         async def receive(self):  # v0.30: the handler also watches for the client leaving
             await asyncio.sleep(3600)
     fake_core = SimpleNamespace(codex=FakeCodex())

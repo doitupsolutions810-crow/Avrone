@@ -600,6 +600,19 @@ async def terminal(body: TerminalIn, x_admin_token: str | None = Header(default=
     return asdict(res)
 
 
+def ws_send_timeout() -> float:
+    """Seconds one event send may block before the client is dropped (AVRONE_WS_SEND_TIMEOUT)."""
+    import math as _m
+    import os
+    try:
+        v = float(os.environ.get("AVRONE_WS_SEND_TIMEOUT", "").strip() or 30)
+    except ValueError:
+        v = 30.0
+    if not _m.isfinite(v):
+        v = 30.0
+    return max(1.0, min(600.0, v))
+
+
 @app.websocket("/ws/events")
 async def events(ws: WebSocket):
     token = ws.headers.get("x-admin-token") or ws.query_params.get("token")
@@ -623,10 +636,21 @@ async def events(ws: WebSocket):
     try:
         async with anyio.create_task_group() as tg:
             async def pump() -> None:
+                from .codex import dumps_event
                 try:
                     while True:
                         ev = await q.get()
-                        await ws.send_json(asdict(ev))
+                        # strict JSON text: send_json raised on bytes/sets and sent bare NaN
+                        with anyio.fail_after(ws_send_timeout()):
+                            # a client that stops reading (stalled TCP, suspended laptop) used to
+                            # hold its subscriber slot forever: 64 of them locked the HUD out
+                            await ws.send_text(dumps_event(asdict(ev)))
+                except TimeoutError:
+                    with anyio.CancelScope(shield=True), anyio.move_on_after(1):
+                        try:
+                            await ws.close(code=1008, reason="client too slow to read the event stream")
+                        except Exception:  # noqa: BLE001
+                            pass
                 except (WebSocketDisconnect, RuntimeError, OSError):
                     pass  # a send to a vanished client is a disconnect, not a server error
                 tg.cancel_scope.cancel()

@@ -59,6 +59,8 @@ def test_ws_send_error_ends_stream(monkeypatch):
         async def send_json(self, data):
             raise OSError("broken pipe")
 
+        send_text = send_json  # round 34: the stream sends strict JSON text
+
         async def receive(self):
             await asyncio.sleep(3600)
     monkeypatch.setattr(server, "core", lambda: SimpleNamespace(codex=FakeCodex()))

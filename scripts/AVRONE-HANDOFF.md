@@ -433,3 +433,16 @@ merge without his word.
 - Tests: tests/test_agentpack_robust.py (45). Mutation on round 32: 28 of 45 fail. The other 17 are guards that pass on both versions.
 - Updated tests/test_robust_v020_homes.py::test_overlong_member_name: a 300-byte name is now refused up front ("too long"), not mid-install. It still raises a PackError and leaves no residue.
 - Gate: 4072 passed (4071 plus the updated test, rerun alone), 2 skipped. Edge suite: bash 3.2 ran shards 1 and 3 (89+89), bash 5 ran shards 0 and 2 (90+89), 357 total.
+
+## Round 34: CodeX event log and the HUD live stream (avrone/codex.py, /ws/events in server.py)
+- **Strict JSON events:** `jsonable()` turns event data into values `json.dumps(allow_nan=False)` and a browser's `JSON.parse` accept. Before:
+  - a tuple dict key raised TypeError out of `emit()`, killing the agent step that logged it;
+  - with redaction off, a cyclic structure raised "Circular reference";
+  - NaN and Infinity were written as bare `NaN`, so the HUD's JSON.parse threw and `/api/runs/{id}` returned 500 ("Out of range float");
+  - bytes or sets sent live made `send_json` raise and dropped the dashboard.
+
+  Non-finite floats become null, sets become sorted lists, bytes are decoded as UTF-8 with replacement, nesting is capped at 32 levels, and a hostile `__str__` becomes `<Type>`. Replay converts old NaN lines when it reads them. Redaction still runs first.
+- **Run ids:** `log_name()` keeps a plain id (`[A-Za-z0-9_.-]{1,128}`, no leading dot) as the file name. Any other id maps to a stable `x-<sha256[:24]>` name. Before, `emit("../escape")` wrote outside `runs/`. Emit and replay use the same mapping.
+- **Slow dashboard:** events dropped because a subscriber's queue was full are counted per subscriber. When the queue has room, that subscriber gets one `stream.gap` event (`missed: N`) ahead of the next event.
+- **Stalled dashboard:** each WebSocket send is bounded by `AVRONE_WS_SEND_TIMEOUT` (default 30 s, clamped 1..600). A client that stops reading is closed with code 1008 and its subscriber slot is freed. Before, 64 stalled clients locked everyone out of the HUD.
+- Tests: tests/test_codex_stream_robust.py (67). Mutation on round 33: 48 of 67 fail.

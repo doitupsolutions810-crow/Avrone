@@ -7,7 +7,10 @@ run, so any run can be replayed or audited later.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import math
+import re
 import threading
 import time
 import uuid
@@ -44,6 +47,72 @@ def _scrub(v: Any, depth: int = 0) -> Any:
     if isinstance(v, (list, tuple)):
         return [_scrub(x, depth + 1) for x in v]
     return v
+
+
+JSON_MAX_DEPTH = 32
+_SAFE_RUN_ID = re.compile(r"[A-Za-z0-9_\-.]{1,128}")
+
+
+def jsonable(v: Any, depth: int = 0) -> Any:
+    """Event data as strict JSON values: what json.dumps(allow_nan=False) and a browser's JSON.parse
+    both accept. Before, a tuple dict key raised TypeError out of emit() (killing the agent step that
+    logged it), NaN/Infinity were written as bare NaN (the HUD's JSON.parse threw, and
+    /api/runs/{id} answered 500 "Out of range float"), and bytes or sets sent live made the
+    WebSocket pump raise and drop the dashboard. Never raises."""
+    if v is None or isinstance(v, (bool, int, str)):
+        return v
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if depth >= JSON_MAX_DEPTH:
+        return "[...]"
+    if isinstance(v, dict):
+        out: dict[str, Any] = {}
+        for k, x in v.items():
+            if isinstance(k, str):
+                key = k
+            elif k is None or isinstance(k, (bool, int)):
+                key = json.dumps(k)  # what json.dumps would have done with the key
+            elif isinstance(k, float):
+                key = json.dumps(k) if math.isfinite(k) else str(k)
+            else:
+                try:
+                    key = str(k)
+                except Exception:  # noqa: BLE001 - a hostile __str__ must not break logging
+                    key = f"<{type(k).__name__}>"
+            out[key] = jsonable(x, depth + 1)
+        return out
+    if isinstance(v, (list, tuple)):
+        return [jsonable(x, depth + 1) for x in v]
+    if isinstance(v, (set, frozenset)):
+        try:
+            items = sorted(v, key=repr)
+        except Exception:  # noqa: BLE001
+            items = list(v)
+        return [jsonable(x, depth + 1) for x in items]
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return bytes(v).decode("utf-8", errors="replace")
+    try:
+        return str(v)
+    except Exception:  # noqa: BLE001
+        return f"<{type(v).__name__}>"
+
+
+def dumps_event(ev: dict[str, Any]) -> str:
+    """One event as strict JSON text (no NaN), for the run log and the live stream."""
+    try:
+        return json.dumps(ev, allow_nan=False)
+    except (TypeError, ValueError):
+        return json.dumps(jsonable(ev), allow_nan=False)
+
+
+def log_name(run_id: str) -> str:
+    """The run log's file stem. A run id that is not a plain name ("../x", "a/b", a 300-char id, ".")
+    used to become the path itself, so emit("../escape") wrote outside runs/. Odd ids map to a
+    stable hashed stem, so emit and replay still agree."""
+    rid = str(run_id)
+    if _SAFE_RUN_ID.fullmatch(rid) and not rid.startswith("."):
+        return rid
+    return "x-" + hashlib.sha256(rid.encode("utf-8", "surrogatepass")).hexdigest()[:24]
 
 
 DEFAULT_MAX_SUBSCRIBERS, HARD_MAX_SUBSCRIBERS = 64, 1024
@@ -109,6 +178,9 @@ class Codex:
         self.dropped = 0  # events a full subscriber queue could not take (slow dashboard)
         self.emitted = 0
         self.refused = 0  # subscribe attempts turned away at AVRONE_MAX_WS_SUBSCRIBERS
+        # events each subscriber missed because its queue was full: reported to that subscriber as
+        # one "stream.gap" event as soon as it has room, so a slow HUD knows its view has holes
+        self._gaps: dict[asyncio.Queue[Event], int] = {}
 
     def subscribe(self) -> asyncio.Queue[Event]:
         # every emit fans out to every subscriber, and each queue holds up to 1000 events: unbounded
@@ -127,12 +199,21 @@ class Codex:
     def unsubscribe(self, q: asyncio.Queue[Event]) -> None:
         self._subscribers.discard(q)
         self._loops.pop(q, None)
+        self._gaps.pop(q, None)
 
     def _offer(self, q: asyncio.Queue[Event], ev: Event) -> None:
+        missed = self._gaps.get(q, 0)
+        if missed and q.maxsize - q.qsize() >= 2:  # room for the notice AND this event
+            q.put_nowait(Event(run_id=ev.run_id, kind="stream.gap", agent="CodeX",
+                               data={"missed": missed, "note": "this stream dropped events while the "
+                                     "client was slow; replay the run for the full log"}))
+            self._gaps.pop(q, None)
         try:
             q.put_nowait(ev)
         except asyncio.QueueFull:
             self.dropped += 1
+            if q in self._subscribers:
+                self._gaps[q] = self._gaps.get(q, 0) + 1
 
     def _deliver(self, q: asyncio.Queue[Event], ev: Event) -> None:
         loop = self._loops.get(q)
@@ -155,9 +236,10 @@ class Codex:
     def emit(self, run_id: str, kind: str, agent: str, **data: Any) -> Event:
         if _redact_on():
             data = _scrub(data)
-        ev = Event(run_id=run_id, kind=kind, agent=agent, data=data)
-        line = json.dumps(asdict(ev), default=str) + "\n"
-        with self._write_lock, (self.log_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
+        data = jsonable(data)
+        ev = Event(run_id=str(run_id), kind=str(kind), agent=str(agent), data=data)
+        line = dumps_event(asdict(ev)) + "\n"
+        with self._write_lock, (self.log_dir / f"{log_name(run_id)}.jsonl").open("a", encoding="utf-8") as f:
             f.write(line)
         self.emitted += 1
         for q in list(self._subscribers):
@@ -174,7 +256,11 @@ class Codex:
             obj = json.loads(line)
         except (json.JSONDecodeError, RecursionError):
             return None
-        return obj if isinstance(obj, dict) else None
+        if not isinstance(obj, dict):
+            return None
+        if "NaN" in line or "Infinity" in line:  # logs written before strict JSON: keep replay servable
+            obj = jsonable(obj)
+        return obj
 
     def runs(self, limit: int = 50) -> list[dict[str, Any]]:
         stamped = []
@@ -204,7 +290,7 @@ class Codex:
         order. Truncated/corrupt lines (e.g. a crash mid-write) are skipped, so one bad line never
         hides the rest of the audit log. Streams the file: a 200 MB log used to be read whole and
         parsed whole (1.4 GB RSS for one request)."""
-        p = self.log_dir / f"{run_id}.jsonl"
+        p = self.log_dir / f"{log_name(run_id)}.jsonl"
         if not p.exists() or not p.resolve().is_relative_to(self.log_dir.resolve()):
             return []
         from collections import deque

@@ -385,3 +385,14 @@ merge without his word.
 - **Clone fallback:** a half-made dir from a failed clone used to crash `copytree` with FileExistsError. It's removed first now. The copy skips agents/, node_modules, venvs, and caches, and keeps symlinks as links.
 - **evolve_diff:** each proposal now records its `base` sha, and the diff runs against that base (new files included). A rejected, uncommitted proposal used to show the repo's previous commit instead of its own edits. A bad base value falls back to the old diff and never reaches the shell.
 - Tests: tests/test_evolve_propose_robust.py (45). Every test runs from a base path that contains a space. Mutation on round 27: 39 of 45 fail.
+
+## Round 29: durable job queue (avrone/jobqueue.py)
+- **Lease fencing:** each `claim()` mints a `token` (the column is added to old DB files in place). `complete`/`fail` with that token only touch the job while this worker still owns it. Before, a worker whose lease ran out could mark a job done, or requeue it, while a second worker was running it. `complete` now returns a bool. `fail` can now return 'stale' or 'missing' (an unknown id used to report "requeued").
+- **Heartbeat:** the Worker extends the lease every lease/3 while the handler runs. A job longer than the lease (900 s default) used to be re-claimed mid-run and run twice.
+- **Release on cancel:** stopping a Worker mid-job puts the job back to queued at once, and the attempt doesn't count. Before, it sat "running" for the whole lease.
+- **Poison jobs:** a job whose lease expired on its last attempt (it crashed or hung every worker) goes dead. Before, it was re-claimed forever.
+- **Corrupt payload:** the job is marked dead in the claim transaction and the next job is claimed. Before, `json.loads` raised out of `claim()` and killed the Worker loop for good.
+- **Results:** `_encode_result` always stores valid JSON. It uses `default=str`, maps NaN to a string, and replaces anything over 100 KB with `{"truncated", "bytes", "head"}`. Before, an unserializable result raised, the finished job was failed and re-run, and slicing could store invalid JSON that made `get()` raise forever. `get()` now decodes corrupt rows as `{"corrupt": true, "raw"}`.
+- **Worker loop:** it survives claim errors ("database is locked", I/O) with capped backoff, and survives `fail()` errors. It exits quietly once the queue is closed.
+- **Inputs:** a bad `lease_s` (0, negative, NaN, inf, non-number) falls back to 900. `max_attempts` is clamped to 1..1000. A bad priority becomes 0. `kind` becomes a str. An unserializable payload raises at enqueue time.
+- Tests: tests/test_jobqueue_robust.py (41). Mutation on round 28: 38 of 41 fail.

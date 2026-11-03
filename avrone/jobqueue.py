@@ -9,12 +9,45 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import math
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+log = logging.getLogger("avrone.jobqueue")
+
+RESULT_MAX = 100000
+ERROR_MAX = 4000
+
+
+def _encode_result(result: Any) -> str:
+    """Always valid JSON. The old `json.dumps(result)[:100000]` raised TypeError on a non-JSON
+    result (the finished job was then failed and RE-RUN) and cut long results mid-token, so get()
+    crashed on the stored text forever after."""
+    try:
+        text = json.dumps(result, default=str, allow_nan=False)
+    except (TypeError, ValueError):
+        text = json.dumps(repr(result))
+    if len(text) > RESULT_MAX:
+        text = json.dumps({"truncated": True, "bytes": len(text), "head": text[:RESULT_MAX - 200]})
+    return text
+
+
+def _decode(text: Any) -> Any:
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return {"corrupt": True, "raw": str(text)[:2000]}
+
+
+def _err_text(error: Any) -> str:
+    return (error if isinstance(error, str) else str(error))[:ERROR_MAX]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -30,13 +63,24 @@ class JobQueue:
     def __init__(self, path: Path, lease_s: float = 900):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.lease_s = lease_s
+        try:
+            lease = float(lease_s)
+        except (TypeError, ValueError):
+            lease = 900.0
+        # a zero, negative or NaN lease made every running job instantly reclaimable (double runs)
+        self.lease_s = lease if math.isfinite(lease) and lease >= 1 else 900.0
         self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         # Several JobQueue instances (processes) may share one file: wait for the write lock
         # instead of failing with "database is locked".
         self._db.execute("PRAGMA busy_timeout=10000")
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "token" not in cols:  # migrate a pre-round-29 file in place
+            try:
+                self._db.execute("ALTER TABLE jobs ADD COLUMN token TEXT")
+            except sqlite3.OperationalError:  # another process added it first
+                pass
         self._lock = asyncio.Lock()
         # A cancelled await releases the asyncio lock while its worker thread is still
         # inside SQLite; the thread lock keeps close() (and every other call) from
@@ -72,45 +116,105 @@ class JobQueue:
     async def enqueue(self, kind: str, payload: dict[str, Any], priority: int = 0, max_attempts: int = 3) -> str:
         jid = uuid.uuid4().hex[:12]
         now = time.time()
+        body = json.dumps(payload)  # an unserializable payload fails HERE, to the caller, not in a worker
+        try:
+            prio = int(priority)
+        except (TypeError, ValueError, OverflowError):
+            prio = 0
+        try:
+            tries = max(1, min(int(max_attempts), 1000))
+        except (TypeError, ValueError, OverflowError):
+            tries = 3
         await self._run(lambda: self._db.execute(
             "INSERT INTO jobs(id,kind,payload,status,priority,max_attempts,created,updated) VALUES(?,?,?,?,?,?,?,?)",
-            (jid, kind, json.dumps(payload), "queued", priority, max_attempts, now, now)))
+            (jid, str(kind), body, "queued", prio, tries, now, now)))
         return jid
 
     async def claim(self) -> dict[str, Any] | None:
         def _claim() -> Any:
             now = time.time()
-            cur = self._db.execute(
-                "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) OR (status='running' AND lease_until<?) "
-                "ORDER BY priority DESC, created LIMIT 1", (now, now))
-            row = cur.fetchone()
-            if not row:
-                return None
-            self._db.execute("UPDATE jobs SET status='running', attempts=attempts+1, lease_until=?, updated=? WHERE id=?",
-                             (now + self.lease_s, now, row[0]))
-            return row
-        row = await self._run(lambda: self._txn(_claim))
-        if row is None:
+            # A job whose lease ran out after its LAST attempt crashed its worker every time
+            # (a poison job): it used to be re-claimed forever. It goes dead instead.
+            self._db.execute(
+                "UPDATE jobs SET status='dead', updated=?, error=COALESCE(error || ' | ', '') || "
+                "'lease expired on the last attempt (worker crashed or hung)' "
+                "WHERE status='running' AND lease_until<? AND attempts>=max_attempts", (now, now))
+            while True:
+                cur = self._db.execute(
+                    "SELECT id,kind,payload,attempts FROM jobs WHERE (status='queued' AND lease_until<=?) "
+                    "OR (status='running' AND lease_until<?) ORDER BY priority DESC, created LIMIT 1", (now, now))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                try:
+                    payload = json.loads(row[2]) if row[2] is not None else {}
+                except (TypeError, ValueError) as e:
+                    # used to raise out of claim() after COMMIT and kill the Worker loop for good
+                    self._db.execute("UPDATE jobs SET status='dead', error=?, updated=? WHERE id=?",
+                                     (_err_text(f"corrupt payload: {e}"), now, row[0]))
+                    continue
+                token = uuid.uuid4().hex
+                self._db.execute("UPDATE jobs SET status='running', attempts=attempts+1, lease_until=?, updated=?, "
+                                 "token=? WHERE id=?", (now + self.lease_s, now, token, row[0]))
+                return row, payload, token
+        got = await self._run(lambda: self._txn(_claim))
+        if got is None:
             return None
-        # parsed after COMMIT, as before: a corrupt payload still leaves the job leased, not re-claimable
-        return {"id": row[0], "kind": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
+        row, payload, token = got
+        return {"id": row[0], "kind": row[1], "payload": payload, "attempts": row[3] + 1, "token": token}
 
-    async def complete(self, jid: str, result: Any) -> None:
-        await self._run(lambda: self._db.execute("UPDATE jobs SET status='done', result=?, updated=? WHERE id=?",
-                                                 (json.dumps(result)[:100000], time.time(), jid)))
+    @staticmethod
+    def _owner(token: str | None) -> tuple[str, tuple]:
+        """Fence for writes from a claimer: a worker whose lease ran out (and whose job another
+        worker re-claimed) must not mark that job done, requeue it, or overwrite its result."""
+        if token is None:
+            return "", ()
+        return " AND status='running' AND token=?", (token,)
 
-    async def fail(self, jid: str, error: str) -> str:
+    async def complete(self, jid: str, result: Any, token: str | None = None) -> bool:
+        """True when the result was recorded; False when the lease was lost (someone else owns it)."""
+        text = _encode_result(result)
+        clause, extra = self._owner(token)
+        cur = await self._run(lambda: self._db.execute(
+            f"UPDATE jobs SET status='done', result=?, updated=?, lease_until=0 WHERE id=?{clause}",
+            (text, time.time(), jid, *extra)))
+        return cur.rowcount > 0
+
+    async def fail(self, jid: str, error: Any, token: str | None = None) -> str:
+        """'dead', 'requeued', 'missing' (no such job) or 'stale' (the lease was lost)."""
+        err = _err_text(error)
+        clause, extra = self._owner(token)
+
         def _fail() -> str:
             now = time.time()
-            r = self._db.execute("SELECT attempts,max_attempts FROM jobs WHERE id=?", (jid,)).fetchone()
-            if r and r[0] >= r[1]:
-                self._db.execute("UPDATE jobs SET status='dead', error=?, updated=? WHERE id=?", (error[:4000], now, jid))
+            r = self._db.execute(f"SELECT attempts,max_attempts FROM jobs WHERE id=?{clause}", (jid, *extra)).fetchone()
+            if r is None:
+                exists = self._db.execute("SELECT 1 FROM jobs WHERE id=?", (jid,)).fetchone()
+                return "stale" if exists else "missing"
+            if r[0] >= r[1]:
+                self._db.execute("UPDATE jobs SET status='dead', error=?, updated=? WHERE id=?", (err, now, jid))
                 return "dead"
-            backoff = min(2 ** (r[0] if r else 1), 60)
+            backoff = min(2 ** max(1, int(r[0])), 60)
             self._db.execute("UPDATE jobs SET status='queued', error=?, lease_until=?, updated=? WHERE id=?",
-                             (error[:4000], now + backoff, now, jid))
+                             (err, now + backoff, now, jid))
             return "requeued"
         return await self._run(lambda: self._txn(_fail))
+
+    async def extend(self, jid: str, token: str, seconds: float | None = None) -> bool:
+        """Heartbeat: push a running job's lease out. False when the lease is already lost."""
+        until = time.time() + (self.lease_s if seconds is None else max(1.0, float(seconds)))
+        cur = await self._run(lambda: self._db.execute(
+            "UPDATE jobs SET lease_until=?, updated=? WHERE id=? AND status='running' AND token=?",
+            (until, time.time(), jid, token)))
+        return cur.rowcount > 0
+
+    async def release(self, jid: str, token: str) -> bool:
+        """Give a claimed job back untouched (worker shutting down): queued again right away and
+        the attempt is not counted. Before, a cancelled job sat 'running' for the whole lease."""
+        cur = await self._run(lambda: self._db.execute(
+            "UPDATE jobs SET status='queued', attempts=MAX(attempts-1,0), lease_until=0, token=NULL, updated=? "
+            "WHERE id=? AND status='running' AND token=?", (time.time(), jid, token)))
+        return cur.rowcount > 0
 
     async def get(self, jid: str) -> dict[str, Any] | None:
         def _g() -> dict[str, Any] | None:
@@ -120,7 +224,7 @@ class JobQueue:
                 return None
             d = dict(zip(cols, r))
             for k in ("payload", "result"):
-                d[k] = json.loads(d[k]) if d[k] else None
+                d[k] = _decode(d[k])  # one corrupt row no longer makes get() raise forever
             return d
         return await self._run(_g)
 
@@ -145,18 +249,66 @@ class Worker:
         self.q, self.handler, self.idle_s = queue, handler, idle_s
         self._task: asyncio.Task | None = None
 
-    async def _loop(self) -> None:
+    async def _heartbeat(self, jid: str, token: str) -> None:
+        # extend at a third of the lease so a long job is never re-claimed (and run twice) mid-flight
+        every = max(0.05, self.q.lease_s / 3)
         while True:
-            job = await self.q.claim()
+            await asyncio.sleep(every)
+            try:
+                if not await self.q.extend(jid, token):
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.warning("job %s: lease heartbeat failed", jid, exc_info=True)
+
+    async def _loop(self) -> None:
+        errors = 0
+        while True:
+            try:
+                job = await self.q.claim()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                # "database is locked", a full disk, an I/O error: these used to end the loop task
+                # silently, and the node stopped running queued work until restart
+                if getattr(self.q, "_closed", False):
+                    return
+                errors += 1
+                log.warning("job queue claim failed (%d in a row)", errors, exc_info=True)
+                await asyncio.sleep(min(self.idle_s * (2 ** min(errors, 6)), 30))
+                continue
+            errors = 0
             if job is None:
                 await asyncio.sleep(self.idle_s)
                 continue
+            jid, token = job["id"], job.get("token")
+            beat = asyncio.create_task(self._heartbeat(jid, token)) if token else None
             try:
-                await self.q.complete(job["id"], await self.handler(job["kind"], job["payload"]))
+                try:
+                    result = await self.handler(job["kind"], job["payload"])
+                finally:
+                    if beat is not None:
+                        beat.cancel()
+                        try:
+                            await beat
+                        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                            pass
+                await self.q.complete(jid, result, token)
             except asyncio.CancelledError:
+                if token:
+                    try:  # hand the job back so the next worker can run it now, not after the lease
+                        await asyncio.shield(self.q.release(jid, token))
+                    except BaseException:  # noqa: BLE001
+                        pass
                 raise
             except Exception as e:  # noqa: BLE001
-                await self.q.fail(job["id"], f"{type(e).__name__}: {e}")
+                try:
+                    await self.q.fail(jid, f"{type(e).__name__}: {e}", token)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    log.warning("job %s: could not record failure", jid, exc_info=True)
 
     def start(self) -> None:
         if self._task is None:

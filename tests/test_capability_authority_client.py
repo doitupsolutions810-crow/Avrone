@@ -39,7 +39,7 @@ def setup_client():
     now = datetime.now(timezone.utc).timestamp()
     parent = {
         "id": "parent-1", "issuer": AUTHORITY, "audience": REQUESTER,
-        "rights": [RIGHT], "constraints": {"tenant": "test"},
+        "rights": [RIGHT], "constraints": {"tenant": "test", "delegation_audiences": [SWARM]},
         "issued_at": now - 10, "expires_at": now + 200, "delegation_depth": 0,
     }
     parent_sig = sign_obj(parent, authority)

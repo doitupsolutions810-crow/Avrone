@@ -133,5 +133,12 @@
     "mock_output_as_runtime_evidence",
     "missing_residual_as_passing_state"
   ],
-  "scope_note": "Seven core repositories identified for the initial control slice. This is not the complete 36-candidate repository inventory."
+  "scope_note": "Seven core repositories identified for the initial control slice. This is not the complete 36-candidate repository inventory.",
+  "signing_profile": {
+    "algorithm": "Ed25519",
+    "canonicalization": "RFC8785-JCS",
+    "digest": "SHA-256",
+    "signature_encoding": "base64",
+    "specification": "integration/signing-profile-v1.md"
+  }
 }

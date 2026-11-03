@@ -94,10 +94,14 @@ class SwarmOutbox:
             request_sha256 TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('pending','queued','rejected')),
             receipt_json BLOB,
+            receipt_sha256 TEXT,
             error_code TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )""")
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(swarm_outbox)")}
+        if "receipt_sha256" not in columns:
+            self._db.execute("ALTER TABLE swarm_outbox ADD COLUMN receipt_sha256 TEXT")
         os.chmod(self.path, 0o600)
         self._fsync_files()
 
@@ -127,6 +131,13 @@ class SwarmOutbox:
         envelope = request.get("envelope")
         if not isinstance(envelope, dict):
             raise InvalidOutboxRecord("signed request envelope is invalid")
+        if (not isinstance(request.get("payload"), dict)
+                or not isinstance(request.get("capability"), dict)
+                or not isinstance(request.get("capability_signature"), str)
+                or not request["capability_signature"]):
+            raise InvalidOutboxRecord("signed request payload or capability is invalid")
+        if not isinstance(envelope.get("signature"), str) or not envelope["signature"]:
+            raise InvalidOutboxRecord("signed request signature is missing")
         message_id, correlation_id = envelope.get("message_id"), envelope.get("correlation_id")
         if not isinstance(message_id, str) or not _ID.fullmatch(message_id):
             raise InvalidOutboxRecord("message id is invalid")
@@ -168,7 +179,7 @@ class SwarmOutbox:
             raise InvalidOutboxRecord("message id is invalid")
         with self._lock:
             row = self._db.execute("""SELECT correlation_id,request_json,request_sha256,state,
-                receipt_json,error_code,created_at,updated_at FROM swarm_outbox WHERE message_id=?""",
+                receipt_json,receipt_sha256,error_code,created_at,updated_at FROM swarm_outbox WHERE message_id=?""",
                 (message_id,)).fetchone()
         if row is None:
             return None
@@ -178,10 +189,20 @@ class SwarmOutbox:
         request = _decode(raw)
         if self._identity(request) != (message_id, row[0]):
             raise InvalidOutboxRecord("stored request identity mismatch")
-        receipt = _decode(bytes(row[4])) if row[4] is not None else None
+        receipt = None
+        if row[4] is not None:
+            receipt_raw = bytes(row[4])
+            if (len(receipt_raw) > MAX_RECEIPT_BYTES or not row[5]
+                    or hashlib.sha256(receipt_raw).hexdigest() != row[5]):
+                raise InvalidOutboxRecord("stored receipt digest mismatch")
+            receipt = _decode(receipt_raw)
+            if not isinstance(receipt, dict):
+                raise InvalidOutboxRecord("stored receipt is not an object")
+        elif row[5] is not None:
+            raise InvalidOutboxRecord("receipt digest exists without receipt")
         return {"message_id": message_id, "correlation_id": row[0], "request": request,
                 "request_sha256": row[2], "state": row[3], "receipt": receipt,
-                "error_code": row[5], "created_at": row[6], "updated_at": row[7]}
+                "error_code": row[6], "created_at": row[7], "updated_at": row[8]}
 
     def pending(self, limit: int = 100) -> list[dict[str, Any]]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
@@ -193,23 +214,26 @@ class SwarmOutbox:
         return [record for mid in ids if (record := self.get(mid)) is not None]
 
     def mark_queued(self, message_id: str, verified_receipt: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(verified_receipt, dict):
+            raise InvalidOutboxRecord("verified receipt must be an object")
         receipt_raw = _json_bytes(verified_receipt, MAX_RECEIPT_BYTES)
+        receipt_digest = hashlib.sha256(receipt_raw).hexdigest()
         now = time.time()
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                row = self._db.execute("SELECT state,receipt_json FROM swarm_outbox WHERE message_id=?",
+                row = self._db.execute("SELECT state,receipt_json,receipt_sha256 FROM swarm_outbox WHERE message_id=?",
                                        (message_id,)).fetchone()
                 if row is None:
                     raise KeyError(message_id)
                 if row[0] == "queued":
-                    if bytes(row[1]) != receipt_raw:
+                    if bytes(row[1]) != receipt_raw or row[2] != receipt_digest:
                         raise RequestConflict("message already has a different verified receipt")
                 elif row[0] != "pending":
                     raise OutboxError("only pending requests can become queued")
                 else:
-                    self._db.execute("UPDATE swarm_outbox SET state='queued',receipt_json=?,updated_at=? WHERE message_id=?",
-                                     (receipt_raw, now, message_id))
+                    self._db.execute("UPDATE swarm_outbox SET state='queued',receipt_json=?,receipt_sha256=?,updated_at=? WHERE message_id=?",
+                                     (receipt_raw, receipt_digest, now, message_id))
                 self._db.execute("COMMIT")
             except BaseException:
                 if self._db.in_transaction:

@@ -113,10 +113,19 @@ class CapabilityAuthorityClient:
         missing = [k for k,v in names.items() if not v]
         if missing: raise RuntimeError("Capability Authority is not configured: " + ", ".join(missing))
         key = Path(names["AVRONE_CA_REQUESTER_KEY_FILE"])
-        if key.is_symlink() or not key.is_file() or key.stat().st_size > 16384 or key.stat().st_mode & 0o077:
-            raise RuntimeError("requester key must be a private regular file (0600) under 16 KiB")
+        fd = os.open(key, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if not __import__("stat").S_ISREG(info.st_mode) or info.st_size > 16384 or info.st_mode & 0o077:
+                raise RuntimeError("requester key must be a private regular file (0600) under 16 KiB")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                private_key = stream.read(16385)
+        finally:
+            os.close(fd)
+        if len(private_key) > 16384:
+            raise RuntimeError("requester key exceeds 16 KiB")
         return cls(endpoint=names["AVRONE_CA_URL"], requester=names["AVRONE_CA_REQUESTER_ID"],
-                   authority_issuer=names["AVRONE_CA_ISSUER"], requester_private_key_pem=key.read_bytes(),
+                   authority_issuer=names["AVRONE_CA_ISSUER"], requester_private_key_pem=private_key,
                    authority_public_key_b64=names["AVRONE_CA_PUBLIC_KEY_B64"], http_client=http_client,
                    allow_insecure_http=os.getenv("AVRONE_CA_ALLOW_HTTP", "0") == "1")
 

@@ -31,6 +31,7 @@ import os
 import time
 import json
 import re
+import stat
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -740,8 +741,13 @@ class TrinityCore:
                 parent_file = os.getenv("AVRONE_CA_PARENT_CAPABILITY_FILE", "")
                 if not parent_file:
                     raise RuntimeError("AVRONE_CA_PARENT_CAPABILITY_FILE is not configured")
-                parent = json.loads(Path(parent_file).read_text("utf-8"))
-                if not isinstance(parent, dict) or not isinstance(parent.get("capability"), dict) or not isinstance(parent.get("signature"), str):
+                parent_path = Path(parent_file)
+                if parent_path.is_symlink() or not parent_path.is_file() or parent_path.stat().st_size > 65536:
+                    raise RuntimeError("AVRONE parent capability file must be a regular file under 64 KiB")
+                if stat.S_IMODE(parent_path.stat().st_mode) & 0o077:
+                    raise RuntimeError("AVRONE parent capability file must have mode 0600 or stricter")
+                parent = json.loads(parent_path.read_text("utf-8"))
+                if not isinstance(parent, dict) or set(parent) != {"capability", "signature"} or not isinstance(parent.get("capability"), dict) or not isinstance(parent.get("signature"), str):
                     raise RuntimeError("AVRONE parent capability file has an invalid schema")
                 authority = CapabilityAuthorityClient.from_env()
                 swarm = SwarmClient.from_env()

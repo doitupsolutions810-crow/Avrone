@@ -147,7 +147,6 @@ class SwarmOutbox:
                     stored_result = record["result"]
                     if stored_request["envelope"]["correlation_id"] != correlation_id:
                         raise ValueError("outbox request correlation mismatch")
-                    swarm_client.verify_request(stored_request)
                     swarm_client.verify_receipt(stored_result["receipt"], stored_request)
                     if not isinstance(stored_result.get("job"), dict) or not isinstance(stored_result["job"].get("id"), str):
                         raise ValueError("stored job receipt is incomplete")

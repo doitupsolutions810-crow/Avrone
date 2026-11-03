@@ -103,6 +103,27 @@ class CapabilityAuthorityClient:
         self._authority_key = Ed25519PublicKey.from_public_bytes(_b64(authority_public_key_b64, 32))
         self._http = http_client or httpx.Client()
 
+    @classmethod
+    def from_env(cls, http_client: httpx.Client | None = None) -> "CapabilityAuthorityClient":
+        required = {
+            "AVRONE_CA_URL": os.getenv("AVRONE_CA_URL", ""),
+            "AVRONE_CA_REQUESTER_ID": os.getenv("AVRONE_CA_REQUESTER_ID", os.getenv("AVRONE_SWARM_ISSUER", "")),
+            "AVRONE_CA_ISSUER": os.getenv("AVRONE_CA_ISSUER", "spiffe://prod/broker"),
+            "AVRONE_CA_REQUESTER_KEY_FILE": os.getenv("AVRONE_CA_REQUESTER_KEY_FILE", os.getenv("AVRONE_SWARM_ISSUER_KEY_FILE", "")),
+            "AVRONE_CA_PUBLIC_KEY_B64": os.getenv("AVRONE_CA_PUBLIC_KEY_B64", os.getenv("AVRONE_SWARM_CA_PUBLIC_KEY_B64", "")),
+        }
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise RuntimeError("Capability Authority client is not configured: " + ", ".join(missing))
+        return cls(
+            endpoint=required["AVRONE_CA_URL"],
+            requester=required["AVRONE_CA_REQUESTER_ID"],
+            authority_issuer=required["AVRONE_CA_ISSUER"],
+            requester_private_key_pem=Path(required["AVRONE_CA_REQUESTER_KEY_FILE"]).read_bytes(),
+            authority_public_key_b64=required["AVRONE_CA_PUBLIC_KEY_B64"],
+            http_client=http_client,
+            allow_insecure_http=os.getenv("AVRONE_CA_ALLOW_HTTP", "0") == "1",
+        )
     def _assertion(self, now: datetime | None = None) -> dict[str, Any]:
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:

@@ -370,3 +370,23 @@ class SwarmClient:
         if not isinstance(unknown, UnknownOutcome):
             raise TypeError("retry requires the UnknownOutcome from the original attempt")
         return self.send_request(unknown.request, timeout=timeout)
+    def enqueue_with_delegation(
+        self, *, authority_client: CapabilityAuthorityClient,
+        parent_capability: dict[str, Any], parent_signature: str,
+        payload: dict[str, Any], delegation_correlation_id: str,
+        delegation_ttl_seconds: int = 120, **enqueue_kwargs: Any,
+    ) -> dict[str, Any]:
+        delegated = authority_client.delegate(
+            parent_capability=parent_capability,
+            parent_signature=parent_signature,
+            audience=self.audience,
+            rights=[dict(ACTION)],
+            ttl_seconds=delegation_ttl_seconds,
+            correlation_id=delegation_correlation_id,
+        )
+        return self.enqueue(
+            payload=payload,
+            capability=delegated["capability"],
+            capability_signature=delegated["signature"],
+            **enqueue_kwargs,
+        )

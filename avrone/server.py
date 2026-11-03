@@ -649,6 +649,10 @@ async def events(ws: WebSocket):
         codex.unsubscribe(q)
 
 
+from .integration import install_routes as _install_integration_routes
+_install_integration_routes(app, core, require_local, settings)
+
+
 def main() -> None:
     import os
     import uvicorn

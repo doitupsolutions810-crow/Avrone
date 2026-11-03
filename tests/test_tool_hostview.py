@@ -21,7 +21,7 @@ def test_registered():
     assert r.check("proc_status", {"all": "yes"})[0] == "bad_args"
 
 
-@pytest.mark.skipif(not os.path.isdir("/proc"), reason="Linux /proc only")
+@pytest.mark.skipif(not hv.proc_namespace_visible(), reason="requires this process's PID namespace in /proc")
 def test_proc_status_sees_own_children(monkeypatch):
     monkeypatch.setenv("AVRONE_PROC_LONG_S", "0.5")
     p = subprocess.Popen(["sleep", "30"], env={"PATH": os.environ["PATH"], "SECRET_X": "hunter2"})
@@ -36,7 +36,7 @@ def test_proc_status_sees_own_children(monkeypatch):
         p.wait()
 
 
-@pytest.mark.skipif(not os.path.isdir("/proc"), reason="Linux /proc only")
+@pytest.mark.skipif(not hv.proc_namespace_visible(), reason="requires this process's PID namespace in /proc")
 def test_proc_status_zombie_and_caps(monkeypatch):
     monkeypatch.setenv("AVRONE_PROC_LONG_S", "bogus")
     assert hv._long_s() == 600.0
@@ -58,6 +58,12 @@ def test_proc_status_without_proc(monkeypatch, tmp_path):
     assert "Linux only" in run(hv.t_proc_status(None, {}))
     monkeypatch.setattr(hv, "PROC", tmp_path)
     assert hv._children(1) == {} and hv._boot_time() is None
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="requires a proc filesystem")
+def test_proc_status_does_not_claim_zero_for_an_invisible_namespace(monkeypatch):
+    monkeypatch.setattr(hv.os, "getpid", lambda: 999999999)
+    assert "unverified" in run(hv.t_proc_status(None, {}))
 
 
 def test_children_tree_from_fake_proc(monkeypatch, tmp_path):

@@ -1,0 +1,571 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "avrone-core",
+      "repository": "https://github.com/doitupsolutions810-crow/Avrone",
+      "revision": "9036ff6adc67655211357ab5bed38051c11cc999",
+      "role": "canonical Python runtime"
+    },
+    {
+      "id": "grok-bot-runtime",
+      "repository": "https://github.com/doitupsolutions810-crow/grok-bot-",
+      "revision": "65d526f24e667d10121640cb2baeb2c3c26b54ef",
+      "branch": "codex/inspect-integration-hardening",
+      "role": "imported Node console, tools, orchestration and sidecars",
+      "files": [
+        {
+          "path": "integrations/grok-bot/.dockerignore",
+          "upstream_path": ".dockerignore",
+          "sha256": "9beae05c36458f25b019eb1e710c51ebb832fa4eabffa8c52bebda0b537b3270"
+        },
+        {
+          "path": "integrations/grok-bot/.env.example",
+          "upstream_path": ".env.example",
+          "sha256": "b62c177c1b244d8acb07dd36de89f7f79d7c2d19b1cb7a695509a95839a06eac"
+        },
+        {
+          "path": "integrations/grok-bot/.env.full",
+          "upstream_path": ".env.full",
+          "sha256": "7435b219a392867e8cefeac9d5b70047ff00b4418864a46b21c843864f69a1f8"
+        },
+        {
+          "path": "integrations/grok-bot/Dockerfile",
+          "upstream_path": "Dockerfile",
+          "sha256": "2c35e47d54744ed8fd9db2c3999429c18e2f9a12fcf8b77710bc42706348ba3a"
+        },
+        {
+          "path": "integrations/grok-bot/README.md",
+          "upstream_path": "README.md",
+          "sha256": "3f7d5090b53d319a85b8217348637d5b2f6f13439a4ddada23f62a87192c3f4c"
+        },
+        {
+          "path": "integrations/grok-bot/browser-service/computer.js",
+          "upstream_path": "browser-service/computer.js",
+          "sha256": "e8702fc4d9d3759a43fd9b65f4793a1d2f184cfec172180c6c2eb0b16ec0a2b6"
+        },
+        {
+          "path": "integrations/grok-bot/config/agents.json",
+          "upstream_path": "config/agents.json",
+          "sha256": "ebb3c1de9de4f6e3d1501c598821a3ba5f56dadf58091482f13116c0aea0a826"
+        },
+        {
+          "path": "integrations/grok-bot/docker-compose.integration.yml",
+          "upstream_path": "docker-compose.integration.yml",
+          "sha256": "88525e25e17d106b163edd0aff5243846c8d3023098ee0356e5c4c607fa410e4"
+        },
+        {
+          "path": "integrations/grok-bot/docker-compose.yml",
+          "upstream_path": "docker-compose.yml",
+          "sha256": "95cfe4659a436592fc8d6eed3b7a809a7edf5468ffd004b3e0784c95c133e56b"
+        },
+        {
+          "path": "integrations/grok-bot/launch.sh",
+          "upstream_path": "launch.sh",
+          "sha256": "638cd1a07a65630f216fce419f358b8a91fa43ab027f2f09b24d2dc10755ded5"
+        },
+        {
+          "path": "integrations/grok-bot/package.json",
+          "upstream_path": "package.json",
+          "sha256": "684219478b153c2742d7572636f75269017aa6bc365fdcd7e1771681a74a9e1a"
+        },
+        {
+          "path": "integrations/grok-bot/public/index.html",
+          "upstream_path": "public/index.html",
+          "sha256": "9ddfe13fdedde080774bbd06b8c9f75967625bd2461848178aa15ec78488db8e"
+        },
+        {
+          "path": "integrations/grok-bot/scripts/check-inline-js.js",
+          "upstream_path": "scripts/check-inline-js.js",
+          "sha256": "ed3a9d349d7e636673e206b3c961e3b3aee33499083c9189f521e57c30f32a8e"
+        },
+        {
+          "path": "integrations/grok-bot/scripts/evolve.js",
+          "upstream_path": "scripts/evolve.js",
+          "sha256": "19245339ede9a76c911738af53a2d4dc73bb27fe03bfcdc62022460606a7228f"
+        },
+        {
+          "path": "integrations/grok-bot/scripts/squad-observe.js",
+          "upstream_path": "scripts/squad-observe.js",
+          "sha256": "b8b0def487c64d0110d7ed1e73a7c39da6f3b34fb6169c32041e5fd3bae8b39c"
+        },
+        {
+          "path": "integrations/grok-bot/scripts/wait-boot.sh",
+          "upstream_path": "scripts/wait-boot.sh",
+          "sha256": "f036595f3f8d71ef5469ee2c51a0ec9a673b6f28cfb6b120884eceabaaedda85"
+        },
+        {
+          "path": "integrations/grok-bot/skills/barcode-forensics/SKILL.md",
+          "upstream_path": "skills/barcode-forensics/SKILL.md",
+          "sha256": "947121c656317f7cff1ddfcbde9c802dd63341b590e56ef2ce4c2687b1328d51"
+        },
+        {
+          "path": "integrations/grok-bot/skills/incident-triage/SKILL.md",
+          "upstream_path": "skills/incident-triage/SKILL.md",
+          "sha256": "fd36cf005335f951dbae896f255c5a01d9ec4413db4e4e1a8572cfa7356386d9"
+        },
+        {
+          "path": "integrations/grok-bot/skills/network-mapping/SKILL.md",
+          "upstream_path": "skills/network-mapping/SKILL.md",
+          "sha256": "bd5f328e2a9315d41d881ef75f2f72d5da7859963b49c99ebfb089c9464069c8"
+        },
+        {
+          "path": "integrations/grok-bot/skills/recon-advanced/SKILL.md",
+          "upstream_path": "skills/recon-advanced/SKILL.md",
+          "sha256": "e51a4578f5ceea2950cddba461663ed2260008db992a6f109421e0cb71028364"
+        },
+        {
+          "path": "integrations/grok-bot/skills/research-squad/SKILL.md",
+          "upstream_path": "skills/research-squad/SKILL.md",
+          "sha256": "ba9d25565699b41355c050b449a49deeb5ea037ecdde10edb9117d31a94d4bab"
+        },
+        {
+          "path": "integrations/grok-bot/skills/self-heal-environment/SKILL.md",
+          "upstream_path": "skills/self-heal-environment/SKILL.md",
+          "sha256": "04081a58ac186adfa2f1e9a18b2692b27ae966d2583b40514c8b1d96873e287f"
+        },
+        {
+          "path": "integrations/grok-bot/skills/test-coverage-sweep/SKILL.md",
+          "upstream_path": "skills/test-coverage-sweep/SKILL.md",
+          "sha256": "3cf7f16169b0180149bfe8b30fcb8ddda43c452d4517d49d6c752bd8ecbdf335"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/codex.js",
+          "upstream_path": "src/agents/codex.js",
+          "sha256": "9beee485b1024ea7c6dddfee96abbcc4ef35dc1b193b3dc644b16ab58f8607dc"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/deepsearch.js",
+          "upstream_path": "src/agents/deepsearch.js",
+          "sha256": "fc01a78b3f19bca6c692cc2c3906607b1b81e480e0260ba4e715d42c22798157"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/governor.js",
+          "upstream_path": "src/agents/governor.js",
+          "sha256": "772475c96a36a9ff058d496b6e64ad82e55a4e34c5b9d449edea3fc94fe8f08f"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/index.js",
+          "upstream_path": "src/agents/index.js",
+          "sha256": "e3b9c3e81cc7fdfd0c57efb5895d24bfe084fc8f00f71fff7aa096d21da2342d"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/orchestrator.js",
+          "upstream_path": "src/agents/orchestrator.js",
+          "sha256": "9b1e88315c01ac29624f5b91d9f32fc8db7e64710a0176847fe8e6e6ad3c4f29"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/registry.js",
+          "upstream_path": "src/agents/registry.js",
+          "sha256": "1a460867d526298b8c374fc94ffda7ce92ab494a753124add17685dd491e6305"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/runtime.js",
+          "upstream_path": "src/agents/runtime.js",
+          "sha256": "9991fe0f9eeede583dd10f7e2e9391de2c0ae09a5f4626304a54946a81a128af"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/subtasks.js",
+          "upstream_path": "src/agents/subtasks.js",
+          "sha256": "42449ed29567ca70ee7b053cf279988f35906a3737e0d14ae643f1dae0739a13"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/taskboard.js",
+          "upstream_path": "src/agents/taskboard.js",
+          "sha256": "e504de61097a6f2cab85b812fc3b757418446391310ed1d7c8d9eaeedf4c9065"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/team.js",
+          "upstream_path": "src/agents/team.js",
+          "sha256": "684df0891a1218acac3f60a6244ede876f4ec441dec1f47413231cbf358d9c12"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/think.js",
+          "upstream_path": "src/agents/think.js",
+          "sha256": "3b05f4ae4b21d42227081139c09a256bba12adc94f643ffa3dcd95718ab05988"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/tool-trace.js",
+          "upstream_path": "src/agents/tool-trace.js",
+          "sha256": "a33e546f0163b754e9a4a5a1177cee18eb89605a07fb774822c060a4ccffd119"
+        },
+        {
+          "path": "integrations/grok-bot/src/agents/trinity.js",
+          "upstream_path": "src/agents/trinity.js",
+          "sha256": "b129faf4959e19111ed3092533a1143266c306332131fcbb08acb7c0dc7ba79e"
+        },
+        {
+          "path": "integrations/grok-bot/src/boot/docker.js",
+          "upstream_path": "src/boot/docker.js",
+          "sha256": "24f9e6c83219808cd8ce749fe421c5a65e8c5449e809c699f9239e3b64f4a58d"
+        },
+        {
+          "path": "integrations/grok-bot/src/boot/preinstall.js",
+          "upstream_path": "src/boot/preinstall.js",
+          "sha256": "67ddd21e829f6c2483c3d7ba02f9cc760963cff00d0fed2028aa5e7b791103f0"
+        },
+        {
+          "path": "integrations/grok-bot/src/boot/selftest.js",
+          "upstream_path": "src/boot/selftest.js",
+          "sha256": "c273fa65f05d70873018b84a467a461d5c066b1287e61f42f66a2820163d6b9b"
+        },
+        {
+          "path": "integrations/grok-bot/src/llm/model-chain.js",
+          "upstream_path": "src/llm/model-chain.js",
+          "sha256": "345addae50b1a5c6da1b74fa9d7161ef2d9b517f40d7c4a5bae34d344dded93e"
+        },
+        {
+          "path": "integrations/grok-bot/src/llm/provider.js",
+          "upstream_path": "src/llm/provider.js",
+          "sha256": "0bf898c67b607199cd1a7cc2f4856be83d1406c1fcfb913cafb9b9ff4bb41a8a"
+        },
+        {
+          "path": "integrations/grok-bot/src/llm/router.js",
+          "upstream_path": "src/llm/router.js",
+          "sha256": "0e74b2477a21e38fddb0883f05617bfaf5c985d26b6126bff836b117b7da5b76"
+        },
+        {
+          "path": "integrations/grok-bot/src/memory/store.js",
+          "upstream_path": "src/memory/store.js",
+          "sha256": "26c2ef160eccb797469140f2eb86664e311701df024dffcf71eda354b52e8456"
+        },
+        {
+          "path": "integrations/grok-bot/src/middleware/agents-crud.js",
+          "upstream_path": "src/middleware/agents-crud.js",
+          "sha256": "3f087fe4cb5153c20f04d2aaf54348b77f755574592be24f1fa01da8b8004cf3"
+        },
+        {
+          "path": "integrations/grok-bot/src/middleware/approvals.js",
+          "upstream_path": "src/middleware/approvals.js",
+          "sha256": "45dfb36704df12de58512022636e6b8c1e395c69945b913e49021849ad18d2ee"
+        },
+        {
+          "path": "integrations/grok-bot/src/middleware/auth.js",
+          "upstream_path": "src/middleware/auth.js",
+          "sha256": "2fbe0b9172eb0cb26c89c553b0afc583d2f78c7e70cf1b4b4e61123e440b0c52"
+        },
+        {
+          "path": "integrations/grok-bot/src/observability/traces.js",
+          "upstream_path": "src/observability/traces.js",
+          "sha256": "3ccb5a7084ad7bd23c9c101d3fb57e74670e27c1e8ae1b2db54094ecc19c0292"
+        },
+        {
+          "path": "integrations/grok-bot/src/rag/index.js",
+          "upstream_path": "src/rag/index.js",
+          "sha256": "9e7d0bf791cada0b72bc733e71b889437935616d7533bea0e30d0e6004133875"
+        },
+        {
+          "path": "integrations/grok-bot/src/router.js",
+          "upstream_path": "src/router.js",
+          "sha256": "14aaffece219763ae19f418b59f59c4cb45fdd9da7331a515d77453c467f503f"
+        },
+        {
+          "path": "integrations/grok-bot/src/server.js",
+          "upstream_path": "src/server.js",
+          "sha256": "46daf29878cad2b7074c9caa4ef37adea736c9d2e970fc79629e9d619b0b6405"
+        },
+        {
+          "path": "integrations/grok-bot/src/tasks/scheduler.js",
+          "upstream_path": "src/tasks/scheduler.js",
+          "sha256": "79d75c37cee3c97edc2bcdbf11d7cfec5b86461cb3bc9ebbbc6ea59934cc33dc"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/avrone.js",
+          "upstream_path": "src/tools/avrone.js",
+          "sha256": "35c7bd25359b74711eb7d667474a8b85c0f9bc35c5000e44b8acd15a50b3fbdc"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/browser.js",
+          "upstream_path": "src/tools/browser.js",
+          "sha256": "d1302bb4b1671bf6a10d7225a7763391a08407ef96d1c2db5bfa7075f40dd565"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/imagegen.js",
+          "upstream_path": "src/tools/imagegen.js",
+          "sha256": "4df49277be541d239fbd73e61328f2dcb566e2c0d7939454ddc817360824e2c7"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/mcp.js",
+          "upstream_path": "src/tools/mcp.js",
+          "sha256": "02475c69930606deb423c77e8f3f8cd2dcdac10211c6124b5d3f06cf5c2c6d66"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/skills.js",
+          "upstream_path": "src/tools/skills.js",
+          "sha256": "ef5514c0b7d3b91b19eb7f7424a7894a74a062e2759f2bec9253a9b1620dcb12"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/spawn.js",
+          "upstream_path": "src/tools/spawn.js",
+          "sha256": "1370cfc63a9cc5dd496135f7adb2082c814c6a782d22d1d2f6612f0b2c2e03df"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/terminal.js",
+          "upstream_path": "src/tools/terminal.js",
+          "sha256": "70167d9c76240a1723274fb847763a9519dac1c39585b49235c186c38cf62bd2"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/vision.js",
+          "upstream_path": "src/tools/vision.js",
+          "sha256": "d5be2f3a201dd43caab4ebba9daf2602d2d53a5a87174867b433278c586a526a"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/web.js",
+          "upstream_path": "src/tools/web.js",
+          "sha256": "9b2c120ab2bed5fdbdf4359ab99230d65793cf05fe402310462d60d9dd2328ef"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/xfeed.js",
+          "upstream_path": "src/tools/xfeed.js",
+          "sha256": "102e8a7a788112c909c2840b769fa710913f91f7e83d6a1e010e14fe942e500a"
+        },
+        {
+          "path": "integrations/grok-bot/src/tools/xtrigger.js",
+          "upstream_path": "src/tools/xtrigger.js",
+          "sha256": "6011163f5dcbff3c6c9738d50dc3289b2e340aac2565f2c5da3c02fcec5640d8"
+        },
+        {
+          "path": "integrations/grok-bot/src/voice/voice.js",
+          "upstream_path": "src/voice/voice.js",
+          "sha256": "b6cf2ea4a74c6242ba0d3320f7d84cdb2335ca8a2219035cd8a3d52f7a8c624e"
+        },
+        {
+          "path": "integrations/grok-bot/tests/avrone-tool.test.js",
+          "upstream_path": "tests/avrone-tool.test.js",
+          "sha256": "dd6900660b9a7d991d4e830af1ece1f5e2b47a4743a2d17dff24e7d7107a838c"
+        },
+        {
+          "path": "integrations/grok-bot/tests/compose-env.test.js",
+          "upstream_path": "tests/compose-env.test.js",
+          "sha256": "557e82f0acabd1e73b42b99a49a8f1371af6eef91a1141824419d6b275377e55"
+        },
+        {
+          "path": "integrations/grok-bot/tests/live.test.js",
+          "upstream_path": "tests/live.test.js",
+          "sha256": "8514190cc1420b67af3726d50e5f2b4ce1e1bc9478a6e91831a3718b823101a5"
+        },
+        {
+          "path": "integrations/grok-bot/tests/model-chain.test.js",
+          "upstream_path": "tests/model-chain.test.js",
+          "sha256": "e2dc0ba1cb605e2fb122e28ba244eb36ebecca4bd9c1c275546fede8b82d945f"
+        },
+        {
+          "path": "integrations/grok-bot/tests/tool-trace.test.js",
+          "upstream_path": "tests/tool-trace.test.js",
+          "sha256": "f2e7819c0bf6bcfd7acdebe33649462a4e3289d905a52b473c40f53ddbaaf2fe"
+        },
+        {
+          "path": "integrations/grok-bot/tests/trinity.unit.test.js",
+          "upstream_path": "tests/trinity.unit.test.js",
+          "sha256": "2f8e679e412a45e7d2fdbb2a37eab099c24ed3c6e40406c9bb2c667b69423e70"
+        },
+        {
+          "path": "integrations/grok-bot/tests/voice.test.js",
+          "upstream_path": "tests/voice.test.js",
+          "sha256": "2118897348db9f12e8e49384d13203f24da9d62163c47b99e93553b23e10e9ab"
+        },
+        {
+          "path": "integrations/grok-bot/verify.sh",
+          "upstream_path": "verify.sh",
+          "sha256": "1724ecda6b9b4e0fb1dbc7d028a7df9c1690e0754037b6099e0720449168d49c"
+        }
+      ]
+    }
+  ],
+  "excluded": [
+    "Grok Bot vendored avrone/ and Python tests: this repository owns the canonical Python runtime."
+  ],
+  "local_changes": [
+    {
+      "path": "integrations/grok-bot/README.md",
+      "sha256": "4fdd80d7e0e3237216aa29e935f1af8aa6667fcb784a48f383b5d6ff865e1e55",
+      "upstream_sha256": "3f7d5090b53d319a85b8217348637d5b2f6f13439a4ddada23f62a87192c3f4c",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/browser-service/computer.js",
+      "sha256": "1bf67dff26d5d27fb0ffc8b486baa7d4aa7d731aac66cf92f9b68f31d4ec3db8",
+      "upstream_sha256": "e8702fc4d9d3759a43fd9b65f4793a1d2f184cfec172180c6c2eb0b16ec0a2b6",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/launch.sh",
+      "sha256": "4bd195cebbeaa0618ea03f55bec81a19b2acebf94817420aeee7a83e73f959ab",
+      "upstream_sha256": "638cd1a07a65630f216fce419f358b8a91fa43ab027f2f09b24d2dc10755ded5",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/package.json",
+      "sha256": "f50241fa48cc7ac8145fd7387e4d700ca1f8ad57d2fda7bf9edcd7877325959b",
+      "upstream_sha256": "684219478b153c2742d7572636f75269017aa6bc365fdcd7e1771681a74a9e1a",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/src/router.js",
+      "sha256": "dc93d390901aa4e761d807523f1f690d43380d32200d859ddc098c34bfa305fd",
+      "upstream_sha256": "14aaffece219763ae19f418b59f59c4cb45fdd9da7331a515d77453c467f503f",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/src/tools/avrone.js",
+      "sha256": "282f065be378d3595d64bb2b2bb795cd83dc645e0292944d5d4c00a06ea51636",
+      "upstream_sha256": "35c7bd25359b74711eb7d667474a8b85c0f9bc35c5000e44b8acd15a50b3fbdc",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/src/tools/browser.js",
+      "sha256": "e38015de68a245445ba56e5ab8fbe1944a31e30025ceede5c3a209c50d359654",
+      "upstream_sha256": "d1302bb4b1671bf6a10d7225a7763391a08407ef96d1c2db5bfa7075f40dd565",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/tests/compose-env.test.js",
+      "sha256": "7d03192543ef2878b1502c4485d192ac84de337c24a86f28dc2b60c3608de308",
+      "upstream_sha256": "557e82f0acabd1e73b42b99a49a8f1371af6eef91a1141824419d6b275377e55",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    },
+    {
+      "path": "integrations/grok-bot/verify.sh",
+      "sha256": "f30cdc61a0283602f1c4714d8a8798c2e41a688cf0c17370ae21f8785748b857",
+      "upstream_sha256": "1724ecda6b9b4e0fb1dbc7d028a7df9c1690e0754037b6099e0720449168d49c",
+      "reason": "Canonical AVRONE council integration, authenticated bridge, CDP service, root launch routing or contract correction."
+    }
+  ],
+  "local_resources": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "68a498307f99a7900334ff4da27869a055c220426b6024d06ec38113c08c7a39",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "3b2d8e8f6f76cab17fd38c933d007cf7754400b20d4e81588720aa468c599246",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "INTEGRATION.md",
+      "sha256": "e0307268c41935426f691f685919006f022cd99d118285441b2f1bd60874b2f4",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "INTEGRATION_VALIDATION.md",
+      "sha256": "2930f09ac99a79fbe4f6bbf0e8bb2d5ef474b1b9141bae70596d3dda508546c2",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "MASTER_PROMPT.md",
+      "sha256": "ee6c1cee1bdc216cee896c981bf706c247776b34d9b6a35a771c74fd93b4bcbd",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "README.md",
+      "sha256": "1d92d33c9cdf5e86d78164112a2c87c9548003a982f71cb07ea03158b61d1611",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/grokbot.py",
+      "sha256": "b1f8f57a2de9c01ac86a5f98ccaa53e209de04b66257df7cda9ee40765511f6c",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/integration.py",
+      "sha256": "a29ef2b2cbd69579b128c9286083e919ac38ccdbf451966fa1cc18ea9922fc84",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/server.py",
+      "sha256": "ed7a8e59a8b406356f082931df1ff0b0a2cd1ca38b6ff7b81408115870807997",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/static/index.html",
+      "sha256": "74038b683acd9be5e5957a0616dee570d02e79ea525091154ac5a54d9e557539",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/static/integration.html",
+      "sha256": "eed249013bdcbb5bd9236a1dfc59d0431647a987bcf1213651f426a9dc49d49b",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/tools_extra.py",
+      "sha256": "360183d008b8b9f10a99330e825b4d158ff75e4ab42315f5040438a208150a99",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "avrone/tools_hostview.py",
+      "sha256": "5f0714574a74b0259931f48ae2923dc47032e1d8aba3724611b938328811f211",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "compose.grok.yml",
+      "sha256": "1ad95e5aff940d42508d0480314774dd4e0d65a23f5a2ecc83de1fcdaeacdc2c",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "integrations/grok-bot/browser-service/Dockerfile",
+      "sha256": "3cbe163f809afa23672910f519d34f94a12303f17b9d2238686d84a7d127362b",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "integrations/grok-bot/package-lock.json",
+      "sha256": "9ba26907773d3646a19911fe86a8ac5d65750ad8d73f28ec8ad1c11c2062b582",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "integrations/grok-bot/src/tools/research-bridge.js",
+      "sha256": "8c0216a4956525a9405fd84834b7b435b1419044730ff24489cd51532bd1fbe7",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "integrations/grok-bot/tests/research-bridge.test.js",
+      "sha256": "6e87b4770ddc401ee731d992d9c04b486f54b38b6c07a58de17976c08cd57b71",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "f5c1a0d8ef3a185957f10cbde0c4052fed1cc1028b9a60357b6c534d55f21512",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "scripts/grok-stack.py",
+      "sha256": "676a36b82445572783e27b5f7fe368a3865b1eed8e717b8165f5e8dd77e3ea4b",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "scripts/verify-source-registry.py",
+      "sha256": "696b1e47fcc5ccbb54416d5087d863799b004ff6ce88d8dde7dd7693cb30997e",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_autopilot_edges.py",
+      "sha256": "34d8a4f1d58d5fa1a8c0644c9aa90d87727a36fb8fb594d3621078de3d5afc50",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_grokbot_integration.py",
+      "sha256": "79f2763257e99cf641b021ffd054e1fcc89716e70313130d263bc4deb8be3613",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_master_prompt.py",
+      "sha256": "90fd80e537791e792f020260faeb4be93b5706c6e49a5e251dae5684353d8e5a",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_recon_extra.py",
+      "sha256": "5b86961503c6f8614f7bce0d86e730b7633e499199e5f8b7257d16472402f156",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_skill_r12.py",
+      "sha256": "c5f16318ec0992677d79230d4c8a98c1d66c2c236b43e015332eac1fc6d1b1f7",
+      "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": "tests/test_tool_hostview.py",
+      "sha256": "e000d1f0757cb4d59eb6e572a0cef50b427b9c616422e48b921b07359d3ff62a",
+      "source": "local integration against the pinned AVRONE baseline"
+    }
+  ]
+}

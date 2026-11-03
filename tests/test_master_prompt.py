@@ -25,7 +25,7 @@ def test_prompt_names_only_real_things():
     reg = builtin_registry()
     register_extra_tools(reg)
     names = {t["name"] for t in reg.list()}
-    listed = set(re.findall(r"^\| `([a-z_0-9]+)` \|", text, re.M))
+    listed = set(re.findall(r"^\| `([a-z_0-9.-]+)` \|", text, re.M))
     assert listed == names
     for skill in re.findall(r"^- \*\*([a-z0-9-]+)\*\*:", text, re.M):
         assert (ROOT / "skills" / skill / "SKILL.md").exists(), skill

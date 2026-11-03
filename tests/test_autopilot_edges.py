@@ -214,6 +214,10 @@ class Env:
 
     def env(self, **kw):
         e = {k: v for k, v in os.environ.items() if not k.startswith(("AVRONE_", "OLLAMA_"))}
+        # Exercise the script's branches in root-owned CI containers as well.
+        # The dedicated root-refusal test explicitly removes this opt-in.
+        if os.geteuid() == 0:
+            e.setdefault("ALLOW_ROOT", "1")
         e.update(PATH=f"{self.bin}:{e['PATH']}", STUB_DIR=str(self.stub), DRIVE=str(self.drive),
                  OLLAMA_HOST=f"127.0.0.1:{self.port}", MODEL="stub-model", ONCE="1", LANES="",
                  SKIP_GATE="1", AUTOPILOT_NO_INSTALL="1", AVRONE_LLM_MODE="mock",
@@ -915,7 +919,7 @@ def test_drive_is_home_rejected(env):
 
 def test_root_refused_unless_allowed(env):
     (env.bin / "id").write_text('#!/bin/sh\n[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n'); (env.bin / "id").chmod(0o755)
-    r = env.run()
+    r = env.run(ALLOW_ROOT="__unset__")
     assert r.returncode == 1 and "do not run as root" in out(r)
     r = env.run(ALLOW_ROOT="1")
     assert r.returncode == 0, out(r)

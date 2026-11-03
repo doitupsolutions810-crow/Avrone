@@ -37,6 +37,7 @@ def test_allowlist_suffix_logic(monkeypatch):
 def test_port_cap_authorized_gate(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "allow")
     monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")  # v0.22 default-deny; cap/gate checks run only on an allowed host
+    monkeypatch.setattr(recon, "_resolve_ips", lambda _: ["93.184.216.34"])
     out = run(recon.t_port_scan(ctx(), {"host": "example.com"}))
     assert "authorized" in out and "refused" in out
     out = run(recon.t_port_scan(ctx(), {"host": "example.com", "authorized": True, "ports": list(range(50))}))  # >32

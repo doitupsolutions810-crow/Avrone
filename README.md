@@ -1,5 +1,7 @@
 # AVRONE
 
+**Grok Bot integration:** this checkout now includes the Node runtime and a shared council interface. See [INTEGRATION.md](INTEGRATION.md) for the single-checkout launch command, source registry, bridge receipts and observed validation limits.
+
 A self-hosted chat + search system where agents don't just answer, they **work**:
 they get a real terminal, a workspace, network access and Docker, they spawn
 sub-agents, and every action they take is logged and shown live on a HUD.

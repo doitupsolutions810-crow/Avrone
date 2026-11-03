@@ -80,9 +80,22 @@ def _children(root_pid: int) -> dict[int, dict[str, Any]]:
     return out
 
 
+def proc_namespace_visible() -> bool:
+    """A mounted procfs may describe the host namespace instead of this runtime's PIDs."""
+    if PROC != Path("/proc"):
+        return True  # injectable synthetic proc tree
+    try:
+        self_pid = int((PROC / "self" / "stat").read_text().partition("(")[0].strip())
+        return self_pid == os.getpid() and (PROC / str(self_pid) / "stat").is_file()
+    except (OSError, ValueError):
+        return False
+
+
 async def t_proc_status(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not PROC.is_dir():
         return "proc_status: /proc is not available on this host (Linux only)"
+    if not proc_namespace_visible():
+        return "proc_status: process visibility is unavailable in this environment; child counts are unverified"
     kids = _children(os.getpid())
     now, long_s = time.time(), _long_s()
     rows = sorted(kids.values(), key=lambda i: i["started"] or 0)

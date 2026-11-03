@@ -797,6 +797,8 @@ class TrinityCore:
         n = max(1, min(n or self.settings.squad_size, 8))
         ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
         dispatch_mode = (dispatch or os.getenv("AVRONE_SQUAD_DISPATCH", "local")).strip().lower()
+        if dispatch_mode not in {"local", "network", "hybrid", "swarm"}:
+            raise ValueError("dispatch must be local, network, hybrid, or swarm")
         if isinstance(done, dict) and dispatch_mode != "swarm":
             return done
         run_id = run_id or uuid.uuid4().hex[:10]
@@ -805,8 +807,6 @@ class TrinityCore:
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", squad_size=n)
         if dispatch_mode == "swarm":
             return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
-        if dispatch_mode not in {"local", "network", "hybrid"}:
-            raise ValueError("dispatch must be local, network, hybrid, or swarm")
         subtasks = ck.get("subtasks") if ck is not None else None
         if ck is not None and isinstance(subtasks, list) and subtasks:
             finished = sum(1 for i in range(len(subtasks)) if isinstance(ck.get(f"worker.{i}"), str))

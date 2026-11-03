@@ -440,13 +440,13 @@
   "local_resources": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "68a498307f99a7900334ff4da27869a055c220426b6024d06ec38113c08c7a39",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "acdaf3e10e325bd8a3f6de2151a1e683effedba7f7ccb0640dae81d188953ebf",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": ".gitignore",
-      "sha256": "3b2d8e8f6f76cab17fd38c933d007cf7754400b20d4e81588720aa468c599246",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "f7e9ea68ad2d22424fb6369929bd5967ce6b61a66b8bfe24432dfcfa6c93c9a5",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": "EDGE_CASE_VALIDATION.md",
@@ -455,8 +455,8 @@
     },
     {
       "path": "INTEGRATION.md",
-      "sha256": "e0307268c41935426f691f685919006f022cd99d118285441b2f1bd60874b2f4",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "b19e12311e88c5c6e2edfd4cea0f2910d13f83e9732b623a1334b502b5f14013",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": "INTEGRATION_VALIDATION.md",
@@ -490,8 +490,8 @@
     },
     {
       "path": "avrone/server.py",
-      "sha256": "ed7a8e59a8b406356f082931df1ff0b0a2cd1ca38b6ff7b81408115870807997",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "3d2bb7f953fbf3c4f7b855b43e332938726064f7ec2bb8ff0bcef0fe050a6956",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": "avrone/static/index.html",
@@ -565,13 +565,13 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "f5c1a0d8ef3a185957f10cbde0c4052fed1cc1028b9a60357b6c534d55f21512",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "6adb2ed86b2c36f4a294f4a282ca239a19a02c68137d46a301b6a5c07dff9fb6",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": "scripts/grok-stack.py",
-      "sha256": "676a36b82445572783e27b5f7fe368a3865b1eed8e717b8165f5e8dd77e3ea4b",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "c39cc413969a8042619df7c22f521425aab2480145a040bfcc75e8cfc20f101a",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": "scripts/mac-avrone-autopilot.sh",
@@ -632,6 +632,61 @@
       "path": "tests/test_tool_hostview.py",
       "sha256": "e000d1f0757cb4d59eb6e572a0cef50b427b9c616422e48b921b07359d3ff62a",
       "source": "local integration against the pinned AVRONE baseline"
+    },
+    {
+      "path": ".dockerignore",
+      "sha256": "b7fffc1753e263c58c9be802630afe4170ef72d6d49ddfdd49386aef67a5e2f4",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "avrone/swarm_api.py",
+      "sha256": "6ec372c3dcedd10b1bb4181607e15569a1ec0aefc93b524df025bb6f6cf8bc39",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "avrone/swarm_client.py",
+      "sha256": "3850b7c16daf42a91ca242ea17b2c9ab361ad45f52178b97e2a214808ce6cf01",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "avrone/swarm_outbox.py",
+      "sha256": "58582b8b1501adfea03ebacc7a252cd6d85a8c134d8b95389d5eb8b340f8aa37",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "compose.swarm.override.yml",
+      "sha256": "d0595bd0dd4257bc9aed277ef1be9ae21b6fd9e14d539ec3f56c23662ef4b578",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "scripts/provision_swarm_keys.py",
+      "sha256": "cd5e223c8257368aeae6f3fc7365a042bc384037ee87ddc69446956ad9a7ac01",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "tests/test_swarm_api.py",
+      "sha256": "b1946f1612317ecea580f014cddcf01bbe73b6962fb91efa81d5d5dc1e666959",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "tests/test_swarm_authority_client.py",
+      "sha256": "451d5a18cc68d09707ef7272e532e2dedb404bd17330bebaa0a24a1295687e59",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "tests/test_swarm_outbox.py",
+      "sha256": "4cd207324611f8ca5d083de44ab81fedd03a9b5eda20382bad3075dfddb407d8",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "tests/test_swarm_provisioning.py",
+      "sha256": "64c2cb59ec2b1cbb1c99890a57a995167506c5b44b85ce907df5ea0bfbcdd1d9",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+    },
+    {
+      "path": "docs/EXTENDED_SWARM_VALIDATION.md",
+      "sha256": "5c72ed8951757090c63fc90fe1cfa440315acc449c95ba26722bc0face8f6b0a",
+      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     }
   ],
   "upstream_updates": [
@@ -646,6 +701,30 @@
         "scripts/verify-grok-bridge.sh"
       ],
       "role": "cross-process bridge journal and crash recovery"
+    },
+    {
+      "id": "signed-swarm-20261103",
+      "repository": "https://github.com/doitupsolutions810-crow/Avrone",
+      "revision": "5c0488da4b07d5672411a1d115c6454287999027",
+      "resources": [
+        ".dockerignore",
+        ".github/workflows/ci.yml",
+        ".gitignore",
+        "INTEGRATION.md",
+        "avrone/server.py",
+        "avrone/swarm_api.py",
+        "avrone/swarm_client.py",
+        "avrone/swarm_outbox.py",
+        "compose.swarm.override.yml",
+        "pyproject.toml",
+        "scripts/grok-stack.py",
+        "scripts/provision_swarm_keys.py",
+        "tests/test_swarm_api.py",
+        "tests/test_swarm_authority_client.py",
+        "tests/test_swarm_outbox.py",
+        "tests/test_swarm_provisioning.py"
+      ],
+      "role": "signed Swarm enqueue, exact retry, Authority delegation and provisioning; lifecycle repair tested locally"
     }
   ],
   "repository_review": {
@@ -660,5 +739,14 @@
       "recent_default_branch_commits": 442,
       "max_commits_per_repository": 30
     }
-  }
+  },
+  "validation_rounds": [
+    {
+      "id": "swarm-lifecycle-20261103",
+      "report": "docs/EXTENDED_SWARM_VALIDATION.md",
+      "python_passed": 114,
+      "node_passed": 49,
+      "full_suite": false
+    }
+  ]
 }

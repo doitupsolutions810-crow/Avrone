@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -198,4 +199,17 @@ def install_routes(
                     http_client.close()
             app.state.swarm_dispatcher = None
 
-    app.add_event_handler("shutdown", close_dispatcher)
+    # Compose with the runtime's existing lifespan. Event handlers are not run
+    # for an application with a custom lifespan, and newer FastAPI versions no
+    # longer expose app.add_event_handler at all.
+    previous_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def swarm_lifespan(application):
+        async with previous_lifespan(application) as lifespan_state:
+            try:
+                yield lifespan_state
+            finally:
+                await close_dispatcher()
+
+    app.router.lifespan_context = swarm_lifespan

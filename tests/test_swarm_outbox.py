@@ -171,7 +171,7 @@ def test_dispatch_persists_before_send_and_reports_only_queued(tmp_path):
             return {"job": {"id": "job-1", "status": "queued"}, "receipt": {"message_id": "msg-1", "signature": "sig"}}
         def verify_receipt(self, receipt, req): assert receipt["message_id"] == req["envelope"]["message_id"]
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
-    client = Client()
+    client = Client(box)
     result = SwarmDispatcher(client, box).submit_request(request())
     assert client.observed["state"] == "pending"
     assert result["state"] == "queued"

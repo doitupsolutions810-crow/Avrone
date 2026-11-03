@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -159,6 +161,36 @@ def test_existing_queued_request_is_not_sent_twice(tmp_path):
         second = http.post("/api/swarm/enqueue", json=body(), headers=headers)
         assert second.status_code == 202 and second.json()["state"] == "queued"
         assert len(client.calls) == 1
+
+
+def test_swarm_cleanup_preserves_runtime_lifespan_and_request_state(tmp_path):
+    events = []
+
+    @asynccontextmanager
+    async def runtime_lifespan(app):
+        events.append("runtime-start")
+        yield {"runtime_marker": "retained"}
+        events.append("runtime-stop")
+
+    app = FastAPI(lifespan=runtime_lifespan)
+    client = FakeClient()
+    client._http = SimpleNamespace(close=lambda: events.append("client-close"))
+    swarm_api.install_routes(app, lambda: None, lambda request, token: None,
+                             SimpleNamespace(data_dir=tmp_path), client_factory=lambda: client)
+
+    @app.get("/runtime-marker")
+    def marker(request: swarm_api.Request):
+        return {"value": request.state.runtime_marker}
+
+    with TestClient(app) as http:
+        assert http.get("/runtime-marker").json() == {"value": "retained"}
+        assert http.post("/api/swarm/enqueue", json=body()).status_code == 202
+        box = app.state.swarm_dispatcher.outbox
+        assert events == ["runtime-start"]
+    assert app.state.swarm_dispatcher is None
+    assert events == ["runtime-start", "client-close", "runtime-stop"]
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        box.pending()
 
 
 class FakeAuthority:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import signal
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -18,8 +20,65 @@ from . import agentcontainer, agentfs
 from .config import Settings
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+_SIGNALS = {int(v): v.name for v in signal.Signals}
+OUTPUT_HEAD_BYTES = 1024 * 1024   # per stream, kept in memory from the start ...
+OUTPUT_TAIL_BYTES = 256 * 1024    # ... plus the last 256 KB; the middle is counted, not kept
+CMD_ECHO_MAX = 400
+
+
+def _pipe_grace() -> float:
+    try:
+        return max(0.0, min(10.0, float(os.environ.get("AVRONE_SHELL_PIPE_GRACE", "0.5"))))
+    except ValueError:
+        return 0.5
+
+
+def clean_output(s: str) -> str:
+    """Terminal noise out, content in: ANSI colour/cursor codes dropped, and a line redrawn with
+    carriage returns (pip/npm/curl progress bars) collapsed to what the terminal finally showed."""
+    if not s:
+        return s
+    s = _ANSI_RE.sub("", s).replace("\r\n", "\n")
+    if "\r" in s:
+        s = "\n".join(seg.rstrip("\r").rsplit("\r", 1)[-1] for seg in s.split("\n"))
+    return s
+
+
+def _head_tail(s: str, budget: int) -> str:
+    """Keep the start and the end of `s` (errors and summaries live at the end)."""
+    if len(s) <= budget:
+        return s
+    marker = "\n...[{} chars cut]...\n"
+    room = budget - len(marker.format(len(s)))
+    if room < 40:
+        return s[:max(0, budget)]
+    head = room * 2 // 5
+    tail = room - head
+    return s[:head] + marker.format(len(s) - head - tail) + s[len(s) - tail:]
+
+
+def exit_label(code: int, timed_out: bool = False) -> str:
+    if timed_out:
+        return f"exit {code} TIMEOUT"
+    if code < -1 and -code in _SIGNALS:
+        return f"exit {code} {_SIGNALS[-code]}"
+    if 128 < code < 160 and code - 128 in _SIGNALS:
+        name = _SIGNALS[code - 128]
+        hint = ", often out of memory" if name == "SIGKILL" else ""
+        return f"exit {code} = killed by {name}{hint}"
+    return f"exit {code}"
+
+
 async def _reap(proc) -> None:
-    """Kill a child that may already have exited, then wait for it (never raises ProcessLookupError)."""
+    """Kill a child (and, when it leads its own session, its whole process group: `cmd &`
+    grandchildren included) that may already have exited, then wait for it. Never raises."""
+    pid = getattr(proc, "pid", None)
+    if isinstance(pid, int) and getattr(proc, "_avrone_pgroup", False):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
     if proc.returncode is None:
         try:
             proc.kill()
@@ -31,6 +90,53 @@ async def _reap(proc) -> None:
         pass
 
 
+class _Capture:
+    """Bounded reader for one pipe: head + rolling tail, middle counted. A command that prints
+    forever (`yes`, a chatty server) can no longer grow the server's memory without limit."""
+
+    def __init__(self) -> None:
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.total = 0
+
+    def feed(self, chunk: bytes) -> None:
+        self.total += len(chunk)
+        room = OUTPUT_HEAD_BYTES - len(self.head)
+        if room > 0:
+            self.head += chunk[:room]
+            chunk = chunk[room:]
+        if chunk:
+            self.tail += chunk
+            if len(self.tail) > OUTPUT_TAIL_BYTES:
+                del self.tail[:len(self.tail) - OUTPUT_TAIL_BYTES]
+
+    def text(self) -> str:
+        cut = self.total - len(self.head) - len(self.tail)
+        if cut <= 0:
+            return (bytes(self.head) + bytes(self.tail)).decode(errors="replace")
+        return (self.head.decode(errors="replace") + f"\n...[{cut} bytes of output not kept]...\n"
+                + self.tail.decode(errors="replace"))
+
+
+async def _exited(proc) -> None:
+    """Wait for the process itself to exit. `proc.wait()` also waits for its pipes to close, so
+    `server &` (a grandchild holding stdout) used to stall every command until the timeout."""
+    delay = 0.005
+    while proc.returncode is None:
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 0.05)
+
+
+async def _pump(stream, cap: _Capture) -> None:
+    if stream is None:
+        return
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            return
+        cap.feed(chunk)
+
+
 @dataclass
 class CommandResult:
     cmd: str
@@ -40,12 +146,29 @@ class CommandResult:
     timed_out: bool = False
 
     def text(self, limit: int = 6000) -> str:
-        out = f"$ {self.cmd}\n[exit {self.exit_code}{' TIMEOUT' if self.timed_out else ''}]\n"
-        if self.stdout:
-            out += self.stdout
-        if self.stderr:
-            out += "\n[stderr]\n" + self.stderr
-        return out[:limit] + ("\n...[truncated]" if len(out) > limit else "")
+        """Model-facing view: the command echo is clipped (a heredoc can't eat the budget),
+        terminal noise is cleaned, and when it must cut it keeps the head and the tail of each
+        stream with stderr guaranteed a share, since the error is usually at the end."""
+        cmd = self.cmd if len(self.cmd) <= CMD_ECHO_MAX else (
+            self.cmd[:CMD_ECHO_MAX - 60] + f" ...[command clipped, {len(self.cmd)} chars]")
+        header = f"$ {cmd}\n[{exit_label(self.exit_code, self.timed_out)}]\n"
+        out, err = clean_output(self.stdout), clean_output(self.stderr)
+        err_block = ("\n[stderr]\n" + err) if err else ""
+        full = header + out + err_block
+        if len(full) <= limit:
+            return full
+        budget = limit - len(header)
+        if budget < 200:  # tiny limits: plain head cut, as before
+            return full[:limit] + "\n...[truncated]"
+        err_b = min(len(err_block), budget // 3) if err_block else 0
+        out_b = budget - err_b
+        if len(out) < out_b:
+            err_b += out_b - len(out)
+            out_b = len(out)
+        body = _head_tail(out, out_b)
+        if err_block:
+            body += "\n[stderr]\n" + _head_tail(err, max(0, err_b - len("\n[stderr]\n")))
+        return (header + body)[:limit] + "\n...[truncated]"
 
 
 class Runner:
@@ -80,19 +203,49 @@ class Runner:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=str(cwd) if cwd else None, env={**os.environ, **env} if env else None,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                stdin=asyncio.subprocess.DEVNULL,  # never read (or hang on) the server's own stdin
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True)  # own process group: timeout/cancel kills `cmd &` children too
         except (OSError, ValueError) as e:  # E2BIG, missing cwd/binary, bad env: a result, not a crash
             return CommandResult(cmd, -1, "", f"could not start command: {type(e).__name__}: {e}"[:500])
+        proc._avrone_pgroup = True
+        cap_out, cap_err = _Capture(), _Capture()
+        readers = [asyncio.ensure_future(_pump(proc.stdout, cap_out)),
+                   asyncio.ensure_future(_pump(proc.stderr, cap_err))]
+        note = ""
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return CommandResult(cmd, proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace"))
-        except asyncio.TimeoutError:
-            await _reap(proc)
-            return CommandResult(cmd, -1, "", "command timed out", timed_out=True)
+            try:
+                await asyncio.wait_for(_exited(proc), timeout=timeout)
+            except asyncio.TimeoutError:
+                await _reap(proc)
+                await asyncio.wait(readers, timeout=1.0)
+                for t in readers:
+                    t.cancel()
+                err = cap_err.text()
+                err = (err + "\n" if err and not err.endswith("\n") else err) + f"command timed out after {timeout}s"
+                return CommandResult(cmd, -1, cap_out.text(), err, timed_out=True)
+            # the command exited; a background child (`server &`) may still hold the pipes open.
+            # Give the readers a moment, then return instead of waiting for that child forever.
+            _done, pending = await asyncio.wait(readers, timeout=_pipe_grace())
+            if pending:
+                for t in pending:
+                    t.cancel()
+                tr = getattr(proc, "_transport", None)
+                if tr is not None:  # release our pipe ends now instead of leaking them to GC
+                    try:
+                        tr.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                note = ("\n[note: a background process still holds the output pipe; "
+                        "redirect its output to a file (cmd > log 2>&1 &) to see it]")
         except asyncio.CancelledError:
             # a cancelled run (evolve_cancel, client gone, squad shutdown) must not leave the child running
+            for t in readers:
+                t.cancel()
             await asyncio.shield(_reap(proc))
             raise
+        err = cap_err.text() + note if (cap_err.total or note) else ""
+        return CommandResult(cmd, proc.returncode or 0, cap_out.text(), err.lstrip("\n") if not cap_err.total else err)
 
 
 class LocalRunner(Runner):

@@ -355,3 +355,13 @@ merge without his word.
 - **replace_all:** opt-in. Accepts "true", "yes", "1", or "all" as strings.
 - **File modes:** writes are atomic, and an overwrite keeps the existing file's mode. Round 24's mkstemp made shared files 0600 and stripped exec bits. agentfs quota_write had the same problem; it now keeps the old mode on overwrite. New shared files get 0666 & ~umask.
 - Tests: tests/test_edit_file_robust.py (55, plus 1 skip, run on both legacy and agent-dir contexts). Mutation on round 24: 41 of 55 fail.
+
+## Round 26: shell runner and output view (branch avrone-a12lr-daemon)
+- **Background stall:** `server &` (any background child holding stdout) used to block every shell call until the timeout, because `proc.wait()`/`communicate()` wait for the pipes to close. The runner now waits on the process itself, gives the pipes a grace period (`AVRONE_SHELL_PIPE_GRACE`, default 0.5 s, clamped to 0–10), then returns with a note telling the agent to redirect the child's output.
+- **Timeout:** output printed before a timeout is kept (it used to be thrown away), and the message says "command timed out after Ns". Each command runs in its own session, so a timeout or cancel kills the whole process group, `cmd &` grandchildren included.
+- **stdin:** the server's stdin is no longer inherited. It's /dev/null, so `cat`, `read`, and prompts return immediately instead of hanging.
+- **Bounded capture:** each stream keeps the first 1 MB and the last 256 KB, and counts the middle. `yes` can't grow server memory anymore.
+- **Exit labels:** `[exit -9 SIGKILL]`; `[exit 137 = killed by SIGKILL, often out of memory]`; 139 shows SIGSEGV.
+- **text() view:** keeps the head and the tail of each stream, so the traceback at the end survives. stderr gets a guaranteed third of the budget. The command echo is clipped at 400 chars, so a heredoc can't eat the budget. ANSI codes are stripped, and CR progress bars collapse to their final state. Tiny limits keep the old head-cut shape.
+- **shell tool:** an empty or whitespace `cmd` gets an error.
+- Tests: tests/test_shell_runner_robust.py (38). Mutation on round 25: 22 of 38 fail. The remainder are unit checks against the stubs.

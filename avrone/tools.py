@@ -225,7 +225,10 @@ def runner_accepts_cwd(runner: Any) -> bool:
 async def t_shell(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not ctx.core.settings.agents_can_shell:
         return "ERROR: shell is disabled for agents (AVRONE_AGENTS_CAN_SHELL=false)."
-    cmd = str(args.get("cmd", ""))
+    cmd = args.get("cmd")
+    cmd = "" if cmd is None else str(cmd)
+    if not cmd.strip():
+        return "ERROR: shell needs a non-empty 'cmd'"
     res = await run_for_agent(ctx, cmd)
     if _INSTALL_RE.search(cmd):  # self-change: record it in the resource ledger
         try:

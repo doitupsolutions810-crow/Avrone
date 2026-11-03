@@ -154,3 +154,87 @@ async def test_reused_correlation_retries_persisted_request_without_delegation(m
     result = await core._dispatch_swarm("same objective", "run-8", "stable-id")
     assert result["status"] == "queued"
     assert "completion" in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_ca_timeout_restart_reuses_exact_persisted_assertion(monkeypatch, tmp_path):
+    import avrone.swarm_client as client_module
+    import avrone.swarm_outbox as outbox_module
+
+    parent = tmp_path / "parent.json"
+    parent.write_text('{"capability":{"id":"parent"},"signature":"sig"}')
+    parent.chmod(0o600)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(parent))
+
+    assertion = {
+        "schema": "capability-authority.delegation-assertion/v1",
+        "issuer": "spiffe://prod/agent/avrone",
+        "subject": "spiffe://prod/agent/avrone",
+        "audience": "spiffe://prod/broker",
+        "jti": "one-stable-jti",
+        "issued_at": "2026-11-03T09:00:00.000Z",
+        "expires_at": "2026-11-03T09:00:30.000Z",
+        "signature": "same-signed-assertion",
+    }
+    ca_records = {}
+    class FakeAuthority:
+        calls = []
+        fail_once = True
+        def _assertion(self):
+            return assertion
+        def delegate(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.fail_once:
+                self.fail_once = False
+                raise client_module.DelegationUnknownOutcome("simulated timeout", kwargs)
+            return {"capability": {"id": "child"}, "signature": "child-signature",
+                    "status": "ok", "correlation_id": kwargs["correlation_id"]}
+    authority = FakeAuthority()
+    monkeypatch.setattr(client_module.CapabilityAuthorityClient, "from_env", classmethod(lambda cls: authority))
+
+    class FakeSwarm:
+        audience = "spiffe://prod/agent/swarm"
+        def build_request(self, **kwargs):
+            return {"envelope": {"message_id": "message-1", "correlation_id": "stable-ca-correlation",
+                                 "signature": "signed"},
+                    "payload": kwargs["payload"], "capability": kwargs["capability"],
+                    "capability_signature": kwargs["capability_signature"]}
+    monkeypatch.setattr(client_module.SwarmClient, "from_env", classmethod(lambda cls: FakeSwarm()))
+
+    class FakeOutbox:
+        def get_by_correlation(self, correlation):
+            return None
+        def get_authority_request(self, correlation):
+            return ca_records.get(correlation)
+        def prepare_authority_request(self, correlation, request):
+            previous = ca_records.get(correlation)
+            if previous is not None and previous["request"] != request:
+                raise AssertionError("persisted CA request must not change")
+            record = {"correlation_id": correlation, "request": request}
+            ca_records[correlation] = record
+            return record
+        def close(self):
+            pass
+    monkeypatch.setattr(outbox_module.SwarmOutbox, "from_env", classmethod(lambda cls: FakeOutbox()))
+    class FakeDispatcher:
+        def __init__(self, client, outbox):
+            pass
+        def submit_request(self, request):
+            return {"state": "queued", "message_id": request["envelope"]["message_id"]}
+    monkeypatch.setattr(outbox_module, "SwarmDispatcher", FakeDispatcher)
+
+    core = TrinityCore.__new__(TrinityCore)
+    core.codex = FakeCodex()
+    core._privileged_run = lambda: False
+
+    first = await core._dispatch_swarm("same objective", "run-ca-1", "stable-ca-correlation")
+    assert first["status"] == "pending"
+    assert first["agents"] == []
+    persisted = ca_records["stable-ca-correlation"]["request"]["requester_assertion"]
+    assert persisted == assertion
+
+    second = await core._dispatch_swarm("same objective", "run-ca-2", "stable-ca-correlation")
+    assert second["status"] == "queued"
+    assert len(authority.calls) == 2
+    assert authority.calls[0]["requester_assertion"] == authority.calls[1]["requester_assertion"] == persisted
+    assert authority.calls[0]["correlation_id"] == authority.calls[1]["correlation_id"] == "stable-ca-correlation"

@@ -1,8 +1,8 @@
 # Repository upgrade review — November 3, 2026
 
-The inventory checked 39 accessible repositories, 366 branch heads, 286 open and closed pull-request records, and 447 recent default-branch commits. Branch and PR collections were paginated to exhaustion; commit history was limited to the most recent 30 commits per repository. One repository had no commits. This is an upgrade review, not an exhaustive audit of every historical file or commit.
+The inventory checked 40 accessible repositories, 367 branch heads, 286 open and closed pull-request records, and 478 recent default-branch commits. Branch and PR collections were paginated to exhaustion; commit history was limited to the most recent 30 commits per repository. One repository had no commits. This is an upgrade review, not an exhaustive audit of every historical file or commit.
 
-The public repository snapshots, PR head/base revisions and commit subjects are recorded in [REPOSITORY_UPGRADE_REVIEW.json](REPOSITORY_UPGRADE_REVIEW.json). That catalog contains the 17 public repositories. Review decisions below use revision-pinned public sources. The source registry hashes the local catalog and implementation resources.
+The public repository snapshots, PR head/base revisions and commit subjects are recorded in [REPOSITORY_UPGRADE_REVIEW.json](REPOSITORY_UPGRADE_REVIEW.json). That catalog contains the 18 public repositories. Review decisions below use revision-pinned public sources. The source registry hashes the local catalog and implementation resources.
 
 | Reviewed source | Finding and integration decision |
 | --- | --- |
@@ -28,3 +28,7 @@ New changes are published to the AVRONE integration branch after their targeted 
 | [Fusion Bridge](https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge), main `966c6c78bfb0e3fc466b221fb2f34a06521c189a`, PR #1 `8c5ea85e973c52631cd9fc1b14e4392f19a1f14c` | Newly discovered repository. Main's documented `/api/events` forwarding differs from the reviewed peer contracts; PR #1 corrects the relay and depends on the blackboard/CycleKernal adapters. Its existence is recorded, not claimed as an activated bridge. |
 
 The refreshed public catalog preserves all retrieved branch and PR head/base revisions. Its 30-commit window is explicit; it is not a claim to have audited every historical file.
+
+## Further refresh and adoption
+
+The latest scan includes 40 repositories and 39 nonempty root inventories. The blackboard proposal from AVRONE PR #20 (`8cca4083eb94da32240a17a5a7ce87db519cdf7b`) is now adapted and strengthened in the canonical runtime, with 180 passing related tests. The Fusion Bridge main at `3f8cc12a965486d5157431c7d906f04024b904cf` has placeholder regressions; its PR #1 source is materialized and independently tested as the repair reference. See [FUSION_SWARM_VALIDATION.md](FUSION_SWARM_VALIDATION.md). New daemon rounds 35–40 are cataloged; competing runtime files are not copied wholesale over the verified integration.

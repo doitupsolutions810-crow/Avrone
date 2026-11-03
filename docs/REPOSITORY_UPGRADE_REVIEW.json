@@ -2,15 +2,48 @@
   "schema_version": 1,
   "reviewed_on": "2026-11-03",
   "scope": {
-    "accessible_repositories": 39,
-    "branches": 366,
+    "accessible_repositories": 40,
+    "branches": 367,
     "pull_requests": 286,
-    "recent_default_branch_commits": 447,
+    "recent_default_branch_commits": 478,
     "commit_window": "Up to 30 recent default-branch commits per repository; not a full-history audit.",
     "empty_repositories": 1,
-    "public_repositories": 17
+    "public_repositories": 18,
+    "root_inventories": 39
   },
   "repositories": [
+    {
+      "repository": "doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform",
+      "url": "https://github.com/doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform",
+      "default_branch": "main",
+      "revision": "1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40",
+      "branches": [
+        {
+          "name": "main",
+          "revision": "1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40"
+        }
+      ],
+      "pull_requests": [],
+      "recent_commits": [
+        {
+          "revision": "1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40",
+          "url": "https://github.com/doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform/commit/1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40",
+          "subject": "Initial commit"
+        }
+      ],
+      "root": [
+        {
+          "path": "LICENSE",
+          "type": "file",
+          "sha": "a2c40fdd9c7920fd4ed20b3e9a99b4cbdd8ec02f"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "8111708325d779a960fe8eea64a6707020ac876a"
+        }
+      ]
+    },
     {
       "repository": "doitupsolutions810-crow/artifact-hosted-demo",
       "url": "https://github.com/doitupsolutions810-crow/artifact-hosted-demo",
@@ -95,65 +128,12 @@
           "url": "https://github.com/doitupsolutions810-crow/artifact-hosted-demo/commit/6f5f97cb4b254b0d833163edd3e4de81915386fc",
           "subject": "Initial commit"
         }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform",
-      "url": "https://github.com/doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform",
-      "default_branch": "main",
-      "revision": "1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40",
-      "branches": [
-        {
-          "name": "main",
-          "revision": "1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40"
-        }
       ],
-      "pull_requests": [],
-      "recent_commits": [
+      "root": [
         {
-          "revision": "1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40",
-          "url": "https://github.com/doitupsolutions810-crow/UnifiedToolStackApplication-utsp-platform/commit/1fcbdd4d3f68659d79cd78fc41dc5c20ebb75c40",
-          "subject": "Initial commit"
-        }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/seed-platform-v10x-docs",
-      "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs",
-      "default_branch": "main",
-      "revision": "0501ddfaa2642b6e35ca4439975b6a7cd9988c03",
-      "branches": [
-        {
-          "name": "main",
-          "revision": "0501ddfaa2642b6e35ca4439975b6a7cd9988c03"
-        }
-      ],
-      "pull_requests": [],
-      "recent_commits": [
-        {
-          "revision": "0501ddfaa2642b6e35ca4439975b6a7cd9988c03",
-          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/0501ddfaa2642b6e35ca4439975b6a7cd9988c03",
-          "subject": "Fix: Add section prefixes to prevent duplicate IDs"
-        },
-        {
-          "revision": "3627976d4d00c13dada0279724e369638bd27c57",
-          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/3627976d4d00c13dada0279724e369638bd27c57",
-          "subject": "Remove workflow file"
-        },
-        {
-          "revision": "51e7971484c926f734b61f9d8089f6bd7c882a9d",
-          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/51e7971484c926f734b61f9d8089f6bd7c882a9d",
-          "subject": "Add comprehensive deployment guide"
-        },
-        {
-          "revision": "a1d48277ec70f8738c3ccc92c78f56f0c24e8581",
-          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/a1d48277ec70f8738c3ccc92c78f56f0c24e8581",
-          "subject": "Add GitHub Pages deployment workflow"
-        },
-        {
-          "revision": "a1f8d14f3fe98fd3bcb53b21f7a9bc4a46da0896",
-          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/a1f8d14f3fe98fd3bcb53b21f7a9bc4a46da0896",
-          "subject": "Initial deployment of SEED Platform v10.x documentation"
+          "path": "README.md",
+          "type": "file",
+          "sha": "ebd4074df42e7539bb69929a4ee0312b8d7c2921"
         }
       ]
     },
@@ -165,7 +145,7 @@
       "branches": [
         {
           "name": "cursor/relay-events-intake-a5d0",
-          "revision": "f3a763fe230b6de3450c235c165773c5ea9550bb"
+          "revision": "97c9df6887a42242031d0afe1c5a43139509510c"
         },
         {
           "name": "emergent-compile",
@@ -224,7 +204,7 @@
           "state": "open",
           "draft": false,
           "head_ref": "cursor/relay-events-intake-a5d0",
-          "head_revision": "f3a763fe230b6de3450c235c165773c5ea9550bb",
+          "head_revision": "97c9df6887a42242031d0afe1c5a43139509510c",
           "base_ref": "main",
           "base_revision": "cbbcce9b6c3864e8710a5607033e351364dab605",
           "merged_at": null
@@ -425,6 +405,155 @@
           "url": "https://github.com/doitupsolutions810-crow/CycleKernal/commit/06702be3301e631d0af65ba7579427eca534c5b0",
           "subject": "Initial commit: CycleKernel-Integrated with Grok Monitoring Platform"
         }
+      ],
+      "root": [
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "b6fbe8081e858a9f546e42d054368691befde9e5"
+        },
+        {
+          "path": "Axiom_Terminal_Controller.ipynb",
+          "type": "file",
+          "sha": "8c01d275fde68eeace7fa2bf6b4a3721753dda52"
+        },
+        {
+          "path": "DEPLOYMENT_SUMMARY.md",
+          "type": "file",
+          "sha": "4c96a09a99a6ac499627e611ee62798d06d2f533"
+        },
+        {
+          "path": "Makefile",
+          "type": "file",
+          "sha": "4fc4b4b9b390c5094602a12ff024f3dc45546ec7"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "c31f0aa94e8a5219c694aa554401a097f8009d52"
+        },
+        {
+          "path": "backend",
+          "type": "dir",
+          "sha": "9175bca45e21a7435ca9a6380802f50526332e5a"
+        },
+        {
+          "path": "docker-compose.ghost.yml",
+          "type": "file",
+          "sha": "a3a9d7d81e7c72ea527aa599c95efdde5a38d921"
+        },
+        {
+          "path": "docker-compose.yml",
+          "type": "file",
+          "sha": "050ac47bd178d116c19d10b847acc2dfb86a5d9d"
+        },
+        {
+          "path": "docs",
+          "type": "dir",
+          "sha": "ac7ceb4c10991a323bb08e0ea58ae86554468655"
+        },
+        {
+          "path": "frontend",
+          "type": "dir",
+          "sha": "4a16d2f8f00c945d5ef674663a3e24fec3332813"
+        },
+        {
+          "path": "master",
+          "type": "dir",
+          "sha": "603691c40f29013ca85bfe3c9f7782a2de4cf6c7"
+        },
+        {
+          "path": "prometheus",
+          "type": "dir",
+          "sha": "8072542e6c81660f15cfc5a3832fd5c199577bfd"
+        },
+        {
+          "path": "research",
+          "type": "dir",
+          "sha": "f488ce8c5b7fbf42ffa933bf552daf49aa0e7f7a"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "29a4820cd9e27bb152cdac76b3ad32e44b85d971"
+        },
+        {
+          "path": "src",
+          "type": "dir",
+          "sha": "3229cedbfe62a12099681fbccb0174a479dbc8e2"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "0ff33582a713e32d97544baf0aba1bb613fd2eca"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/seed-platform-v10x-docs",
+      "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs",
+      "default_branch": "main",
+      "revision": "0501ddfaa2642b6e35ca4439975b6a7cd9988c03",
+      "branches": [
+        {
+          "name": "main",
+          "revision": "0501ddfaa2642b6e35ca4439975b6a7cd9988c03"
+        }
+      ],
+      "pull_requests": [],
+      "recent_commits": [
+        {
+          "revision": "0501ddfaa2642b6e35ca4439975b6a7cd9988c03",
+          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/0501ddfaa2642b6e35ca4439975b6a7cd9988c03",
+          "subject": "Fix: Add section prefixes to prevent duplicate IDs"
+        },
+        {
+          "revision": "3627976d4d00c13dada0279724e369638bd27c57",
+          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/3627976d4d00c13dada0279724e369638bd27c57",
+          "subject": "Remove workflow file"
+        },
+        {
+          "revision": "51e7971484c926f734b61f9d8089f6bd7c882a9d",
+          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/51e7971484c926f734b61f9d8089f6bd7c882a9d",
+          "subject": "Add comprehensive deployment guide"
+        },
+        {
+          "revision": "a1d48277ec70f8738c3ccc92c78f56f0c24e8581",
+          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/a1d48277ec70f8738c3ccc92c78f56f0c24e8581",
+          "subject": "Add GitHub Pages deployment workflow"
+        },
+        {
+          "revision": "a1f8d14f3fe98fd3bcb53b21f7a9bc4a46da0896",
+          "url": "https://github.com/doitupsolutions810-crow/seed-platform-v10x-docs/commit/a1f8d14f3fe98fd3bcb53b21f7a9bc4a46da0896",
+          "subject": "Initial deployment of SEED Platform v10.x documentation"
+        }
+      ],
+      "root": [
+        {
+          "path": "DEPLOYMENT_GUIDE.md",
+          "type": "file",
+          "sha": "248797184281eb5f589beb6da8c20ab738f90b44"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "0b26be115c5bbac2fb01d8f2f39f7441187d118b"
+        },
+        {
+          "path": "generate_docs.py",
+          "type": "file",
+          "sha": "d526f09e58f0f5feaea049d4d1cbaad8fc2e7278"
+        },
+        {
+          "path": "index.html",
+          "type": "file",
+          "sha": "87deab65b6a11f1016d093530da50b357345d834"
+        },
+        {
+          "path": "requirements.txt",
+          "type": "file",
+          "sha": "9706131343e99b73c219057760f0cecd6dd463c5"
+        }
       ]
     },
     {
@@ -459,6 +588,63 @@
           "revision": "f57555568b0aebab286f466e8655bbbe4630eaaa",
           "url": "https://github.com/doitupsolutions810-crow/KiloMan/commit/f57555568b0aebab286f466e8655bbbe4630eaaa",
           "subject": "Initial commit from Create Next App"
+        }
+      ],
+      "root": [
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "5ef6a520780202a1d6addd833d800ccb1ecac0bb"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "e215bc4ccf138bbc38ad58ad57e92135484b3c0f"
+        },
+        {
+          "path": "app",
+          "type": "dir",
+          "sha": "e684a4ec194ea96301fa250619c828c71c57d715"
+        },
+        {
+          "path": "architecture_plan.md",
+          "type": "file",
+          "sha": "6162aac31db1d545510eb0dd235ad2309e0bd4fd"
+        },
+        {
+          "path": "eslint.config.mjs",
+          "type": "file",
+          "sha": "c85fb67c463f20d1ee449b0ffee725a61dfb9259"
+        },
+        {
+          "path": "next.config.ts",
+          "type": "file",
+          "sha": "e9ffa3083ad279ecf95fd8eae59cb253e9a539c4"
+        },
+        {
+          "path": "package-lock.json",
+          "type": "file",
+          "sha": "75908cf64e451e2d32d071901af6ccc25c0892c5"
+        },
+        {
+          "path": "package.json",
+          "type": "file",
+          "sha": "cf5750ba39aa88a069a93c135e0b0460b28adbee"
+        },
+        {
+          "path": "postcss.config.mjs",
+          "type": "file",
+          "sha": "61e36849cf7cfa9f1f71b4a3964a4953e3e243d3"
+        },
+        {
+          "path": "public",
+          "type": "dir",
+          "sha": "3c0dd35109191ee1f5228805912be404cda264e0"
+        },
+        {
+          "path": "tsconfig.json",
+          "type": "file",
+          "sha": "2627c6070ad3aad1a758ab2b901207ee6b1864bd"
         }
       ]
     },
@@ -625,70 +811,142 @@
           "url": "https://github.com/doitupsolutions810-crow/express-openapi-validator/commit/2fc8a6aa0cc8009ed691aec2e180482f43db93cd",
           "subject": "fix: package.json & package-lock.json to reduce vulnerabilities (#1096)"
         }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/cleanroom-agent-system",
-      "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system",
-      "default_branch": "main",
-      "revision": "78e83cdcd546f72921124093009de850efb9466e",
-      "branches": [
-        {
-          "name": "main",
-          "revision": "78e83cdcd546f72921124093009de850efb9466e"
-        }
       ],
-      "pull_requests": [],
-      "recent_commits": [
+      "root": [
         {
-          "revision": "78e83cdcd546f72921124093009de850efb9466e",
-          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/78e83cdcd546f72921124093009de850efb9466e",
-          "subject": "Add vector memory, self-improve agent, live dashboard, background agent, hardened deploy"
+          "path": ".all-contributorsrc",
+          "type": "file",
+          "sha": "9c021ea393e4488a5127fa0aaaceed6582842c5e"
         },
         {
-          "revision": "05ccf14f42c82f80465df84a26c28a21c5a3dd28",
-          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/05ccf14f42c82f80465df84a26c28a21c5a3dd28",
-          "subject": "Integrate agent memory persistence, optimize multi-agent orchestration with parallel execution + error handling, harden DeployAgent"
+          "path": ".codacy.yml",
+          "type": "file",
+          "sha": "821687403e8da24cbb4f52806089ace1ed14abea"
         },
         {
-          "revision": "a32c0665db17d4a3168dbbff2e05c5b2b4d49edd",
-          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/a32c0665db17d4a3168dbbff2e05c5b2b4d49edd",
-          "subject": "Scale agents, add tests, memory skill, production deploy support, architecture updates"
+          "path": ".editorconfig",
+          "type": "file",
+          "sha": "99117d6c36b86087b76446d03ab92c5cdce64296"
         },
         {
-          "revision": "fa692487a3829c35831b136a8e358d4732a05489",
-          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/fa692487a3829c35831b136a8e358d4732a05489",
-          "subject": "Add coding-agent skill + architecture handbook"
+          "path": ".github",
+          "type": "dir",
+          "sha": "78e5e59d98adafb7ff33197882a44ccc40a9b123"
         },
         {
-          "revision": "cdfc68c4fdede0e025e81cf074b84f3135f8a7b4",
-          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/cdfc68c4fdede0e025e81cf074b84f3135f8a7b4",
-          "subject": "Initial commit: Cleanroom Agent System starter codebase with coding agent + Vercel hooks"
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "84f4a5808a52ffcb38d6d547ddab0ddce14b72d6"
         },
         {
-          "revision": "2cae4caecaf7bf36dea53a5a6b1c6ec3b763bae4",
-          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/2cae4caecaf7bf36dea53a5a6b1c6ec3b763bae4",
-          "subject": "Initial commit"
-        }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/sacp-platform",
-      "url": "https://github.com/doitupsolutions810-crow/sacp-platform",
-      "default_branch": "main",
-      "revision": "0b669185afa316b4b2dad63672bf4c29e2107fa4",
-      "branches": [
+          "path": ".gitpod.yml",
+          "type": "file",
+          "sha": "2b06da224e71caa213d5f501a09fb6b8a5ecacfd"
+        },
         {
-          "name": "main",
-          "revision": "0b669185afa316b4b2dad63672bf4c29e2107fa4"
-        }
-      ],
-      "pull_requests": [],
-      "recent_commits": [
+          "path": ".nycrc",
+          "type": "file",
+          "sha": "2094af21a11b0cfa553bda42b0914bca9cf015ca"
+        },
         {
-          "revision": "0b669185afa316b4b2dad63672bf4c29e2107fa4",
-          "url": "https://github.com/doitupsolutions810-crow/sacp-platform/commit/0b669185afa316b4b2dad63672bf4c29e2107fa4",
-          "subject": "Initial commit"
+          "path": ".prettierrc.json",
+          "type": "file",
+          "sha": "a20502b7f06d848452da0d93ce8830c1d86b05dd"
+        },
+        {
+          "path": ".travis.yml",
+          "type": "file",
+          "sha": "3d8e26f07f50dedd70d5ebda8126342d549981d6"
+        },
+        {
+          "path": "CHANGE_HISTORY.md",
+          "type": "file",
+          "sha": "85d0592aa780951764c265094caa3a47744932b3"
+        },
+        {
+          "path": "CODE_OF_CONDUCT.md",
+          "type": "file",
+          "sha": "5d506909ffa942d9048b02ae62433536c8396f07"
+        },
+        {
+          "path": "CONTRIBUTING.md",
+          "type": "file",
+          "sha": "b2e78d6e7e758f49fb3b377e32f7d745cecd70eb"
+        },
+        {
+          "path": "LICENSE",
+          "type": "file",
+          "sha": "511abc79d6d93c433424db636a52f2449b8b5914"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "d1af81fdbdc0e30e5e68975942c9de87becd6008"
+        },
+        {
+          "path": "SECURITY.md",
+          "type": "file",
+          "sha": "66ba1532a1fddf0801e8bfb0ff4ccfb2214a3d36"
+        },
+        {
+          "path": "_config.yml",
+          "type": "file",
+          "sha": "c4192631f25b34d77a7f159aa0da0e3ae99c4ef4"
+        },
+        {
+          "path": "assets",
+          "type": "dir",
+          "sha": "7d06173ebd65e74b3eb1d607cd452aadb5ce2fa9"
+        },
+        {
+          "path": "build.sh",
+          "type": "file",
+          "sha": "e87f6a924e94139fee8f8e6527e5adcd059b4502"
+        },
+        {
+          "path": "examples",
+          "type": "dir",
+          "sha": "bbceda8d818d225927572bcc3cd15b2aeec13e1b"
+        },
+        {
+          "path": "launch.json",
+          "type": "file",
+          "sha": "ec4d7e8a26be569cfe96d6e3693b389deaadc82f"
+        },
+        {
+          "path": "package-lock.json",
+          "type": "file",
+          "sha": "d20b653c7378e7e831fadf59787587f587e76db4"
+        },
+        {
+          "path": "package.json",
+          "type": "file",
+          "sha": "548617ed9a2f3f7772e12d8c2f8c98b746447468"
+        },
+        {
+          "path": "secrets.zip.enc",
+          "type": "file",
+          "sha": "87df9d90f10621d20d5b19f2471a1908020f2201"
+        },
+        {
+          "path": "src",
+          "type": "dir",
+          "sha": "0c2c18bdc16d62f97cce70360a34d0d44c903ff6"
+        },
+        {
+          "path": "test",
+          "type": "dir",
+          "sha": "0a7e3251dd602e9ee3fdbb3850b0f5d68355e6e1"
+        },
+        {
+          "path": "tsconfig.json",
+          "type": "file",
+          "sha": "22f73d9609ea68e6c899c853a2ebbc0d8a468abb"
+        },
+        {
+          "path": "typings",
+          "type": "dir",
+          "sha": "b7b4cc85f9c29d9c40243795240a1a12c962e920"
         }
       ]
     },
@@ -1408,6 +1666,664 @@
           "url": "https://github.com/doitupsolutions810-crow/living-intermediate-control-plane/commit/dbe47743be008a0546d81bc059b194a520087276",
           "subject": "Expose tolerated QGT positivity projection diagnostics"
         }
+      ],
+      "root": [
+        {
+          "path": ".dockerignore",
+          "type": "file",
+          "sha": "0b40fac373ed5d8eacb4f4a613981b2bdd4771ed"
+        },
+        {
+          "path": ".github",
+          "type": "dir",
+          "sha": "bde87b16410987ce41c447596b81aa3a2d433dc3"
+        },
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "6694e0236f2950ce3be4022a0e240885e6714034"
+        },
+        {
+          "path": ".trivyignore",
+          "type": "file",
+          "sha": "09932e5cb1e0c64f5bd3e75230c64eb6eebcaf6d"
+        },
+        {
+          "path": "Dockerfile",
+          "type": "file",
+          "sha": "e20451c9f9d8c26e6a33aaa84e51bc103f6c75d9"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "3591a38bb5afe269c6e93a8a7ecfbfe1689391ce"
+        },
+        {
+          "path": "SYSTEM_ACCESS.md",
+          "type": "file",
+          "sha": "4435894d0f34488c7902a4e039da7d7b5551d7ec"
+        },
+        {
+          "path": "agents",
+          "type": "dir",
+          "sha": "9b03f00a7259c0d06f71bac123468170a11ad99b"
+        },
+        {
+          "path": "attestation",
+          "type": "dir",
+          "sha": "2bd1206227718e40dbd8bba6eff0bed727f97518"
+        },
+        {
+          "path": "avrone-chat",
+          "type": "dir",
+          "sha": "aa8fbc54e5b7661f8ea22664ee13726b132427ed"
+        },
+        {
+          "path": "avrone",
+          "type": "dir",
+          "sha": "2de2e287f17150b3f692899022e7ca4035a2a0a7"
+        },
+        {
+          "path": "bin",
+          "type": "dir",
+          "sha": "1c5fe9542c4d11975830ef7828ead8d86668f11c"
+        },
+        {
+          "path": "cloudflared",
+          "type": "dir",
+          "sha": "f659fc130d21a676f5743710bbf877c591897f50"
+        },
+        {
+          "path": "config.json",
+          "type": "file",
+          "sha": "0aea00e47851f9b7200fee1e188a5f4151308ad6"
+        },
+        {
+          "path": "connectors",
+          "type": "dir",
+          "sha": "e2ae6806b14630a0a507c50b6715f0f62702df0e"
+        },
+        {
+          "path": "data",
+          "type": "dir",
+          "sha": "e0240445816b5b8f76be02e3c4f7b7d727abd2ea"
+        },
+        {
+          "path": "docs",
+          "type": "dir",
+          "sha": "a29af002640f74c2dc527620e8b4e5483ae458f5"
+        },
+        {
+          "path": "integrate.mjs",
+          "type": "file",
+          "sha": "6b54b60dfd96c6604961d0475cc8e1bfe84c6114"
+        },
+        {
+          "path": "k8s",
+          "type": "dir",
+          "sha": "11f092e512a22f021c38ca27a62ec5cf63de65f0"
+        },
+        {
+          "path": "lattice",
+          "type": "dir",
+          "sha": "36d0ab38e6d6eb0a718ecf7cc3479f8e231e75be"
+        },
+        {
+          "path": "launchdesk",
+          "type": "dir",
+          "sha": "75f875b8696d7385f74ccdb25f83fad45c08fb78"
+        },
+        {
+          "path": "lib",
+          "type": "dir",
+          "sha": "5cf201d9e35d6e7f72286f61994af4844de8456b"
+        },
+        {
+          "path": "package.json",
+          "type": "file",
+          "sha": "a234efb285b4cc2a3f602755d65cbf9b752f9908"
+        },
+        {
+          "path": "platform",
+          "type": "dir",
+          "sha": "77e855552d947cc7b7d5a50536967dbde8997092"
+        },
+        {
+          "path": "policy",
+          "type": "dir",
+          "sha": "7cfe9b7f09ec9afcdd1406b13c50e16e0f131944"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "434fe1c0563dbd7c8d1ffa2fed4c8b37b6871e27"
+        },
+        {
+          "path": "status",
+          "type": "dir",
+          "sha": "7c8589562a81671464a4b54c6199ecfe0a31ab81"
+        },
+        {
+          "path": "test",
+          "type": "dir",
+          "sha": "2cbb5e83c3d1c7d9a773a1bf6f57a3ef45ea9628"
+        },
+        {
+          "path": "trivy.yaml",
+          "type": "file",
+          "sha": "3bf0aa252232718ecf6d1882ea14605398ed2773"
+        },
+        {
+          "path": "workspace",
+          "type": "dir",
+          "sha": "a79af9b1c44d5758fdde732b53ed8795957fb58c"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/cleanroom-agent-system",
+      "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system",
+      "default_branch": "main",
+      "revision": "78e83cdcd546f72921124093009de850efb9466e",
+      "branches": [
+        {
+          "name": "main",
+          "revision": "78e83cdcd546f72921124093009de850efb9466e"
+        }
+      ],
+      "pull_requests": [],
+      "recent_commits": [
+        {
+          "revision": "78e83cdcd546f72921124093009de850efb9466e",
+          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/78e83cdcd546f72921124093009de850efb9466e",
+          "subject": "Add vector memory, self-improve agent, live dashboard, background agent, hardened deploy"
+        },
+        {
+          "revision": "05ccf14f42c82f80465df84a26c28a21c5a3dd28",
+          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/05ccf14f42c82f80465df84a26c28a21c5a3dd28",
+          "subject": "Integrate agent memory persistence, optimize multi-agent orchestration with parallel execution + error handling, harden DeployAgent"
+        },
+        {
+          "revision": "a32c0665db17d4a3168dbbff2e05c5b2b4d49edd",
+          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/a32c0665db17d4a3168dbbff2e05c5b2b4d49edd",
+          "subject": "Scale agents, add tests, memory skill, production deploy support, architecture updates"
+        },
+        {
+          "revision": "fa692487a3829c35831b136a8e358d4732a05489",
+          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/fa692487a3829c35831b136a8e358d4732a05489",
+          "subject": "Add coding-agent skill + architecture handbook"
+        },
+        {
+          "revision": "cdfc68c4fdede0e025e81cf074b84f3135f8a7b4",
+          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/cdfc68c4fdede0e025e81cf074b84f3135f8a7b4",
+          "subject": "Initial commit: Cleanroom Agent System starter codebase with coding agent + Vercel hooks"
+        },
+        {
+          "revision": "2cae4caecaf7bf36dea53a5a6b1c6ec3b763bae4",
+          "url": "https://github.com/doitupsolutions810-crow/cleanroom-agent-system/commit/2cae4caecaf7bf36dea53a5a6b1c6ec3b763bae4",
+          "subject": "Initial commit"
+        }
+      ],
+      "root": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "c7f4ebe53de35f503c5db81f7e80196812fac48c"
+        },
+        {
+          "path": "agents",
+          "type": "dir",
+          "sha": "833f35a70d96158c252121727a2b985d2c3c783b"
+        },
+        {
+          "path": "api",
+          "type": "dir",
+          "sha": "b3d9b67765de8e5c9ef00edf7bd470fc4f13ddf4"
+        },
+        {
+          "path": "deploy",
+          "type": "dir",
+          "sha": "03d51d9e9bb07eda00b30532e6d8c9128e40da4e"
+        },
+        {
+          "path": "docs",
+          "type": "dir",
+          "sha": "a86d83447e1eb425a2ded8701a818d0c2d485be9"
+        },
+        {
+          "path": "requirements.txt",
+          "type": "file",
+          "sha": "3f9cae0d92c4846ef715a2e76913d10afc3f0c56"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "627c8afa51fe489d4f58189f02b96b800457bcef"
+        },
+        {
+          "path": "skills",
+          "type": "dir",
+          "sha": "6a81d4ed08b1c6f2350c75e47361196c2f10482a"
+        },
+        {
+          "path": "src",
+          "type": "dir",
+          "sha": "da52080a080b85c0e8890a2639450f62963dab0a"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "198720dc3efafaa339bd34ebab8b567316a5e23f"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/sacp-platform",
+      "url": "https://github.com/doitupsolutions810-crow/sacp-platform",
+      "default_branch": "main",
+      "revision": "0b669185afa316b4b2dad63672bf4c29e2107fa4",
+      "branches": [
+        {
+          "name": "main",
+          "revision": "0b669185afa316b4b2dad63672bf4c29e2107fa4"
+        }
+      ],
+      "pull_requests": [],
+      "recent_commits": [
+        {
+          "revision": "0b669185afa316b4b2dad63672bf4c29e2107fa4",
+          "url": "https://github.com/doitupsolutions810-crow/sacp-platform/commit/0b669185afa316b4b2dad63672bf4c29e2107fa4",
+          "subject": "Initial commit"
+        }
+      ],
+      "root": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "cd57e5d20a11f1bc5e685d6fbcb1697cfa083721"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent",
+      "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent",
+      "default_branch": "main",
+      "revision": "e0ad9246ee93225606eb0e49e2dab47157108b26",
+      "branches": [
+        {
+          "name": "main",
+          "revision": "e0ad9246ee93225606eb0e49e2dab47157108b26"
+        }
+      ],
+      "pull_requests": [],
+      "recent_commits": [
+        {
+          "revision": "e0ad9246ee93225606eb0e49e2dab47157108b26",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/e0ad9246ee93225606eb0e49e2dab47157108b26",
+          "subject": "1"
+        },
+        {
+          "revision": "f3b4a5ab5a8193fa91b6993257ebe2ea97c04049",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/f3b4a5ab5a8193fa91b6993257ebe2ea97c04049",
+          "subject": "1st"
+        },
+        {
+          "revision": "9ccae538fe80d9bc9479ff28e950f7f96b50e75e",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/9ccae538fe80d9bc9479ff28e950f7f96b50e75e",
+          "subject": "README addded"
+        },
+        {
+          "revision": "6fe15c37e8c7d173cc2c64e3bb95ada0834257b3",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/6fe15c37e8c7d173cc2c64e3bb95ada0834257b3",
+          "subject": "removed unecessary files"
+        },
+        {
+          "revision": "9344a903827aee52629d05d16cc213bfe26a44b1",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/9344a903827aee52629d05d16cc213bfe26a44b1",
+          "subject": "removed unecessary files"
+        },
+        {
+          "revision": "3c16af454037a44931545463b290b4d8b2fa9349",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/3c16af454037a44931545463b290b4d8b2fa9349",
+          "subject": "removed unecessary files"
+        },
+        {
+          "revision": "01ea0fde03119806d88de4bbb093fcd71c7a8e68",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/01ea0fde03119806d88de4bbb093fcd71c7a8e68",
+          "subject": "v1 working"
+        },
+        {
+          "revision": "e334e593be8ce3dd421075420f573d6ec9b63ea4",
+          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/e334e593be8ce3dd421075420f573d6ec9b63ea4",
+          "subject": "initial"
+        }
+      ],
+      "root": [
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "2ab4425c41a01c3c59a0454dd964f9c767e1ea65"
+        },
+        {
+          "path": ".kb",
+          "type": "dir",
+          "sha": "ddd1357fbe1c33783f7742a08ebcc87ea3b53363"
+        },
+        {
+          "path": "AGENTS.md",
+          "type": "file",
+          "sha": "f0a7ee8503840a6b41e58e80906650a891ae86f1"
+        },
+        {
+          "path": "AVRONE_V48_COMPLETE_ANALYSIS.md",
+          "type": "file",
+          "sha": "9c31468c3cb7a6175df97b0227af81e6fe6bdfe3"
+        },
+        {
+          "path": "LICENSE",
+          "type": "file",
+          "sha": "14fac913ccf80234b1848540089a3bbcb6e5283d"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "f2192f3493acac52ae51ca2cdb55c3ec55e80d1b"
+        },
+        {
+          "path": "docs",
+          "type": "dir",
+          "sha": "a1841a530b15ba6b952106cdd1cf8da6cfcd6cad"
+        },
+        {
+          "path": "knowledge_base",
+          "type": "dir",
+          "sha": "f62b003fb9e7da2fa96ec2a5c7c10716f7e7a27d"
+        },
+        {
+          "path": "my-agent-pzy2ks",
+          "type": "dir",
+          "sha": "70becbf9c73bb8aabfd70fd62172e50c0c34678b"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/control12-workspace",
+      "url": "https://github.com/doitupsolutions810-crow/control12-workspace",
+      "default_branch": "main",
+      "revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
+      "branches": [
+        {
+          "name": "commercial-v1",
+          "revision": "90fd352f9842c8f6863394a799ccaee64cc2da3c"
+        },
+        {
+          "name": "feat/commercial-ci-dispatch",
+          "revision": "45783b3ac902567030cf7f62a9be77ac0fe6b37d"
+        },
+        {
+          "name": "feat/degraded-success",
+          "revision": "6ebbd48ed057a303757322d505d9eeae9354bab3"
+        },
+        {
+          "name": "feat/self-hosted-optional",
+          "revision": "ccca47e26c933068ad3a79f5ef051e0736a8358b"
+        },
+        {
+          "name": "feat/self-hosted-probe",
+          "revision": "3374d1af7336c24c8cdf43dfbde26e50624e7412"
+        },
+        {
+          "name": "fix/default-authentication-boundary",
+          "revision": "71a57dc3c640cebd6a1856f0b0dc74ecd27c0505"
+        },
+        {
+          "name": "fix/runner-pool-probe",
+          "revision": "940f93d2fdfbbc8a975dd35957bdcb1e9f810403"
+        },
+        {
+          "name": "main",
+          "revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6"
+        }
+      ],
+      "pull_requests": [
+        {
+          "number": 7,
+          "title": "Add fail-closed authentication boundary to CONTROL12 Workspace",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/7",
+          "state": "open",
+          "draft": true,
+          "head_ref": "fix/default-authentication-boundary",
+          "head_revision": "71a57dc3c640cebd6a1856f0b0dc74ecd27c0505",
+          "base_ref": "main",
+          "base_revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
+          "merged_at": null
+        },
+        {
+          "number": 6,
+          "title": "Degraded success criteria; slim-probe non-blocking",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/6",
+          "state": "closed",
+          "draft": false,
+          "head_ref": "feat/degraded-success",
+          "head_revision": "6ebbd48ed057a303757322d505d9eeae9354bab3",
+          "base_ref": "main",
+          "base_revision": "7b21c7e7e5c72e7e7bffd1a29fce1ffae47f9372",
+          "merged_at": "2026-09-17T19:27:31Z"
+        },
+        {
+          "number": 5,
+          "title": "Commercial CI can target self-hosted control12 runners",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/5",
+          "state": "closed",
+          "draft": false,
+          "head_ref": "feat/self-hosted-optional",
+          "head_revision": "ccca47e26c933068ad3a79f5ef051e0736a8358b",
+          "base_ref": "main",
+          "base_revision": "86eeb28830afd1a79b1f582e1ea5dfdfcebb7316",
+          "merged_at": "2026-09-17T19:25:01Z"
+        },
+        {
+          "number": 4,
+          "title": "Add self-hosted control12 runner probe",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/4",
+          "state": "closed",
+          "draft": false,
+          "head_ref": "feat/self-hosted-probe",
+          "head_revision": "3374d1af7336c24c8cdf43dfbde26e50624e7412",
+          "base_ref": "main",
+          "base_revision": "0af242c4108340da6bfd6b27e6f476a6e55a9ff5",
+          "merged_at": "2026-09-17T19:15:20Z"
+        },
+        {
+          "number": 3,
+          "title": "Pin Commercial CI runners: ubuntu-24.04 + ubuntu-slim probe",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/3",
+          "state": "closed",
+          "draft": false,
+          "head_ref": "fix/runner-pool-probe",
+          "head_revision": "940f93d2fdfbbc8a975dd35957bdcb1e9f810403",
+          "base_ref": "main",
+          "base_revision": "196a1b60e15104da6c69a0a5b07a1611f6c24c21",
+          "merged_at": "2026-09-17T19:09:57Z"
+        },
+        {
+          "number": 2,
+          "title": "Add CONTROL12 Commercial CI with workflow_dispatch",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/2",
+          "state": "closed",
+          "draft": false,
+          "head_ref": "feat/commercial-ci-dispatch",
+          "head_revision": "45783b3ac902567030cf7f62a9be77ac0fe6b37d",
+          "base_ref": "main",
+          "base_revision": "750341247b49355be6a4bb780e4ca27fbdf8457a",
+          "merged_at": "2026-09-17T18:59:25Z"
+        },
+        {
+          "number": 1,
+          "title": "Commercial v1: release assurance and revenue control plane",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/1",
+          "state": "open",
+          "draft": false,
+          "head_ref": "commercial-v1",
+          "head_revision": "90fd352f9842c8f6863394a799ccaee64cc2da3c",
+          "base_ref": "main",
+          "base_revision": "750341247b49355be6a4bb780e4ca27fbdf8457a",
+          "merged_at": null
+        }
+      ],
+      "recent_commits": [
+        {
+          "revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
+          "subject": "Degraded success criteria; slim-probe non-blocking"
+        },
+        {
+          "revision": "7b21c7e7e5c72e7e7bffd1a29fce1ffae47f9372",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/7b21c7e7e5c72e7e7bffd1a29fce1ffae47f9372",
+          "subject": "Commercial CI can target self-hosted control12 runners"
+        },
+        {
+          "revision": "86eeb28830afd1a79b1f582e1ea5dfdfcebb7316",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/86eeb28830afd1a79b1f582e1ea5dfdfcebb7316",
+          "subject": "Add self-hosted control12 runner probe"
+        },
+        {
+          "revision": "0af242c4108340da6bfd6b27e6f476a6e55a9ff5",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/0af242c4108340da6bfd6b27e6f476a6e55a9ff5",
+          "subject": "Pin Commercial CI runners: ubuntu-24.04 + ubuntu-slim probe"
+        },
+        {
+          "revision": "196a1b60e15104da6c69a0a5b07a1611f6c24c21",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/196a1b60e15104da6c69a0a5b07a1611f6c24c21",
+          "subject": "Add CONTROL12 Commercial CI with workflow_dispatch"
+        },
+        {
+          "revision": "750341247b49355be6a4bb780e4ca27fbdf8457a",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/750341247b49355be6a4bb780e4ca27fbdf8457a",
+          "subject": "Proceed 2026-08-15: Build continuity — 9 lattices, forge+horizon+procure+ship green"
+        },
+        {
+          "revision": "60b8ce612e829ccd234a92dd5b375cbe07fa8b66",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/60b8ce612e829ccd234a92dd5b375cbe07fa8b66",
+          "subject": "Proceed: GitHub Pages workflow + operator portal; sandbox stack redeployed"
+        },
+        {
+          "revision": "f0aa61c0d1dc898d919e20553f5514f6e1bb67f3",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/f0aa61c0d1dc898d919e20553f5514f6e1bb67f3",
+          "subject": "Public operator portal (docs/) for GitHub Pages access"
+        },
+        {
+          "revision": "2a725555edcf35506b45b94054fb9e7fc7505062",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/2a725555edcf35506b45b94054fb9e7fc7505062",
+          "subject": "Add single-folder run + cloud/VPS public URL deploy guides"
+        },
+        {
+          "revision": "8ae9c8c61e682b238cd5d3809aa670b249a66ab4",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/8ae9c8c61e682b238cd5d3809aa670b249a66ab4",
+          "subject": "OPERATE_NOW: live operator guide — stack deployed process mode"
+        },
+        {
+          "revision": "65909a2519bdda6b2727d088ebaa7295e9c18c47",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/65909a2519bdda6b2727d088ebaa7295e9c18c47",
+          "subject": "Ship 1.0.0-ship: SaaS security/tenancy/metrics, PRODUCTION runbook, patent technical disclosure"
+        },
+        {
+          "revision": "216d6d0c38d0fa2992dfc8acf7e40c86c2bb4101",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/216d6d0c38d0fa2992dfc8acf7e40c86c2bb4101",
+          "subject": "Deploy: process stack live — gateway :3010, workspace :8080, VM browser dashboards, deploy.sh"
+        },
+        {
+          "revision": "78867da596f7cbf187ad81c71d9fd5e01074b042",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/78867da596f7cbf187ad81c71d9fd5e01074b042",
+          "subject": "Connector proof: GitHub MCP get_me + ToolReach + async gateway forge HTTP 200"
+        },
+        {
+          "revision": "a9b63e00ae30ff9de14d06962df0dc037c456831",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/a9b63e00ae30ff9de14d06962df0dc037c456831",
+          "subject": "HarnessOpt loop closed: H0 seed, real D_k from long-horizon, hypothesis, bounded Δh, AttestPipe+Host-ONLY apply"
+        },
+        {
+          "revision": "c78e1ff7218bcfc5acc709d98f1ec7d1719b8561",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/c78e1ff7218bcfc5acc709d98f1ec7d1719b8561",
+          "subject": "Long-horizon agent cluster: real multi-step execution (attest, brain, cycle, host-gate, forge, codex, quarantine) — no mocks"
+        },
+        {
+          "revision": "295d102f4794bed77a2ddc6c547a50380bfd3501",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/295d102f4794bed77a2ddc6c547a50380bfd3501",
+          "subject": "Publish first attested tool: Workspace Attestor v1 (Chat→AttestPipe→Cycle→Host-ONLY→FORGE path closed)"
+        },
+        {
+          "revision": "9cd12f4028fda3b2545a88c184526b7d8f11dafd",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/9cd12f4028fda3b2545a88c184526b7d8f11dafd",
+          "subject": "Add ChatBot + Coding Workspace UI (templates/index.html)"
+        },
+        {
+          "revision": "6465263fcbeb97e8b2775697a060b80dcbffda81",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/6465263fcbeb97e8b2775697a060b80dcbffda81",
+          "subject": "Add FastAPI app and ChatBot + Coding Workspace UI"
+        },
+        {
+          "revision": "310c9e9b73910802eb920967ec7e7dd37c735c88",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/310c9e9b73910802eb920967ec7e7dd37c735c88",
+          "subject": "Publish CONTROL12 Workspace: ChatBot + Agent Orchestration coding surface under Trinity Core / AttestPipe / Cycle Kernel / Host-ONLY"
+        },
+        {
+          "revision": "37258a2a674fb263ea1849d25283e302d503d11f",
+          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/37258a2a674fb263ea1849d25283e302d503d11f",
+          "subject": "Initial commit"
+        }
+      ],
+      "root": [
+        {
+          "path": ".github",
+          "type": "dir",
+          "sha": "e7f856a94281c43e1d500d84f35a1be4344769ab"
+        },
+        {
+          "path": "Dockerfile",
+          "type": "file",
+          "sha": "80f016435dd8ae3ef1759fc026faa59ab481d04f"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "a5b7e0ea36913d8ca49077b391a751667143e7d4"
+        },
+        {
+          "path": "SUCCESS_CRITERIA.md",
+          "type": "file",
+          "sha": "419ed714eb35abf08ae891eba01614966b503c84"
+        },
+        {
+          "path": "app",
+          "type": "dir",
+          "sha": "45799dfcbff169ec6b9ba7e55a4568d39f9e44ee"
+        },
+        {
+          "path": "artifacts",
+          "type": "dir",
+          "sha": "2f1218a700006f976c0f55d75bb7cb2d639aaf34"
+        },
+        {
+          "path": "docs",
+          "type": "dir",
+          "sha": "2026acdc150bd2e0702ab4e96bb39e7ccc5c5096"
+        },
+        {
+          "path": "requirements.txt",
+          "type": "file",
+          "sha": "d663d8da9bb9f4a6ce647a0746a0c50a8af340ca"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "910fcf33bf6b715c5b1a5b1ba804420bd4c5394c"
+        },
+        {
+          "path": "templates",
+          "type": "dir",
+          "sha": "a116f57118bc17e7f0e6751e37b2cc425436d521"
+        }
       ]
     },
     {
@@ -1850,60 +2766,142 @@
           "url": "https://github.com/doitupsolutions810-crow/capability-authority/commit/14342290f63acc7c8cfc9412a51131dae05afa9a",
           "subject": "overlay: gitignore and clone-test notes"
         }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent",
-      "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent",
-      "default_branch": "main",
-      "revision": "e0ad9246ee93225606eb0e49e2dab47157108b26",
-      "branches": [
-        {
-          "name": "main",
-          "revision": "e0ad9246ee93225606eb0e49e2dab47157108b26"
-        }
       ],
-      "pull_requests": [],
-      "recent_commits": [
+      "root": [
         {
-          "revision": "e0ad9246ee93225606eb0e49e2dab47157108b26",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/e0ad9246ee93225606eb0e49e2dab47157108b26",
-          "subject": "1"
+          "path": ".github",
+          "type": "dir",
+          "sha": "ae2c84b638e139e56fbfe07a66eae22722f59072"
         },
         {
-          "revision": "f3b4a5ab5a8193fa91b6993257ebe2ea97c04049",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/f3b4a5ab5a8193fa91b6993257ebe2ea97c04049",
-          "subject": "1st"
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "571c4d2219c2fc56db3af121f1337ca89f69cabf"
         },
         {
-          "revision": "9ccae538fe80d9bc9479ff28e950f7f96b50e75e",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/9ccae538fe80d9bc9479ff28e950f7f96b50e75e",
-          "subject": "README addded"
+          "path": "DEV.md",
+          "type": "file",
+          "sha": "92769ddbea3189677fd17cec2927eb2f7293a9bb"
         },
         {
-          "revision": "6fe15c37e8c7d173cc2c64e3bb95ada0834257b3",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/6fe15c37e8c7d173cc2c64e3bb95ada0834257b3",
-          "subject": "removed unecessary files"
+          "path": "Makefile",
+          "type": "file",
+          "sha": "daf76f6bc609e5d8e4d9f8ac7131ffe5bc247d1d"
         },
         {
-          "revision": "9344a903827aee52629d05d16cc213bfe26a44b1",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/9344a903827aee52629d05d16cc213bfe26a44b1",
-          "subject": "removed unecessary files"
+          "path": "OVERLAY.md",
+          "type": "file",
+          "sha": "16e736cc02197fffe9eeaab126acf599f23e4019"
         },
         {
-          "revision": "3c16af454037a44931545463b290b4d8b2fa9349",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/3c16af454037a44931545463b290b4d8b2fa9349",
-          "subject": "removed unecessary files"
+          "path": "README.md",
+          "type": "file",
+          "sha": "f6a0340e2f6c5183c68c6668db3f48d09a9c9c7b"
         },
         {
-          "revision": "01ea0fde03119806d88de4bbb093fcd71c7a8e68",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/01ea0fde03119806d88de4bbb093fcd71c7a8e68",
-          "subject": "v1 working"
+          "path": "admin",
+          "type": "dir",
+          "sha": "89fac20c973129036b125f9958136a5f5d415713"
         },
         {
-          "revision": "e334e593be8ce3dd421075420f573d6ec9b63ea4",
-          "url": "https://github.com/doitupsolutions810-crow/LLM-RE-KnowledgeBase-Agent/commit/e334e593be8ce3dd421075420f573d6ec9b63ea4",
-          "subject": "initial"
+          "path": "agents",
+          "type": "dir",
+          "sha": "8f465d11f53bc59e55e1d14a6b02b509f6ca70ae"
+        },
+        {
+          "path": "attestpipe",
+          "type": "dir",
+          "sha": "73b5addc13745173e3cab43cc046760430db9700"
+        },
+        {
+          "path": "config",
+          "type": "dir",
+          "sha": "0bda5a77619ddb56f9a95293660f2628b23f1f59"
+        },
+        {
+          "path": "control12",
+          "type": "dir",
+          "sha": "ea01fdc5ee80bb1dbed3458c7bcdc4aed6ddbc4b"
+        },
+        {
+          "path": "docs",
+          "type": "dir",
+          "sha": "b8a3af7352bc1db5935c50f151283076a8c63ac6"
+        },
+        {
+          "path": "evidence",
+          "type": "dir",
+          "sha": "9959c5a3eaca7ed109a745fba5d7d3f358d73c82"
+        },
+        {
+          "path": "gateway",
+          "type": "dir",
+          "sha": "a18737a08e814f25ba552f922c325180cc73501e"
+        },
+        {
+          "path": "identity",
+          "type": "dir",
+          "sha": "4643387f4eb8d6867c384c86e3f3525dba30b9ad"
+        },
+        {
+          "path": "plane_service",
+          "type": "dir",
+          "sha": "2eba4cd7273e39ed4acccfae14dc451ec151bb2d"
+        },
+        {
+          "path": "policy",
+          "type": "dir",
+          "sha": "583fc94dac25ed98776f09ddfd487e95baf4e82e"
+        },
+        {
+          "path": "requirements-lab.txt",
+          "type": "file",
+          "sha": "65b96890671800108db5d30d68d8949a710b1da2"
+        },
+        {
+          "path": "requirements-spiffe.txt",
+          "type": "file",
+          "sha": "3b6d4e3d2d735bd1f738df55726793133d527950"
+        },
+        {
+          "path": "research",
+          "type": "dir",
+          "sha": "608d063de340c000841d0bfe2637c8d9726ea21e"
+        },
+        {
+          "path": "rings",
+          "type": "dir",
+          "sha": "819d351b722bd6d837b3f47efeef210d0d1439b9"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "6e6e009cea1dc46125432479fe2eaa8222f5ceb3"
+        },
+        {
+          "path": "sovereign",
+          "type": "dir",
+          "sha": "0c597ae050e5ac4234da91e4afd2964e74c6c161"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "ccbce9c96eb980f1c0332da1507422ab8130fb79"
+        },
+        {
+          "path": "third_party",
+          "type": "dir",
+          "sha": "10e3bb738180dec86e7bc88abc630df7e2438a05"
+        },
+        {
+          "path": "tools",
+          "type": "dir",
+          "sha": "be842b1a3c2267a2e2b8b91216b3f6ed622a8f6a"
+        },
+        {
+          "path": "watsonx",
+          "type": "dir",
+          "sha": "ea34bb4abe0405e0d2fa81b49dd530f822d3c980"
         }
       ]
     },
@@ -1925,495 +2923,112 @@
           "url": "https://github.com/doitupsolutions810-crow/crystal-iris-ruby-zippy/commit/6ebabd143ff5744d40b36042ad36894e59157afe",
           "subject": "Export from Grok"
         }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/control12-workspace",
-      "url": "https://github.com/doitupsolutions810-crow/control12-workspace",
-      "default_branch": "main",
-      "revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
-      "branches": [
-        {
-          "name": "commercial-v1",
-          "revision": "90fd352f9842c8f6863394a799ccaee64cc2da3c"
-        },
-        {
-          "name": "feat/commercial-ci-dispatch",
-          "revision": "45783b3ac902567030cf7f62a9be77ac0fe6b37d"
-        },
-        {
-          "name": "feat/degraded-success",
-          "revision": "6ebbd48ed057a303757322d505d9eeae9354bab3"
-        },
-        {
-          "name": "feat/self-hosted-optional",
-          "revision": "ccca47e26c933068ad3a79f5ef051e0736a8358b"
-        },
-        {
-          "name": "feat/self-hosted-probe",
-          "revision": "3374d1af7336c24c8cdf43dfbde26e50624e7412"
-        },
-        {
-          "name": "fix/default-authentication-boundary",
-          "revision": "71a57dc3c640cebd6a1856f0b0dc74ecd27c0505"
-        },
-        {
-          "name": "fix/runner-pool-probe",
-          "revision": "940f93d2fdfbbc8a975dd35957bdcb1e9f810403"
-        },
-        {
-          "name": "main",
-          "revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6"
-        }
       ],
-      "pull_requests": [
-        {
-          "number": 7,
-          "title": "Add fail-closed authentication boundary to CONTROL12 Workspace",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/7",
-          "state": "open",
-          "draft": true,
-          "head_ref": "fix/default-authentication-boundary",
-          "head_revision": "71a57dc3c640cebd6a1856f0b0dc74ecd27c0505",
-          "base_ref": "main",
-          "base_revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
-          "merged_at": null
-        },
-        {
-          "number": 6,
-          "title": "Degraded success criteria; slim-probe non-blocking",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/6",
-          "state": "closed",
-          "draft": false,
-          "head_ref": "feat/degraded-success",
-          "head_revision": "6ebbd48ed057a303757322d505d9eeae9354bab3",
-          "base_ref": "main",
-          "base_revision": "7b21c7e7e5c72e7e7bffd1a29fce1ffae47f9372",
-          "merged_at": "2026-09-17T19:27:31Z"
-        },
-        {
-          "number": 5,
-          "title": "Commercial CI can target self-hosted control12 runners",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/5",
-          "state": "closed",
-          "draft": false,
-          "head_ref": "feat/self-hosted-optional",
-          "head_revision": "ccca47e26c933068ad3a79f5ef051e0736a8358b",
-          "base_ref": "main",
-          "base_revision": "86eeb28830afd1a79b1f582e1ea5dfdfcebb7316",
-          "merged_at": "2026-09-17T19:25:01Z"
-        },
-        {
-          "number": 4,
-          "title": "Add self-hosted control12 runner probe",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/4",
-          "state": "closed",
-          "draft": false,
-          "head_ref": "feat/self-hosted-probe",
-          "head_revision": "3374d1af7336c24c8cdf43dfbde26e50624e7412",
-          "base_ref": "main",
-          "base_revision": "0af242c4108340da6bfd6b27e6f476a6e55a9ff5",
-          "merged_at": "2026-09-17T19:15:20Z"
-        },
-        {
-          "number": 3,
-          "title": "Pin Commercial CI runners: ubuntu-24.04 + ubuntu-slim probe",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/3",
-          "state": "closed",
-          "draft": false,
-          "head_ref": "fix/runner-pool-probe",
-          "head_revision": "940f93d2fdfbbc8a975dd35957bdcb1e9f810403",
-          "base_ref": "main",
-          "base_revision": "196a1b60e15104da6c69a0a5b07a1611f6c24c21",
-          "merged_at": "2026-09-17T19:09:57Z"
-        },
-        {
-          "number": 2,
-          "title": "Add CONTROL12 Commercial CI with workflow_dispatch",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/2",
-          "state": "closed",
-          "draft": false,
-          "head_ref": "feat/commercial-ci-dispatch",
-          "head_revision": "45783b3ac902567030cf7f62a9be77ac0fe6b37d",
-          "base_ref": "main",
-          "base_revision": "750341247b49355be6a4bb780e4ca27fbdf8457a",
-          "merged_at": "2026-09-17T18:59:25Z"
-        },
-        {
-          "number": 1,
-          "title": "Commercial v1: release assurance and revenue control plane",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/pull/1",
-          "state": "open",
-          "draft": false,
-          "head_ref": "commercial-v1",
-          "head_revision": "90fd352f9842c8f6863394a799ccaee64cc2da3c",
-          "base_ref": "main",
-          "base_revision": "750341247b49355be6a4bb780e4ca27fbdf8457a",
-          "merged_at": null
-        }
-      ],
-      "recent_commits": [
-        {
-          "revision": "6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/6d0a504ee5704fe8bedf052d7acabdf8a96e4fd6",
-          "subject": "Degraded success criteria; slim-probe non-blocking"
-        },
-        {
-          "revision": "7b21c7e7e5c72e7e7bffd1a29fce1ffae47f9372",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/7b21c7e7e5c72e7e7bffd1a29fce1ffae47f9372",
-          "subject": "Commercial CI can target self-hosted control12 runners"
-        },
-        {
-          "revision": "86eeb28830afd1a79b1f582e1ea5dfdfcebb7316",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/86eeb28830afd1a79b1f582e1ea5dfdfcebb7316",
-          "subject": "Add self-hosted control12 runner probe"
-        },
-        {
-          "revision": "0af242c4108340da6bfd6b27e6f476a6e55a9ff5",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/0af242c4108340da6bfd6b27e6f476a6e55a9ff5",
-          "subject": "Pin Commercial CI runners: ubuntu-24.04 + ubuntu-slim probe"
-        },
-        {
-          "revision": "196a1b60e15104da6c69a0a5b07a1611f6c24c21",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/196a1b60e15104da6c69a0a5b07a1611f6c24c21",
-          "subject": "Add CONTROL12 Commercial CI with workflow_dispatch"
-        },
-        {
-          "revision": "750341247b49355be6a4bb780e4ca27fbdf8457a",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/750341247b49355be6a4bb780e4ca27fbdf8457a",
-          "subject": "Proceed 2026-08-15: Build continuity — 9 lattices, forge+horizon+procure+ship green"
-        },
-        {
-          "revision": "60b8ce612e829ccd234a92dd5b375cbe07fa8b66",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/60b8ce612e829ccd234a92dd5b375cbe07fa8b66",
-          "subject": "Proceed: GitHub Pages workflow + operator portal; sandbox stack redeployed"
-        },
-        {
-          "revision": "f0aa61c0d1dc898d919e20553f5514f6e1bb67f3",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/f0aa61c0d1dc898d919e20553f5514f6e1bb67f3",
-          "subject": "Public operator portal (docs/) for GitHub Pages access"
-        },
-        {
-          "revision": "2a725555edcf35506b45b94054fb9e7fc7505062",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/2a725555edcf35506b45b94054fb9e7fc7505062",
-          "subject": "Add single-folder run + cloud/VPS public URL deploy guides"
-        },
-        {
-          "revision": "8ae9c8c61e682b238cd5d3809aa670b249a66ab4",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/8ae9c8c61e682b238cd5d3809aa670b249a66ab4",
-          "subject": "OPERATE_NOW: live operator guide — stack deployed process mode"
-        },
-        {
-          "revision": "65909a2519bdda6b2727d088ebaa7295e9c18c47",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/65909a2519bdda6b2727d088ebaa7295e9c18c47",
-          "subject": "Ship 1.0.0-ship: SaaS security/tenancy/metrics, PRODUCTION runbook, patent technical disclosure"
-        },
-        {
-          "revision": "216d6d0c38d0fa2992dfc8acf7e40c86c2bb4101",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/216d6d0c38d0fa2992dfc8acf7e40c86c2bb4101",
-          "subject": "Deploy: process stack live — gateway :3010, workspace :8080, VM browser dashboards, deploy.sh"
-        },
-        {
-          "revision": "78867da596f7cbf187ad81c71d9fd5e01074b042",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/78867da596f7cbf187ad81c71d9fd5e01074b042",
-          "subject": "Connector proof: GitHub MCP get_me + ToolReach + async gateway forge HTTP 200"
-        },
-        {
-          "revision": "a9b63e00ae30ff9de14d06962df0dc037c456831",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/a9b63e00ae30ff9de14d06962df0dc037c456831",
-          "subject": "HarnessOpt loop closed: H0 seed, real D_k from long-horizon, hypothesis, bounded Δh, AttestPipe+Host-ONLY apply"
-        },
-        {
-          "revision": "c78e1ff7218bcfc5acc709d98f1ec7d1719b8561",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/c78e1ff7218bcfc5acc709d98f1ec7d1719b8561",
-          "subject": "Long-horizon agent cluster: real multi-step execution (attest, brain, cycle, host-gate, forge, codex, quarantine) — no mocks"
-        },
-        {
-          "revision": "295d102f4794bed77a2ddc6c547a50380bfd3501",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/295d102f4794bed77a2ddc6c547a50380bfd3501",
-          "subject": "Publish first attested tool: Workspace Attestor v1 (Chat→AttestPipe→Cycle→Host-ONLY→FORGE path closed)"
-        },
-        {
-          "revision": "9cd12f4028fda3b2545a88c184526b7d8f11dafd",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/9cd12f4028fda3b2545a88c184526b7d8f11dafd",
-          "subject": "Add ChatBot + Coding Workspace UI (templates/index.html)"
-        },
-        {
-          "revision": "6465263fcbeb97e8b2775697a060b80dcbffda81",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/6465263fcbeb97e8b2775697a060b80dcbffda81",
-          "subject": "Add FastAPI app and ChatBot + Coding Workspace UI"
-        },
-        {
-          "revision": "310c9e9b73910802eb920967ec7e7dd37c735c88",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/310c9e9b73910802eb920967ec7e7dd37c735c88",
-          "subject": "Publish CONTROL12 Workspace: ChatBot + Agent Orchestration coding surface under Trinity Core / AttestPipe / Cycle Kernel / Host-ONLY"
-        },
-        {
-          "revision": "37258a2a674fb263ea1849d25283e302d503d11f",
-          "url": "https://github.com/doitupsolutions810-crow/control12-workspace/commit/37258a2a674fb263ea1849d25283e302d503d11f",
-          "subject": "Initial commit"
-        }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/grok-bot-",
-      "url": "https://github.com/doitupsolutions810-crow/grok-bot-",
-      "default_branch": "main",
-      "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-      "branches": [
-        {
-          "name": "base44/setup-1baae7c2",
-          "revision": "5bab65c0306344501098d044f09df312bef13d75"
-        },
-        {
-          "name": "base44/setup-4bb27625",
-          "revision": "c896f3c8a6ba4110032bbc6e49a39d5fd9ff81bc"
-        },
-        {
-          "name": "codex/inspect-integration-hardening",
-          "revision": "65d526f24e667d10121640cb2baeb2c3c26b54ef"
-        },
-        {
-          "name": "feat/auth-and-auto-review",
-          "revision": "2f59eaec4e55d546a35038aa7eebc28e2272baa3"
-        },
-        {
-          "name": "feat/github-agent-task-workflow",
-          "revision": "869622cb6032a0bc9e4a3570d43125772d14a33d"
-        },
-        {
-          "name": "feat/swarm-executor-bridge-20261103",
-          "revision": "c677041f141234ab90c4b6b2a8fad97797c3f942"
-        },
-        {
-          "name": "fix-main-ce51cd228fc0",
-          "revision": "380c1fd866e4cbf0eb01af478772bfedc6101a99"
-        },
-        {
-          "name": "github-repo-integration",
-          "revision": "92387277c59c1e73912d3d6a4c2b050dbdced9ec"
-        },
-        {
-          "name": "integrate/avrone-v0.19-native-mode",
-          "revision": "2241b5ad2ef3a1ffde82543ca7b60cf2226f7511"
-        },
-        {
-          "name": "main",
-          "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21"
-        },
-        {
-          "name": "repo-system-enhancements",
-          "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21"
-        },
-        {
-          "name": "safe-dual-profile",
-          "revision": "c06e9da46126bfc9d1a718575d2d62e2e623d953"
-        },
-        {
-          "name": "squad/round3-edge-expansion-2026-10-29",
-          "revision": "9a3994ff91c22dd92431412094a1b8316f7b1746"
-        }
-      ],
-      "pull_requests": [
-        {
-          "number": 4,
-          "title": "Wire real signed Swarm specialist execution",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/4",
-          "state": "open",
-          "draft": true,
-          "head_ref": "feat/swarm-executor-bridge-20261103",
-          "head_revision": "c677041f141234ab90c4b6b2a8fad97797c3f942",
-          "base_ref": "main",
-          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-          "merged_at": null
-        },
-        {
-          "number": 3,
-          "title": "v0.20 squad round 3: sync AVRONE runtime hardening and edge tests",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/3",
-          "state": "open",
-          "draft": true,
-          "head_ref": "squad/round3-edge-expansion-2026-10-29",
-          "head_revision": "9a3994ff91c22dd92431412094a1b8316f7b1746",
-          "base_ref": "main",
-          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-          "merged_at": null
-        },
-        {
-          "number": 2,
-          "title": "Security and integration: harden Grok Bot ↔ AVRONE bridge",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/2",
-          "state": "open",
-          "draft": true,
-          "head_ref": "codex/inspect-integration-hardening",
-          "head_revision": "65d526f24e667d10121640cb2baeb2c3c26b54ef",
-          "base_ref": "main",
-          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-          "merged_at": null
-        },
-        {
-          "number": 1,
-          "title": "feat: run live Grok Bot tasks from GitHub Actions",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/1",
-          "state": "open",
-          "draft": true,
-          "head_ref": "feat/github-agent-task-workflow",
-          "head_revision": "869622cb6032a0bc9e4a3570d43125772d14a33d",
-          "base_ref": "main",
-          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-          "merged_at": null
-        }
-      ],
-      "recent_commits": [
-        {
-          "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/c4d5e95b7a23639c103552ea1cc0470e86c98a21",
-          "subject": "Fix boot blocker: socket-proxy allow-list missing INFO (and PING) — docker.info() readiness probe got 403 'Request forbidden by administrative rules', daemon never connected, BOOT_STRICT killed every boot (CI and local)"
-        },
-        {
-          "revision": "0b622ee7b97fc4f19768169b46ee3607fe3c4deb",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/0b622ee7b97fc4f19768169b46ee3607fe3c4deb",
-          "subject": "Fix Docker socket proxy protocol for boot"
-        },
-        {
-          "revision": "ac423c104a1663014714ec109792a9c707db96f8",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/ac423c104a1663014714ec109792a9c707db96f8",
-          "subject": "Mark host launch and verification scripts executable"
-        },
-        {
-          "revision": "3e685ccb2703e907ea9239bba9cae283f13fd40b",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/3e685ccb2703e907ea9239bba9cae283f13fd40b",
-          "subject": "Clean up temporary status file correctly on interruption"
-        },
-        {
-          "revision": "8a4b2eed88eb9bd978367dd328f5e99a7f3f9194",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/8a4b2eed88eb9bd978367dd328f5e99a7f3f9194",
-          "subject": "Document independent local verification and truthful partial status"
-        },
-        {
-          "revision": "2245e18a02635e5410b8e3118707d3b042a0612a",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/2245e18a02635e5410b8e3118707d3b042a0612a",
-          "subject": "Gate local verification phases and prevent long waits after prerequisite failure"
-        },
-        {
-          "revision": "62913e1ccd7444cd862e167dcee32ca572b1d109",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/62913e1ccd7444cd862e167dcee32ca572b1d109",
-          "subject": "Fail immediately when boot self-tests report degraded readiness"
-        },
-        {
-          "revision": "72a4431e5b496aafbf99eb7300af133e09d42163",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/72a4431e5b496aafbf99eb7300af133e09d42163",
-          "subject": "Enable host-gateway routing for the AVRONE bridge on Linux"
-        },
-        {
-          "revision": "e7e9265ada4cd70a641d192f6202fbe5cd3dfa97",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/e7e9265ada4cd70a641d192f6202fbe5cd3dfa97",
-          "subject": "Fail live suite if any boot self-test is missing or failed"
-        },
+      "root": [
         {
-          "revision": "97021ff8ef529cdbd1595f63ba72c140bf1f28d3",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/97021ff8ef529cdbd1595f63ba72c140bf1f28d3",
-          "subject": "Make API readiness reflect actual boot self-test outcome"
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "d218143954d25ff689dc8149c3111f970d497c04"
         },
         {
-          "revision": "6967ce2d4c235d49e4a42545b70ea5ea24c0d882",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/6967ce2d4c235d49e4a42545b70ea5ea24c0d882",
-          "subject": "Fix launcher to call the shared boot gate"
+          "path": ".grok",
+          "type": "dir",
+          "sha": "c410a3bb41ddaff16ec92c40d821dda7333f26f1"
         },
         {
-          "revision": "e7086533d378d215424a63fa8cf0df712dae4c10",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/e7086533d378d215424a63fa8cf0df712dae4c10",
-          "subject": "Use robust first-boot gate and report integration health honestly"
+          "path": ".node_modules.lock",
+          "type": "file",
+          "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
         },
         {
-          "revision": "76a18c2e32dfa7ba86e72e7b2dfecf23ef1b24e6",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/76a18c2e32dfa7ba86e72e7b2dfecf23ef1b24e6",
-          "subject": "Make local verifier first-boot aware and prevent false green verdicts"
+          "path": ".prettierrc",
+          "type": "file",
+          "sha": "bccee911b6b0dac9051d360fbc5e0a6303eed8fb"
         },
         {
-          "revision": "858e511bed24a44e0fa17971b0c3432f31722a65",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/858e511bed24a44e0fa17971b0c3432f31722a65",
-          "subject": "Add resilient local boot gate with restart-loop diagnostics"
+          "path": ".vercel",
+          "type": "dir",
+          "sha": "7dca98aad24c7b46367f19b4e9942996a6c2aa86"
         },
         {
-          "revision": "c06e9da46126bfc9d1a718575d2d62e2e623d953",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/c06e9da46126bfc9d1a718575d2d62e2e623d953",
-          "subject": "CI: emit failure-log tail as run annotations from the on-failure logs step (any live-test/evolve failure becomes anonymously diagnosable)"
+          "path": "AGENTS.md",
+          "type": "file",
+          "sha": "3de21a250ebb121e0b732822c628c93d5db7ffc4"
         },
         {
-          "revision": "5c7acdb1e14efe96c7a9e2aa912ce8859d290299",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/5c7acdb1e14efe96c7a9e2aa912ce8859d290299",
-          "subject": "Docs: document first-boot timing expectation (API up after ~2GB model pulls; 10-25 min on a fresh host) — matches the CI 25-min boot window"
+          "path": "AGENTS.project.md",
+          "type": "file",
+          "sha": "4932472dd21bfd6c55043c37371b42d654c54065"
         },
         {
-          "revision": "2de04bd740c75cc104975309141b5faad8daae6d",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/2de04bd740c75cc104975309141b5faad8daae6d",
-          "subject": "CI: size boot wait to real first-boot model pulls (25 min, was 10) and surface boot logs as annotations when the port never answers"
+          "path": "attachments",
+          "type": "dir",
+          "sha": "adb8f9b02bdbe20edb04e12307b5dc9a574328b2"
         },
         {
-          "revision": "012096ea0c5ab4136d95fb55d7a423e1379df16a",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/012096ea0c5ab4136d95fb55d7a423e1379df16a",
-          "subject": "Fix full stack build: drop nonexistent @modelcontextprotocol/server-git (npm 404) from image; prune dead git MCP server entry"
+          "path": "eslint.config.mjs",
+          "type": "file",
+          "sha": "bfc3c2560b42997c103f92bb5b681ce46163eb0c"
         },
         {
-          "revision": "9462de151f64d61d5bf8c55abe6408babe0f04b3",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/9462de151f64d61d5bf8c55abe6408babe0f04b3",
-          "subject": "Docs: quick-start one-command verify.sh pointer (also re-triggers CI after the billing fix)"
+          "path": "migrations",
+          "type": "dir",
+          "sha": "281e531fc6383e1a2a302223472f3329dbdb3e9f"
         },
         {
-          "revision": "72bf8de9e7868eef16ca08140dd6e8bf8e8bc13d",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/72bf8de9e7868eef16ca08140dd6e8bf8e8bc13d",
-          "subject": "Boot hardening pass 4: browser-sidecar readiness gate + CDP connect retry + daemon grace window (final cold-start races closed)"
+          "path": "package-lock.json",
+          "type": "file",
+          "sha": "4b25882e53fdb639aa3f1f71237f7d32059bfe3e"
         },
         {
-          "revision": "d97135a8997e3e4f08cf1c5a108712c424a52143",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/d97135a8997e3e4f08cf1c5a108712c424a52143",
-          "subject": "Boot hardening pass 3: offline-capable MCP handshake (servers pre-installed at build time) + per-server isolation with 20s handshake timeout"
+          "path": "package.json",
+          "type": "file",
+          "sha": "6a6d9ba706c5bdc6bb9d359a2bfe2dac5735132c"
         },
         {
-          "revision": "17793532c8b822eece7569c5d00f52e5cb0574cc",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/17793532c8b822eece7569c5d00f52e5cb0574cc",
-          "subject": "Boot hardening pass 2: ollama reachability wait + sandbox image pull-on-demand; PEP-668-safe venv for AVRONE in launch.sh/verify.sh"
+          "path": "public",
+          "type": "dir",
+          "sha": "fb0a0c8f87b81da41eb6458b087f640ea4f29d14"
         },
         {
-          "revision": "15375504345b09123f7640ca107fc7dd5530d891",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/15375504345b09123f7640ca107fc7dd5530d891",
-          "subject": "Boot success path: race-hardened model pulls, local-image skip, sync'd browser pin; verify.sh = CI-equivalent local proof"
+          "path": "screenshots",
+          "type": "dir",
+          "sha": "175b3607bdf1e03f9873baf693f6b56d1d7137d7"
         },
         {
-          "revision": "50927245c181fcc3a544826e343300a9eabfe27f",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/50927245c181fcc3a544826e343300a9eabfe27f",
-          "subject": "CI: pin runners to ubuntu-24.04 (ubuntu-latest -> Ubuntu 26 migration) + tidy avroneTool comment"
+          "path": "scripts",
+          "type": "dir",
+          "sha": "6d66c003f8e5262e1b30e02547fd9564fc2e67e1"
         },
         {
-          "revision": "b562f8ec392eb2e8f170ea37bd1b60da1ec7a7c7",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/b562f8ec392eb2e8f170ea37bd1b60da1ec7a7c7",
-          "subject": "Concluding system bridge + voice bridge + the agents' evolution loop + sequential local launcher"
+          "path": "server",
+          "type": "dir",
+          "sha": "2d4cfc78f759f4a941a9528cabd11f1b244c6560"
         },
         {
-          "revision": "348488a596bf31cb2f44cab1d43799739aedfdc9",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/348488a596bf31cb2f44cab1d43799739aedfdc9",
-          "subject": "v1.1: stack upgrade (Node 24 LTS, express 5, openai 7, playwright 1.64, better-sqlite3 13, zod 4, dockerode 5, node-cron 4, MCP SDK 1.32) + .env.full final-product profile + compose config gate in CI"
+          "path": "src",
+          "type": "dir",
+          "sha": "2e5ce84e3f71f2d11a0ccf3f75bc1451613d6432"
         },
         {
-          "revision": "60b888c39216b9f699e56662bc11fea28ecf8705",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/60b888c39216b9f699e56662bc11fea28ecf8705",
-          "subject": "Default model qwen2.5:3b (live-benchmarked) + model-bench harness & workflow"
+          "path": "startup.sh",
+          "type": "file",
+          "sha": "b0e140532b1d87c02df28324deb25b1ed9c13d6c"
         },
         {
-          "revision": "38977c2a3d39230a28dca6b11c58cb85c2732d3c",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/38977c2a3d39230a28dca6b11c58cb85c2732d3c",
-          "subject": "app: console v3 (Runs tab + governor card, squad/deep mode pills, teammate editor, approvals), teammate roster, SKILL.md playbooks, shared-profile browser service, 8 live integration tests"
+          "path": "tsconfig.json",
+          "type": "file",
+          "sha": "88b15efc8660413c4937067a6f621ebd171c5964"
         },
         {
-          "revision": "deeb92027b09dfab31f00f747da186bbba0a88f3",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/deeb92027b09dfab31f00f747da186bbba0a88f3",
-          "subject": "core: Avrone orchestration — Trinity (PLAN/SQUAD/LEAD + deep waves), Governor, Eternal CodeX, task board; runtime Auto Review, registry, team dispatch, spawn depth limits, hash-chained traces, squad/deep router + server wiring"
+          "path": "vercel.json",
+          "type": "file",
+          "sha": "1c00aa58be1fc08fc0ef50cedbf813a8bc3f4cb6"
         },
         {
-          "revision": "83b5a8f28c2d4637dd6e3ad164eead2494a6e104",
-          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/83b5a8f28c2d4637dd6e3ad164eead2494a6e104",
-          "subject": "infra: compose stack (socket-proxy, browser profile, grok_workspace), Dockerfile, env, CI, install script, README"
+          "path": "vite.config.ts",
+          "type": "file",
+          "sha": "f0aa67ddb6b5067c5aece4678259caa57638aa5a"
         }
       ]
     },
@@ -2425,7 +3040,7 @@
       "branches": [
         {
           "name": "avrone-a12lr-daemon",
-          "revision": "d7fea4d0d9ecc93c23d42b6702ee78accbfd9b69"
+          "revision": "13726f4887fbc692571ca78daa1fe578929953a3"
         },
         {
           "name": "base44/setup-2bbf0d91",
@@ -2441,7 +3056,7 @@
         },
         {
           "name": "cursor/avrone-fusion-blackboard-59b2",
-          "revision": "aa3f77b3638b02f0f537364a6862ccf41de4d938"
+          "revision": "8cca4083eb94da32240a17a5a7ce87db519cdf7b"
         },
         {
           "name": "deploy/render-free-preview",
@@ -2493,7 +3108,7 @@
         },
         {
           "name": "integration/grokbot-unified-launch-20261102",
-          "revision": "df49d059d98cc63fc126cdb0c25d012c5c6d3f65"
+          "revision": "4232b83ece8662fa7c28a4cd59e660f3d203261a"
         },
         {
           "name": "integration/platform-bridge-2026-10",
@@ -2501,7 +3116,7 @@
         },
         {
           "name": "integration/trinity-sqlite-swarm-dispatch-20261103",
-          "revision": "12be1b765656e58e81a7123ccd7f3085235f0814"
+          "revision": "1215437b63e4d716f4fe461692e0311b2a5cd87d"
         },
         {
           "name": "main",
@@ -2624,7 +3239,7 @@
           "state": "open",
           "draft": false,
           "head_ref": "cursor/avrone-fusion-blackboard-59b2",
-          "head_revision": "aa3f77b3638b02f0f537364a6862ccf41de4d938",
+          "head_revision": "8cca4083eb94da32240a17a5a7ce87db519cdf7b",
           "base_ref": "main",
           "base_revision": "9bb0e750aa40947f7f78b6ef41dcfa9afe6ae202",
           "merged_at": null
@@ -2636,19 +3251,19 @@
           "state": "open",
           "draft": true,
           "head_ref": "integration/trinity-sqlite-swarm-dispatch-20261103",
-          "head_revision": "12be1b765656e58e81a7123ccd7f3085235f0814",
+          "head_revision": "1215437b63e4d716f4fe461692e0311b2a5cd87d",
           "base_ref": "integration/grokbot-unified-launch-20261102",
           "base_revision": "69a411780aa1360b5058c574346d5e6aea92f098",
           "merged_at": null
         },
         {
           "number": 17,
-          "title": "Integrate Grok Bot with AVRONE and harden council evidence",
+          "title": "Integrate Grok Bot and harden durable Swarm dispatch",
           "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/17",
           "state": "open",
           "draft": true,
           "head_ref": "integration/grokbot-unified-launch-20261102",
-          "head_revision": "df49d059d98cc63fc126cdb0c25d012c5c6d3f65",
+          "head_revision": "4232b83ece8662fa7c28a4cd59e660f3d203261a",
           "base_ref": "main",
           "base_revision": "9bb0e750aa40947f7f78b6ef41dcfa9afe6ae202",
           "merged_at": null
@@ -2984,6 +3599,863 @@
           "revision": "b924da9634f19a17391870e50ace9928d07c347c",
           "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/b924da9634f19a17391870e50ace9928d07c347c",
           "subject": "autopilot round 5: macOS bash 3.2 verified, sh/symlink launch, closed fds, signal-safe waits, USR1 status, symlink-safe state, fuzzing (202 edge tests)"
+        }
+      ],
+      "root": [
+        {
+          "path": ".dockerignore",
+          "type": "file",
+          "sha": "0e560570bfba0d560b1c494ba220167df5792aa2"
+        },
+        {
+          "path": ".env.example",
+          "type": "file",
+          "sha": "a90b215cdd7aeeeb53447d3218de805bb435e964"
+        },
+        {
+          "path": ".github",
+          "type": "dir",
+          "sha": "f7827402fcc5b24267a076653a77768b7768c564"
+        },
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "eae172731b1896dfe511bd9d0f1b209972c8a00e"
+        },
+        {
+          "path": "Dockerfile",
+          "type": "file",
+          "sha": "51a9365e99ff942d5b170af28f632f7551a488d6"
+        },
+        {
+          "path": "MASTER_PROMPT.md",
+          "type": "file",
+          "sha": "69374feb57a9c95e7e644677a4b6f7ae693813b2"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "105b3df012f847e64f0d35120ee0ab7f742752e7"
+        },
+        {
+          "path": "SYSTEM_ACCESS.md",
+          "type": "file",
+          "sha": "b1b28d685db73ee5d1e14cefbd519e132ced34d1"
+        },
+        {
+          "path": "avrone-squad",
+          "type": "dir",
+          "sha": "f3e9f9166f472070c36c5f07f26c0a487677c517"
+        },
+        {
+          "path": "avrone",
+          "type": "dir",
+          "sha": "4aae06927079c5f491c0b2fc5769d5cc0bebcf8e"
+        },
+        {
+          "path": "deploy",
+          "type": "dir",
+          "sha": "f5c9f35a6b3733f01425b9f7b24cc19b6b017f02"
+        },
+        {
+          "path": "docker-compose.yml",
+          "type": "file",
+          "sha": "b17191f444d43d8cdb865e34298fd37c7c2b688e"
+        },
+        {
+          "path": "examples",
+          "type": "dir",
+          "sha": "9434c3225500ed8ef78d09a0e63629d78387dfd6"
+        },
+        {
+          "path": "grok-bot-integration",
+          "type": "dir",
+          "sha": "ca8b24d4466e5d994abbb1ae72551c44403591ac"
+        },
+        {
+          "path": "integrations",
+          "type": "dir",
+          "sha": "fe7d812f838a0b3fb7513cda522644d916031e97"
+        },
+        {
+          "path": "plugins",
+          "type": "dir",
+          "sha": "4f973c6dbb87bc0291c8da7843528552c3b4bce4"
+        },
+        {
+          "path": "pyproject.toml",
+          "type": "file",
+          "sha": "398fc034b05ea42e71e59378fb8723e1e8993cb8"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "83eac42236714dd2a26ef44d83d06371ef641ad5"
+        },
+        {
+          "path": "skills",
+          "type": "dir",
+          "sha": "73466acf5a0f2056ed1d3a53d9adc9d763213f42"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "89420d35df47333c5356cbdaf1a01168cc58c8b5"
+        },
+        {
+          "path": "tools",
+          "type": "dir",
+          "sha": "37ef603c8c7f7c030b4f7135ebc3c66d4617bd83"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/grok-bot-",
+      "url": "https://github.com/doitupsolutions810-crow/grok-bot-",
+      "default_branch": "main",
+      "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+      "branches": [
+        {
+          "name": "base44/setup-1baae7c2",
+          "revision": "5bab65c0306344501098d044f09df312bef13d75"
+        },
+        {
+          "name": "base44/setup-4bb27625",
+          "revision": "c896f3c8a6ba4110032bbc6e49a39d5fd9ff81bc"
+        },
+        {
+          "name": "codex/inspect-integration-hardening",
+          "revision": "65d526f24e667d10121640cb2baeb2c3c26b54ef"
+        },
+        {
+          "name": "feat/auth-and-auto-review",
+          "revision": "2f59eaec4e55d546a35038aa7eebc28e2272baa3"
+        },
+        {
+          "name": "feat/github-agent-task-workflow",
+          "revision": "869622cb6032a0bc9e4a3570d43125772d14a33d"
+        },
+        {
+          "name": "feat/swarm-executor-bridge-20261103",
+          "revision": "b7e70592c9cee82549253634d5d931430955f4fe"
+        },
+        {
+          "name": "fix-main-ce51cd228fc0",
+          "revision": "380c1fd866e4cbf0eb01af478772bfedc6101a99"
+        },
+        {
+          "name": "github-repo-integration",
+          "revision": "92387277c59c1e73912d3d6a4c2b050dbdced9ec"
+        },
+        {
+          "name": "integrate/avrone-v0.19-native-mode",
+          "revision": "2241b5ad2ef3a1ffde82543ca7b60cf2226f7511"
+        },
+        {
+          "name": "main",
+          "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21"
+        },
+        {
+          "name": "repo-system-enhancements",
+          "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21"
+        },
+        {
+          "name": "safe-dual-profile",
+          "revision": "c06e9da46126bfc9d1a718575d2d62e2e623d953"
+        },
+        {
+          "name": "squad/round3-edge-expansion-2026-10-29",
+          "revision": "9a3994ff91c22dd92431412094a1b8316f7b1746"
+        }
+      ],
+      "pull_requests": [
+        {
+          "number": 4,
+          "title": "Wire real signed Swarm specialist execution",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/4",
+          "state": "open",
+          "draft": true,
+          "head_ref": "feat/swarm-executor-bridge-20261103",
+          "head_revision": "b7e70592c9cee82549253634d5d931430955f4fe",
+          "base_ref": "main",
+          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+          "merged_at": null
+        },
+        {
+          "number": 3,
+          "title": "v0.20 squad round 3: sync AVRONE runtime hardening and edge tests",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/3",
+          "state": "open",
+          "draft": true,
+          "head_ref": "squad/round3-edge-expansion-2026-10-29",
+          "head_revision": "9a3994ff91c22dd92431412094a1b8316f7b1746",
+          "base_ref": "main",
+          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+          "merged_at": null
+        },
+        {
+          "number": 2,
+          "title": "Security and integration: harden Grok Bot ↔ AVRONE bridge",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/2",
+          "state": "open",
+          "draft": true,
+          "head_ref": "codex/inspect-integration-hardening",
+          "head_revision": "65d526f24e667d10121640cb2baeb2c3c26b54ef",
+          "base_ref": "main",
+          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+          "merged_at": null
+        },
+        {
+          "number": 1,
+          "title": "feat: run live Grok Bot tasks from GitHub Actions",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/pull/1",
+          "state": "open",
+          "draft": true,
+          "head_ref": "feat/github-agent-task-workflow",
+          "head_revision": "869622cb6032a0bc9e4a3570d43125772d14a33d",
+          "base_ref": "main",
+          "base_revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+          "merged_at": null
+        }
+      ],
+      "recent_commits": [
+        {
+          "revision": "c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/c4d5e95b7a23639c103552ea1cc0470e86c98a21",
+          "subject": "Fix boot blocker: socket-proxy allow-list missing INFO (and PING) — docker.info() readiness probe got 403 'Request forbidden by administrative rules', daemon never connected, BOOT_STRICT killed every boot (CI and local)"
+        },
+        {
+          "revision": "0b622ee7b97fc4f19768169b46ee3607fe3c4deb",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/0b622ee7b97fc4f19768169b46ee3607fe3c4deb",
+          "subject": "Fix Docker socket proxy protocol for boot"
+        },
+        {
+          "revision": "ac423c104a1663014714ec109792a9c707db96f8",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/ac423c104a1663014714ec109792a9c707db96f8",
+          "subject": "Mark host launch and verification scripts executable"
+        },
+        {
+          "revision": "3e685ccb2703e907ea9239bba9cae283f13fd40b",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/3e685ccb2703e907ea9239bba9cae283f13fd40b",
+          "subject": "Clean up temporary status file correctly on interruption"
+        },
+        {
+          "revision": "8a4b2eed88eb9bd978367dd328f5e99a7f3f9194",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/8a4b2eed88eb9bd978367dd328f5e99a7f3f9194",
+          "subject": "Document independent local verification and truthful partial status"
+        },
+        {
+          "revision": "2245e18a02635e5410b8e3118707d3b042a0612a",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/2245e18a02635e5410b8e3118707d3b042a0612a",
+          "subject": "Gate local verification phases and prevent long waits after prerequisite failure"
+        },
+        {
+          "revision": "62913e1ccd7444cd862e167dcee32ca572b1d109",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/62913e1ccd7444cd862e167dcee32ca572b1d109",
+          "subject": "Fail immediately when boot self-tests report degraded readiness"
+        },
+        {
+          "revision": "72a4431e5b496aafbf99eb7300af133e09d42163",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/72a4431e5b496aafbf99eb7300af133e09d42163",
+          "subject": "Enable host-gateway routing for the AVRONE bridge on Linux"
+        },
+        {
+          "revision": "e7e9265ada4cd70a641d192f6202fbe5cd3dfa97",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/e7e9265ada4cd70a641d192f6202fbe5cd3dfa97",
+          "subject": "Fail live suite if any boot self-test is missing or failed"
+        },
+        {
+          "revision": "97021ff8ef529cdbd1595f63ba72c140bf1f28d3",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/97021ff8ef529cdbd1595f63ba72c140bf1f28d3",
+          "subject": "Make API readiness reflect actual boot self-test outcome"
+        },
+        {
+          "revision": "6967ce2d4c235d49e4a42545b70ea5ea24c0d882",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/6967ce2d4c235d49e4a42545b70ea5ea24c0d882",
+          "subject": "Fix launcher to call the shared boot gate"
+        },
+        {
+          "revision": "e7086533d378d215424a63fa8cf0df712dae4c10",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/e7086533d378d215424a63fa8cf0df712dae4c10",
+          "subject": "Use robust first-boot gate and report integration health honestly"
+        },
+        {
+          "revision": "76a18c2e32dfa7ba86e72e7b2dfecf23ef1b24e6",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/76a18c2e32dfa7ba86e72e7b2dfecf23ef1b24e6",
+          "subject": "Make local verifier first-boot aware and prevent false green verdicts"
+        },
+        {
+          "revision": "858e511bed24a44e0fa17971b0c3432f31722a65",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/858e511bed24a44e0fa17971b0c3432f31722a65",
+          "subject": "Add resilient local boot gate with restart-loop diagnostics"
+        },
+        {
+          "revision": "c06e9da46126bfc9d1a718575d2d62e2e623d953",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/c06e9da46126bfc9d1a718575d2d62e2e623d953",
+          "subject": "CI: emit failure-log tail as run annotations from the on-failure logs step (any live-test/evolve failure becomes anonymously diagnosable)"
+        },
+        {
+          "revision": "5c7acdb1e14efe96c7a9e2aa912ce8859d290299",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/5c7acdb1e14efe96c7a9e2aa912ce8859d290299",
+          "subject": "Docs: document first-boot timing expectation (API up after ~2GB model pulls; 10-25 min on a fresh host) — matches the CI 25-min boot window"
+        },
+        {
+          "revision": "2de04bd740c75cc104975309141b5faad8daae6d",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/2de04bd740c75cc104975309141b5faad8daae6d",
+          "subject": "CI: size boot wait to real first-boot model pulls (25 min, was 10) and surface boot logs as annotations when the port never answers"
+        },
+        {
+          "revision": "012096ea0c5ab4136d95fb55d7a423e1379df16a",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/012096ea0c5ab4136d95fb55d7a423e1379df16a",
+          "subject": "Fix full stack build: drop nonexistent @modelcontextprotocol/server-git (npm 404) from image; prune dead git MCP server entry"
+        },
+        {
+          "revision": "9462de151f64d61d5bf8c55abe6408babe0f04b3",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/9462de151f64d61d5bf8c55abe6408babe0f04b3",
+          "subject": "Docs: quick-start one-command verify.sh pointer (also re-triggers CI after the billing fix)"
+        },
+        {
+          "revision": "72bf8de9e7868eef16ca08140dd6e8bf8e8bc13d",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/72bf8de9e7868eef16ca08140dd6e8bf8e8bc13d",
+          "subject": "Boot hardening pass 4: browser-sidecar readiness gate + CDP connect retry + daemon grace window (final cold-start races closed)"
+        },
+        {
+          "revision": "d97135a8997e3e4f08cf1c5a108712c424a52143",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/d97135a8997e3e4f08cf1c5a108712c424a52143",
+          "subject": "Boot hardening pass 3: offline-capable MCP handshake (servers pre-installed at build time) + per-server isolation with 20s handshake timeout"
+        },
+        {
+          "revision": "17793532c8b822eece7569c5d00f52e5cb0574cc",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/17793532c8b822eece7569c5d00f52e5cb0574cc",
+          "subject": "Boot hardening pass 2: ollama reachability wait + sandbox image pull-on-demand; PEP-668-safe venv for AVRONE in launch.sh/verify.sh"
+        },
+        {
+          "revision": "15375504345b09123f7640ca107fc7dd5530d891",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/15375504345b09123f7640ca107fc7dd5530d891",
+          "subject": "Boot success path: race-hardened model pulls, local-image skip, sync'd browser pin; verify.sh = CI-equivalent local proof"
+        },
+        {
+          "revision": "50927245c181fcc3a544826e343300a9eabfe27f",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/50927245c181fcc3a544826e343300a9eabfe27f",
+          "subject": "CI: pin runners to ubuntu-24.04 (ubuntu-latest -> Ubuntu 26 migration) + tidy avroneTool comment"
+        },
+        {
+          "revision": "b562f8ec392eb2e8f170ea37bd1b60da1ec7a7c7",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/b562f8ec392eb2e8f170ea37bd1b60da1ec7a7c7",
+          "subject": "Concluding system bridge + voice bridge + the agents' evolution loop + sequential local launcher"
+        },
+        {
+          "revision": "348488a596bf31cb2f44cab1d43799739aedfdc9",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/348488a596bf31cb2f44cab1d43799739aedfdc9",
+          "subject": "v1.1: stack upgrade (Node 24 LTS, express 5, openai 7, playwright 1.64, better-sqlite3 13, zod 4, dockerode 5, node-cron 4, MCP SDK 1.32) + .env.full final-product profile + compose config gate in CI"
+        },
+        {
+          "revision": "60b888c39216b9f699e56662bc11fea28ecf8705",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/60b888c39216b9f699e56662bc11fea28ecf8705",
+          "subject": "Default model qwen2.5:3b (live-benchmarked) + model-bench harness & workflow"
+        },
+        {
+          "revision": "38977c2a3d39230a28dca6b11c58cb85c2732d3c",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/38977c2a3d39230a28dca6b11c58cb85c2732d3c",
+          "subject": "app: console v3 (Runs tab + governor card, squad/deep mode pills, teammate editor, approvals), teammate roster, SKILL.md playbooks, shared-profile browser service, 8 live integration tests"
+        },
+        {
+          "revision": "deeb92027b09dfab31f00f747da186bbba0a88f3",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/deeb92027b09dfab31f00f747da186bbba0a88f3",
+          "subject": "core: Avrone orchestration — Trinity (PLAN/SQUAD/LEAD + deep waves), Governor, Eternal CodeX, task board; runtime Auto Review, registry, team dispatch, spawn depth limits, hash-chained traces, squad/deep router + server wiring"
+        },
+        {
+          "revision": "83b5a8f28c2d4637dd6e3ad164eead2494a6e104",
+          "url": "https://github.com/doitupsolutions810-crow/grok-bot-/commit/83b5a8f28c2d4637dd6e3ad164eead2494a6e104",
+          "subject": "infra: compose stack (socket-proxy, browser profile, grok_workspace), Dockerfile, env, CI, install script, README"
+        }
+      ],
+      "root": [
+        {
+          "path": ".dockerignore",
+          "type": "file",
+          "sha": "9617709388669b8d3c450b7f9d949df4208b0d2b"
+        },
+        {
+          "path": ".env.example",
+          "type": "file",
+          "sha": "c18f8de1a28ef2deab29f1711a6f9d97ae9612aa"
+        },
+        {
+          "path": ".env.full",
+          "type": "file",
+          "sha": "469feb4f86089e4650a3c953216e7f81e234289c"
+        },
+        {
+          "path": ".github",
+          "type": "dir",
+          "sha": "9f863b012275551fb0e0799abef3be10805d11f6"
+        },
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "e25769d16aa27f3a7f7041dbb6a9960b1c558489"
+        },
+        {
+          "path": "Dockerfile",
+          "type": "file",
+          "sha": "ec5640774fb444f5d2807d4d5a3ed84981f410ba"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "5a8de6382d30f25d11afa7393fce0bdcbf49542a"
+        },
+        {
+          "path": "avrone",
+          "type": "dir",
+          "sha": "a81f370b25c8419ca205b9baa3cbc014ca64aa25"
+        },
+        {
+          "path": "browser-service",
+          "type": "dir",
+          "sha": "012f423853c78670f9970b21020202634332cfa4"
+        },
+        {
+          "path": "config",
+          "type": "dir",
+          "sha": "a5696b3fe130e772579e71d96fafa6ad88260445"
+        },
+        {
+          "path": "deploy",
+          "type": "dir",
+          "sha": "e8355a0c263a21e125fc9c6b1708c7cf4a592619"
+        },
+        {
+          "path": "docker-compose.yml",
+          "type": "file",
+          "sha": "33055a8352e7cae70d92fc31957546eddbca7ee3"
+        },
+        {
+          "path": "examples",
+          "type": "dir",
+          "sha": "9434c3225500ed8ef78d09a0e63629d78387dfd6"
+        },
+        {
+          "path": "install.sh",
+          "type": "file",
+          "sha": "204df2e63801f6c69f8af9ee6624cb771e453abc"
+        },
+        {
+          "path": "launch.sh",
+          "type": "file",
+          "sha": "0d3e2758f03f2f139323408432b31e467f191f8f"
+        },
+        {
+          "path": "package.json",
+          "type": "file",
+          "sha": "c948b384340451107a7049d4e83bed1d14ed3bbd"
+        },
+        {
+          "path": "plugins",
+          "type": "dir",
+          "sha": "4f973c6dbb87bc0291c8da7843528552c3b4bce4"
+        },
+        {
+          "path": "public",
+          "type": "dir",
+          "sha": "07bec30aa6adb28a452795b8aa48b680f08ccc06"
+        },
+        {
+          "path": "pyproject.toml",
+          "type": "file",
+          "sha": "3d5527ac6bb99c48c8ae54ec2932ce5e7fcf7ec2"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "f61629f2f8f93f62cb8e14fc464dd20c71117d42"
+        },
+        {
+          "path": "skills",
+          "type": "dir",
+          "sha": "0c1c10d2a8ea5198a838824743b6cbae10d43de4"
+        },
+        {
+          "path": "src",
+          "type": "dir",
+          "sha": "b180689e3cf252404fcabaa5e75e0f25a43c0a84"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "1d020d08556670ebdb5ec7b674dac16ca9cf7fbe"
+        },
+        {
+          "path": "tools",
+          "type": "dir",
+          "sha": "3ecb27c9624bb93caed6c8b10d962c0c7a8d301c"
+        },
+        {
+          "path": "verify.sh",
+          "type": "file",
+          "sha": "f05b59b12feacaaa00a2678b535c4cb4a63c454a"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/avrone-daemon",
+      "url": "https://github.com/doitupsolutions810-crow/avrone-daemon",
+      "default_branch": "main",
+      "revision": "13726f4887fbc692571ca78daa1fe578929953a3",
+      "branches": [
+        {
+          "name": "main",
+          "revision": "13726f4887fbc692571ca78daa1fe578929953a3"
+        }
+      ],
+      "pull_requests": [],
+      "recent_commits": [
+        {
+          "revision": "13726f4887fbc692571ca78daa1fe578929953a3",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/13726f4887fbc692571ca78daa1fe578929953a3",
+          "subject": "Round 40: telemetry/system map/Mermaid hardening + MCP server shutdown hang fix"
+        },
+        {
+          "revision": "2989efa0c04d79b33536195361045afcfc160a36",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/2989efa0c04d79b33536195361045afcfc160a36",
+          "subject": "round 39: governor macOS memory (sysctl+vm_stat+pressure level) and thermal limit (pmset), cgroup memory/CPU awareness, bounded probes, junk-input coercion (127 tests)"
+        },
+        {
+          "revision": "f6775f1c9e719e929fb226cd0b1a5050145c87d5",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/f6775f1c9e719e929fb226cd0b1a5050145c87d5",
+          "subject": "round 38: mcp_server survives huge-int/deep-nesting lines, id/jsonrpc envelope checks, notifications/cancelled, duplicate in-flight ids, batch cap, stdin-close grace, strict JSON output, broken stdout (88 tests)"
+        },
+        {
+          "revision": "d4ce7f1ee138efb3fd03854cff96e5a3083e8a90",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/d4ce7f1ee138efb3fd03854cff96e5a3083e8a90",
+          "subject": "round 37: checkpoint fsync, poison-value refusal, set-aside of corrupt/foreign/oversize files, stale tmp cleanup, JSON-normalised resume match, case-insensitive busy/lock keys, robust list/describe (63 tests)"
+        },
+        {
+          "revision": "d7fea4d0d9ecc93c23d42b6702ee78accbfd9b69",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/d7fea4d0d9ecc93c23d42b6702ee78accbfd9b69",
+          "subject": "round 36: recon DNS-rebinding pin, strict authorized/ports, allowlist normalisation, embedded-IP names, TLS address fallback (124 tests)"
+        },
+        {
+          "revision": "715aba50dd3a1ba1b36f232e2c55307c9b7ec49d",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/715aba50dd3a1ba1b36f232e2c55307c9b7ec49d",
+          "subject": "Round 35: MCP client vs misbehaving servers (HTTP deadline, size caps, SSE parsing, server->client replies, session id validation + expiry re-init, stdio long lines/odd ids/write race, config coercion, tool name collisions); 117 tests"
+        },
+        {
+          "revision": "78f9c2cb4013b9231a5364e57d686466634a7a98",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/78f9c2cb4013b9231a5364e57d686466634a7a98",
+          "subject": "Round 34: CodeX strict-JSON events, safe run-log names, stream.gap notice, WS send timeout for stalled HUD clients"
+        },
+        {
+          "revision": "88b173037efbe2b18c841e95dfc9f4225eb55203",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/88b173037efbe2b18c841e95dfc9f4225eb55203",
+          "subject": "round 33: agentpack: case-insensitive path collisions, control chars, length limits, exec bits, mtime clamp, export churn"
+        },
+        {
+          "revision": "126e491ffe22e8794cb559170b4fbfd453cb8617",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/126e491ffe22e8794cb559170b4fbfd453cb8617",
+          "subject": "Round 32: memory sync — per-sender/total remote namespace quotas, typed merge keys/values, no churn of full namespaces by old entries, memory_sync keys as a bare string"
+        },
+        {
+          "revision": "267259656eae89ab6e2cda1d697afd7e90723c10",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/267259656eae89ab6e2cda1d697afd7e90723c10",
+          "subject": "Round 31: fleet signing — token rotation via AVRONE_FLEET_TOKEN_PREV, quote-stripped tokens, proxy-prefix canonical path, case-insensitive hex sig, clock-skew diagnostics, weak-token warning"
+        },
+        {
+          "revision": "9a63383c26d7625b87798fc9ffe140bddf9b7589",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/9a63383c26d7625b87798fc9ffe140bddf9b7589",
+          "subject": "Round 30: fleet routing robustness — sanitized peer load, heartbeat clamp, clock-skew offline, auto-dispatch failover with cooldown, clear errors for non-JSON peer replies"
+        },
+        {
+          "revision": "3af9352ffe1b13664a12c7f63cde92399f709797",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/3af9352ffe1b13664a12c7f63cde92399f709797",
+          "subject": "Round 29: harden job queue (lease tokens, heartbeat, release on cancel, poison/corrupt jobs, valid JSON results, resilient worker loop, input clamps, schema migration)"
+        },
+        {
+          "revision": "63adc0323f3a780601100bb6a39826704a1ef850",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/63adc0323f3a780601100bb6a39826704a1ef850",
+          "subject": "Round 28: harden evolve proposals (quoted paths, safe commit message, commit check, containment, edit validation, clone fallback, base-sha diff)"
+        },
+        {
+          "revision": "48d0340c10b8bf299f8fce6385cc001cbe2fdeae",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/48d0340c10b8bf299f8fce6385cc001cbe2fdeae",
+          "subject": "round 27: docker runner in-container deadline (GUARD, timeout -s KILL probed), sh fallback for bash-less images, recreate dead shared/home container once, name+rm --rm containers on timeout/cancel, auto falls back to local on failed docker health check, exit-125 label"
+        },
+        {
+          "revision": "1e8e1792e118e44af0fad9dba5e0cc0fe8356697",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/1e8e1792e118e44af0fad9dba5e0cc0fe8356697",
+          "subject": "round 26: shell runner returns despite background pipe holders, keeps partial output on timeout, kills process group, stdin=/dev/null, bounded capture, signal exit labels; head+tail output view with stderr share, clipped cmd echo, ANSI/CR cleanup"
+        },
+        {
+          "revision": "4530f8449f7dfe29996011874aa7e72e6d1eb9ad",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/4530f8449f7dfe29996011874aa7e72e6d1eb9ad",
+          "subject": "round 25: edit_file byte-exact (surrogateescape), CRLF + trailing-whitespace matching, closest-line hints, replace_all, binary/dir refusals; atomic writes keep file mode"
+        },
+        {
+          "revision": "fbddaaadc653371b59019617e22b840cf8872962",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/fbddaaadc653371b59019617e22b840cf8872962",
+          "subject": "Add rift-level edge suite (94 assertions, all green)"
+        },
+        {
+          "revision": "3915f5e5b01175af97ca81981239c2546c3a7ff3",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/3915f5e5b01175af97ca81981239c2546c3a7ff3",
+          "subject": "Add AVRONE-12 lattice runtime, void-edge suite, and coherent Grok-bot bridge"
+        },
+        {
+          "revision": "588f19eb93e39faf7b26ef402fd2d99011b2b4b1",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/588f19eb93e39faf7b26ef402fd2d99011b2b4b1",
+          "subject": "round 24: harden core read_file/write_file/fetch (bounded reads + offset paging, binary/dir handling, JSON content, atomic UTF-8 writes, capped streamed fetch)"
+        },
+        {
+          "revision": "078b78fa8a9122a1c090c79815556e9872a5c6bd",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/078b78fa8a9122a1c090c79815556e9872a5c6bd",
+          "subject": "autopilot round 23: endpoint and config values (base URL normalization, API key cleanup, junk numeric env, .env export/quotes, InvalidURL failover)"
+        },
+        {
+          "revision": "c5581862aec377d5c159a1eefe9a2562f4f0749a",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/c5581862aec377d5c159a1eefe9a2562f4f0749a",
+          "subject": "Integrate grok-bot- enhancements: plugins (calculator, datetime, json_tool), 5 SKILL.md playbooks, docker-compose stack with Ollama/Playwright/socket-proxy, launch.sh/install.sh boot sequence, browser-service, public dashboard, config/agents.json, examples (fleet-compose, mcp.json), scripts (wait-boot, evolve), CI workflows, pyproject.toml, package.json. Coherent A12LR integration."
+        },
+        {
+          "revision": "85147c8bab4aa1b406a6de4dd808d3593441cfb6",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/85147c8bab4aa1b406a6de4dd808d3593441cfb6",
+          "subject": "autopilot round 22: outbound request body (lone surrogates, NUL, non-string content, role aliases, tool role without id, NaN temperature)"
+        },
+        {
+          "revision": "ae0c2ee27e426f5762aa1d1331ef8cbaad918fc5",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/ae0c2ee27e426f5762aa1d1331ef8cbaad918fc5",
+          "subject": "autopilot round 21: response body shapes (200 error bodies, legacy/delta/native/SSE bodies) and Retry-After HTTP-date"
+        },
+        {
+          "revision": "3b69a1e62632f0ecda504e3d1cf1114f72dc1f2d",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/3b69a1e62632f0ecda504e3d1cf1114f72dc1f2d",
+          "subject": "autopilot round 20: reply content shapes (content-part lists, prose preamble beside tool calls, refusal, double-encoded tool args)"
+        },
+        {
+          "revision": "03459b574ae02341e51353bf4f5b0406a80bb9f8",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/03459b574ae02341e51353bf4f5b0406a80bb9f8",
+          "subject": "autopilot round 19: native tool-call dispatch guard (never run cut-off calls, nameless/final-named calls, junk-trailed args, duplicate calls)"
+        },
+        {
+          "revision": "7cf3e9575d4f2e5c3fc56d30bc5f75c94c7d4bf8",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/7cf3e9575d4f2e5c3fc56d30bc5f75c94c7d4bf8",
+          "subject": "autopilot round 18: out-of-turns result unwrapping and context-window budget (oldest tool output elided, system prompt kept)"
+        },
+        {
+          "revision": "a6803b921f4e1f7e287153b7bff4ba7ee20887d2",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/a6803b921f4e1f7e287153b7bff4ba7ee20887d2",
+          "subject": "autopilot round 17: agent-loop guards (empty-turn nudge, non-text replies, identical-call loop note, central tool output cap)"
+        },
+        {
+          "revision": "b02516b5f5ff9c7bcadd389daaebdabb0da954e9",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/b02516b5f5ff9c7bcadd389daaebdabb0da954e9",
+          "subject": "autopilot round 16: normalize parsed actions (tool prefixes, args aliases, string args, null final beside a tool, JSON finals)"
+        },
+        {
+          "revision": "3b4c94293d6a22998ac74acf782933f9576a1517",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/3b4c94293d6a22998ac74acf782933f9576a1517",
+          "subject": "autopilot round 15: robust parse_action (raw_decode scan, think/harmony stripping, any fence tag, bounded)"
+        },
+        {
+          "revision": "f0de454bd0123b5aa9572613d53d993058670e0a",
+          "url": "https://github.com/doitupsolutions810-crow/avrone-daemon/commit/f0de454bd0123b5aa9572613d53d993058670e0a",
+          "subject": "round 14: gpt-oss native tool_calls with empty content become JSON actions; truncated empty replies fail fast with reason; judge CTX hint (357 edge tests, bash 3.2 + 5; 18 gateway tests)"
+        }
+      ],
+      "root": [
+        {
+          "path": ".dockerignore",
+          "type": "file",
+          "sha": "0e560570bfba0d560b1c494ba220167df5792aa2"
+        },
+        {
+          "path": ".env.example",
+          "type": "file",
+          "sha": "a90b215cdd7aeeeb53447d3218de805bb435e964"
+        },
+        {
+          "path": ".github",
+          "type": "dir",
+          "sha": "f7827402fcc5b24267a076653a77768b7768c564"
+        },
+        {
+          "path": ".gitignore",
+          "type": "file",
+          "sha": "eae172731b1896dfe511bd9d0f1b209972c8a00e"
+        },
+        {
+          "path": "Dockerfile",
+          "type": "file",
+          "sha": "51a9365e99ff942d5b170af28f632f7551a488d6"
+        },
+        {
+          "path": "MASTER_PROMPT.md",
+          "type": "file",
+          "sha": "c5562652c2184eac5f6e0da725d8c93bf2b1563f"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "105b3df012f847e64f0d35120ee0ab7f742752e7"
+        },
+        {
+          "path": "SYSTEM_ACCESS.md",
+          "type": "file",
+          "sha": "b1b28d685db73ee5d1e14cefbd519e132ced34d1"
+        },
+        {
+          "path": "avrone-a12lr",
+          "type": "dir",
+          "sha": "7bb5f9c0f729ccd95a70b2c71ff3bb12bdc3eed0"
+        },
+        {
+          "path": "avrone-squad",
+          "type": "dir",
+          "sha": "f3e9f9166f472070c36c5f07f26c0a487677c517"
+        },
+        {
+          "path": "avrone",
+          "type": "dir",
+          "sha": "5d28bd0f91c70164d27123e673d15e9387ef1d03"
+        },
+        {
+          "path": "deploy",
+          "type": "dir",
+          "sha": "f5c9f35a6b3733f01425b9f7b24cc19b6b017f02"
+        },
+        {
+          "path": "docker-compose.yml",
+          "type": "file",
+          "sha": "b17191f444d43d8cdb865e34298fd37c7c2b688e"
+        },
+        {
+          "path": "examples",
+          "type": "dir",
+          "sha": "9434c3225500ed8ef78d09a0e63629d78387dfd6"
+        },
+        {
+          "path": "grok-bot-integration",
+          "type": "dir",
+          "sha": "ca8b24d4466e5d994abbb1ae72551c44403591ac"
+        },
+        {
+          "path": "plugins",
+          "type": "dir",
+          "sha": "4f973c6dbb87bc0291c8da7843528552c3b4bce4"
+        },
+        {
+          "path": "pyproject.toml",
+          "type": "file",
+          "sha": "398fc034b05ea42e71e59378fb8723e1e8993cb8"
+        },
+        {
+          "path": "scripts",
+          "type": "dir",
+          "sha": "e0820e47ff7d715fb5599cc17b98bad47f2882ea"
+        },
+        {
+          "path": "skills",
+          "type": "dir",
+          "sha": "73466acf5a0f2056ed1d3a53d9adc9d763213f42"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "797454e5eedf5303768ca639c6ac29e778d92201"
+        },
+        {
+          "path": "tools",
+          "type": "dir",
+          "sha": "37ef603c8c7f7c030b4f7135ebc3c66d4617bd83"
+        }
+      ]
+    },
+    {
+      "repository": "doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge",
+      "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge",
+      "default_branch": "main",
+      "revision": "3f8cc12a965486d5157431c7d906f04024b904cf",
+      "branches": [
+        {
+          "name": "cursor/fusion-bridge-contracts-5b39",
+          "revision": "8c5ea85e973c52631cd9fc1b14e4392f19a1f14c"
+        },
+        {
+          "name": "main",
+          "revision": "3f8cc12a965486d5157431c7d906f04024b904cf"
+        }
+      ],
+      "pull_requests": [
+        {
+          "number": 1,
+          "title": "Make the fusion relay speak the real Avrone and CycleKernal contracts",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/pull/1",
+          "state": "open",
+          "draft": false,
+          "head_ref": "cursor/fusion-bridge-contracts-5b39",
+          "head_revision": "8c5ea85e973c52631cd9fc1b14e4392f19a1f14c",
+          "base_ref": "main",
+          "base_revision": "966c6c78bfb0e3fc466b221fb2f34a06521c189a",
+          "merged_at": null
+        }
+      ],
+      "recent_commits": [
+        {
+          "revision": "3f8cc12a965486d5157431c7d906f04024b904cf",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/3f8cc12a965486d5157431c7d906f04024b904cf",
+          "subject": "Close gap 3: greatscale evidence posts directly to CognitiveBridge (coherence/caution move). Filter cyclekernal-relay role to kill feedback loops. Preserve structured payload. Longer soak + multi-edge verified (50 cycles, curiosity ~0.77, coherence rises)."
+        },
+        {
+          "revision": "966c6c78bfb0e3fc466b221fb2f34a06521c189a",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/966c6c78bfb0e3fc466b221fb2f34a06521c189a",
+          "subject": "Harden fusion bridge: soft-fail stats, dual /events|/api/events path, fixed shim mimetype, richer relay return, live edge-case verified (curiosity nudge confirmed)"
+        },
+        {
+          "revision": "6ea6d3b872acf1e024ded2d0ae8e3e787c04e836",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/6ea6d3b872acf1e024ded2d0ae8e3e787c04e836",
+          "subject": "feat: add docker-compose stack (Avrone + CognitiveBridge + relay) and endpoint resolver swap layer"
+        },
+        {
+          "revision": "0fd8061f28770ac9a4cc112fb6bbe9020f461aab",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/0fd8061f28770ac9a4cc112fb6bbe9020f461aab",
+          "subject": "feat: add working bridge loop — Avrone shim, CognitiveBridge standalone, relay module, integration test (14 cases, all passing)"
+        },
+        {
+          "revision": "fe16c4c6143b96c2c59995bd7823c688817d7f64",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/fe16c4c6143b96c2c59995bd7823c688817d7f64",
+          "subject": "feat: bridge v1.0 — wire Avrone blackboard to CycleKernal CognitiveBridge"
+        },
+        {
+          "revision": "fbdd4627d84da575304d8d40f8d189fc05080084",
+          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/fbdd4627d84da575304d8d40f8d189fc05080084",
+          "subject": "Initial commit"
+        }
+      ],
+      "root": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "311c8dd0658759f372c9be9a2065c327fdb1a203"
+        },
+        {
+          "path": "bridge",
+          "type": "dir",
+          "sha": "bddfaaa75671c92597504b1ec710759e53388fe5"
+        },
+        {
+          "path": "docker-compose.avrone.yml",
+          "type": "file",
+          "sha": "f38be8794aae633e1933c703dd1a63c85cd004c2"
+        },
+        {
+          "path": "requirements.txt",
+          "type": "file",
+          "sha": "039d26e46d77b46fe38c002be58ea9caefc0f3a5"
+        },
+        {
+          "path": "tests",
+          "type": "dir",
+          "sha": "3fc72ec876f9e351e30c35621b59234ceec5c0ca"
         }
       ]
     },
@@ -5167,62 +6639,92 @@
           "url": "https://github.com/doitupsolutions810-crow/great-scale/commit/96f8a0e791146b0346d2073dc9d1e9c51f69283d",
           "subject": "Test QGT eigenvalue scale covariance"
         }
-      ]
-    },
-    {
-      "repository": "doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge",
-      "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge",
-      "default_branch": "main",
-      "revision": "966c6c78bfb0e3fc466b221fb2f34a06521c189a",
-      "branches": [
-        {
-          "name": "cursor/fusion-bridge-contracts-5b39",
-          "revision": "8c5ea85e973c52631cd9fc1b14e4392f19a1f14c"
-        },
-        {
-          "name": "main",
-          "revision": "966c6c78bfb0e3fc466b221fb2f34a06521c189a"
-        }
       ],
-      "pull_requests": [
+      "root": [
         {
-          "number": 1,
-          "title": "Make the fusion relay speak the real Avrone and CycleKernal contracts",
-          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/pull/1",
-          "state": "open",
-          "draft": false,
-          "head_ref": "cursor/fusion-bridge-contracts-5b39",
-          "head_revision": "8c5ea85e973c52631cd9fc1b14e4392f19a1f14c",
-          "base_ref": "main",
-          "base_revision": "966c6c78bfb0e3fc466b221fb2f34a06521c189a",
-          "merged_at": null
-        }
-      ],
-      "recent_commits": [
-        {
-          "revision": "966c6c78bfb0e3fc466b221fb2f34a06521c189a",
-          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/966c6c78bfb0e3fc466b221fb2f34a06521c189a",
-          "subject": "Harden fusion bridge: soft-fail stats, dual /events|/api/events path, fixed shim mimetype, richer relay return, live edge-case verified (curiosity nudge confirmed)"
+          "path": ".github",
+          "type": "dir",
+          "sha": "5af7233b7fd25779e549bbe7cac70927fb110d0f"
         },
         {
-          "revision": "6ea6d3b872acf1e024ded2d0ae8e3e787c04e836",
-          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/6ea6d3b872acf1e024ded2d0ae8e3e787c04e836",
-          "subject": "feat: add docker-compose stack (Avrone + CognitiveBridge + relay) and endpoint resolver swap layer"
+          "path": "DESCENT_LXXVIII_TOPOLOGICAL_QGT.md",
+          "type": "file",
+          "sha": "f3271f04d87823b1eff3b1b8e296df371a202db1"
         },
         {
-          "revision": "0fd8061f28770ac9a4cc112fb6bbe9020f461aab",
-          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/0fd8061f28770ac9a4cc112fb6bbe9020f461aab",
-          "subject": "feat: add working bridge loop — Avrone shim, CognitiveBridge standalone, relay module, integration test (14 cases, all passing)"
+          "path": "DESCENT_LXXVII_MULTICHANNEL_QGT.md",
+          "type": "file",
+          "sha": "c97c46df11c4efb7f08743283f6cb7a696a138d0"
         },
         {
-          "revision": "fe16c4c6143b96c2c59995bd7823c688817d7f64",
-          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/fe16c4c6143b96c2c59995bd7823c688817d7f64",
-          "subject": "feat: bridge v1.0 — wire Avrone blackboard to CycleKernal CognitiveBridge"
+          "path": "DESCENT_LXXVI_TWO_BAND_SATURATION.md",
+          "type": "file",
+          "sha": "e871626cfbf679364cd145a92ab7b5275a36c0e4"
         },
         {
-          "revision": "fbdd4627d84da575304d8d40f8d189fc05080084",
-          "url": "https://github.com/doitupsolutions810-crow/GreatScale-Avrone-Grok-Fusion-Bridge/commit/fbdd4627d84da575304d8d40f8d189fc05080084",
-          "subject": "Initial commit"
+          "path": "ENVIRONMENT.md",
+          "type": "file",
+          "sha": "9783156675902d982836965bd20d04a5e3ed1d08"
+        },
+        {
+          "path": "LATTICE_BRIDGE.md",
+          "type": "file",
+          "sha": "caed44437b27c5f0f329c1a3be8a3fc504b2d19c"
+        },
+        {
+          "path": "QUANTUM_GEOMETRY_BRIDGE.md",
+          "type": "file",
+          "sha": "f3d543cfb6be1d06df371be064692eeaf1de99a0"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "sha": "ba3a2e6c3f569e4e2eb296b9ba79e3535b5618f7"
+        },
+        {
+          "path": "SYSTEM_ACCESS.md",
+          "type": "file",
+          "sha": "1157c315e10c70513db6190eaf20c20a67bb57e8"
+        },
+        {
+          "path": "package.json",
+          "type": "file",
+          "sha": "af74c4dc1ec849bd4aadf7ca3783626acabe888a"
+        },
+        {
+          "path": "public",
+          "type": "dir",
+          "sha": "21aeeaf888ac446325a59e0d3a3ea3701730421b"
+        },
+        {
+          "path": "research",
+          "type": "dir",
+          "sha": "c71f0d6f6c2f44aa9371c518af69850b94adf782"
+        },
+        {
+          "path": "test.js",
+          "type": "file",
+          "sha": "702fd5b38395f45a71f6c7bc1566ad31d025f336"
+        },
+        {
+          "path": "test_descent.py",
+          "type": "file",
+          "sha": "b508ffacd36a6c8b87a3b25cfbc9d7c0f13f32c2"
+        },
+        {
+          "path": "test_quantum_geometry.js",
+          "type": "file",
+          "sha": "38dfa3bf12c9ba42779968d36fb0e41e1c0e78c1"
+        },
+        {
+          "path": "test_topological_qgt.cjs",
+          "type": "file",
+          "sha": "74f2e3d23692ebaf35fa79c88832abf8f77c0ce1"
+        },
+        {
+          "path": "vercel.json",
+          "type": "file",
+          "sha": "9000c6a9e86ec7e794c12aa4266d3a1df313a555"
         }
       ]
     }

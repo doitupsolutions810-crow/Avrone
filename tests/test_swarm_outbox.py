@@ -58,7 +58,7 @@ def test_message_id_collision_with_different_bytes_is_rejected(tmp_path):
 def test_mark_queued_requires_existing_pending_and_is_idempotent(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     with pytest.raises(KeyError):
-        box.mark_queued("missing", {"ok": True})
+        box.mark_queued("missing", {"ok": True}, owner_token="0" * 48)
     box.prepare(request())
     owner = box.claim_dispatch("msg-1")
     result = box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"}, owner_token=owner)

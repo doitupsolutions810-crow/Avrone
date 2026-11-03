@@ -10,11 +10,11 @@
 
 All signers and verifiers MUST use RFC 8785 JCS. Ordinary language-default JSON serialization is not compatible: Python's default `json.dumps` and JavaScript's `JSON.stringify` differ for exponent notation, negative zero, integral floats, and Unicode escaping. Do not sign pretty-printed JSON, raw transport bytes, or a language-specific object representation.
 
-The payload digest is computed over the payload object only:
+The payload digest is computed over the complete payload object, including the exact requested action (type, resource, and method). Action metadata MUST NOT be supplied only in an unsigned transport field:
 
 `payload_digest = "sha256:" + hex(SHA256(JCS(payload)))`
 
-The Ed25519 signature is computed over the JCS encoding of the complete object with its `signature` member omitted. Signature bytes are standard padded Base64. Public keys are provisioned out of band and pinned by workload identity and key version. A key returned in the same request/envelope is never a trust root.
+The Ed25519 envelope signature is computed over the JCS encoding of the complete object with its `signature` member omitted. Signature bytes are standard padded Base64. Public keys are provisioned out of band and pinned by workload identity and key version. A key returned in the same request/envelope is never a trust root.
 
 ## Envelope verification
 
@@ -22,7 +22,7 @@ A receiver MUST:
 1. Require exactly the fields in `message-envelope-v1.schema.json`.
 2. Verify the pinned issuer key and Ed25519 signature.
 3. Require the expected issuer and exact audience.
-4. Recompute the payload digest and compare it in constant time.
+4. Recompute the payload digest, including the action tuple, and compare it in constant time. Reject any transport-level action that differs from the signed payload.
 5. Enforce UTC RFC 3339 timestamps, a maximum 5-minute validity window, bounded clock skew, and expiry.
 6. Verify the capability independently against the pinned Capability Authority key, exact audience, expiry, and exact `type/resource/method` tuple.
 7. Deduplicate `message_id` and `correlation_id`; identical retries return the original receipt, while changed payload/action/capability under an existing identifier are conflicts.

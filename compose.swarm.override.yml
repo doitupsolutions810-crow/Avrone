@@ -1,0 +1,25 @@
+services:
+  avrone:
+    environment:
+      AVRONE_CA_URL: ${AVRONE_CA_URL:?set AVRONE_CA_URL to the HTTPS Capability Authority endpoint}
+      AVRONE_CA_REQUESTER_ID: ${AVRONE_CA_REQUESTER_ID:-spiffe://prod/agent/avrone}
+      AVRONE_CA_ISSUER: ${AVRONE_CA_ISSUER:-spiffe://prod/broker}
+      AVRONE_CA_REQUESTER_KEY_FILE: /run/avrone-secrets/avrone-ca-requester.pem
+      AVRONE_CA_PUBLIC_KEY_B64: ${AVRONE_CA_PUBLIC_KEY_B64:?set AVRONE_CA_PUBLIC_KEY_B64 to the pinned Authority Ed25519 public key}
+      AVRONE_CA_ALLOW_HTTP: ${AVRONE_CA_ALLOW_HTTP:-0}
+      AVRONE_SWARM_PARENT_CAPABILITY_FILE: /run/avrone-secrets/avrone-swarm-parent.json
+      AVRONE_SWARM_URL: ${AVRONE_SWARM_URL:?set AVRONE_SWARM_URL to the HTTPS Swarm endpoint}
+      AVRONE_SWARM_ISSUER: ${AVRONE_SWARM_ISSUER:?set AVRONE_SWARM_ISSUER to AVRONE's Swarm SPIFFE identity}
+      AVRONE_SWARM_ISSUER_KEY_FILE: /run/avrone-secrets/avrone-swarm-issuer.pem
+      AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE: /run/avrone-secrets/swarm-receipt.pub
+      AVRONE_SWARM_AUDIENCE: ${AVRONE_SWARM_AUDIENCE:-spiffe://prod/agent/swarm}
+      AVRONE_SWARM_DELEGATION_TTL_SECONDS: ${AVRONE_SWARM_DELEGATION_TTL_SECONDS:-120}
+      AVRONE_SWARM_CA_PUBLIC_KEY_B64: ${AVRONE_CA_PUBLIC_KEY_B64:?set the pinned Authority Ed25519 public key}
+      AVRONE_SWARM_ALLOW_HTTP: ${AVRONE_SWARM_ALLOW_HTTP:-0}
+    volumes:
+      - type: bind
+        source: ${AVRONE_SECRET_DIR:?set AVRONE_SECRET_DIR to the mode-0700 directory containing provisioned keys and credentials}
+        target: /run/avrone-secrets
+        read_only: true
+        bind:
+          create_host_path: false

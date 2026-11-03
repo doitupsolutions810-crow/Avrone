@@ -465,8 +465,8 @@
     },
     {
       "path": "MASTER_PROMPT.md",
-      "sha256": "2516dcd5dc1cc9cedb575d9ffdd568176b636379bf3bbfd32df870ee9058c2b6",
-      "source": "Adapted from AVRONE PR 20 at 8cca4083eb94da32240a17a5a7ce87db519cdf7b, with local strict JSON and durable cross-process fan-in fixes; 180 tests passed"
+      "sha256": "6a43df35681624208bd0ccb6b33341a165397056fb02ac88436c60c682b6d488",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "README.md",
@@ -645,13 +645,13 @@
     },
     {
       "path": "avrone/swarm_client.py",
-      "sha256": "3850b7c16daf42a91ca242ea17b2c9ab361ad45f52178b97e2a214808ce6cf01",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "0b8a9d02319f917d69fcfd75b542090bee4c644f158adbcdcf6edd25c03b0ee3",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "avrone/swarm_outbox.py",
-      "sha256": "3b7cffe3bff00470526acc7f29ab463e11c3360f94959784b3f142429aceebe6",
-      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
+      "sha256": "34001403ef6f136de35ba08b712c2839035440cc337190111edd4a6f140bc762",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "compose.swarm.override.yml",
@@ -670,13 +670,13 @@
     },
     {
       "path": "tests/test_swarm_authority_client.py",
-      "sha256": "451d5a18cc68d09707ef7272e532e2dedb404bd17330bebaa0a24a1295687e59",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "08d184811560c5babbde19b88bb9fb10863eafad5b5531e8d10d73ed1eb9d49f",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "tests/test_swarm_outbox.py",
-      "sha256": "833b69c8772bab732adb8194628f3cf298c1b5301d5d1aae23fcb57f283b7134",
-      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
+      "sha256": "ada5e32d175a34552dfc749a9d59e0c42cd1171769e09105c42fc73027f64cb0",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "tests/test_swarm_provisioning.py",
@@ -745,8 +745,13 @@
     },
     {
       "path": "docs/FUSION_SWARM_VALIDATION.md",
-      "sha256": "7416e8617e18c1286c3cc7be4dfa718a9bfc5552775c1adfe1a28b5787436acc",
-      "source": "Adapted from AVRONE PR 20 at 8cca4083eb94da32240a17a5a7ce87db519cdf7b, with local strict JSON and durable cross-process fan-in fixes; 180 tests passed"
+      "sha256": "1c28e88f19d3df49da5b3497abbf188365e5b90d66bf7c83fe50a9fec44a8574",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
+    },
+    {
+      "path": "tests/test_swarm_client_delegation.py",
+      "sha256": "293cb3326d26e75d72578b9843967748c0441b795ca382eb21486a8b26f64561",
+      "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     }
   ],
   "upstream_updates": [
@@ -876,6 +881,12 @@
       "id": "blackboard-fusion-20261103",
       "report": "docs/FUSION_SWARM_VALIDATION.md",
       "python_passed": 180,
+      "full_suite": false
+    },
+    {
+      "id": "swarm-replay-leases-20261103",
+      "report": "docs/FUSION_SWARM_VALIDATION.md",
+      "python_passed": 122,
       "full_suite": false
     }
   ]

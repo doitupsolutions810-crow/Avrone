@@ -146,7 +146,7 @@ def test_timeout_retry_reuses_correlation_and_can_reconcile_expired_parent(monke
     assert len(http.calls) == 2
     first, second = http.calls[0][1], http.calls[1][1]
     assert first["correlation_id"] == second["correlation_id"] == "corr-timeout"
-    assert first["requester_assertion"]["jti"] != second["requester_assertion"]["jti"]
+    assert first["requester_assertion"] == second["requester_assertion"]
 
 
 def test_direct_delegate_never_uses_expired_parent_for_new_issuance(monkeypatch):

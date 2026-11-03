@@ -21,3 +21,9 @@ Final blackboard/bridge/server selection: **180 passed** in **5.73 seconds**. It
 The Fusion Bridge main revision `3f8cc12a965486d5157431c7d906f04024b904cf` contains literal `PLACEHOLDER` in its README, relay and Great Scale evidence module. A local checkout reproduced a collection failure (`NameError`) when importing the relay. The pinned PR #1 implementation at `8c5ea85e973c52631cd9fc1b14e4392f19a1f14c` passes **35 tests** in **16.027 seconds** in a separate workspace. Those tests exercise explicit contract stubs; actual cross-repository HTTP execution is a separate next gate.
 
 The Registry hashes adopted resources and this report. Live inference, Docker deployment, the physical Mac and unmerged proposals are not certified by these software tests.
+
+## Signed Swarm replay and shared dispatch ownership
+
+Adapted the reviewed PR #19 signing/outbox changes while retaining the existing protected key-file loaders, operator API and per-message thread locks. The active-tree selection passes **122 tests** in **1.42 seconds**. A timed-out Authority request now preserves and verifies its exact signed assertion/JTI. A persisted dispatch lease fences independent connections and refuses a result/rejection from an expired owner. The test fixtures now explicitly acquire ownership before recording receipts; signature-validation and stale-owner tests remain active.
+
+This validates the producer and durable queue boundary. The Trinity routing proposal and actual deployed Authority/worker execution remain distinct integration gates.

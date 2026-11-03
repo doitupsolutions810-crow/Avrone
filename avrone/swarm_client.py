@@ -8,6 +8,7 @@ import os
 import stat
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from datetime import datetime as _TimestampParser
 from typing import Any
 from uuid import uuid4
 
@@ -198,10 +199,7 @@ class CapabilityAuthorityClient:
         }
         return {**unsigned, "signature": base64.b64encode(self._requester_key.sign(_jcs(unsigned))).decode("ascii")}
 
-    def _verify_parent(
-        self, parent: dict[str, Any], signature: str,
-        rights: list[dict[str, str]], now: datetime, *, allow_expired: bool = False,
-    ) -> None:
+    def _verify_parent(self, parent: dict[str, Any], signature: str, rights: list[dict[str, str]], now: datetime, *, allow_expired_for_replay: bool = False) -> None:
         if not isinstance(parent, dict) or parent.get("issuer") != self.authority_issuer or parent.get("audience") != self.requester:
             raise ValueError("parent capability issuer/audience mismatch")
         if not isinstance(parent.get("id"), str) or not parent["id"].strip():
@@ -211,7 +209,7 @@ class CapabilityAuthorityClient:
             raise ValueError("parent capability timestamps must be numbers")
         if not math.isfinite(issued) or not math.isfinite(expires) or issued > now.timestamp() + 30 or expires <= issued:
             raise ValueError("parent capability timestamps are invalid")
-        if expires <= now.timestamp() and not allow_expired:
+        if expires <= now.timestamp() and not allow_expired_for_replay:
             raise ValueError("parent capability is expired")
         parent_rights = parent.get("rights")
         if not isinstance(parent_rights, list):
@@ -261,7 +259,8 @@ class CapabilityAuthorityClient:
         self, *, parent_capability: dict[str, Any], parent_signature: str,
         audience: str, rights: list[dict[str, str]], ttl_seconds: int = 120,
         correlation_id: str | None = None, timeout: float = 10.0,
-        _allow_expired_parent_for_replay: bool = False,
+        requester_assertion: dict[str, Any] | None = None,
+        allow_expired_parent_replay: bool = False,
     ) -> dict[str, Any]:
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= 300:
             raise ValueError("delegated ttl_seconds must be an integer in 1..300")
@@ -272,19 +271,49 @@ class CapabilityAuthorityClient:
         correlation = correlation_id or str(uuid4())
         if not isinstance(correlation, str) or not correlation.strip() or len(correlation) > 128:
             raise ValueError("correlation_id must contain 1..128 characters")
-        if not isinstance(_allow_expired_parent_for_replay, bool):
-            raise ValueError("internal replay flag must be boolean")
         current = datetime.now(timezone.utc)
-        self._verify_parent(
-            parent_capability, parent_signature, rights, current,
-            allow_expired=_allow_expired_parent_for_replay,
-        )
+        if not isinstance(allow_expired_parent_replay, bool):
+            raise ValueError("allow_expired_parent_replay must be boolean")
+        if allow_expired_parent_replay and requester_assertion is None:
+            raise ValueError("expired parent replay requires the persisted requester assertion")
+        self._verify_parent(parent_capability, parent_signature, rights, current,
+                            allow_expired_for_replay=allow_expired_parent_replay)
+        assertion = requester_assertion if requester_assertion is not None else self._assertion(current)
+        if (not isinstance(assertion, dict) or assertion.get("schema") != "capability-authority.delegation-assertion/v1"
+                or assertion.get("issuer") != self.requester or assertion.get("subject") != self.requester
+                or assertion.get("audience") != self.authority_issuer
+                or not isinstance(assertion.get("jti"), str) or not assertion["jti"].strip()
+                or len(assertion["jti"]) > 128
+                or not isinstance(assertion.get("signature"), str) or len(assertion["signature"]) > 128
+                or set(assertion) != {"schema", "issuer", "subject", "audience", "jti", "issued_at", "expires_at", "signature"}):
+            raise ValueError("requester_assertion is malformed or bound to another workload")
+        unsigned_assertion = {key: value for key, value in assertion.items() if key != "signature"}
+        try:
+            if not isinstance(assertion["issued_at"], str) or not isinstance(assertion["expires_at"], str):
+                raise ValueError("requester assertion timestamps are invalid")
+            signature_bytes = _b64(assertion["signature"], 64)
+            issued_at = _TimestampParser.fromisoformat(assertion["issued_at"].replace("Z", "+00:00"))
+            expires_at = _TimestampParser.fromisoformat(assertion["expires_at"].replace("Z", "+00:00"))
+            if (issued_at.tzinfo is None or expires_at.tzinfo is None
+                    or expires_at <= issued_at
+                    or expires_at - issued_at > timedelta(seconds=30)
+                    or issued_at > current + timedelta(seconds=30)):
+                raise ValueError("requester assertion timestamps are invalid")
+            self._requester_key.public_key().verify(signature_bytes, _jcs(unsigned_assertion))
+        except (InvalidSignature, TypeError, KeyError, AttributeError) as exc:
+            raise ValueError("requester_assertion signature verification failed") from exc
+        except (ValueError, OverflowError) as exc:
+            if str(exc) == "requester assertion timestamps are invalid":
+                raise
+            raise ValueError("requester_assertion timestamps or signature encoding are invalid") from exc
+        if expires_at <= current and not allow_expired_parent_replay:
+            raise ValueError("requester assertion is expired")
         args = {
             "parent_capability": parent_capability, "parent_signature": parent_signature,
             "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,
-            "correlation_id": correlation,
+            "correlation_id": correlation, "requester_assertion": assertion,
         }
-        request = {"requester_assertion": self._assertion(current), **args}
+        request = {"requester_assertion": assertion, **{k: v for k, v in args.items() if k != "requester_assertion"}}
         try:
             response = self._http.post(self.endpoint, json=request, timeout=timeout)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -313,10 +342,7 @@ class CapabilityAuthorityClient:
     def retry(self, unknown: DelegationUnknownOutcome, *, timeout: float = 10.0) -> dict[str, Any]:
         if not isinstance(unknown, DelegationUnknownOutcome):
             raise TypeError("retry requires the DelegationUnknownOutcome from the original attempt")
-        return self.delegate(
-            **unknown.args_for_retry, timeout=timeout,
-            _allow_expired_parent_for_replay=True,
-        )
+        return self.delegate(**unknown.args_for_retry, timeout=timeout, allow_expired_parent_replay=True)
 
 
 class SwarmClient:

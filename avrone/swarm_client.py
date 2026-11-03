@@ -366,9 +366,9 @@ class SwarmClient:
             issuer=required["AVRONE_SWARM_ISSUER"],
             audience=required["AVRONE_SWARM_AUDIENCE"],
             capability_authority_issuer=required["AVRONE_SWARM_CA_ISSUER"],
-            issuer_private_key_pem=Path(required["AVRONE_SWARM_ISSUER_KEY_FILE"]).read_bytes(),
+            issuer_private_key_pem=_read_private_file(required["AVRONE_SWARM_ISSUER_KEY_FILE"], max_bytes=16 * 1024),
             capability_authority_public_key_b64=required["AVRONE_SWARM_CA_PUBLIC_KEY_B64"],
-            swarm_receipt_public_key_pem=Path(required["AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE"]).read_bytes(),
+            swarm_receipt_public_key_pem=_read_private_file(required["AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE"], max_bytes=16 * 1024),
             http_client=http_client,
             allow_insecure_http=os.getenv("AVRONE_SWARM_ALLOW_HTTP", "0") == "1",
         )

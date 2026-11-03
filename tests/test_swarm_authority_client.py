@@ -202,3 +202,63 @@ def test_parent_method_substitution_is_rejected_before_network():
             ttl_seconds=30, correlation_id="corr-method",
         )
     assert http.calls == []
+
+
+def test_parent_credential_loader_accepts_private_canonical_file(tmp_path):
+    import json
+    from avrone.swarm_client import load_parent_capability_file
+    tmp_path.chmod(0o700)
+    capability = {"id": "parent-1", "audience": REQUESTER}
+    signature = base64.b64encode(b"x" * 64).decode("ascii")
+    path = tmp_path / "parent.json"
+    path.write_text(json.dumps({"capability": capability, "signature": signature}))
+    path.chmod(0o600)
+    assert load_parent_capability_file(path) == (capability, signature)
+
+
+def test_parent_credential_loader_rejects_symlink_and_permissive_mode(tmp_path):
+    from avrone.swarm_client import load_parent_capability_file
+    tmp_path.chmod(0o700)
+    real = tmp_path / "real.json"
+    real.write_text('{"capability":{},"signature":"' + base64.b64encode(b"x" * 64).decode() + '"}')
+    real.chmod(0o600)
+    link = tmp_path / "parent.json"
+    link.symlink_to(real)
+    with pytest.raises(RuntimeError, match="symlink"):
+        load_parent_capability_file(link)
+    link.unlink()
+    real.chmod(0o644)
+    with pytest.raises(RuntimeError, match="0600"):
+        load_parent_capability_file(real)
+
+
+def test_parent_credential_loader_rejects_duplicate_keys_and_oversize(tmp_path):
+    from avrone.swarm_client import load_parent_capability_file
+    tmp_path.chmod(0o700)
+    path = tmp_path / "parent.json"
+    path.write_text('{"capability":{},"capability":{},"signature":"' + base64.b64encode(b"x" * 64).decode() + '"}')
+    path.chmod(0o600)
+    with pytest.raises(RuntimeError, match="valid bounded JSON"):
+        load_parent_capability_file(path)
+    path.write_bytes(b"x" * (64 * 1024 + 1))
+    with pytest.raises(RuntimeError, match="size limit"):
+        load_parent_capability_file(path)
+
+
+def test_authority_client_from_env_uses_pinned_files_and_key(tmp_path, monkeypatch):
+    from avrone.swarm_client import CapabilityAuthorityClient
+    tmp_path.chmod(0o700)
+    requester = Ed25519PrivateKey.generate()
+    authority = Ed25519PrivateKey.generate()
+    key_file = tmp_path / "requester.pem"
+    key_file.write_bytes(pem_private(requester))
+    key_file.chmod(0o600)
+    monkeypatch.setenv("AVRONE_CA_URL", "http://127.0.0.1:8090")
+    monkeypatch.setenv("AVRONE_CA_REQUESTER_ID", REQUESTER)
+    monkeypatch.setenv("AVRONE_CA_REQUESTER_KEY_FILE", str(key_file))
+    monkeypatch.setenv("AVRONE_CA_PUBLIC_KEY_B64", b64_public(authority.public_key()))
+    monkeypatch.setenv("AVRONE_CA_ALLOW_HTTP", "1")
+    client = CapabilityAuthorityClient.from_env(http_client=StubHTTP([]))
+    assert client.requester == REQUESTER
+    assert client.authority_issuer == BROKER
+    assert isinstance(client._requester_key, Ed25519PrivateKey)

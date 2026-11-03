@@ -796,13 +796,13 @@ class TrinityCore:
         finished workers are not re-run and a finished run is returned as is."""
         n = max(1, min(n or self.settings.squad_size, 8))
         ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
-        if isinstance(done, dict):
+        dispatch_mode = (dispatch or os.getenv("AVRONE_SQUAD_DISPATCH", "local")).strip().lower()
+        if isinstance(done, dict) and dispatch_mode != "swarm":
             return done
         run_id = run_id or uuid.uuid4().hex[:10]
         if ck is not None:
             ck.begin(task, "squad", run_id, n=n)
         self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", squad_size=n)
-        dispatch_mode = (dispatch or os.getenv("AVRONE_SQUAD_DISPATCH", "local")).strip().lower()
         if dispatch_mode == "swarm":
             return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
         if dispatch_mode not in {"local", "network", "hybrid"}:

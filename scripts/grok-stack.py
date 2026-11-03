@@ -70,8 +70,8 @@ def main(argv=None):
     if args.action == "check" or report["state"] != "READY":
         print(json.dumps({k: v for k, v in report.items() if k != "sources"}, indent=2))
         return 0 if report["state"] == "READY" else 1
-    if args.swarm and args.action not in {"up", "down"}:
-        parser.error("--swarm is supported only with up and down")
+    if args.swarm and args.action != "up":
+        parser.error("--swarm is supported only with up")
     env = credentials()
     command = ["docker", "compose", "--env-file", str(ENV), "-f", str(ROOT / "compose.grok.yml")]
     if args.swarm:

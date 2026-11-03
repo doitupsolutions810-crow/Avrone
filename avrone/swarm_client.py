@@ -193,6 +193,7 @@ class CapabilityAuthorityClient:
         self, *, parent_capability: dict[str, Any], parent_signature: str,
         audience: str, rights: list[dict[str, str]], ttl_seconds: int = 120,
         correlation_id: str | None = None, timeout: float = 10.0,
+        requester_assertion: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= 300:
             raise ValueError("delegated ttl_seconds must be an integer in 1..300")
@@ -205,12 +206,19 @@ class CapabilityAuthorityClient:
             raise ValueError("correlation_id must contain 1..128 characters")
         current = datetime.now(timezone.utc)
         self._verify_parent(parent_capability, parent_signature, rights, current)
+        assertion = requester_assertion if requester_assertion is not None else self._assertion(current)
+        if (not isinstance(assertion, dict) or assertion.get("schema") != "capability-authority.delegation-assertion/v1"
+                or assertion.get("issuer") != self.requester or assertion.get("subject") != self.requester
+                or assertion.get("audience") != self.authority_issuer
+                or not isinstance(assertion.get("jti"), str) or not isinstance(assertion.get("signature"), str)
+                or len(assertion["signature"]) > 128):
+            raise ValueError("requester_assertion is malformed or bound to another workload")
         args = {
             "parent_capability": parent_capability, "parent_signature": parent_signature,
             "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,
-            "correlation_id": correlation,
+            "correlation_id": correlation, "requester_assertion": assertion,
         }
-        request = {"requester_assertion": self._assertion(current), **args}
+        request = {"requester_assertion": assertion, **{k: v for k, v in args.items() if k != "requester_assertion"}}
         try:
             response = self._http.post(self.endpoint, json=request, timeout=timeout)
         except (httpx.TimeoutException, httpx.TransportError) as exc:

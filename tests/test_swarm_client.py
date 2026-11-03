@@ -127,3 +127,42 @@ def test_tampered_receipt_is_not_reported_as_success(keys):
     request = client.build_request(payload={"objective": "verify receipt"}, capability=capability, capability_signature=signature)
     with pytest.raises(UnknownOutcome, match="independently verified"):
         client.send_request(request)
+
+
+def test_enqueue_with_delegation_binds_same_correlation_across_authority_and_swarm(keys):
+    capability, signature = capability_for(keys)
+    calls = []
+    class FakeAuthority:
+        def delegate(self, **kwargs):
+            calls.append(kwargs)
+            return {"capability": capability, "signature": signature}
+    transport = httpx.MockTransport(lambda request: response_for(json.loads(request.content), keys[2]))
+    client = client_for(keys, transport)
+    result = client.enqueue_with_delegation(
+        authority_client=FakeAuthority(),
+        parent_capability={"id": "parent-cap"},
+        parent_signature="parent-signature",
+        payload={"objective": "run the four specialist roles"},
+        delegation_correlation_id="stable-task-001",
+    )
+    assert result["job"]["id"] == "job-1"
+    assert calls[0]["audience"] == AUDIENCE
+    assert calls[0]["rights"] == [{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}]
+    assert calls[0]["correlation_id"] == "stable-task-001"
+
+
+def test_enqueue_with_delegation_rejects_correlation_mismatch_before_delegating(keys):
+    capability, signature = capability_for(keys)
+    class FakeAuthority:
+        def delegate(self, **kwargs):
+            raise AssertionError("must not delegate with mismatched correlation")
+    client = client_for(keys, httpx.MockTransport(lambda request: response_for(json.loads(request.content), keys[2])))
+    with pytest.raises(ValueError, match="correlation_id"):
+        client.enqueue_with_delegation(
+            authority_client=FakeAuthority(),
+            parent_capability={"id": "parent-cap"},
+            parent_signature="parent-signature",
+            payload={"objective": "do not split correlation"},
+            delegation_correlation_id="stable-task-001",
+            correlation_id="different-task",
+        )

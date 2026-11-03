@@ -472,3 +472,22 @@ merge without his word.
   - Error codes that aren't integers become None.
 - **Tool name collisions:** `a b`, `a_b`, `a?b`, and servers whose names sanitize alike get `_2`/`_3` suffixes. Before, `register()` silently replaced the earlier tool. Name parts are trimmed to 64 characters.
 - Tests: tests/test_mcp_client_robust.py (117), including a real subprocess stdio server. One older test was updated: `test_list_tools_pagination_guard_and_empty_call` now expects a repeated cursor to stop after 2 calls, not 100.
+
+## Round 36: recon guardrails, next layer (avrone/recon.py)
+- **DNS-rebinding pin (security):**
+  - Before: `http_fingerprint` vetted the name's address, then httpx resolved the name again on its own. A rebinding name (public on the first lookup, 127.0.0.1 or 169.254.169.254 on the next) reached a private address.
+  - Now: `_PinnedTransport` connects every request and redirect hop to the exact address the guard vetted for that host. The Host header, the TLS SNI and the certificate check still use the name; this was proven with a real local TLS server. An unvetted host is refused before any connection.
+- **port_scan `authorized`:** before, `bool("false")` was True, so `"false"`, `"no"` and `"0"` all authorized a scan. Now only true, "true", "yes", "1" or 1 count.
+- **Strict ports (`_strict_int`):** before, `True` became port 1 and 443.9 became 443. Now bools, non-integer floats, "443.5", NaN and lists are refused.
+- **Allowlist entries:** these used to be kept verbatim and never matched anything, so they silently allowed nothing. Now each entry is reduced to its bare host:
+  - URLs (`https://mysite.com/`) and host:port (`mysite.com:443`).
+  - userinfo (`user@mysite.com`) and Unicode names (bücher.de becomes xn--bcher-kva.de).
+  - An IP-literal entry never matches.
+- **IPs embedded in names:**
+  - The dash form (`10-0-0-1.sslip.io`, `app-192-168-1-5.nip.io`) is refused.
+  - The 8-hex form (`7f000001.nip.io`) is refused on the wildcard-DNS services (nip.io, sslip.io, xip.io, traefik.me, nip.direct).
+  - Loopback wildcard domains (localtest.me, lvh.me, vcap.me, lacolhost.com) are refused.
+  - The connecting tools still re-check resolution; this refuses these names up front.
+- **IPv6:** site-local fec0::/10 now counts as non-public.
+- **tls_inspect:** tries each vetted address (up to 4) instead of failing when the first one, often IPv6, is unreachable.
+- Tests: tests/test_recon_pinning_robust.py (124), including a real 127.0.0.1 HTTP server with a hostname that has no DNS at all, and real TLS SNI and certificate verification. Mutation: 71 of 124 fail on round 35's code.

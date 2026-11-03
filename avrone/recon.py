@@ -30,7 +30,9 @@ AUDIT NOTE (v0.13 hardening) -- the guardrails, in the order every tool applies 
      or set "*" to explicitly allow any public host. Unparseable (", ,") fails CLOSED.
   5. Connect-time re-check. Tools that connect to the target (tls_inspect, port_scan,
      http_fingerprint) resolve the name first and refuse if ANY address is non-public,
-     then connect to the vetted address; http_fingerprint re-checks every redirect hop.
+     then connect to the vetted address; http_fingerprint re-checks every redirect hop and
+     (round 36) pins each hop's connection to its vetted address (_PinnedTransport), so a
+     DNS-rebinding name cannot swap in a private address between the check and the connect.
   6. Output caps: CT rows/names, DNS types/answers/answer length, SAN and header lengths.
   7. Audit trail. Every call is written to the Codex action log: the tool's own event
      (recon.tls / recon.http / recon.portscan / recon.ct / recon.dns / osint.domain),
@@ -98,7 +100,32 @@ def _allowlist() -> list[str] | None:
         return None
     if not raw.strip():
         return []
-    return [a for a in (h.strip().lower().strip(".") for h in raw.split(",")) if a and "*" not in a]
+    out = []
+    for h in raw.split(","):
+        a = _norm_allow_entry(h)
+        if a and "*" not in a:
+            out.append(a)
+    return out
+
+
+def _norm_allow_entry(h: str) -> str:
+    """One AVRONE_RECON_ALLOWLIST entry as the bare IDNA host it means. "https://MySite.com/",
+    "mysite.com:443", "user@mysite.com" and "bücher.de" used to be kept verbatim and never matched
+    anything (silently allowing nothing). Normalisation only narrows to the host the operator wrote."""
+    a = h.strip().lower()
+    a = re.sub(r"^[a-z][a-z0-9+.-]*://", "", a)
+    a = re.split(r"[/?#]", a, maxsplit=1)[0]
+    a = a.rsplit("@", 1)[-1]
+    if a.count(":") == 1:
+        a = a.split(":")[0]
+    a = a.strip().strip(".")
+    if not a or a.startswith("[") or ":" in a:
+        return ""  # an IP literal never matches a hostname target
+    try:
+        a = a.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+    return a.strip(".")
 
 
 def _allowed_host(host: str) -> bool:
@@ -120,7 +147,12 @@ _BLOCKED_NAMES = {
 _BLOCKED_SUFFIXES = (
     "localhost", "local", "localdomain", "internal", "intranet", "lan", "home", "corp",
     "private", "home.arpa", "in-addr.arpa", "ip6.arpa", "svc.cluster.local", "cluster.local",
+    # public wildcard names that resolve every subdomain to 127.0.0.1 by design
+    "localtest.me", "lvh.me", "vcap.me", "lacolhost.com",
 )
+# public wildcard-DNS services that turn an address written in the name into an A record
+_IP_IN_NAME_SERVICES = ("nip.io", "sslip.io", "xip.io", "traefik.me", "nip.direct")
+_DASH_QUAD = re.compile(r"(?<![0-9])(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})(?![0-9])")
 _LABEL = re.compile(r"^(?!-)[a-z0-9_-]{1,63}(?<!-)$")
 _TLD = re.compile(r"^(?:[a-z][a-z0-9-]*[a-z0-9]|[a-z]|xn--[a-z0-9-]+)$")
 
@@ -130,7 +162,8 @@ def _non_public_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
     if mapped is not None:
         ip = mapped
     return (not ip.is_global) or ip.is_multicast or ip.is_private or ip.is_loopback \
-        or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+        or ip.is_link_local or ip.is_reserved or ip.is_unspecified \
+        or bool(getattr(ip, "is_site_local", False))  # fec0::/10: deprecated, still routed internally
 
 
 def _parse_ip(host: str):
@@ -167,6 +200,21 @@ def _reject_private(host: str) -> str | None:
                     return f"ERROR: {host} embeds a private address; refused"
             except ValueError:
                 pass
+    # the dash form (10-0-0-1.sslip.io, app-192-168-1-5.nip.io) and, on the wildcard-DNS services,
+    # the 8-hex-digit form (7f000001.nip.io). Before, only the dotted form was caught here; the
+    # connecting tools still re-check what the name resolves to, this refuses it up front.
+    for label in labels:
+        for quad in _DASH_QUAD.findall(label):
+            try:
+                if _non_public_ip(ipaddress.IPv4Address(".".join(str(int(x)) for x in quad))):
+                    return f"ERROR: {host} embeds a private address; refused"
+            except ValueError:
+                pass
+    if any(h == s or h.endswith("." + s) for s in _IP_IN_NAME_SERVICES):
+        for label in labels:
+            for m in re.findall(r"(?<![0-9a-f])([0-9a-f]{8})(?![0-9a-f])", label):
+                if _non_public_ip(ipaddress.IPv4Address(int(m, 16))):
+                    return f"ERROR: {host} embeds a private address; refused"
     return None
 
 
@@ -249,9 +297,37 @@ def _host_arg(args: dict[str, Any]) -> tuple[str, str | None]:
     return host, None
 
 
+def _strict_int(v: Any) -> int:
+    """An integer argument: 443, "443", 443.0. Refuses True (int(True) == 1 used to scan port 1),
+    443.9 (silently truncated), "443.5", NaN and None."""
+    if isinstance(v, bool) or v is None:
+        raise ValueError("not an integer")
+    if isinstance(v, float):
+        if not v.is_integer():
+            raise ValueError("not an integer")
+        return int(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and re.fullmatch(r"\s*[+-]?\d{1,6}\s*", v):
+        return int(v)
+    raise ValueError("not an integer")
+
+
+def _authorized(v: Any) -> bool:
+    """port_scan's authorized flag. Only true / "true" / "yes" / 1 count: bool("false") is True,
+    so {"authorized": "false"} (or "no", "0") used to authorize a scan."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v == 1
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "1")
+    return False
+
+
 def _port_arg(args: dict[str, Any], default: int) -> tuple[int, str | None]:
     try:
-        port = int(args.get("port", default))
+        port = _strict_int(args.get("port", default))
     except (TypeError, ValueError):
         return 0, "ERROR: port must be an integer"
     if not 1 <= port <= 65535:
@@ -285,6 +361,46 @@ class _Refused(Exception):
     """A guardrail tripped mid-call (resolution or redirect hop); message is the ERROR text."""
 
 
+def _request_host(request) -> str:
+    raw = getattr(request.url, "raw_host", b"") or b""
+    host = raw.decode("ascii", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    return host.lower().rstrip(".")
+
+
+try:
+    import httpx as _httpx
+
+    class _PinnedTransport(_httpx.AsyncBaseTransport):
+        """Connects each request to the address the guard vetted for its host, never to a fresh DNS
+        answer. Before, http_fingerprint vetted the name and then let httpx resolve it again, so a
+        DNS-rebinding name (public on the first lookup, 127.0.0.1 / 169.254.169.254 on the second)
+        reached a private address. The Host header and TLS SNI/certificate check keep the name."""
+
+        def __init__(self, pins: dict[str, str]):
+            self.pins = pins
+            self.inner = _httpx.AsyncHTTPTransport(retries=0)
+
+        async def handle_async_request(self, request):
+            host = _request_host(request)
+            ip = self.pins.get(host)
+            if not ip:
+                raise _Refused(f"ERROR: {host or 'request'} was not vetted before connecting; refused")
+            logical = request.url
+            request.headers.setdefault("host", logical.netloc.decode("ascii"))
+            request.url = logical.copy_with(host=ip)
+            if logical.scheme == "https":
+                request.extensions = {**request.extensions, "sni_hostname": host}
+            try:
+                return await self.inner.handle_async_request(request)
+            finally:
+                request.url = logical  # redirects and r.url keep the hostname
+
+        async def aclose(self) -> None:
+            await self.inner.aclose()
+except ImportError:  # pragma: no cover - httpx is a hard dependency
+    _PinnedTransport = None  # type: ignore[assignment,misc]
+
+
 async def t_tls_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
     host, err = _gate(ctx, "tls_inspect", args)
     if err:
@@ -299,9 +415,17 @@ async def t_tls_inspect(ctx: "AgentContext", args: dict[str, Any]) -> str:
         if (rerr := _reject_resolved(host, ips)):
             raise _Refused(rerr)
         ctx_ssl = ssl.create_default_context()
-        with socket.create_connection((ips[0], port), timeout=8) as sock:
-            with ctx_ssl.wrap_socket(sock, server_hostname=host) as ss:
-                return ss.getpeercert(), ss.version(), ss.cipher()
+        last: Exception | None = None
+        for ip in ips[:4]:  # every address is vetted; an unreachable first (often IPv6) used to fail the call
+            try:
+                sock = socket.create_connection((ip, port), timeout=8)
+            except OSError as e:
+                last = e
+                continue
+            with sock:
+                with ctx_ssl.wrap_socket(sock, server_hostname=host) as ss:
+                    return ss.getpeercert(), ss.version(), ss.cipher()
+        raise last or OSError("no address to connect to")
 
     try:
         cert, ver, cipher = await asyncio.to_thread(_get)
@@ -340,6 +464,7 @@ async def t_http_fingerprint(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if rerr:
         return _refuse(ctx, "http_fingerprint", host, rerr)
     url = f"{scheme}://{host}/"
+    pins: dict[str, str] = {}
 
     async def _guard_hop(request) -> None:
         # every request, including each redirect hop, must stay on a public, allowed host
@@ -347,13 +472,15 @@ async def t_http_fingerprint(ctx: "AgentContext", args: dict[str, Any]) -> str:
         hop_host, herr = _host_arg({"host": hop})
         if herr:
             raise _Refused(f"ERROR: redirect to {hop} refused: {herr.removeprefix('ERROR: ')}")
-        _, herr = await _vet_resolved(hop_host)
+        addr, herr = await _vet_resolved(hop_host)
         if herr:
             raise _Refused(f"ERROR: redirect to {hop} refused: {herr.removeprefix('ERROR: ')}")
+        pins[hop_host] = addr  # the transport connects to exactly this address
 
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True, max_redirects=5,
-                                     event_hooks={"request": [_guard_hop]}) as c:
+                                     event_hooks={"request": [_guard_hop]},
+                                     transport=_PinnedTransport(pins)) as c:
             r = await c.get(url, headers={"user-agent": "AVRONE-recon/0.10"})
     except _Refused as e:
         return _refuse(ctx, "http_fingerprint", host, str(e))
@@ -380,7 +507,7 @@ async def t_port_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
     raw = args.get("host") or args.get("domain") or args.get("target") or ""
     if (d := _denied()):
         return _refuse(ctx, "port_scan", raw, d)
-    if not bool(args.get("authorized")):
+    if not _authorized(args.get("authorized")):
         return _refuse(ctx, "port_scan", raw,
                        'ERROR: port_scan needs {"authorized": true} to confirm you own or are authorized to scan '
                        "this host. Scanning third-party hosts is abuse and is refused.")
@@ -391,7 +518,7 @@ async def t_port_scan(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not isinstance(ports, list) or len(ports) > 32:
         return _refuse(ctx, "port_scan", host, "ERROR: ports must be a list of at most 32 integers")
     try:
-        ports = sorted({int(p) for p in ports})
+        ports = sorted({_strict_int(p) for p in ports})
     except (TypeError, ValueError):
         return _refuse(ctx, "port_scan", host, "ERROR: ports must be integers")
     if any(p < 1 or p > 65535 for p in ports):

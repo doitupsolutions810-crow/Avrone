@@ -325,3 +325,23 @@ merge without his word.
 - **.env parser** (`parse_dotenv_line`): handles `export KEY=`, a BOM, CRLF, and a quoted value that contains " #". Keys with spaces are rejected. A non-UTF-8 file or a directory named .env no longer crashes.
 - **Malformed URL at request time**: httpx.InvalidURL (not an HTTPError, so it used to escape chat() raw) and UnsupportedProtocol now fail over at once with no retry. The legacy client raises LLMError.
 - Tests: tests/test_config_endpoint.py (70). Mutation on round 22: 49 of 70 fail.
+
+## Round 24: core read_file / write_file / fetch tools (branch avrone-a12lr-daemon)
+- **read_file**:
+  - Reads are bounded. It never reads a huge log whole.
+  - Truncation is announced with `offset=` paging. Optional `offset` accepts an int or a numeric string. Before, it cut silently at 12000 chars and the model thought the file ended there.
+  - Binary files (a NUL in the first 8 KB) get a refusal with a shell hint, instead of NUL soup.
+  - A directory returns its entries instead of `IsADirectoryError`. An empty path or a junk offset gets a clear message.
+  - A multi-byte character cut at the window edge isn't mangled.
+- **write_file**:
+  - Dict or list content becomes pretty JSON. Before, the model's .json files were Python reprs like `{'a': 1}`, and the schema rejected them.
+  - Lone surrogates become U+FFFD instead of aborting the write.
+  - An empty path, a trailing-slash path, or an existing directory gets a clear error.
+  - Writes outside agent dirs are atomic (tmp then os.replace) and use explicit UTF-8. A full disk leaves the old file intact.
+- **fetch**:
+  - The body is streamed and capped at 2 MB.
+  - Binary types are summarised, not decoded.
+  - URLs wrapped in <>, quotes, or backticks, and uppercase schemes, are cleaned.
+  - HTML entities are unescaped.
+  - Timeouts, connect errors, bad URLs, and an unknown charset each get a clear message.
+- Tests: tests/test_core_file_tools.py (51). Mutation on round 23: 38 of 51 fail.

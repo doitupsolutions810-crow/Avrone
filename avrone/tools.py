@@ -45,8 +45,8 @@ _TYPES: dict[str, tuple[type, ...]] = {
 CORE_SCHEMAS: dict[str, dict[str, dict[str, str]]] = {
     "shell": {"required": {"cmd": "str"}},
     "python": {"required": {"code": "str"}},
-    "read_file": {"required": {"path": "str"}},
-    "write_file": {"required": {"path": "str", "content": "str"}},
+    "read_file": {"required": {"path": "str"}, "optional": {"offset": "int|str"}},
+    "write_file": {"required": {"path": "str", "content": "str|dict|list"}},
     "edit_file": {"required": {"path": "str", "old": "str", "new": "str"}},
     "fetch": {"required": {"url": "str"}},
     "web_search": {"required": {"query": "str"}, "optional": {"max_results": "int"}},
@@ -239,42 +239,170 @@ _INSTALL_RE = __import__("re").compile(
     r"\b(apt(-get)?\s+install|pip3?\s+install|python3?\s+-m\s+pip\s+install|npm\s+(i|install)|apk\s+add|yum\s+install|dnf\s+install|brew\s+install|cargo\s+install|go\s+install)\b")
 
 
+READ_MAX_CHARS = 12000
+FETCH_MAX_BYTES = 2 * 1024 * 1024
+FETCH_TRANSPORT: Any = None  # tests inject an httpx.MockTransport here
+_TEXTY = ("text/", "json", "xml", "javascript", "yaml", "csv", "x-sh", "markdown", "html")
+
+
+def _offset(raw: Any) -> int:
+    try:
+        return max(0, int(str(raw).strip() or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _dir_listing(p: Path, limit: int = 30) -> str:
+    try:
+        names = sorted(c.name + ("/" if c.is_dir() else "") for c in p.iterdir())
+    except OSError:
+        return ""
+    more = f", ... (+{len(names) - limit} more)" if len(names) > limit else ""
+    return ", ".join(names[:limit]) + more if names else "(empty)"
+
+
+def write_content(raw: Any) -> str:
+    """write_file content as text. Before round 24 a dict/list (common when a model writes a
+    .json file) became a Python repr ("{'a': 1}"), and a lone surrogate aborted the write."""
+    import json as _json
+    if raw is None:
+        text = ""
+    elif isinstance(raw, str):
+        text = raw
+    elif isinstance(raw, (dict, list)):
+        text = _json.dumps(raw, indent=2, ensure_ascii=False, default=str) + "\n"
+    elif isinstance(raw, bytes):
+        text = raw.decode("utf-8", "replace")
+    else:
+        text = str(raw)
+    return re.sub(r"[\ud800-\udfff]", "\ufffd", text)
+
+
 async def t_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Bounded, honest read: never loads a huge file whole, says when it truncated and how to
+    page on (offset), refuses binary instead of returning NUL soup, and lists a directory
+    instead of raising IsADirectoryError."""
     from . import fsunify
-    p = fsunify.resolve(ctx, args.get("path", ""), "read_file").path
+    raw_path = str(args.get("path") or "").strip()
+    if not raw_path:
+        return "ERROR: read_file needs a file path (use list_files to see what is there)"
+    p = fsunify.resolve(ctx, raw_path, "read_file").path
     if not p.exists():
-        return f"ERROR: {args.get('path')} not found"
-    return p.read_text(errors="replace")[:12000]
+        return f"ERROR: {raw_path} not found"
+    if p.is_dir():
+        return f"ERROR: {raw_path} is a directory, not a file. Entries: {_dir_listing(p)}"
+    if not p.is_file():
+        return f"ERROR: {raw_path} is not a regular file"
+    size = p.stat().st_size
+    off = _offset(args.get("offset"))
+    with p.open("rb") as fh:
+        head = fh.read(8192)
+        if b"\x00" in head:
+            return (f"ERROR: {raw_path} is a binary file ({size} bytes); inspect it with shell "
+                    f"(e.g. `file {raw_path}` or `xxd {raw_path} | head`)")
+        fh.seek(0)
+        data = fh.read((off + READ_MAX_CHARS) * 4 + 4)
+    text = data.decode("utf-8", "replace")
+    if data and len(data) < size:  # a cut multi-byte char at the end of the window
+        text = text.rstrip("\ufffd")
+    chunk = text[off:off + READ_MAX_CHARS]
+    end = off + len(chunk)
+    complete = len(data) >= size and end >= len(text)
+    if complete and off == 0:
+        return chunk
+    if not chunk and off:
+        return f"ERROR: offset {off} is past the end of {raw_path} ({size} bytes)"
+    note = (f"\n[truncated: showing chars {off}-{end} of a {size}-byte file; "
+            f"call read_file with offset={end} for more]") if not complete else \
+        f"\n[end of file: chars {off}-{end}]"
+    return chunk + note
 
 
 async def t_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    import os as _os
+    import tempfile as _tempfile
     from . import fsunify
-    r = fsunify.resolve(ctx, args.get("path", ""), "write_file")
+    raw_path = str(args.get("path") or "").strip()
+    if not raw_path or raw_path.endswith(("/", "\\")):
+        return "ERROR: write_file needs a file path (got a directory or nothing)"
+    r = fsunify.resolve(ctx, raw_path, "write_file")
     p = r.path
+    content = write_content(args.get("content"))
+    if not r.in_agent and p.is_dir():  # (agent dirs: quota_write refuses and audits it)
+        return f"ERROR: {raw_path} is a directory; give a file path inside it"
     if r.in_agent:
         from .agentfs_tools import quota_write
-        size, used, quota = quota_write(ctx, r.root, p, str(args.get("content", "")).encode("utf-8"),
-                                        tool="write_file")
+        size, used, quota = quota_write(ctx, r.root, p, content.encode("utf-8"), tool="write_file")
         return f"wrote {fsunify.display(ctx, p)} ({size} bytes; agent dir {used}/{quota} bytes)"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(str(args.get("content", "")))
+    # atomic: a crash or full disk mid-write never leaves a half-written file behind
+    fd, tmp = _tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(content)
+        _os.replace(tmp, p)
+    except BaseException:
+        try:
+            _os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     if r.unified:
         return f"wrote {fsunify.display(ctx, p)} ({p.stat().st_size} bytes)"
     return f"wrote {p.relative_to(ctx.core.runner.workspace.resolve())} ({p.stat().st_size} bytes)"
 
 
+def clean_url(raw: Any) -> str:
+    u = str(raw or "").strip().strip("<>\"'` ").strip()
+    return u
+
+
 async def t_fetch(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    """Bounded GET: the body is streamed and capped (a model fetching a 4 GB ISO no longer
+    loads it into memory), binary bodies are summarised, entities are unescaped."""
+    import html as _html
     if not ctx.core.settings.allow_network:
         return "ERROR: network access is disabled."
-    url = str(args.get("url", ""))
-    if not re.match(r"^https?://", url):
+    url = clean_url(args.get("url"))
+    if not re.match(r"^https?://", url, re.I):
         return "ERROR: url must start with http(s)://"
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-        r = await c.get(url, headers={"User-Agent": "AVRONE/0.2"})
-    text = re.sub(r"<script.*?</script>|<style.*?</style>", "", r.text, flags=re.S)
+    kw: dict[str, Any] = {"timeout": 30, "follow_redirects": True}
+    if FETCH_TRANSPORT is not None:
+        kw["transport"] = FETCH_TRANSPORT
+    try:
+        async with httpx.AsyncClient(**kw) as c:
+            async with c.stream("GET", url, headers={"User-Agent": "AVRONE/0.2"}) as r:
+                ctype = r.headers.get("content-type", "").lower()
+                buf = bytearray()
+                cut = False
+                async for part in r.aiter_bytes():
+                    buf += part
+                    if len(buf) > FETCH_MAX_BYTES:
+                        cut = True
+                        del buf[FETCH_MAX_BYTES:]
+                        break
+                status, encoding = r.status_code, r.encoding or "utf-8"
+    except httpx.TimeoutException:
+        return f"ERROR: fetch timed out after 30s: {url}"
+    except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
+        return f"ERROR: bad url {url!r}: {e}"
+    except httpx.HTTPError as e:
+        return f"ERROR: fetch failed ({type(e).__name__}): {e}"
+    is_text = (not ctype) or any(t in ctype for t in _TEXTY)
+    if not is_text or b"\x00" in bytes(buf[:4096]):
+        more = "+" if cut else ""
+        return (f"[HTTP {status}] binary content ({ctype or 'unknown type'}, {len(buf)}{more} bytes); "
+                "not shown. Download it with shell (curl -o) if you need it.")
+    try:
+        text = bytes(buf).decode(encoding, "replace")
+    except LookupError:
+        text = bytes(buf).decode("utf-8", "replace")
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", "", text, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
+    text = _html.unescape(text)
     text = re.sub(r"\s+", " ", text)
-    return f"[HTTP {r.status_code}] {text[:8000]}"
+    tail = " [body cut at 2 MB]" if cut else ""
+    return f"[HTTP {status}] {text[:8000]}{tail}"
 
 
 async def t_spawn(ctx: "AgentContext", args: dict[str, Any]) -> str:

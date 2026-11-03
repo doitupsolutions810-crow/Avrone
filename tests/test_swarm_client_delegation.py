@@ -229,3 +229,29 @@ def test_parent_expiry_preflight_can_be_skipped_only_for_replay_after_signature_
     invalid_signature = base64.b64encode(b"\\0" * 64).decode("ascii")
     with pytest.raises(ValueError, match="invalid parent Capability Authority signature"):
         client._verify_parent(parent, invalid_signature, rights, now, allow_expired_for_replay=True)
+
+
+def test_parent_and_delegated_rights_require_nonempty_string_fields():
+    authority_key = Ed25519PrivateKey.generate()
+    client = CapabilityAuthorityClient.__new__(CapabilityAuthorityClient)
+    client.authority_issuer = "spiffe://prod/broker"
+    client.requester = "spiffe://prod/agent/avrone"
+    client._authority_key = authority_key.public_key()
+    now = datetime.now(timezone.utc)
+    valid_right = {"type": "Execute", "resource": "swarm.jobs", "method": "POST"}
+
+    malformed_parent = {
+        "id": "parent-1", "issuer": client.authority_issuer,
+        "audience": client.requester, "issued_at": now.timestamp() - 1,
+        "expires_at": now.timestamp() + 60,
+        "rights": [{"type": "Execute", "resource": None, "method": "POST"}],
+    }
+    parent_sig = base64.b64encode(authority_key.sign(rfc8785.dumps(malformed_parent))).decode("ascii")
+    with pytest.raises(ValueError, match="exceed parent"):
+        client._verify_parent(malformed_parent, parent_sig, [valid_right], now)
+
+    valid_parent = {**malformed_parent, "rights": [valid_right]}
+    valid_sig = base64.b64encode(authority_key.sign(rfc8785.dumps(valid_parent))).decode("ascii")
+    malformed_right = {"type": "Execute", "resource": None, "method": "POST"}
+    with pytest.raises(ValueError, match="non-empty strings"):
+        client._verify_parent(valid_parent, valid_sig, [malformed_right], now)

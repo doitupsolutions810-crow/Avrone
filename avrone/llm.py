@@ -21,6 +21,7 @@ from .config import Settings
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 from .gateway import Gateway, is_loopback_url, LLMError  # noqa: E402,F401  (re-exported)
+from .gateway import sanitize_messages as _sanitize, safe_temperature as _safe_temp  # noqa: E402
 
 
 class LLM:
@@ -51,8 +52,8 @@ class LLM:
             headers["X-Title"] = "AVRONE"
         body: dict[str, Any] = {
             "model": model or self.s.llm_model,
-            "messages": messages,
-            "temperature": temperature,
+            "messages": _sanitize(messages),
+            "temperature": _safe_temp(temperature),
         }
         url = self.s.llm_base_url.rstrip("/") + "/chat/completions"
         tries = max(1, self.s.llm_retries)
@@ -63,6 +64,8 @@ class LLM:
                 async with httpx.AsyncClient(timeout=self.s.llm_timeout,
                                              trust_env=not is_loopback_url(url)) as client:
                     r = await client.post(url, headers=headers, json=body)
+            except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
+                raise LLMError(f"Model backend URL is invalid ({url!r}): {e}") from e
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 raise LLMError(f"Model backend unreachable at {url}: {e}") from e
             except httpx.HTTPError as e:  # read timeouts, dropped connections: retry

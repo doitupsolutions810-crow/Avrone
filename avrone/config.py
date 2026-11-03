@@ -10,16 +10,47 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def parse_dotenv_line(line: str) -> tuple[str, str] | None:
+    """One .env line -> (key, value), or None. Handles `export KEY=v`, a BOM, CRLF, matching
+    quotes (a ' #' inside quotes is kept), and trailing ' # comments' on unquoted values.
+    Before round 23 `export KEY=v` set a variable literally named 'export KEY', and
+    KEY="a #1" lost everything after the '#'."""
+    line = line.lstrip("\ufeff").strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+    key, _, value = line.partition("=")
+    key = key.strip()
+    if key.startswith("export "):
+        key = key[len("export "):].strip()
+    if not key or any(c.isspace() for c in key):
+        return None
+    value = value.strip()
+    if value[:1] in ("'", '"'):
+        end = value.find(value[0], 1)
+        if end > 0:
+            return key, value[1:end]
+    value = value.split(" #", 1)[0].split("\t#", 1)[0]
+    return key, _unquote(value)
+
+
 def _load_dotenv(path: Path) -> None:
-    if not path.exists():
+    try:
+        if not path.is_file():
+            return
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.split(" #", 1)[0]  # allow trailing comments
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    for line in text.splitlines():
+        kv = parse_dotenv_line(line)
+        if kv:
+            os.environ.setdefault(*kv)
 
 
 _load_dotenv(Path(os.getenv("AVRONE_ENV_FILE", ".env")))
@@ -48,23 +79,81 @@ def resolve_provider(provider: str | None, base_url: str | None = None, model: s
     if name not in PROVIDERS:
         raise ValueError(f"Unknown AVRONE_PROVIDER {provider!r}. Choose one of: {', '.join(PROVIDERS)}")
     p_url, p_model, key_env = PROVIDERS[name]
-    url = base_url or p_url
+    url = normalize_base_url(base_url or "", name) or p_url
     if not url:
         raise ValueError("AVRONE_PROVIDER=custom needs AVRONE_LLM_BASE_URL")
-    key = api_key if api_key else (env.get(key_env, "") if key_env else "")
-    return name, url, model or p_model, key
+    key = clean_api_key(api_key if api_key else (env.get(key_env, "") if key_env else ""))
+    model = _unquote(model or "") or p_model
+    return name, url, model, key
+
+
+_LOCAL_HOSTS = ("localhost", "127.", "0.0.0.0", "[::1]", "::1", "host.docker.internal", "10.", "192.168.")
+
+
+def normalize_base_url(url: str, provider: str = "") -> str:
+    """The OpenAI-compatible base URL, from what people actually paste:
+    - quotes/whitespace, trailing slashes, and a full '.../chat/completions' endpoint are stripped
+      (before round 23 that became '.../chat/completions/chat/completions', a 404);
+    - a missing scheme gets http:// for local hosts and https:// otherwise (httpx refused it);
+    - for Ollama, a bare 'http://host:11434' or the native '/api' or '/api/chat' path becomes '/v1'
+      (the server answers 404 'page not found' on /chat/completions without it)."""
+    u = _unquote(url or "")
+    if not u:
+        return ""
+    if "://" not in u:
+        host = u.split("/", 1)[0].lower()
+        local = host.startswith(_LOCAL_HOSTS) or host.split(":")[0] in ("localhost",) or ":11434" in host
+        u = ("http://" if local else "https://") + u
+    u = u.rstrip("/")
+    for suffix in ("/chat/completions", "/completions"):
+        if u.lower().endswith(suffix):
+            u = u[: -len(suffix)].rstrip("/")
+            break
+    scheme, _, rest = u.partition("://")
+    host, slash, path = rest.partition("/")
+    path = "/" + path if slash else ""
+    is_ollama = provider == "ollama" or host.endswith(":11434")
+    if is_ollama and path.lower() in ("", "/api", "/api/chat", "/api/generate"):
+        path = "/v1"
+    return f"{scheme.lower()}://{host}{path}"
+
+
+def clean_api_key(key: str) -> str:
+    """A pasted key with quotes, whitespace, newlines, or a leading 'Bearer ' (which made the
+    header 'Bearer Bearer sk-...', a 401) is reduced to the bare token."""
+    k = _unquote(key or "")
+    if k[:7].lower() == "bearer " or k[:7].lower() == "bearer\t":
+        k = k[7:]
+    return "".join(k.split())  # no whitespace is valid inside a token; a newline breaks the header
 
 
 def _env(name: str, default: str = ""):
     return lambda: os.getenv(name, default)
 
 
+def _num(raw: str | None, default: float, cast: type) -> float:
+    v = (raw or "").strip().strip("'\"").replace("_", "")
+    if not v:
+        return default
+    try:
+        f = float(v)
+    except ValueError:
+        import sys
+        print(f"AVRONE: ignoring bad number {raw!r}; using {default}", file=sys.stderr)
+        return default
+    if f != f or f in (float("inf"), float("-inf")):
+        return default
+    return cast(f)
+
+
 def _int(name: str, default: int):
-    return lambda: int(os.getenv(name, str(default)))
+    # Before round 23 AVRONE_LLM_TIMEOUT=30s or an empty AVRONE_LLM_RETRIES= raised ValueError at
+    # import time (settings = Settings() below), so the whole server failed to start.
+    return lambda: int(_num(os.getenv(name), default, int))
 
 
 def _float(name: str, default: float):
-    return lambda: float(os.getenv(name, str(default)))
+    return lambda: float(_num(os.getenv(name), default, float))
 
 
 def _bool(name: str, default: bool):

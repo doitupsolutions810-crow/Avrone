@@ -302,3 +302,26 @@ merge without his word.
 - **Retry-After:** accepts an HTTP-date as well as seconds. A past date gives 0, NaN or junk is ignored, and the delay is still capped at 30 s.
 - Unusable bodies (empty choices, HTML, arrays) still give "bad response" and retry, as before.
 - Tests: tests/test_gateway_response_shapes.py (36). Mutation on round 20: 19 of 36 fail. The rest are pass-through guards.
+
+## Round 22 hardening (outbound request body). Branch: avrone-a12lr-daemon
+- From round 22 on, work goes to the `avrone-a12lr-daemon` branch (Crow, 2026-11-02). `main` stays at round 21 (ae0c2ee).
+- **`sanitize_messages()`** runs on every request body (gateway and the legacy `llm.LLM` path):
+  - Lone surrogates (bytes decoded with surrogateescape, or a cut emoji) become U+FFFD. Before, httpx raised UnicodeEncodeError locally, the same way on every upstream.
+  - NUL bytes are dropped.
+  - Content that is None, a number, bytes, a part list, or a dict always becomes a string.
+  - Roles are normalised: developer→system, human→user, ai/model/bot→assistant, function→tool, anything unknown→user.
+  - A tool-role message with no `tool_call_id` becomes a user "TOOL RESULT:" message, so strict servers don't return 400.
+  - Extra keys are dropped. A valid `name` is kept. Junk entries are skipped, and the caller's list is never mutated.
+- **`safe_temperature()`**: NaN or inf (which made the JSON invalid) and non-numbers fall back to 0.7. Other values are clamped to 0–2.
+- Tests: tests/test_gateway_outbound.py (43). Mutation on round 21: 35 of 43 fail.
+
+## Round 23: endpoint and config values (branch avrone-a12lr-daemon)
+- **`normalize_base_url()`** in config.resolve_provider covers both the gateway and the legacy LLM:
+  - Strips quotes, whitespace, trailing slashes, and a pasted full `/chat/completions` or `/completions` endpoint. That used to double into a 404.
+  - Adds a missing scheme: http:// for local or LAN hosts and :11434, https:// otherwise.
+  - For Ollama, a bare `host:11434`, or `/api`, `/api/chat`, or `/api/generate`, becomes `/v1`.
+- **`clean_api_key()`**: removes quotes, whitespace, and newlines, plus a leading `Bearer ` (that used to send "Bearer Bearer", a 401). Model names are unquoted.
+- **Numeric env vars** (`_int`/`_float`): blank, junk ("30s"), NaN, or inf now fall back to the default with a stderr note. Before, this raised ValueError at import (`settings = Settings()`), so nothing started. Underscores, quotes, and "1e1" are accepted.
+- **.env parser** (`parse_dotenv_line`): handles `export KEY=`, a BOM, CRLF, and a quoted value that contains " #". Keys with spaces are rejected. A non-UTF-8 file or a directory named .env no longer crashes.
+- **Malformed URL at request time**: httpx.InvalidURL (not an HTTPError, so it used to escape chat() raw) and UnsupportedProtocol now fail over at once with no retry. The legacy client raises LLMError.
+- Tests: tests/test_config_endpoint.py (70). Mutation on round 22: 49 of 70 fail.

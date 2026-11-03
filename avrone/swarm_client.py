@@ -118,7 +118,10 @@ class CapabilityAuthorityClient:
         }
         return {**unsigned, "signature": base64.b64encode(self._requester_key.sign(_jcs(unsigned))).decode("ascii")}
 
-    def _verify_parent(self, parent: dict[str, Any], signature: str, rights: list[dict[str, str]], now: datetime) -> None:
+    def _verify_parent(
+        self, parent: dict[str, Any], signature: str,
+        rights: list[dict[str, str]], now: datetime, *, allow_expired: bool = False,
+    ) -> None:
         if not isinstance(parent, dict) or parent.get("issuer") != self.authority_issuer or parent.get("audience") != self.requester:
             raise ValueError("parent capability issuer/audience mismatch")
         if not isinstance(parent.get("id"), str) or not parent["id"].strip():
@@ -126,16 +129,27 @@ class CapabilityAuthorityClient:
         issued, expires = parent.get("issued_at"), parent.get("expires_at")
         if isinstance(issued, bool) or isinstance(expires, bool) or not isinstance(issued, (int, float)) or not isinstance(expires, (int, float)):
             raise ValueError("parent capability timestamps must be numbers")
-        if not math.isfinite(issued) or not math.isfinite(expires) or issued > now.timestamp() + 30 or expires <= now.timestamp() or expires <= issued:
-            raise ValueError("parent capability is expired or invalid")
+        if not math.isfinite(issued) or not math.isfinite(expires) or issued > now.timestamp() + 30 or expires <= issued:
+            raise ValueError("parent capability timestamps are invalid")
+        if expires <= now.timestamp() and not allow_expired:
+            raise ValueError("parent capability is expired")
         parent_rights = parent.get("rights")
         if not isinstance(parent_rights, list):
             raise ValueError("parent capability rights are invalid")
-        allowed = {(r.get("type"), r.get("resource"), r.get("method")) for r in parent_rights if isinstance(r, dict)}
+        allowed = set()
+        for item in parent_rights:
+            if not isinstance(item, dict):
+                continue
+            parts = (item.get("type"), item.get("resource"), item.get("method"))
+            if all(isinstance(part, str) and part.strip() for part in parts):
+                allowed.add(parts)
         for right in rights:
             if not isinstance(right, dict) or set(right) != {"type", "resource", "method"}:
                 raise ValueError("delegated right schema is invalid")
-            if (right.get("type"), right.get("resource"), right.get("method")) not in allowed:
+            parts = (right.get("type"), right.get("resource"), right.get("method"))
+            if not all(isinstance(part, str) and part.strip() for part in parts):
+                raise ValueError("delegated right fields must be non-empty strings")
+            if parts not in allowed:
                 raise ValueError("delegated rights exceed parent capability")
         try:
             self._authority_key.verify(_b64(signature, 64), _jcs(parent))
@@ -167,6 +181,7 @@ class CapabilityAuthorityClient:
         self, *, parent_capability: dict[str, Any], parent_signature: str,
         audience: str, rights: list[dict[str, str]], ttl_seconds: int = 120,
         correlation_id: str | None = None, timeout: float = 10.0,
+        _allow_expired_parent_for_replay: bool = False,
     ) -> dict[str, Any]:
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= 300:
             raise ValueError("delegated ttl_seconds must be an integer in 1..300")
@@ -177,8 +192,13 @@ class CapabilityAuthorityClient:
         correlation = correlation_id or str(uuid4())
         if not isinstance(correlation, str) or not correlation.strip() or len(correlation) > 128:
             raise ValueError("correlation_id must contain 1..128 characters")
+        if not isinstance(_allow_expired_parent_for_replay, bool):
+            raise ValueError("internal replay flag must be boolean")
         current = datetime.now(timezone.utc)
-        self._verify_parent(parent_capability, parent_signature, rights, current)
+        self._verify_parent(
+            parent_capability, parent_signature, rights, current,
+            allow_expired=_allow_expired_parent_for_replay,
+        )
         args = {
             "parent_capability": parent_capability, "parent_signature": parent_signature,
             "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,
@@ -213,7 +233,10 @@ class CapabilityAuthorityClient:
     def retry(self, unknown: DelegationUnknownOutcome, *, timeout: float = 10.0) -> dict[str, Any]:
         if not isinstance(unknown, DelegationUnknownOutcome):
             raise TypeError("retry requires the DelegationUnknownOutcome from the original attempt")
-        return self.delegate(**unknown.args_for_retry, timeout=timeout)
+        return self.delegate(
+            **unknown.args_for_retry, timeout=timeout,
+            _allow_expired_parent_for_replay=True,
+        )
 
 
 class SwarmClient:

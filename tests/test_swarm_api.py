@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from avrone import swarm_api
-from avrone.swarm_client import UnknownOutcome
+from avrone.swarm_client import ACTION, AuthorityRejected, DelegationUnknownOutcome, UnknownOutcome
 
 
 class FakeClient:
@@ -33,7 +33,7 @@ class FakeClient:
             raise ValueError("bad receipt")
 
 
-def setup(tmp_path, *, fail_first=False, configured=True):
+def setup(tmp_path, *, fail_first=False, configured=True, authority=None, parent=None):
     app = FastAPI()
     client = FakeClient(fail_first=fail_first)
 
@@ -46,8 +46,20 @@ def setup(tmp_path, *, fail_first=False, configured=True):
         if token != "operator-token":
             raise HTTPException(403, "denied")
 
+    def authority_factory():
+        if authority is None:
+            raise RuntimeError("Authority not configured")
+        return authority
+
+    def parent_loader():
+        if parent is None:
+            raise RuntimeError("parent credential unavailable")
+        return parent
+
     swarm_api.install_routes(app, lambda: None, auth, SimpleNamespace(data_dir=tmp_path),
-                             client_factory=factory)
+                             client_factory=factory,
+                             authority_client_factory=authority_factory,
+                             parent_capability_loader=parent_loader)
     return app, client
 
 
@@ -147,3 +159,108 @@ def test_existing_queued_request_is_not_sent_twice(tmp_path):
         second = http.post("/api/swarm/enqueue", json=body(), headers=headers)
         assert second.status_code == 202 and second.json()["state"] == "queued"
         assert len(client.calls) == 1
+
+
+class FakeAuthority:
+    def __init__(self, outcome=None):
+        self.calls = []
+        self.outcome = outcome
+        self._http = SimpleNamespace(close=lambda: None)
+
+    def delegate(self, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return {"status": "ok", "correlation_id": kwargs["correlation_id"],
+                "capability": {"id": "delegated-cap-1", "audience": kwargs["audience"],
+                               "rights": kwargs["rights"]},
+                "signature": "authority-signature"}
+
+
+def auto_body(message_id="auto-msg-1", correlation_id="auto-corr-1"):
+    return {"objective": "run approved task", "message_id": message_id,
+            "correlation_id": correlation_id}
+
+
+def test_enqueue_automatically_delegates_from_pinned_parent(tmp_path):
+    authority = FakeAuthority()
+    parent = ({"id": "root-parent"}, "root-signature")
+    app, client = setup(tmp_path, authority=authority, parent=parent)
+    with TestClient(app) as http:
+        result = http.post("/api/swarm/enqueue", json=auto_body(),
+                           headers={"X-Admin-Token": "operator-token"})
+        assert result.status_code == 202 and result.json()["state"] == "queued"
+    assert len(authority.calls) == 1
+    call = authority.calls[0]
+    assert call["parent_capability"] == parent[0]
+    assert call["parent_signature"] == parent[1]
+    assert call["audience"] == "spiffe://prod/agent/swarm"
+    assert call["rights"] == [ACTION]
+    assert call["correlation_id"] == "auto-corr-1"
+    sent = json.loads(client.calls[0])
+    assert sent["capability"]["id"] == "delegated-cap-1"
+    assert sent["capability_signature"] == "authority-signature"
+
+
+def test_authority_unknown_outcome_never_falls_back_to_local_dispatch(tmp_path):
+    authority = FakeAuthority(DelegationUnknownOutcome(
+        "timeout", {"correlation_id": "auto-corr-1"}
+    ))
+    app, client = setup(tmp_path, authority=authority,
+                        parent=({"id": "root-parent"}, "root-signature"))
+    with TestClient(app) as http:
+        result = http.post("/api/swarm/enqueue", json=auto_body(),
+                           headers={"X-Admin-Token": "operator-token"})
+    assert result.status_code == 202
+    assert result.json()["state"] == "delegation_unknown"
+    assert result.json()["correlation_id"] == "auto-corr-1"
+    assert client.calls == []
+
+
+def test_authority_rejection_never_dispatches(tmp_path):
+    authority = FakeAuthority(AuthorityRejected({"error": "expired parent"}))
+    app, client = setup(tmp_path, authority=authority,
+                        parent=({"id": "root-parent"}, "root-signature"))
+    with TestClient(app) as http:
+        result = http.post("/api/swarm/enqueue", json=auto_body(),
+                           headers={"X-Admin-Token": "operator-token"})
+    assert result.status_code == 403
+    assert result.json()["error_code"] == "authority_rejected"
+    assert client.calls == []
+
+
+def test_auto_delegation_requires_stable_message_and_correlation_ids(tmp_path):
+    authority = FakeAuthority()
+    app, client = setup(tmp_path, authority=authority,
+                        parent=({"id": "root-parent"}, "root-signature"))
+    with TestClient(app) as http:
+        result = http.post("/api/swarm/enqueue", json={"objective": "run task"},
+                           headers={"X-Admin-Token": "operator-token"})
+    assert result.status_code == 422
+    assert authority.calls == [] and client.calls == []
+
+
+def test_auto_delegation_requires_both_or_neither_credential_fields(tmp_path):
+    authority = FakeAuthority()
+    app, client = setup(tmp_path, authority=authority,
+                        parent=({"id": "root-parent"}, "root-signature"))
+    request = auto_body()
+    request["capability"] = {"id": "cap-1"}
+    with TestClient(app) as http:
+        result = http.post("/api/swarm/enqueue", json=request,
+                           headers={"X-Admin-Token": "operator-token"})
+    assert result.status_code == 422
+    assert authority.calls == [] and client.calls == []
+
+
+def test_auto_delegation_retry_does_not_mint_twice_after_swarm_outbox_exists(tmp_path):
+    authority = FakeAuthority()
+    app, client = setup(tmp_path, authority=authority,
+                        parent=({"id": "root-parent"}, "root-signature"))
+    with TestClient(app) as http:
+        headers = {"X-Admin-Token": "operator-token"}
+        first = http.post("/api/swarm/enqueue", json=auto_body(), headers=headers)
+        second = http.post("/api/swarm/enqueue", json=auto_body(), headers=headers)
+    assert first.status_code == second.status_code == 202
+    assert len(authority.calls) == 1
+    assert len(client.calls) == 1

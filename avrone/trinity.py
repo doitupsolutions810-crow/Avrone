@@ -31,6 +31,7 @@ import os
 import time
 import json
 import re
+import stat
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -997,6 +998,68 @@ class TrinityCore:
             return None, run_id, None
 
     # ------------------------------------------------------------ the squad
+    async def _dispatch_swarm(self, task: str, run_id: str, correlation_id: str | None = None) -> dict[str, Any]:
+        """Submit one objective through CA -> signed Swarm client -> durable outbox."""
+        correlation = correlation_id or ("avrone-" + run_id)
+        if self._privileged_run():
+            result = {"status": "rejected", "reason": "privileged AVRONE runs cannot be dispatched to Swarm"}
+        else:
+            def submit() -> dict[str, Any]:
+                from .swarm_client import ACTION, CapabilityAuthorityClient, DelegationUnknownOutcome, SwarmClient
+                from .swarm_outbox import SwarmOutbox, SwarmDispatcher
+                filename = os.getenv("AVRONE_CA_PARENT_CAPABILITY_FILE", "")
+                if not filename: raise RuntimeError("AVRONE_CA_PARENT_CAPABILITY_FILE is not configured")
+                fd = os.open(Path(filename), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    info = os.fstat(fd)
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > 65536 or stat.S_IMODE(info.st_mode) & 0o077:
+                        raise RuntimeError("parent capability must be a regular mode-0600 file under 64 KiB")
+                    with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream: raw = stream.read(65537)
+                finally: os.close(fd)
+                if len(raw.encode("utf-8")) > 65536: raise RuntimeError("parent capability exceeds 64 KiB")
+                def unique(pairs):
+                    d = {}
+                    for k,v in pairs:
+                        if k in d: raise ValueError("duplicate parent capability JSON key")
+                        d[k] = v
+                    return d
+                parent = json.loads(raw, object_pairs_hook=unique)
+                if not isinstance(parent, dict) or set(parent) != {"capability","signature"} or not isinstance(parent["capability"],dict) or not isinstance(parent["signature"],str) or not parent["signature"]:
+                    raise RuntimeError("parent capability file schema is invalid")
+                authority, swarm, outbox = CapabilityAuthorityClient.from_env(), SwarmClient.from_env(), SwarmOutbox.from_env()
+                try:
+                    dispatcher = SwarmDispatcher(swarm, outbox)
+                    existing = outbox.get_by_correlation(correlation)
+                    if existing:
+                        previous_objective = (existing.get("request", {}).get("payload", {}).get("objective"))
+                        if previous_objective != task:
+                            raise RuntimeError("Swarm correlation ID is already bound to a different objective")
+                        return dispatcher.retry(existing["message_id"])
+                    delegated = authority.delegate(parent_capability=parent["capability"], parent_signature=parent["signature"],
+                        audience=swarm.audience, rights=[dict(ACTION)], ttl_seconds=120, correlation_id=correlation)
+                    signed = swarm.build_request(payload={"objective":task}, capability=delegated["capability"],
+                        capability_signature=delegated["signature"], correlation_id=correlation)
+                    return dispatcher.submit_request(signed)
+                except DelegationUnknownOutcome as exc:
+                    return {"state":"pending","correlation_id":exc.correlation_id,"retryable":True,
+                            "reason":"Capability Authority outcome is ambiguous"}
+                finally: outbox.close()
+            try:
+                remote = await asyncio.to_thread(submit)
+                state = remote.get("state","unknown")
+                result = {"status":"queued" if state=="queued" else "pending" if state in {"pending","unknown"} else state,
+                          "correlation_id":correlation,"remote":remote}
+            except Exception as exc:
+                result = {"status":"disabled","reason":f"{type(exc).__name__}: {exc}"}
+        status = result.get("status","unknown")
+        answer = ("Swarm accepted the objective into its queue; task completion is not claimed." if status=="queued"
+                  else "Swarm dispatch is pending reconciliation; no local fallback was started." if status=="pending"
+                  else "Swarm dispatch did not start local execution: "+str(result.get("reason",status)))
+        out={"run_id":run_id,"status":status,"answer":answer,"agents":[],"swarm":result}
+        self.codex.emit(run_id,"swarm.dispatch","Trinity",status=status,correlation_id=correlation)
+        self.codex.emit(run_id,"run.done","Trinity",answer=answer,status=status)
+        return out
+
     async def plan(self, run_id: str, task: str, n: int) -> list[dict[str, str]]:
         self.codex.emit(run_id, "lead.plan", "Planner", squad_size=n)
         reply = await self._chat([
@@ -1009,7 +1072,7 @@ class TrinityCore:
 
     async def squad(self, task: str, n: int | None = None, run_id: str | None = None,
                     checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None,
-                    dispatch: str | None = None) -> dict[str, Any]:
+                    dispatch: str | None = None, swarm_correlation_id: str | None = None) -> dict[str, Any]:
         """Plan, run the squad in parallel, merge with the lead.
 
         `dispatch` (local|network|hybrid) overrides AVRONE_SQUAD_DISPATCH for this run (netsquad).
@@ -1019,6 +1082,12 @@ class TrinityCore:
         finished workers are not re-run and a finished run is returned as is."""
         n = max(1, min(n or self.settings.squad_size, 8))
         ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
+        dispatch_mode = (dispatch or os.getenv("AVRONE_SQUAD_DISPATCH", "local")).strip().lower()
+        if dispatch_mode not in {"local", "network", "hybrid", "swarm"}:
+            raise ValueError("dispatch must be local, network, hybrid, or swarm")
+        if dispatch_mode == "swarm":
+            run_id = run_id or uuid.uuid4().hex[:10]
+            return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
         if isinstance(done, dict):
             return done
         run_id = run_id or uuid.uuid4().hex[:10]

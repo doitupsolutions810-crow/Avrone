@@ -103,6 +103,32 @@ class CapabilityAuthorityClient:
         self._authority_key = Ed25519PublicKey.from_public_bytes(_b64(authority_public_key_b64, 32))
         self._http = http_client or httpx.Client()
 
+    @classmethod
+    def from_env(cls, http_client: httpx.Client | None = None) -> "CapabilityAuthorityClient":
+        names = {"AVRONE_CA_URL": os.getenv("AVRONE_CA_URL", ""),
+                 "AVRONE_CA_REQUESTER_ID": os.getenv("AVRONE_CA_REQUESTER_ID", ""),
+                 "AVRONE_CA_ISSUER": os.getenv("AVRONE_CA_ISSUER", ""),
+                 "AVRONE_CA_REQUESTER_KEY_FILE": os.getenv("AVRONE_CA_REQUESTER_KEY_FILE", ""),
+                 "AVRONE_CA_PUBLIC_KEY_B64": os.getenv("AVRONE_CA_PUBLIC_KEY_B64", "")}
+        missing = [k for k,v in names.items() if not v]
+        if missing: raise RuntimeError("Capability Authority is not configured: " + ", ".join(missing))
+        key = Path(names["AVRONE_CA_REQUESTER_KEY_FILE"])
+        fd = os.open(key, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if not __import__("stat").S_ISREG(info.st_mode) or info.st_size > 16384 or info.st_mode & 0o077:
+                raise RuntimeError("requester key must be a private regular file (0600) under 16 KiB")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                private_key = stream.read(16385)
+        finally:
+            os.close(fd)
+        if len(private_key) > 16384:
+            raise RuntimeError("requester key exceeds 16 KiB")
+        return cls(endpoint=names["AVRONE_CA_URL"], requester=names["AVRONE_CA_REQUESTER_ID"],
+                   authority_issuer=names["AVRONE_CA_ISSUER"], requester_private_key_pem=private_key,
+                   authority_public_key_b64=names["AVRONE_CA_PUBLIC_KEY_B64"], http_client=http_client,
+                   allow_insecure_http=os.getenv("AVRONE_CA_ALLOW_HTTP", "0") == "1")
+
     def _assertion(self, now: datetime | None = None) -> dict[str, Any]:
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:

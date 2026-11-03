@@ -556,3 +556,25 @@ Grok Bot's `launch.sh` boots both systems in sequence and runs their live tests;
 - Model hosting environment (Ollama/vLLM container managed by Sovereign OS)
 - Persistent agent memory in Eternal CodeX
 
+
+
+## External Swarm dispatch (opt-in)
+
+Trinity supports an explicit `dispatch="swarm"` mode (or
+`AVRONE_SQUAD_DISPATCH=swarm`). The default remains local execution. Swarm
+dispatch is fail-closed: privileged runs are rejected, missing credentials or
+invalid parent capabilities disable the remote path, and a remote submission
+failure never falls back to local workers.
+
+Configure the Capability Authority, workload-specific Swarm issuer/audience,
+pinned CA and receipt keys, protected parent-capability file, and private
+SQLite outbox using the variables documented in `.env.example`. Keep private
+keys and capability files outside the repository; never commit them.
+
+A durable outbox request is retried with its original signed envelope and
+message ID. A verified Swarm receipt means only that the request was accepted
+into the queue; it does not mean specialist work has completed. Use the same
+correlation ID when resuming an ambiguous submission. Capability Authority
+delegation timeouts remain a separate reconciliation gate: the Authority must
+support idempotent correlation handling before claiming exact replay across
+process restarts at that pre-enqueue stage.

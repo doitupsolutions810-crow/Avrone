@@ -333,3 +333,27 @@ def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
     assert len(box.pending()) == 0
     assert box.get("msg-1")["state"] == "queued"
     box.close()
+
+
+def test_get_by_correlation_returns_exact_persisted_request(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    original = request()
+    box.prepare(original)
+    found = box.get_by_correlation("corr-1")
+    assert found["request"] == original
+    assert found["state"] == "pending"
+    box.close()
+
+
+def test_get_by_correlation_rejects_invalid_input(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    for bad in [None, "", "../bad", "x" * 129]:
+        with pytest.raises(InvalidOutboxRecord):
+            box.get_by_correlation(bad)
+    box.close()
+
+
+def test_get_by_correlation_returns_none_when_not_found(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    assert box.get_by_correlation("not-yet-submitted") is None
+    box.close()

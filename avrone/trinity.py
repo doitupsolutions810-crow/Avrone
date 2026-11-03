@@ -790,7 +790,7 @@ class TrinityCore:
                     swarm_correlation_id: str | None = None) -> dict[str, Any]:
         """Plan, run the squad in parallel, merge with the lead.
 
-        `dispatch` (local|network|hybrid) overrides AVRONE_SQUAD_DISPATCH for this run (netsquad).
+        `dispatch` (local|network|hybrid|swarm) overrides AVRONE_SQUAD_DISPATCH for this run. Swarm is an explicit remote queue submission with a durable outbox; it never falls back to local execution.
 
         With `checkpoint` (a path or Checkpoint), the plan, every finished worker result and
         the final result are recorded; calling again with the same task and file resumes:

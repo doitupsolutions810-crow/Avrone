@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
+import os
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -74,7 +76,13 @@ class SwarmClient:
         capability_authority_public_key_b64: str,
         swarm_receipt_public_key_pem: bytes | str,
         http_client: httpx.Client | None = None,
+        allow_insecure_http: bool = False,
     ):
+        parsed_endpoint = httpx.URL(endpoint)
+        if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.host:
+            raise ValueError("Swarm endpoint must be an absolute HTTP(S) URL")
+        if parsed_endpoint.scheme == "http" and parsed_endpoint.host not in {"localhost", "127.0.0.1", "::1"} and not allow_insecure_http:
+            raise ValueError("non-loopback Swarm endpoints require HTTPS")
         self.endpoint = endpoint.rstrip("/") + "/api/integration/enqueue"
         self.issuer, self.audience = issuer, audience
         self.capability_authority_issuer = capability_authority_issuer
@@ -88,6 +96,32 @@ class SwarmClient:
         if not isinstance(self._receipt_key, Ed25519PublicKey):
             raise ValueError("Swarm receipt verification key must be Ed25519")
         self._http = http_client or httpx.Client()
+
+    @classmethod
+    def from_env(cls, http_client: httpx.Client | None = None) -> "SwarmClient":
+        required = {
+            "AVRONE_SWARM_URL": os.getenv("AVRONE_SWARM_URL", ""),
+            "AVRONE_SWARM_ISSUER": os.getenv("AVRONE_SWARM_ISSUER", ""),
+            "AVRONE_SWARM_AUDIENCE": os.getenv("AVRONE_SWARM_AUDIENCE", ""),
+            "AVRONE_SWARM_CA_ISSUER": os.getenv("AVRONE_SWARM_CA_ISSUER", "spiffe://prod/broker"),
+            "AVRONE_SWARM_ISSUER_KEY_FILE": os.getenv("AVRONE_SWARM_ISSUER_KEY_FILE", ""),
+            "AVRONE_SWARM_CA_PUBLIC_KEY_B64": os.getenv("AVRONE_SWARM_CA_PUBLIC_KEY_B64", ""),
+            "AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE": os.getenv("AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE", ""),
+        }
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise RuntimeError("Swarm client is not configured: " + ", ".join(missing))
+        return cls(
+            endpoint=required["AVRONE_SWARM_URL"],
+            issuer=required["AVRONE_SWARM_ISSUER"],
+            audience=required["AVRONE_SWARM_AUDIENCE"],
+            capability_authority_issuer=required["AVRONE_SWARM_CA_ISSUER"],
+            issuer_private_key_pem=Path(required["AVRONE_SWARM_ISSUER_KEY_FILE"]).read_bytes(),
+            capability_authority_public_key_b64=required["AVRONE_SWARM_CA_PUBLIC_KEY_B64"],
+            swarm_receipt_public_key_pem=Path(required["AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE"]).read_bytes(),
+            http_client=http_client,
+            allow_insecure_http=os.getenv("AVRONE_SWARM_ALLOW_HTTP", "0") == "1",
+        )
 
     def _verify_capability(self, capability: dict[str, Any], signature: str, now: datetime) -> None:
         if not isinstance(capability, dict) or capability.get("issuer") != self.capability_authority_issuer or capability.get("audience") != self.audience:

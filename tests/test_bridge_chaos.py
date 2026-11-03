@@ -224,3 +224,86 @@ def test_multiprocess_compaction_is_serialized_and_keeps_bounded_tail(tmp_path):
     lines = path.read_text(encoding="utf-8").splitlines()
     assert all(isinstance(json.loads(line), dict) for line in lines)
     assert not list(path.parent.glob(".process-compact.jsonl.*.tmp"))
+
+
+def _hold_bridge_sidecar_lock(data_dir: str, run_id: str, ready) -> None:
+    import fcntl
+    from pathlib import Path
+    lock = Path(data_dir) / "bridge" / f"{run_id}.jsonl.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+b") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        ready.set()
+        while True:
+            import time
+            time.sleep(1)
+
+
+def test_sigkill_while_holding_bridge_lock_allows_restart(tmp_path):
+    import multiprocessing
+    import os
+    import signal
+
+    if os.name != "posix":
+        pytest.skip("flock is a POSIX lock")
+    ctx = multiprocessing.get_context("spawn")
+    ready = ctx.Event()
+    holder = ctx.Process(target=_hold_bridge_sidecar_lock,
+                         args=(str(tmp_path), "killed-lock", ready))
+    holder.start()
+    assert ready.wait(10)
+    os.kill(holder.pid, signal.SIGKILL)
+    holder.join(10)
+    assert holder.exitcode == -signal.SIGKILL
+
+    bridge = Bridge("killed-lock", tmp_path)
+    post = bridge.post("recovery", "conclusion", "lock recovered")
+    assert Bridge("killed-lock", tmp_path).get(post["id"]) is not None
+
+
+def test_six_processes_append_without_corrupting_jsonl(tmp_path):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    workers = [ctx.Process(target=_multiprocess_writer,
+                           args=(str(tmp_path), "six-workers", f"W{i}", 35, 500))
+               for i in range(6)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(25)
+    for worker in workers:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join()
+            pytest.fail("six-process writer did not finish within 25 seconds")
+        assert worker.exitcode == 0
+
+    path = tmp_path / "bridge" / "six-workers.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 210
+    assert len({row["id"] for row in rows}) == 210
+
+
+def test_process_lock_sidecar_survives_atomic_journal_replacement(tmp_path):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    workers = [ctx.Process(target=_multiprocess_writer,
+                           args=(str(tmp_path), "sidecar-stable", f"S{i}", 35, 7))
+               for i in range(4)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(25)
+    for worker in workers:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join()
+            pytest.fail("sidecar stability writer timed out")
+        assert worker.exitcode == 0
+
+    path = tmp_path / "bridge" / "sidecar-stable.jsonl"
+    assert path.exists()
+    assert path.with_suffix(path.suffix + ".lock").exists()
+    assert len(Bridge("sidecar-stable", tmp_path, limit=7)) == 7

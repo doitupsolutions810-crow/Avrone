@@ -50,7 +50,7 @@ result = swarm.enqueue_with_delegation(
 
 Use a stable `delegation_correlation_id` for retries. If the Authority response is lost, call `authority.retry(unknown)` with the returned `DelegationUnknownOutcome`; it refreshes the short-lived requester assertion but preserves the correlation ID so the Authority returns the same persisted child capability. Never generate a new correlation ID for an ambiguous delegation result.
 
-The Authority allowlist and public-key mount must be provisioned independently. This client does not mint parent capabilities and does not enable caller override.
+The parent capability must contain `constraints.delegation_audiences` including the exact Swarm SPIFFE ID, and the Authority must independently allowlist that same audience. The parent capability is provisioned out of band by the Authority operator; see [Capability Authority's delegated issuance and bootstrap procedure](https://github.com/doitupsolutions810-crow/capability-authority/blob/security/delegated-audience-issuance-20261103/docs/DELEGATED_CAPABILITY_ISSUANCE.md). The Authority allowlist and public-key mount must be provisioned independently. This client does not mint parent capabilities and does not enable caller override.
 
 ## Use
 

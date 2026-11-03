@@ -1035,8 +1035,20 @@ class TrinityCore:
                         if previous_objective != task:
                             raise RuntimeError("Swarm correlation ID is already bound to a different objective")
                         return dispatcher.retry(existing["message_id"])
-                    delegated = authority.delegate(parent_capability=parent["capability"], parent_signature=parent["signature"],
-                        audience=swarm.audience, rights=[dict(ACTION)], ttl_seconds=120, correlation_id=correlation)
+                    authority_record = outbox.get_authority_request(correlation)
+                    if authority_record is None:
+                        ca_request = {
+                            "parent_capability": parent["capability"],
+                            "parent_signature": parent["signature"],
+                            "audience": swarm.audience,
+                            "rights": [dict(ACTION)],
+                            "ttl_seconds": 120,
+                            "correlation_id": correlation,
+                            "requester_assertion": authority._assertion(),
+                        }
+                        authority_record = outbox.prepare_authority_request(correlation, ca_request)
+                    # Reuse the exact assertion/JTI and request bytes after an ambiguous CA timeout.
+                    delegated = authority.delegate(**authority_record["request"])
                     signed = swarm.build_request(payload={"objective":task}, capability=delegated["capability"],
                         capability_signature=delegated["signature"], correlation_id=correlation)
                     return dispatcher.submit_request(signed)
@@ -1075,7 +1087,7 @@ class TrinityCore:
                     dispatch: str | None = None, swarm_correlation_id: str | None = None) -> dict[str, Any]:
         """Plan, run the squad in parallel, merge with the lead.
 
-        `dispatch` (local|network|hybrid) overrides AVRONE_SQUAD_DISPATCH for this run (netsquad).
+        `dispatch` (local|network|hybrid|swarm) overrides AVRONE_SQUAD_DISPATCH for this run. Swarm mode is explicit and never falls back locally.
 
         With `checkpoint` (a path or Checkpoint), the plan, every finished worker result and
         the final result are recorded; calling again with the same task and file resumes:

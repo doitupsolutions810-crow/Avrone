@@ -170,11 +170,13 @@ class SwarmOutbox:
         if row is None:
             return None
         raw = bytes(row[0])
+        if len(raw) > 256 * 1024:
+            raise InvalidOutboxRecord("persisted authority request exceeds size limit")
         if hashlib.sha256(raw).hexdigest() != row[1]:
             raise InvalidOutboxRecord("persisted authority request digest mismatch")
         try:
-            request = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            request = _decode(raw)
+        except InvalidOutboxRecord as exc:
             raise InvalidOutboxRecord("persisted authority request JSON is invalid") from exc
         if not isinstance(request, dict) or request.get("correlation_id") != correlation_id:
             raise InvalidOutboxRecord("persisted authority request correlation mismatch")

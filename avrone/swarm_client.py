@@ -224,11 +224,18 @@ class CapabilityAuthorityClient:
             raise ValueError("requester_assertion is malformed or bound to another workload")
         unsigned_assertion = {key: value for key, value in assertion.items() if key != "signature"}
         try:
+            if not isinstance(assertion["issued_at"], str) or not isinstance(assertion["expires_at"], str):
+                raise ValueError("requester assertion timestamps are invalid")
             signature_bytes = _b64(assertion["signature"], 64)
             issued_at = datetime.fromisoformat(assertion["issued_at"].replace("Z", "+00:00"))
             expires_at = datetime.fromisoformat(assertion["expires_at"].replace("Z", "+00:00"))
-            if issued_at.tzinfo is None or expires_at.tzinfo is None or expires_at <= issued_at:
+            if (issued_at.tzinfo is None or expires_at.tzinfo is None
+                    or expires_at <= issued_at
+                    or expires_at - issued_at > timedelta(seconds=30)
+                    or issued_at > current + timedelta(seconds=30)):
                 raise ValueError("requester assertion timestamps are invalid")
+            if expires_at <= current and not allow_expired_parent_replay:
+                raise ValueError("requester assertion is expired")
             self._requester_key.public_key().verify(signature_bytes, _jcs(unsigned_assertion))
         except (InvalidSignature, TypeError, KeyError, AttributeError) as exc:
             raise ValueError("requester_assertion signature verification failed") from exc

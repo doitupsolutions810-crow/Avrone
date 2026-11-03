@@ -9,6 +9,7 @@ import sqlite3
 import stat
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -273,26 +274,56 @@ class SwarmDispatcher:
 
     def __init__(self, client: Any, outbox: SwarmOutbox):
         self.client, self.outbox = client, outbox
+        self._flights_guard = threading.Lock()
+        self._flights: dict[str, list] = {}
+
+    @contextmanager
+    def message_lock(self, message_id: str | None):
+        """Serialize one message inside this process; release unused lock entries.
+
+        The receiver's signed idempotency protocol remains authoritative across
+        processes. This lock also prevents parallel API calls from reminting the
+        same message before its first request has reached the durable outbox.
+        """
+        if message_id is None:
+            yield
+            return
+        if not isinstance(message_id, str) or not _ID.fullmatch(message_id):
+            raise InvalidOutboxRecord("message id is invalid")
+        with self._flights_guard:
+            entry = self._flights.setdefault(message_id, [threading.RLock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self._flights_guard:
+                entry[1] -= 1
+                if not entry[1]:
+                    del self._flights[message_id]
 
     def submit_request(self, request: dict[str, Any]) -> dict[str, Any]:
-        record = self.outbox.prepare(request)
-        if record["state"] == "queued":
-            return self._queued_result(record)
-        if record["state"] == "rejected":
-            return {"state": "rejected", "message_id": record["message_id"],
-                    "error_code": record["error_code"]}
-        return self._send(record)
+        message_id, _ = self.outbox._identity(request)
+        with self.message_lock(message_id):
+            record = self.outbox.prepare(request)
+            if record["state"] == "queued":
+                return self._queued_result(record)
+            if record["state"] == "rejected":
+                return {"state": "rejected", "message_id": record["message_id"],
+                        "error_code": record["error_code"]}
+            return self._send(record)
 
     def retry(self, message_id: str) -> dict[str, Any]:
-        record = self.outbox.get(message_id)
-        if record is None:
-            raise KeyError(message_id)
-        if record["state"] == "queued":
-            return self._queued_result(record)
-        if record["state"] == "rejected":
-            return {"state": "rejected", "message_id": message_id,
-                    "error_code": record["error_code"]}
-        return self._send(record)
+        with self.message_lock(message_id):
+            record = self.outbox.get(message_id)
+            if record is None:
+                raise KeyError(message_id)
+            if record["state"] == "queued":
+                return self._queued_result(record)
+            if record["state"] == "rejected":
+                return {"state": "rejected", "message_id": message_id,
+                        "error_code": record["error_code"]}
+            return self._send(record)
 
     @staticmethod
     def _queued_result(record: dict[str, Any]) -> dict[str, Any]:

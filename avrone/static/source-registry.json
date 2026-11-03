@@ -490,8 +490,8 @@
     },
     {
       "path": "avrone/server.py",
-      "sha256": "3d2bb7f953fbf3c4f7b855b43e332938726064f7ec2bb8ff0bcef0fe050a6956",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "78ee286a8a262b108487ebeab9f35018c7be34673fa0310240ddd0ebfca026fc",
+      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     },
     {
       "path": "avrone/static/index.html",
@@ -640,8 +640,8 @@
     },
     {
       "path": "avrone/swarm_api.py",
-      "sha256": "6ec372c3dcedd10b1bb4181607e15569a1ec0aefc93b524df025bb6f6cf8bc39",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "649ee7579f86b9470988723fe0bcb31ba97aefd1f86e020d46c7b28138a1b7bc",
+      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     },
     {
       "path": "avrone/swarm_client.py",
@@ -650,8 +650,8 @@
     },
     {
       "path": "avrone/swarm_outbox.py",
-      "sha256": "58582b8b1501adfea03ebacc7a252cd6d85a8c134d8b95389d5eb8b340f8aa37",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "3b7cffe3bff00470526acc7f29ab463e11c3360f94959784b3f142429aceebe6",
+      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     },
     {
       "path": "compose.swarm.override.yml",
@@ -675,8 +675,8 @@
     },
     {
       "path": "tests/test_swarm_outbox.py",
-      "sha256": "4cd207324611f8ca5d083de44ab81fedd03a9b5eda20382bad3075dfddb407d8",
-      "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
+      "sha256": "833b69c8772bab732adb8194628f3cf298c1b5301d5d1aae23fcb57f283b7134",
+      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     },
     {
       "path": "tests/test_swarm_provisioning.py",
@@ -685,8 +685,8 @@
     },
     {
       "path": "docs/EXTENDED_SWARM_VALIDATION.md",
-      "sha256": "2e8dd86c2abf3562a8e1e31c6d969b9cc2b7fb6b8434ba4ced3e6d188f9a7d5c",
-      "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
+      "sha256": "4cb58fdb8ce71d6cceb5d7a5f9ac9b540ef22aacfd767f035524d9291347577f",
+      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     },
     {
       "path": "avrone/fleet.py",
@@ -707,6 +707,11 @@
       "path": "tests/test_queue_lease_edges.py",
       "sha256": "c983971a228ee034e49d6e55a9b2fb3d7ae1856a4f0296320e90b6017a22bf6d",
       "source": "Local queue hardening adapted from AVRONE daemon revision 267259656eae89ab6e2cda1d697afd7e90723c10; validated by 163 queue/fleet tests"
+    },
+    {
+      "path": "tests/test_swarm_concurrency.py",
+      "sha256": "2f81e083c0d5d2cbecc0a189af6be50cd46da079427fea8a7eef85e5a1a172d6",
+      "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     }
   ],
   "upstream_updates": [
@@ -782,6 +787,12 @@
       "id": "queue-leases-20261103",
       "report": "docs/EXTENDED_SWARM_VALIDATION.md",
       "python_passed": 163,
+      "full_suite": false
+    },
+    {
+      "id": "swarm-concurrency-20261103",
+      "report": "docs/EXTENDED_SWARM_VALIDATION.md",
+      "python_passed": 133,
       "full_suite": false
     }
   ]

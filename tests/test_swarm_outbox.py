@@ -301,7 +301,7 @@ def test_mark_queued_requires_receipt_object(tmp_path):
     box.close()
 
 
-def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
+def test_independent_dispatchers_share_one_durable_identity(tmp_path):
     barrier = threading.Barrier(2)
     class Client:
         calls = 0
@@ -314,15 +314,16 @@ def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
                     "receipt": {"message_id": "msg-1", "signature": "same-signed-receipt"}}
         def verify_receipt(self, receipt, req):
             assert receipt["message_id"] == req["envelope"]["message_id"]
-    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
-    client = Client(); dispatcher = SwarmDispatcher(client, box)
+    boxes = [SwarmOutbox(tmp_path / "outbox.sqlite3") for _ in range(2)]
+    client = Client()
+    dispatchers = [SwarmDispatcher(client, box) for box in boxes]
     results = []; errors = []
-    def submit():
+    def submit(dispatcher):
         try:
             results.append(dispatcher.submit_request(request()))
         except Exception as exc:
             errors.append(exc)
-    threads = [threading.Thread(target=submit) for _ in range(2)]
+    threads = [threading.Thread(target=submit, args=(dispatcher,)) for dispatcher in dispatchers]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -330,6 +331,7 @@ def test_concurrent_duplicate_dispatches_share_one_durable_identity(tmp_path):
     assert not errors and len(results) == 2
     assert all(result["state"] == "queued" for result in results)
     assert client.calls == 2
-    assert len(box.pending()) == 0
-    assert box.get("msg-1")["state"] == "queued"
-    box.close()
+    assert len(boxes[0].pending()) == 0
+    assert boxes[0].get("msg-1")["state"] == "queued"
+    for box in boxes:
+        box.close()

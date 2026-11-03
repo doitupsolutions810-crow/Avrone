@@ -29,3 +29,13 @@ The fleet queue validates kind and text fields before dispatch, and a local deep
 Final queue/fleet selection: **163 passed** in 8.24 seconds, including the four-connection repeated claim race, old-schema migration, long jobs spanning multiple leases, cancellation during a real SQLite thread operation, Unicode/size cases and cross-connection stale-owner fencing.
 
 Reproduce: `python -m pytest -q tests/test_queue_lease_edges.py tests/test_jobqueue_robust.py tests/test_queue_inbox.py tests/test_jobqueue_shutdown.py tests/test_fleet_edges.py tests/test_fleet_gateway.py tests/test_robust_v021_state.py::test_jobqueue_two_queues_on_one_file_never_double_claim`.
+
+## Round 3: concurrent Swarm API and operator boundary
+
+The first concurrency/API boundary run had **6 failures and 7 passes**. A blocked synchronous enqueue prevented an unrelated health endpoint from responding; a corrupted stored request escaped as an application exception; and the real server passed its public-chat access policy into the signing routes instead of requiring an operator token.
+
+Swarm network and SQLite work now run in FastAPI's worker pool. Dispatcher initialization is serialized, and a per-message lock coalesces concurrent same-process submits/retries without retaining unused lock entries. The cross-instance test still sends two independent requests and verifies that both converge on the same persisted receipt; receiver-side signed idempotency remains necessary across processes. Every signing route now requires the operator token even if public chat is open or the caller is on loopback. Corrupt status records return HTTP 409.
+
+After repair: **133 passed** in 3.36 seconds across the Swarm API/concurrency/outbox/Authority/provisioning tests and server/access-policy regressions. The suite includes eight simultaneous first requests, eight duplicate requests, a deliberately stalled send with a responsive health probe, preserved lifespan cleanup, and all three public-access policies.
+
+Reproduce: `python -m pytest -q tests/test_swarm_concurrency.py tests/test_swarm_api.py tests/test_swarm_outbox.py tests/test_swarm_authority_client.py tests/test_swarm_provisioning.py tests/test_server_edges.py tests/test_robust_v027_access.py`.

@@ -653,7 +653,15 @@ from .integration import install_routes as _install_integration_routes
 _install_integration_routes(app, core, require_local, settings)
 
 from .swarm_api import install_routes as _install_swarm_routes
-_install_swarm_routes(app, core, require_local, settings)
+
+
+def require_swarm_operator(request: Request, token: str | None) -> None:
+    # Public chat policy never authorizes use of the operator's signing keys.
+    require_admin(token)
+    require_local(request, token)
+
+
+_install_swarm_routes(app, core, require_swarm_operator, settings)
 
 
 def main() -> None:

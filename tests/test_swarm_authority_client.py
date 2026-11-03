@@ -1,0 +1,204 @@
+"""Real Ed25519 contract tests for AVRONE's Capability Authority client."""
+import base64
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from avrone import swarm_client as sc
+
+REQUESTER = "spiffe://prod/agent/avrone"
+BROKER = "spiffe://prod/broker"
+SWARM = "spiffe://prod/agent/swarm"
+RIGHT = {"type": "Execute", "resource": "swarm.jobs", "method": "POST"}
+
+
+class Response:
+    status_code = 200
+    def __init__(self, body):
+        self.body = body
+    def json(self):
+        return self.body
+
+
+class StubHTTP:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+    def post(self, url, *, json, timeout):
+        self.calls.append((url, json, timeout))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def pem_private(key):
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+
+def b64_public(key):
+    raw = key.public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    return base64.b64encode(raw).decode("ascii")
+
+
+def make_parent(ca_private, now, expires_in=300):
+    parent = {
+        "id": "parent-avrone-1", "issuer": BROKER, "audience": REQUESTER,
+        "rights": [RIGHT],
+        "constraints": {"tenant": "avrone-swarm", "delegation_audiences": [SWARM]},
+        "issued_at": now.timestamp() - 1,
+        "expires_at": now.timestamp() + expires_in,
+        "delegation_depth": 0,
+    }
+    signature = base64.b64encode(ca_private.sign(sc._jcs(parent))).decode("ascii")
+    return parent, signature
+
+
+def make_client(http, requester_private, ca_private):
+    return sc.CapabilityAuthorityClient(
+        endpoint="http://127.0.0.1:8090",
+        requester=REQUESTER,
+        authority_issuer=BROKER,
+        requester_private_key_pem=pem_private(requester_private),
+        authority_public_key_b64=b64_public(ca_private.public_key()),
+        http_client=http,
+    )
+
+
+def signed_child(ca_private, parent, now, expires_in=60):
+    child = {
+        "id": "child-avrone-1", "issuer": BROKER, "audience": SWARM,
+        "rights": [RIGHT], "constraints": parent["constraints"],
+        "issued_at": now.timestamp(), "expires_at": now.timestamp() + expires_in,
+        "parent_id": parent["id"], "delegation_depth": 1,
+    }
+    signature = base64.b64encode(ca_private.sign(sc._jcs(child))).decode("ascii")
+    return child, signature
+
+
+def test_delegate_signs_requester_assertion_and_verifies_authority_child():
+    now = datetime.now(timezone.utc)
+    requester = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    parent, parent_sig = make_parent(ca, now)
+    child, child_sig = signed_child(ca, parent, now)
+    http = StubHTTP([Response({
+        "status": "ok", "correlation_id": "corr-success",
+        "capability": child, "signature": child_sig,
+    })])
+    client = make_client(http, requester, ca)
+    result = client.delegate(
+        parent_capability=parent, parent_signature=parent_sig,
+        audience=SWARM, rights=[RIGHT], ttl_seconds=120,
+        correlation_id="corr-success",
+    )
+    assert result["capability"] == child
+    url, request, _timeout = http.calls[0]
+    assert url.endswith("/v1/capabilities/delegate")
+    assertion = request["requester_assertion"]
+    assert assertion["issuer"] == REQUESTER
+    assert assertion["subject"] == REQUESTER
+    assert assertion["audience"] == BROKER
+    unsigned = {k: v for k, v in assertion.items() if k != "signature"}
+    requester.public_key().verify(
+        sc._b64(assertion["signature"], 64), sc._jcs(unsigned)
+    )
+
+
+def test_timeout_retry_reuses_correlation_and_can_reconcile_expired_parent(monkeypatch):
+    real_now = datetime.now(timezone.utc)
+    requester = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    parent, parent_sig = make_parent(ca, real_now, expires_in=1)
+    http = StubHTTP([
+        httpx.ReadTimeout("response lost"),
+        Response({"status": "error", "error": "delegated_capability_expired",
+                  "correlation_id": "corr-timeout"}),
+    ])
+    client = make_client(http, requester, ca)
+
+    class Clock:
+        values = [real_now, real_now + timedelta(seconds=2)]
+        @classmethod
+        def now(cls, tz=None):
+            return cls.values.pop(0)
+
+    monkeypatch.setattr(sc, "datetime", Clock)
+    with pytest.raises(sc.DelegationUnknownOutcome) as caught:
+        client.delegate(
+            parent_capability=parent, parent_signature=parent_sig,
+            audience=SWARM, rights=[RIGHT], ttl_seconds=120,
+            correlation_id="corr-timeout",
+        )
+    with pytest.raises(sc.AuthorityRejected, match="delegated_capability_expired"):
+        client.retry(caught.value)
+
+    assert len(http.calls) == 2
+    first, second = http.calls[0][1], http.calls[1][1]
+    assert first["correlation_id"] == second["correlation_id"] == "corr-timeout"
+    assert first["requester_assertion"]["jti"] != second["requester_assertion"]["jti"]
+
+
+def test_direct_delegate_never_uses_expired_parent_for_new_issuance(monkeypatch):
+    now = datetime.now(timezone.utc)
+    requester = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    parent, parent_sig = make_parent(ca, now, expires_in=1)
+    http = StubHTTP([])
+    client = make_client(http, requester, ca)
+
+    class Clock:
+        @classmethod
+        def now(cls, tz=None):
+            return now + timedelta(seconds=2)
+
+    monkeypatch.setattr(sc, "datetime", Clock)
+    with pytest.raises(ValueError, match="expired"):
+        client.delegate(
+            parent_capability=parent, parent_signature=parent_sig,
+            audience=SWARM, rights=[RIGHT], ttl_seconds=30,
+            correlation_id="corr-expired-new",
+        )
+    assert http.calls == []
+
+
+def test_authority_response_correlation_mismatch_is_unknown_outcome():
+    now = datetime.now(timezone.utc)
+    requester = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    parent, parent_sig = make_parent(ca, now)
+    http = StubHTTP([Response({"status": "ok", "correlation_id": "other"})])
+    client = make_client(http, requester, ca)
+    with pytest.raises(sc.DelegationUnknownOutcome, match="correlation mismatch"):
+        client.delegate(
+            parent_capability=parent, parent_signature=parent_sig,
+            audience=SWARM, rights=[RIGHT], ttl_seconds=30,
+            correlation_id="corr-expected",
+        )
+
+
+def test_parent_method_substitution_is_rejected_before_network():
+    now = datetime.now(timezone.utc)
+    requester = Ed25519PrivateKey.generate()
+    ca = Ed25519PrivateKey.generate()
+    parent, parent_sig = make_parent(ca, now)
+    http = StubHTTP([])
+    client = make_client(http, requester, ca)
+    with pytest.raises(ValueError, match="exceed parent"):
+        client.delegate(
+            parent_capability=parent, parent_signature=parent_sig,
+            audience=SWARM,
+            rights=[{"type": "Execute", "resource": "swarm.jobs", "method": "DELETE"}],
+            ttl_seconds=30, correlation_id="corr-method",
+        )
+    assert http.calls == []

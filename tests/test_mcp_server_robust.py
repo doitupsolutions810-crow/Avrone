@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -411,3 +412,116 @@ def test_real_stdio_process_survives_hostile_lines(tmp_path):
     out = [json.loads(x) for x in p.stdout.splitlines() if x.strip()]
     assert out[-1] == {"jsonrpc": "2.0", "id": 2, "result": {}}
     assert [m["error"]["code"] for m in out[:3]] in ([-32700, -32700, -32600], [-32700, -32600, -32600])
+
+
+# ================================================================ round 40: shutdown while the core is still building
+def _eof_reader():
+    r = asyncio.StreamReader()
+    r.feed_eof()
+    return r
+
+
+class _Sink:
+    def __init__(self):
+        self.data = b""
+
+    def write(self, b):
+        self.data += b
+
+    def flush(self):
+        pass
+
+
+def test_shutdown_cancels_core_that_never_finishes(monkeypatch):
+    from avrone import mcp_server as ms
+    monkeypatch.setenv("AVRONE_MCP_SHUTDOWN_GRACE", "0")
+    started = asyncio.Event() if False else None
+
+    async def forever():
+        await asyncio.sleep(3600)
+
+    async def go():
+        srv = ms.AvroneMCPServer(core_factory=forever)
+        t0 = time.monotonic()
+        await asyncio.wait_for(srv.serve(_eof_reader(), _Sink()), timeout=10)
+        assert srv._core_task.cancelled()
+        return time.monotonic() - t0
+    assert asyncio.run(go()) < 5
+
+
+def test_shutdown_stops_runner_of_core_finishing_after_eof(monkeypatch):
+    from avrone import mcp_server as ms
+    monkeypatch.setenv("AVRONE_MCP_SHUTDOWN_GRACE", "5")
+    stopped = []
+
+    class Runner:
+        async def stop(self):
+            stopped.append("runner")
+
+    class Mgr:
+        async def stop(self):
+            stopped.append("mcp")
+
+    async def slow():
+        await asyncio.sleep(0.3)
+        return object(), {"runner": Runner(), "mcp": Mgr()}
+
+    async def go():
+        srv = ms.AvroneMCPServer(core_factory=slow)
+        await srv.serve(_eof_reader(), _Sink())
+    asyncio.run(go())
+    assert sorted(stopped) == ["mcp", "runner"]  # before: never stopped, children held the pipe
+
+
+def test_shutdown_tolerates_core_build_failure(monkeypatch):
+    from avrone import mcp_server as ms
+    monkeypatch.setenv("AVRONE_MCP_SHUTDOWN_GRACE", "2")
+
+    async def boom():
+        await asyncio.sleep(0.05)
+        raise RuntimeError("docker probe failed")
+
+    async def go():
+        srv = ms.AvroneMCPServer(core_factory=boom)
+        await srv.serve(_eof_reader(), _Sink())
+    asyncio.run(go())
+
+
+def test_protocol_stdout_children_cannot_write_to_protocol(tmp_path):
+    code = (
+        "import sys, subprocess\n"
+        "from avrone.mcp_server import protocol_stdout\n"
+        "out = protocol_stdout()\n"
+        "subprocess.run([sys.executable, '-c', 'print(\"STRAY-CHILD\")'])\n"
+        "print('STRAY-PARENT')\n"
+        "out.write(b'{\"ok\":1}\\n'); out.flush()\n"
+    )
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, cwd=os.getcwd())
+    assert p.stdout == '{"ok":1}\n'
+    assert "STRAY-CHILD" in p.stderr
+
+
+def test_protocol_stdout_lingering_child_does_not_hold_pipe(tmp_path):
+    code = (
+        "import sys, subprocess\n"
+        "from avrone.mcp_server import protocol_stdout\n"
+        "out = protocol_stdout()\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], stderr=subprocess.DEVNULL)\n"
+        "out.write(b'bye\\n'); out.flush()\n"
+    )
+    t0 = time.monotonic()
+    p = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                       timeout=25, cwd=os.getcwd())
+    assert p.stdout == b"bye\n" and time.monotonic() - t0 < 15
+
+
+def test_protocol_stdout_fallback(monkeypatch):
+    from avrone import mcp_server as ms
+    import io
+
+    class NoFd(io.TextIOWrapper):
+        pass
+    buf = io.BytesIO()
+    fake = io.TextIOWrapper(buf)
+    monkeypatch.setattr(ms.sys, "stdout", fake)
+    assert ms.protocol_stdout() is buf

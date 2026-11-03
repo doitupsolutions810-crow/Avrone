@@ -545,3 +545,26 @@ merge without his word.
   - A negative millidegree sysfs value (a powered-off sensor at -274000) is dropped.
 - **Junk inputs never raise.** `target(want)` accepts NaN, inf, strings and bools. `max_parallel` and `min_parallel` accept inf, "2.0" and junk (`max_parallel` is clamped to 4096). A NaN `ttl_s` falls back to 2 s.
 - Tests: tests/test_governor_platform_robust.py (127). macOS command output is simulated from the documented formats and **not checked on a real Mac**.
+
+## Round 40: telemetry, system map and Mermaid against broken and hostile run logs (avrone/telemetry.py)
+- **One bad line no longer 500s the HUD.** `_iter_events` skips:
+  - lines that aren't JSON objects (lists, strings, numbers)
+  - huge-int and deep-nesting lines (which raise `ValueError` or `RecursionError`)
+  - bad UTF-8 (decoded with replacement)
+  - logs deleted between glob and stat, and unreadable files
+  - a missing log dir, or one that is a file
+- **Fields are normalised.** `ts` must be a finite number, otherwise it reads as 0 and falls outside the window. Run ids must be a string or int (a list id raised `TypeError`). `data`, `agent` and `kind` must have the right types. An unhashable `mode` reads as None. A non-string spawn `parent` reads as no parent.
+- **Durations.** `run.done` earlier than `run.start` (a clock step) clamps to 0. Completion is tested with `is not None`.
+- **Bounded reads.** Each log is read from its tail, up to `AVRONE_TELEMETRY_MAX_FILE_BYTES` (default 8 MiB, clamped 64 KiB..256 MiB), and the partial first line is dropped. Before, a multi-GB log was read whole on every request.
+- **Window.** `clamp_window`: NaN, inf, zero, negative or junk become 24 h, capped at 366 days. Before, `?hours=nan` showed an empty HUD.
+- `active_now` tolerates odd shapes for `core.active`.
+- **Mermaid.**
+  - Labels are entity-escaped (`" [ ] | ` < > { } &`), whitespace is collapsed and the length is capped at 120. Before, a model-written tool name could close the node text and inject a `click` statement.
+  - Ids are ASCII-only and unique: "a-b" and "a_b" no longer merge.
+  - Junk nodes and edges are skipped, and odd weights and `min_weight` values are tolerated.
+- Tests: tests/test_telemetry_robust.py (91).
+- **Also fixed in round 40: an MCP server hang found by the gate.** Round 38's real-subprocess test timed out after 60 s in 2 of 3 runs under load. Two causes:
+  - `shutdown()` ignored a core that was still building at stdin EOF. That core then finished, and its runner and MCP children were never stopped.
+  - Children inherited the real stdout, so a lingering child held the client's pipe open.
+  - Fixes: `shutdown()` waits up to the grace period (at least 1 s), then cancels the core build, and stops the runner and MCP of a core that finished during shutdown. `protocol_stdout()` gives JSON-RPC a private, non-inheritable dup of fd 1 and points fd 1 at stderr, so a stray child print can't corrupt the protocol either.
+  - Six new tests in tests/test_mcp_server_robust.py. The subprocess test then passed 6 of 6 runs.

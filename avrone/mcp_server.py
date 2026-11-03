@@ -250,7 +250,23 @@ class AvroneMCPServer:
             await asyncio.gather(*rest, return_exceptions=True)
 
     async def shutdown(self) -> None:
-        if self._core_task and self._core_task.done() and not self._core_task.exception():
+        # The core may still be building at EOF (establish/MCP startup). It used to be left running:
+        # it finished after this check, so its runner and MCP children were never stopped and kept the
+        # client's stdout pipe open, and the client waited on a server that never exited. Give it the
+        # shutdown grace (at least 1 s), then cancel it.
+        t = self._core_task
+        if t is not None and not t.done():
+            with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(t), timeout=max(1.0, shutdown_grace()))
+            if not t.done():
+                t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+        if self._core_task and self._core_task.done() and not self._core_task.cancelled() \
+                and not self._core_task.exception():
+            res = self._core_task.result()
+            if not self._extras and isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], dict):
+                self._extras = res[1]  # finished during shutdown: core() never stored its extras
             mgr = self._extras.get("mcp")
             if mgr:
                 with contextlib.suppress(Exception):
@@ -481,8 +497,23 @@ async def _stdin_reader() -> asyncio.StreamReader:
     return reader
 
 
+def protocol_stdout():
+    """A private, non-inheritable copy of fd 1 for JSON-RPC, with fd 1 itself pointed at stderr.
+    Before, only sys.stdout was swapped: every child (runner shell, MCP servers, tools) inherited
+    the real stdout, so one stray print corrupted the protocol, and a child left running held the
+    client's pipe open after the server had exited. Falls back to sys.stdout.buffer when fds can't
+    be duplicated (an odd embedder)."""
+    try:
+        sys.stdout.flush()
+        fd = os.dup(sys.stdout.fileno())  # os.dup() is non-inheritable since Python 3.4
+        os.dup2(sys.stderr.fileno(), 1)
+        return os.fdopen(fd, "wb")
+    except (OSError, ValueError, AttributeError):
+        return sys.stdout.buffer
+
+
 async def amain() -> None:
-    out = sys.stdout.buffer
+    out = protocol_stdout()
     # Anything else that prints must not corrupt the JSON-RPC stream.
     sys.stdout = sys.stderr
     server = AvroneMCPServer()

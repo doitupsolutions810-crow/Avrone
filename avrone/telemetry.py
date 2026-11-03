@@ -7,7 +7,10 @@ Eternal CodeX event logs. Nothing here probes external networks.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -17,22 +20,109 @@ if TYPE_CHECKING:
     from .trinity import TrinityCore
 
 
+DEFAULT_WINDOW_S = 86400.0
+MAX_WINDOW_S = 366 * 86400.0
+DEFAULT_MAX_FILE_BYTES, HARD_MAX_FILE_BYTES = 8 << 20, 256 << 20
+
+
+def _finite(v: Any, default: float = 0.0) -> float:
+    """v as a finite float; bools, strings, NaN, inf and junk read as default."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return default
+    f = float(v)
+    return f if math.isfinite(f) else default
+
+
+def clamp_window(window_s: Any) -> float:
+    """A usable look-back window: NaN, inf, zero, negative or junk -> 24 h; capped at 366 days.
+    ?hours=nan used to make every ts comparison False, so the HUD silently showed nothing."""
+    w = _finite(window_s, DEFAULT_WINDOW_S)
+    if w <= 0:
+        return DEFAULT_WINDOW_S
+    return min(w, MAX_WINDOW_S)
+
+
+def max_file_bytes() -> int:
+    """Bytes read from the end of each log (AVRONE_TELEMETRY_MAX_FILE_BYTES, default 8 MiB, clamped
+    64 KiB..256 MiB). A runaway multi-GB run log used to be read whole into memory per request."""
+    try:
+        n = int(os.getenv("AVRONE_TELEMETRY_MAX_FILE_BYTES", "").strip() or DEFAULT_MAX_FILE_BYTES)
+    except ValueError:
+        n = DEFAULT_MAX_FILE_BYTES
+    return max(64 << 10, min(HARD_MAX_FILE_BYTES, n))
+
+
+def _read_tail(p: Path, limit: int) -> str | None:
+    try:
+        with open(p, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            cut = size > limit
+            if cut:
+                f.seek(size - limit)
+            raw = f.read(limit)
+    except OSError:
+        return None
+    if cut:  # drop the partial first line
+        nl = raw.find(b"\n")
+        raw = raw[nl + 1:] if nl >= 0 else b""
+    return raw.decode("utf-8", errors="replace")
+
+
+def _mtime(p: Path) -> float | None:
+    try:
+        return p.stat().st_mtime
+    except OSError:  # deleted / rotated between glob and stat
+        return None
+
+
 def _iter_events(log_dir: Path, since: float, max_files: int = 200):
-    files = sorted(log_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
-    for p in files:
-        if p.stat().st_mtime < since:
+    """Events (dicts with a finite float ts) newer than since. Never raises on bad files or lines:
+    one non-UTF-8 byte, a log deleted mid-scan, or a line that was a JSON list used to 500 the HUD."""
+    since = _finite(since, 0.0)
+    try:
+        found = [(m, p) for p in Path(log_dir).glob("*.jsonl") if (m := _mtime(p)) is not None]
+    except OSError:
+        return
+    found.sort(key=lambda mp: mp[0], reverse=True)
+    limit = max_file_bytes()
+    for m, p in found[:max(1, int(max_files))]:
+        if m < since:
             continue
-        for line in p.read_text().splitlines():
+        text = _read_tail(p, limit)
+        if text is None:
+            continue
+        for line in text.splitlines():
             try:
                 ev = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):  # JSONDecodeError, huge ints, deep nesting
                 continue
-            if ev.get("ts", 0) >= since:
+            if not isinstance(ev, dict):
+                continue
+            ts = _finite(ev.get("ts"), 0.0)
+            if ts >= since:
+                ev["ts"] = ts
                 yield ev
+
+
+def _key(v: Any) -> str | None:
+    """A run id usable as a dict key: str or int, else None (a list id raised TypeError)."""
+    if isinstance(v, bool) or not isinstance(v, (str, int)):
+        return None
+    return str(v)
+
+
+def _fields(ev: dict) -> tuple[str | None, str, str, dict, float]:
+    data = ev.get("data")
+    agent = ev.get("agent")
+    kind = ev.get("kind")
+    return (_key(ev.get("run_id")), kind if isinstance(kind, str) else "",
+            agent if isinstance(agent, str) else "", data if isinstance(data, dict) else {},
+            _finite(ev.get("ts"), 0.0))
 
 
 def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     """Aggregate metrics over the last window_s seconds."""
+    window_s = clamp_window(window_s)
     since = time.time() - window_s
     runs: dict[str, dict[str, Any]] = {}
     tool_calls: Counter[str] = Counter()
@@ -47,12 +137,15 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     net_fallback = 0
 
     for ev in _iter_events(core.codex.log_dir, since):
-        rid, kind, agent, data, ts = ev.get("run_id"), ev.get("kind"), ev.get("agent", ""), ev.get("data", {}), ev.get("ts", 0)
+        rid, kind, agent, data, ts = _fields(ev)
+        if kind.startswith("run.") and rid is None:
+            continue
         if kind == "run.start":
-            runs[rid] = {"run_id": rid, "mode": data.get("mode"), "start": ts, "end": None,
+            mode = data.get("mode")
+            runs[rid] = {"run_id": rid, "mode": mode if isinstance(mode, str) else None, "start": ts, "end": None,
                          "prompt": str(data.get("prompt", ""))[:120]}
         elif kind == "run.done" and rid in runs:
-            runs[rid]["end"] = ts
+            runs[rid]["end"] = max(ts, runs[rid]["start"])  # a clock step back must not give a negative duration
         elif kind == "agent.spawn":
             agent_roles[str(data.get("role", "?"))] += 1
         elif kind == "tool.call":
@@ -78,7 +171,7 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
         elif kind == "fleet.netsquad_fallback":
             net_fallback += 1
 
-    done = [r for r in runs.values() if r["end"]]
+    done = [r for r in runs.values() if r["end"] is not None]
     durations = sorted(r["end"] - r["start"] for r in done)
 
     def pct(xs: list[float], p: float) -> float | None:
@@ -90,7 +183,7 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
                  "by_mode": dict(Counter(r["mode"] for r in runs.values())),
                  "p50_s": pct(durations, 0.5), "p95_s": pct(durations, 0.95)},
         "agents": {"spawned": sum(agent_roles.values()), "by_role": dict(agent_roles.most_common(20)),
-                   "active_now": [n for n, a in core.active.items() if a.get("status") == "working"]},
+                   "active_now": _active_now(core)},
         "tools": {t: {"calls": c, "errors": tool_errors.get(t, 0),
                       "avg_s": round(sum(tool_latency[t]) / len(tool_latency[t]), 2) if tool_latency[t] else None}
                   for t, c in tool_calls.most_common()},
@@ -103,6 +196,14 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
         "resilience": {"throttles": len(throttles), "checkpoint_resumes": resumes,
                        "recent_throttles": sorted(throttles, key=lambda t: t["ts"], reverse=True)[:5]},
     }
+
+
+def _active_now(core: Any) -> list[str]:
+    try:
+        return [str(n) for n, a in dict(getattr(core, "active", {}) or {}).items()
+                if isinstance(a, dict) and a.get("status") == "working"]
+    except Exception:
+        return []
 
 
 def node_health(core: "TrinityCore") -> dict[str, Any]:
@@ -186,13 +287,14 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
                         node(f"ragent:{nid}/{a['name']}", "agent", f"{a['name']}@{nid}")
                         edges[(f"node:{nid}", f"ragent:{nid}/{a['name']}")] += 1
 
-    since = time.time() - window_s
+    since = time.time() - clamp_window(window_s)
     for ev in _iter_events(core.codex.log_dir, since):
-        kind, agent, data = ev.get("kind"), ev.get("agent", ""), ev.get("data", {})
+        _rid, kind, agent, data, _ts = _fields(ev)
         if kind == "agent.spawn":
             role = str(data.get("role", "Agent"))
             node(f"role:{role}", "agent", role)
             parent = data.get("parent")
+            parent = str(parent) if isinstance(parent, (str, int)) and not isinstance(parent, bool) else ""
             edges[(f"role:{parent.rsplit('-', 1)[0]}" if parent else "core", f"role:{role}")] += 1
             edges[(f"role:{role}", "model:worker")] += 1
         elif kind == "tool.call":
@@ -222,14 +324,37 @@ def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
 
 def to_mermaid(graph: dict[str, Any], min_weight: int = 0) -> str:
     """Render the system map as a Mermaid flowchart (paste into GitHub/markdown)."""
-    def mid(x: str) -> str:
-        return "n_" + "".join(c if c.isalnum() else "_" for c in x)
+    ids: dict[str, str] = {}
+
+    def mid(x: Any) -> str:
+        """Mermaid-safe id, unique per node id: "a-b" and "a_b" used to collapse into one node.
+        Only ASCII alphanumerics survive (str.isalnum() let other scripts through)."""
+        x = str(x)
+        if x not in ids:
+            base = "n_" + "".join(c if (c.isascii() and c.isalnum()) else "_" for c in x)[:60]
+            ids[x] = base if base not in ids.values() else f"{base}_{hashlib.sha1(x.encode('utf-8', 'surrogatepass')).hexdigest()[:8]}"
+        return ids[x]
+
+    def label(v: Any) -> str:
+        """Labels come from run logs (model-written role and tool names): quotes, brackets, pipes,
+        backticks and newlines could close the node text and inject Mermaid statements (click)."""
+        t = " ".join(str(v).split())[:120]
+        for ch, ent in (("&", "#amp;"), ('"', "#quot;"), ("<", "#lt;"), (">", "#gt;"), ("[", "#91;"), ("]", "#93;"),
+                        ("|", "#124;"), ("`", "#96;"), ("{", "#123;"), ("}", "#125;")):
+            t = t.replace(ch, ent)
+        return t or "?"
+
     lines = ["flowchart LR"]
-    for n in graph["nodes"]:
-        label = n["label"].replace('"', "'")
-        lines.append(f'  {mid(n["id"])}["{label}"]')
-    for e in graph["edges"]:
-        if e["weight"] >= min_weight:
-            w = f"|{e['weight']}|" if e["weight"] else ""
-            lines.append(f"  {mid(e['from'])} -->{w} {mid(e['to'])}")
+    for n in graph.get("nodes") or []:
+        if not isinstance(n, dict) or "id" not in n:
+            continue
+        lines.append(f'  {mid(n["id"])}["{label(n.get("label", n["id"]))}"]')
+    floor = _finite(min_weight, 0.0)
+    for e in graph.get("edges") or []:
+        if not isinstance(e, dict) or "from" not in e or "to" not in e:
+            continue
+        w = _finite(e.get("weight"), 0.0)
+        if w >= floor:
+            tag = f"|{int(w) if w == int(w) else w}|" if w else ""
+            lines.append(f"  {mid(e['from'])} -->{tag} {mid(e['to'])}")
     return "\n".join(lines)

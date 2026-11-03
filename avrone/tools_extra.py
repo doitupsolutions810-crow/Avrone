@@ -14,6 +14,7 @@ New options (all optional, read via env / getattr so config.py needs no change):
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import html as _html
@@ -655,13 +656,27 @@ async def t_docker_run(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not cmd.strip():
         return "ERROR: cmd is required"
     ws = _ws(ctx)
-    argv = ["docker", "run", "--rm", "-v", f"{ws}:/workspace", "-w", "/workspace"]
+    run_name = f"avrone-dr-{uuid.uuid4().hex[:12]}"
+    argv = ["docker", "run", "--rm", "--name", run_name, "-v", f"{ws}:/workspace", "-w", "/workspace"]
     if not _setting(ctx, "allow_network", True):
         argv += ["--network", "none"]
     argv += [image, "sh", "-c", cmd]
     timeout = int(_setting(ctx, "command_timeout", 120)) + 180  # allow for image pull
-    res = await ctx.core.runner._exec(argv, f"docker run --rm {image} {cmd}", timeout)
+    try:
+        res = await ctx.core.runner._exec(argv, f"docker run --rm {image} {cmd}", timeout)
+    except asyncio.CancelledError:
+        await asyncio.shield(_docker_rm(ctx, run_name))
+        raise
+    if getattr(res, "timed_out", False):  # the killed client leaves the --rm container running
+        await _docker_rm(ctx, run_name)
     return res.text()
+
+
+async def _docker_rm(ctx: "AgentContext", name: str) -> None:
+    try:
+        await ctx.core.runner._exec(["docker", "rm", "-f", name], "docker rm", 30)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --------------------------------------------------------------------------- think

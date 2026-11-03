@@ -151,7 +151,11 @@ class CommandResult:
         stream with stderr guaranteed a share, since the error is usually at the end."""
         cmd = self.cmd if len(self.cmd) <= CMD_ECHO_MAX else (
             self.cmd[:CMD_ECHO_MAX - 60] + f" ...[command clipped, {len(self.cmd)} chars]")
-        header = f"$ {cmd}\n[{exit_label(self.exit_code, self.timed_out)}]\n"
+        label = exit_label(self.exit_code, self.timed_out)
+        if self.exit_code == 125 and not self.timed_out and ("Error response from daemon" in self.stderr
+                                                             or self.stderr.startswith("docker:")):
+            label += " = docker failed before the command ran"
+        header = f"$ {cmd}\n[{label}]\n"
         out, err = clean_output(self.stdout), clean_output(self.stderr)
         err_block = ("\n[stderr]\n" + err) if err else ""
         full = header + out + err_block
@@ -270,6 +274,7 @@ class DockerRunner(Runner):
         super().__init__(settings)
         self.container = f"avrone-env-{uuid.uuid4().hex[:8]}"
         self.agent_pool: agentcontainer.AgentContainerPool | None = None  # AVRONE_AGENT_CONTAINER=persistent
+        self.restarts = 0
 
     def _pool(self) -> agentcontainer.AgentContainerPool:
         if self.agent_pool is None:
@@ -294,35 +299,76 @@ class DockerRunner(Runner):
             await self.agent_pool.close()
         await self._exec(["docker", "rm", "-f", self.container], "docker rm", 30)
 
-    def exec_argv(self, cmd: str, agent_cwd: Path | None = None) -> list[str]:
+    def exec_argv(self, cmd: str, agent_cwd: Path | None = None, timeout: float | None = None,
+                  run_name: str | None = None) -> list[str]:
         """argv for one command. Agent commands run in their own dir.
 
         Default: `docker exec -w /workspace/agents/<id>` in the shared container (the agent dir
         is the same host dir via the /workspace bind mount). With AVRONE_AGENT_DOCKER_ISOLATE=1:
-        a throwaway `docker run --rm` that mounts ONLY that agent dir, as `-v <dir>:/agent`."""
+        a throwaway `docker run --rm` that mounts ONLY that agent dir, as `-v <dir>:/agent`.
+        With `timeout`, the command carries its own in-container deadline (agentcontainer.GUARD);
+        `run_name` names the throwaway container so a timed-out one can be removed."""
+        tail = agentcontainer.launcher(cmd, timeout)
         if agent_cwd is None:
-            return ["docker", "exec", self.container, "bash", "-lc", cmd]
+            return ["docker", "exec", self.container, *tail]
         if agentfs.docker_isolate():
             mnt = agentfs.CONTAINER_AGENT_MOUNT
-            argv = ["docker", "run", "--rm", *agentfs.agent_volume_args(agent_cwd), "-w", mnt,
-                    "-e", f"AVRONE_AGENT_DIR={mnt}"]
+            argv = ["docker", "run", "--rm"]
+            if run_name:
+                argv += ["--name", run_name]
+            argv += [*agentfs.agent_volume_args(agent_cwd), "-w", mnt, "-e", f"AVRONE_AGENT_DIR={mnt}"]
             # same hardening as the persistent agent home (cap_drop ALL, no-new-privileges,
             # mem/cpu/pids limits, --network none unless AVRONE_ALLOW_NETWORK)
             argv += agentcontainer.hardening_args(self.s.allow_network)
-            return argv + [self.s.docker_image, "bash", "-lc", cmd]
+            return argv + [self.s.docker_image, *tail]
         inner = agentfs.container_agent_path(self.workspace, agent_cwd)
         argv = ["docker", "exec", "-w", inner]
         for k, v in self.agent_env(agent_cwd, in_container=inner).items():
             argv += ["-e", f"{k}={v}"]
-        return argv + [self.container, "bash", "-lc", cmd]
+        return argv + [self.container, *tail]
+
+    async def _remove(self, name: str) -> None:
+        try:
+            await self._exec(["docker", "rm", "-f", name], "docker rm", 30)
+        except Exception:  # noqa: BLE001 - cleanup is best effort
+            pass
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
+        t = timeout or self.s.command_timeout
         if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
             # long-lived per-agent home container (only the agent dir mounted at /agent), reused
-            name = await self._pool().ensure(agent_cwd)
-            return await self._exec(agentcontainer.exec_argv(name, cmd), cmd, timeout or self.s.command_timeout)
-        return await self._exec(self.exec_argv(cmd, agent_cwd), cmd, timeout or self.s.command_timeout)
+            pool = self._pool()
+            name = await pool.ensure(agent_cwd)
+            res = await self._exec(agentcontainer.exec_argv(name, cmd, t), cmd, t)
+            if agentcontainer.container_gone(res, name):  # the home died under us: recreate once
+                await pool.forget(name)
+                self.restarts += 1
+                name = await pool.ensure(agent_cwd)
+                res = await self._exec(agentcontainer.exec_argv(name, cmd, t), cmd, t)
+            return res
+        if agent_cwd is not None and agentfs.docker_isolate():
+            run_name = f"avrone-run-{uuid.uuid4().hex[:12]}"
+            try:
+                res = await self._exec(self.exec_argv(cmd, agent_cwd, t, run_name), cmd, t)
+            except asyncio.CancelledError:
+                await asyncio.shield(self._remove(run_name))
+                raise
+            if getattr(res, "timed_out", False):  # killing the docker client leaves a --rm container running
+                await self._remove(run_name)
+            return res
+        res = await self._exec(self.exec_argv(cmd, agent_cwd, t), cmd, t)
+        if agentcontainer.container_gone(res, self.container):
+            # the shared environment container died (daemon restart, OOM): bring it back once
+            self.restarts += 1
+            await self._remove(self.container)
+            try:
+                await self.start()
+            except Exception as e:  # noqa: BLE001
+                res.stderr = (res.stderr.rstrip("\n") + f"\n[could not restart the environment container: {e}]")[:2000]
+                return res
+            res = await self._exec(self.exec_argv(cmd, agent_cwd, t), cmd, t)
+        return res
 
 
 async def establish(settings: Settings) -> Runner:
@@ -340,6 +386,16 @@ async def establish(settings: Settings) -> Runner:
         else:
             raise
     check = await runner.run("echo ready", timeout=60)
+    if check.exit_code != 0 and choice == "docker" and settings.runner == "auto":
+        # docker answered but the environment can't run a command (image without a shell, a
+        # daemon that died after start): auto mode falls back to local instead of refusing to boot
+        try:
+            await runner.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        runner = LocalRunner(settings)
+        await runner.start()
+        check = await runner.run("echo ready", timeout=60)
     if check.exit_code != 0:
         raise RuntimeError(f"Environment health check failed: {check.text()}")
     return runner

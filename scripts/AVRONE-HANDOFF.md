@@ -365,3 +365,13 @@ merge without his word.
 - **text() view:** keeps the head and the tail of each stream, so the traceback at the end survives. stderr gets a guaranteed third of the budget. The command echo is clipped at 400 chars, so a heredoc can't eat the budget. ANSI codes are stripped, and CR progress bars collapse to their final state. Tiny limits keep the old head-cut shape.
 - **shell tool:** an empty or whitespace `cmd` gets an error.
 - Tests: tests/test_shell_runner_robust.py (38). Mutation on round 25: 22 of 38 fail. The remainder are unit checks against the stubs.
+
+## Round 27: Docker runner (branch avrone-a12lr-daemon)
+- **In-container deadline:** killing a timed-out `docker exec`/`docker run` client never killed the command inside the container, so runaway loops kept burning the container's CPU. Docker commands now launch through `agentcontainer.GUARD` (`sh -c GUARD <deadline> <cmd>`). It applies `timeout -s KILL <t+2>` inside the container when the image's `timeout` accepts that syntax. The syntax is probed, so on an old busybox the command still runs, just without the deadline.
+- **No-bash images:** alpine and busybox images used to fail with exit 127 on `bash -lc`. GUARD falls back to `sh -c`.
+- **Dead containers:** when the shared env container or an agent home dies (daemon restart, OOM, `docker rm`), docker answers "No such container" or "is not running/paused/restarting". The runner recreates the container once and retries. The retry only happens when docker refused before the command started (empty stdout, exit 1/125/126, daemon error text), so a command can't run twice. A failed restart is reported in stderr.
+- **Leaked --rm containers:** isolate-mode runs (`avrone-run-*`) and the docker_run tool (`avrone-dr-*`) are now named, and they're `docker rm -f`'d on timeout or cancel.
+- **Auto mode:** if the docker health check fails (for example, an image with no shell), auto mode stops docker and falls back to local. An explicit `runner=docker` still raises.
+- **Exit 125:** labeled "docker failed before the command ran" when the stderr is docker's.
+- `exec_argv` without a timeout keeps the old `bash -lc` shape. `run()` always passes the timeout.
+- Tests: tests/test_docker_runner_robust.py (36), run against a fake `docker` shim. Mutation on round 26: 25 of 36 fail. Not verified against a real Docker daemon.

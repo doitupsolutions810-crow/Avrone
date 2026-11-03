@@ -108,9 +108,46 @@ def persistent_run_argv(name: str, host_dir: Path, image: str, allow_network: bo
             image, "sleep", "infinity"]
 
 
-def exec_argv(name: str, cmd: str) -> list[str]:
+# In-container launcher. `docker exec`/`docker run` clients that we kill on a timeout do NOT kill
+# the process inside the container, so the command enforces its own deadline there: `timeout -s
+# KILL` when the image has a timeout that understands that syntax (GNU, busybox >= 1.30; probed,
+# so an old busybox just runs without it), a couple of seconds after the client gives up. It also
+# runs images with no bash (alpine, busybox) under sh instead of failing with exit 127.
+# Called as: sh -c GUARD <deadline-secs> <cmd>   ($0 = deadline, $1 = cmd)
+GUARD = ('t=$0; c=$1; if command -v bash >/dev/null 2>&1; then i=bash; f=-lc; else i=sh; f=-c; fi; '
+         'if [ "$t" -gt 0 ] 2>/dev/null && command -v timeout >/dev/null 2>&1 '
+         '&& timeout -s KILL 5 true >/dev/null 2>&1; then exec timeout -s KILL "$t" "$i" "$f" "$c"; fi; '
+         'exec "$i" "$f" "$c"')
+DEADLINE_SLACK = 2
+
+
+def launcher(cmd: str, timeout: float | None = None) -> list[str]:
+    """Tail of a docker argv that runs `cmd`. With no timeout: the historical `bash -lc cmd`."""
+    if timeout is None:
+        return ["bash", "-lc", cmd]
+    try:
+        secs = int(float(timeout))
+    except (TypeError, ValueError):
+        secs = 0
+    return ["sh", "-c", GUARD, str(max(0, secs) + DEADLINE_SLACK if secs > 0 else 0), cmd]
+
+
+_DEAD_RE = re.compile(r"Error(?: response from daemon)?:\s*(?:No such container|[Cc]ontainer \S+ is "
+                      r"(?:not running|paused|restarting))")
+
+
+def container_gone(res: Any, name: str) -> bool:
+    """True when docker refused to run the command because the container is gone or stopped
+    (daemon restart, OOM kill, someone ran `docker rm`). The command never started, so a retry
+    after recreating the container cannot run it twice."""
+    err = str(getattr(res, "stderr", "") or "")
+    return (getattr(res, "exit_code", 0) in (1, 125, 126) and not str(getattr(res, "stdout", "") or "").strip()
+            and bool(_DEAD_RE.search(err)))
+
+
+def exec_argv(name: str, cmd: str, timeout: float | None = None) -> list[str]:
     mnt = agentfs.CONTAINER_AGENT_MOUNT
-    return ["docker", "exec", "-w", mnt, "-e", f"AVRONE_AGENT_DIR={mnt}", name, "bash", "-lc", cmd]
+    return ["docker", "exec", "-w", mnt, "-e", f"AVRONE_AGENT_DIR={mnt}", name, *launcher(cmd, timeout)]
 
 
 def inspect_argv(name: str) -> list[str]:
@@ -181,6 +218,11 @@ class AgentContainerPool:
                 self.created += 1
             self.homes[name] = _Home(name, d, now, created=now, uses=1)
             return name
+
+    async def forget(self, name: str) -> None:
+        """Drop a home whose container died, so the next ensure() recreates it."""
+        async with self._lock:
+            self.homes.pop(name, None)
 
     async def reap_idle(self, now: float | None = None, skip: str = "") -> list[str]:
         """Remove every home container idle for longer than AVRONE_AGENT_IDLE_SECS."""

@@ -185,7 +185,7 @@ def test_docker_runner_persistent_mode(tmp_path, monkeypatch):
     execs = [a for a in seen if a[1] == "exec"]
     assert [a[-1] for a in execs] == ["ls", "pwd"] and all("avrone-agent-edge1-researcher" in a for a in execs)
     run(r.run("echo hi"))                                         # non-agent command: shared container
-    assert seen[-1] == ["docker", "exec", r.container, "bash", "-lc", "echo hi"]
+    assert seen[-1][:5] == ["docker", "exec", r.container, "sh", "-c"] and seen[-1][-1] == "echo hi"
     run(r.stop())
     assert ["docker", "rm", "-f", "avrone-agent-edge1-researcher"] in seen
 

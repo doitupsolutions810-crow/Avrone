@@ -238,6 +238,8 @@ async def test_ca_timeout_restart_reuses_exact_persisted_assertion(monkeypatch, 
     assert len(authority.calls) == 2
     assert authority.calls[0]["requester_assertion"] == authority.calls[1]["requester_assertion"] == persisted
     assert authority.calls[0]["correlation_id"] == authority.calls[1]["correlation_id"] == "stable-ca-correlation"
+    assert authority.calls[0]["allow_expired_parent_replay"] is False
+    assert authority.calls[1]["allow_expired_parent_replay"] is True
 
 
 @pytest.mark.asyncio

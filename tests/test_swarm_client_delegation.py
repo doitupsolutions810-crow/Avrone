@@ -171,3 +171,6 @@ def test_parent_expiry_preflight_can_be_skipped_only_for_replay_after_signature_
     with pytest.raises(ValueError, match="expired"):
         client._verify_parent(parent, signature, rights, now)
     client._verify_parent(parent, signature, rights, now, allow_expired_for_replay=True)
+    invalid_signature = base64.b64encode(b"\\0" * 64).decode("ascii")
+    with pytest.raises(ValueError, match="invalid parent Capability Authority signature"):
+        client._verify_parent(parent, invalid_signature, rights, now, allow_expired_for_replay=True)

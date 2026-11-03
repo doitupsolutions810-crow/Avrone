@@ -353,7 +353,7 @@ class SwarmClient:
             "AVRONE_SWARM_AUDIENCE": os.getenv("AVRONE_SWARM_AUDIENCE", ""),
             "AVRONE_SWARM_CA_ISSUER": os.getenv("AVRONE_SWARM_CA_ISSUER", "spiffe://prod/broker"),
             "AVRONE_SWARM_ISSUER_KEY_FILE": os.getenv("AVRONE_SWARM_ISSUER_KEY_FILE", ""),
-            "AVRONE_SWARM_CA_PUBLIC_KEY_B64": os.getenv("AVRONE_SWARM_CA_PUBLIC_KEY_B64", ""),
+            "AVRONE_SWARM_CA_PUBLIC_KEY_B64": os.getenv("AVRONE_SWARM_CA_PUBLIC_KEY_B64", os.getenv("AVRONE_CA_PUBLIC_KEY_B64", "")),
             "AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE": os.getenv("AVRONE_SWARM_RECEIPT_PUBLIC_KEY_FILE", ""),
         }
         missing = [key for key, value in required.items() if not value]

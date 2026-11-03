@@ -118,7 +118,7 @@ class CapabilityAuthorityClient:
         }
         return {**unsigned, "signature": base64.b64encode(self._requester_key.sign(_jcs(unsigned))).decode("ascii")}
 
-    def _verify_parent(self, parent: dict[str, Any], signature: str, rights: list[dict[str, str]], now: datetime) -> None:
+    def _verify_parent(self, parent: dict[str, Any], signature: str, audience: str, rights: list[dict[str, str]], now: datetime) -> None:
         if not isinstance(parent, dict) or parent.get("issuer") != self.authority_issuer or parent.get("audience") != self.requester:
             raise ValueError("parent capability issuer/audience mismatch")
         if not isinstance(parent.get("id"), str) or not parent["id"].strip():
@@ -128,6 +128,9 @@ class CapabilityAuthorityClient:
             raise ValueError("parent capability timestamps must be numbers")
         if not math.isfinite(issued) or not math.isfinite(expires) or issued > now.timestamp() + 30 or expires <= now.timestamp() or expires <= issued:
             raise ValueError("parent capability is expired or invalid")
+        constraints = parent.get("constraints")
+        if not isinstance(constraints, dict) or not isinstance(constraints.get("delegation_audiences"), list) or audience not in constraints["delegation_audiences"]:
+            raise ValueError("parent capability does not authorize delegated audience")
         parent_rights = parent.get("rights")
         if not isinstance(parent_rights, list):
             raise ValueError("parent capability rights are invalid")
@@ -178,7 +181,7 @@ class CapabilityAuthorityClient:
         if not isinstance(correlation, str) or not correlation.strip() or len(correlation) > 128:
             raise ValueError("correlation_id must contain 1..128 characters")
         current = datetime.now(timezone.utc)
-        self._verify_parent(parent_capability, parent_signature, rights, current)
+        self._verify_parent(parent_capability, parent_signature, audience, rights, current)
         args = {
             "parent_capability": parent_capability, "parent_signature": parent_signature,
             "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,

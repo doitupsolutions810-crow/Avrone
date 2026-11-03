@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 
 import asyncio
 import logging
@@ -305,6 +306,153 @@ async def chat(body: ChatIn, request: Request, x_admin_token: str | None = Heade
         if release:
             release()
     return {**res, **extra} if isinstance(res, dict) and extra else res
+
+
+class ResearchDebateIn(BaseModel):
+    repository: str
+    commit_sha: str
+    claim: str
+    rounds: int = 2
+    source_paths: list[str] | None = None
+
+
+@app.post("/api/research/debate")
+async def research_debate(body: ResearchDebateIn, request: Request,
+                          x_admin_token: str | None = Header(default=None)):
+    """Run a live adversarial research council against an exact public Git commit.
+
+    Same-origin local use is supported. Remote callers need the existing AVRONE admin
+    token or an authenticated reverse proxy; no credential is accepted from query params.
+    """
+    require_local(request, x_admin_token)
+    from .research_bridge import ResearchBridgeError, fetch_source_files, verify_github_commit, write_receipt
+
+    claim = body.claim.strip()
+    if not claim or len(claim) > 4000:
+        raise HTTPException(400, "claim must contain 1-4000 characters")
+    rounds = max(1, min(int(body.rounds), 3))
+    try:
+        source = await verify_github_commit(body.repository, body.commit_sha)
+    except ResearchBridgeError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    run_id = uuid.uuid4().hex[:12]
+    try:
+        source_files = await fetch_source_files(body.repository, body.commit_sha, body.source_paths or [])
+    except ResearchBridgeError as exc:
+        raise HTTPException(422, str(exc)) from None
+    fetched = [item for item in source_files if item.get("status") == "fetched"]
+    source_context = "\n\n".join(
+        f"### FILE {item['path']} (blob {item['blob_sha']}; truncated={item['truncated']})\n"
+        f"{item['content']}" for item in fetched
+    )
+    source_manifest = [{k: v for k, v in item.items() if k != "content"} for item in source_files]
+    task = (
+        "Run an adversarial mathematical and software-research review using the source snapshot below. "
+        "The source snapshot is read-only evidence at a pinned commit; it is not proof that repository "
+        "tests pass. Assign distinct review angles to algebra, topology/domain semantics, numerical analysis, "
+        "and skeptical falsification. Seek explicit counterexamples; separate observed source facts, derived "
+        "results, assumptions, conjectures, and unverified claims. Do not claim tests were run unless actual "
+        "run evidence exists. Report disagreement and unresolved proof obligations.\n\n"
+        f"PINNED SOURCE: {source['repository']}@{source['commit_sha']} ({source['commit_url']})\n"
+        f"COMMIT MESSAGE: {source.get('commit_message', '')}\n"
+        f"CHANGED PATHS: {json.dumps(source.get('changed_files', []), ensure_ascii=False)}\n"
+        f"FETCHED SOURCE MANIFEST: {json.dumps(source_manifest, ensure_ascii=False)}\n\n"
+        f"RESEARCH CLAIM: {claim}\n\nSOURCE EXCERPTS:\n{source_context}"
+    )
+    first_answer = (
+        "Initial claim supplied for adversarial review (not pre-verified): " + claim + "\n\n"
+        "The endpoint resolved the exact public commit SHA and fetched the listed source excerpts at that SHA. "
+        "No source code was executed by this endpoint. Distinguish inspected text from execution/test evidence."
+    )
+    squad_result = None
+    review_result = None
+    run_errors: list[str] = []
+    try:
+        # First pass: planner + parallel workers + lead synthesis + bridge cross-examination.
+        squad_result = await core().squad(task, n=4, run_id=run_id)
+    except Exception as exc:
+        run_errors.append(f"squad:{type(exc).__name__}")
+        core().codex.emit(run_id, "error", "ResearchBridge",
+                          message=f"squad phase failed: {type(exc).__name__}")
+    if squad_result is not None:
+        initial_answer = str(squad_result.get("answer") or "")
+        if initial_answer.strip():
+            try:
+                # Second pass: independent deep reviewers challenge the first synthesis.
+                review_run_id = run_id + "d"
+                review_result = await core().deep(
+                    task, first_answer=initial_answer, n=4, run_id=review_run_id, rounds=rounds
+                )
+            except Exception as exc:
+                run_errors.append(f"deep:{type(exc).__name__}")
+                core().codex.emit(run_id, "error", "ResearchBridge",
+                                  message=f"deep review phase failed: {type(exc).__name__}")
+        else:
+            run_errors.append("squad:empty_synthesis")
+    else:
+        review_run_id = run_id + "d"
+    final_answer = str(review_result.get("answer") or "") if review_result is not None else ""
+    if not final_answer and squad_result is not None:
+        final_answer = (
+            "PARTIAL RESULT — the squad synthesis is retained, but the independent deep-review phase "
+            "did not complete successfully. Do not treat this as a completed adversarial review.\n\n"
+            + str(squad_result.get("answer") or "")
+        )
+    elif not final_answer:
+        final_answer = "RUN FAILED before a usable squad synthesis was produced; inspect the AVRONE run log."
+    result = {
+        "run_id": run_id,
+        "mode": "squad_then_deep",
+        "squad_run_id": run_id if squad_result is not None else None,
+        "review_run_id": (run_id + "d") if review_result is not None else None,
+        "status": "complete" if review_result is not None else ("partial" if squad_result is not None else "failed"),
+        "errors": run_errors,
+        "answer": final_answer,
+        "squad": squad_result,
+        "review": review_result,
+    }
+    result["source_files"] = source_files
+    try:
+        receipt = write_receipt(settings.data_dir, run_id=run_id, source=source,
+                                claim=claim, mode="squad_then_deep", rounds=rounds, result=result)
+    except ResearchBridgeError as exc:
+        raise HTTPException(500, f"council finished but receipt could not be written: {exc}") from None
+    core().codex.emit(run_id, "research.receipt", "ResearchBridge",
+                      repository=source["repository"], commit_sha=source["commit_sha"],
+                      receipt_digest=receipt["result_digest_sha256"],
+                      evidence_digest=receipt["evidence_digest_sha256"])
+    return {
+        "run_id": run_id,
+        "source": source,
+        "answer": result.get("answer", result),
+        "result": result,
+        "receipt": {
+            "schema": receipt["schema"],
+            "run_id": run_id,
+            "result_digest_sha256": receipt["result_digest_sha256"],
+            "evidence_digest_sha256": receipt["evidence_digest_sha256"],
+            "verification_boundary": receipt["verification_boundary"],
+            "url": f"/api/research/receipts/{run_id}",
+        },
+        "status": result["status"],
+        "source_manifest": source_manifest,
+        "verification": "source_commit_verified; agent conclusions remain unverified until independently checked",
+    }
+
+
+@app.get("/api/research/receipts/{run_id}")
+async def research_receipt(run_id: str, request: Request,
+                           x_admin_token: str | None = Header(default=None)):
+    require_local(request, x_admin_token)
+    from .research_bridge import ResearchBridgeError, read_receipt
+    try:
+        receipt = read_receipt(settings.data_dir, run_id)
+    except ResearchBridgeError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if receipt is None:
+        raise HTTPException(404, "research receipt not found")
+    return receipt
 
 
 # ------------------------------------------------------------------ checkpoints (admin)

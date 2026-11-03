@@ -7,6 +7,7 @@ import pytest
 
 from avrone.swarm_outbox import (
     SwarmOutbox, SwarmDispatcher, OutboxError, InvalidOutboxRecord, RequestConflict,
+    DispatchLeaseLost,
 )
 
 
@@ -59,20 +60,22 @@ def test_mark_queued_requires_existing_pending_and_is_idempotent(tmp_path):
     with pytest.raises(KeyError):
         box.mark_queued("missing", {"ok": True})
     box.prepare(request())
-    result = box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"})
+    owner = box.claim_dispatch("msg-1")
+    result = box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"}, owner_token=owner)
     assert result["state"] == "queued"
-    assert box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"})["state"] == "queued"
+    assert box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"}, owner_token=owner)["state"] == "queued"
     with pytest.raises(RequestConflict):
-        box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "different"})
+        box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "different"}, owner_token=owner)
     box.close()
 
 
 def test_rejected_is_terminal_and_cannot_be_queued(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     box.prepare(request())
-    box.mark_rejected("msg-1", "forbidden")
+    owner = box.claim_dispatch("msg-1")
+    box.mark_rejected("msg-1", "forbidden", owner_token=owner)
     with pytest.raises(OutboxError):
-        box.mark_queued("msg-1", {"ok": True})
+        box.mark_queued("msg-1", {"ok": True}, owner_token=owner)
     assert box.pending() == []
     box.close()
 
@@ -102,7 +105,9 @@ def test_request_and_receipt_size_limits(tmp_path):
     huge = request(); huge["payload"]["blob"] = "x" * (512 * 1024)
     with pytest.raises(InvalidOutboxRecord): box.prepare(huge)
     box.prepare(request())
-    with pytest.raises(InvalidOutboxRecord): box.mark_queued("msg-1", {"blob": "x" * (128 * 1024)})
+    owner = box.claim_dispatch("msg-1")
+    with pytest.raises(InvalidOutboxRecord):
+        box.mark_queued("msg-1", {"blob": "x" * (128 * 1024)}, owner_token=owner)
     box.close()
 
 
@@ -159,8 +164,10 @@ def test_corrupt_stored_blob_is_detected(tmp_path):
 def test_mark_rejected_rejects_bad_codes(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     box.prepare(request())
+    owner = box.claim_dispatch("msg-1")
     for bad in ["", "bad code", "x" * 65, "../bad"]:
-        with pytest.raises(ValueError): box.mark_rejected("msg-1", bad)
+        with pytest.raises(ValueError):
+            box.mark_rejected("msg-1", bad, owner_token=owner)
     box.close()
 
 
@@ -240,7 +247,8 @@ def test_retry_returns_stored_queue_receipt_without_resending(tmp_path):
 def test_corrupt_stored_receipt_is_detected(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     box.prepare(request())
-    box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"})
+    owner = box.claim_dispatch("msg-1")
+    box.mark_queued("msg-1", {"message_id": "msg-1", "signature": "verified"}, owner_token=owner)
     box._db.execute("UPDATE swarm_outbox SET receipt_json=? WHERE message_id='msg-1'", (b'{"tampered":true}',))
     with pytest.raises(InvalidOutboxRecord, match="receipt digest"):
         box.get("msg-1")
@@ -296,9 +304,10 @@ def test_get_rejects_invalid_message_id(tmp_path):
 def test_mark_queued_requires_receipt_object(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     box.prepare(request())
+    owner = box.claim_dispatch("msg-1")
     for bad in [None, [], "receipt", 1]:
         with pytest.raises(InvalidOutboxRecord):
-            box.mark_queued("msg-1", bad)
+            box.mark_queued("msg-1", bad, owner_token=owner)
     box.close()
 
 
@@ -332,6 +341,68 @@ def test_concurrent_duplicate_dispatches_send_only_once(tmp_path):
     assert client.calls == 1
     assert len(box.pending()) == 0
     assert box.get("msg-1")["state"] == "queued"
+    box.close()
+
+
+def test_expired_dispatch_owner_cannot_commit_a_queue_result(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    stale_owner = box.claim_dispatch("msg-1", lease_seconds=30)
+    box._db.execute("UPDATE dispatch_leases SET lease_until=0 WHERE message_id='msg-1'")
+    current_owner = box.claim_dispatch("msg-1", lease_seconds=30)
+    assert current_owner and current_owner != stale_owner
+
+    receipt = {"message_id": "msg-1", "signature": "verified"}
+    with pytest.raises(DispatchLeaseLost):
+        box.mark_queued("msg-1", receipt, owner_token=stale_owner)
+    assert box.get("msg-1")["state"] == "pending"
+
+    assert box.mark_queued("msg-1", receipt, owner_token=current_owner)["state"] == "queued"
+    box.close()
+
+
+def test_expired_dispatch_owner_cannot_commit_a_rejection(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare(request())
+    stale_owner = box.claim_dispatch("msg-1", lease_seconds=30)
+    box._db.execute("UPDATE dispatch_leases SET lease_until=0 WHERE message_id='msg-1'")
+    current_owner = box.claim_dispatch("msg-1", lease_seconds=30)
+    assert current_owner and current_owner != stale_owner
+
+    with pytest.raises(DispatchLeaseLost):
+        box.mark_rejected("msg-1", "http_403", owner_token=stale_owner)
+    assert box.get("msg-1")["state"] == "pending"
+
+    assert box.mark_rejected("msg-1", "http_403", owner_token=current_owner)["state"] == "rejected"
+    box.close()
+
+
+def test_dispatcher_reports_unknown_when_send_returns_after_lease_recovery(tmp_path):
+    class Client:
+        def __init__(self, outbox):
+            self.outbox = outbox
+            self.successor = None
+
+        def send_request(self, req):
+            self.outbox._db.execute(
+                "UPDATE dispatch_leases SET lease_until=0 WHERE message_id='msg-1'"
+            )
+            self.successor = self.outbox.claim_dispatch("msg-1", lease_seconds=30)
+            return {"job": {"id": "job-1", "status": "queued"},
+                    "receipt": {"message_id": "msg-1", "signature": "verified"}}
+
+        def verify_receipt(self, receipt, req):
+            assert receipt["message_id"] == req["envelope"]["message_id"]
+
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    client = Client(box)
+    result = SwarmDispatcher(client, box).submit_request(request())
+
+    assert result["state"] == "unknown"
+    assert "lease expired" in result["reason"]
+    assert box.get("msg-1")["state"] == "pending"
+    assert client.successor
+    assert box.release_dispatch("msg-1", client.successor)
     box.close()
 
 

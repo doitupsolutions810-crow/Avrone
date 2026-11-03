@@ -108,9 +108,9 @@ def test_invalid_utf8_and_extreme_json_lines_are_ignored(tmp_path):
     expected = bridge.post("a", "finding", "survives")
     path = tmp_path / "bridge" / "hostile-lines.jsonl"
     with path.open("ab") as stream:
-        stream.write(b"\\xff\\xfe\\n")
-        stream.write(("[" * 1200 + "0" + "]" * 1200 + "\\n").encode())
-        stream.write(json.dumps(_remote("valid-after-hostile-line")).encode() + b"\\n")
+        stream.write(b"\xff\xfe\n")
+        stream.write(("[" * 1200 + "0" + "]" * 1200 + "\n").encode())
+        stream.write(json.dumps(_remote("valid-after-hostile-line")).encode() + b"\n")
     replay = Bridge("hostile-lines", tmp_path)
     assert replay.get(expected["id"]) is not None
     assert replay.get("valid-after-hostile-line") is not None

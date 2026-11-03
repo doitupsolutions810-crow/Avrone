@@ -166,3 +166,61 @@ def test_post_input_types_and_reference_requirements_fail_closed():
         bridge.post("agent", "unknown", "text")
     with pytest.raises(BridgeError):
         bridge.reply("agent", [], "reply without parent")
+
+
+def _multiprocess_writer(data_dir: str, run_id: str, worker: str, count: int, limit: int) -> None:
+    # Top-level target so multiprocessing spawn can import it on macOS as well.
+    bridge = Bridge(run_id, data_dir, node_id=worker, limit=limit)
+    for index in range(count):
+        bridge.post(worker, "finding", f"{worker}:{index}")
+
+
+def test_multiprocess_append_preserves_every_record(tmp_path):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    workers = [ctx.Process(target=_multiprocess_writer,
+                           args=(str(tmp_path), "process-shared", f"P{i}", 45, 500))
+               for i in range(4)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(20)
+    for worker in workers:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join()
+            pytest.fail("multiprocess writer did not finish within 20 seconds")
+        assert worker.exitcode == 0
+
+    replay = Bridge("process-shared", tmp_path, limit=500)
+    assert len(replay) == 180
+    assert len({post["id"] for post in replay.posts()}) == 180
+    assert {post["agent"] for post in replay.posts()} == {f"P{i}" for i in range(4)}
+
+
+def test_multiprocess_compaction_is_serialized_and_keeps_bounded_tail(tmp_path):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    workers = [ctx.Process(target=_multiprocess_writer,
+                           args=(str(tmp_path), "process-compact", f"C{i}", 55, 13))
+               for i in range(4)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(25)
+    for worker in workers:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join()
+            pytest.fail("multiprocess compaction writer did not finish within 25 seconds")
+        assert worker.exitcode == 0
+
+    replay = Bridge("process-compact", tmp_path, limit=13)
+    assert len(replay) == 13
+    assert len({post["id"] for post in replay.posts()}) == 13
+    path = tmp_path / "bridge" / "process-compact.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert all(isinstance(json.loads(line), dict) for line in lines)
+    assert not list(path.parent.glob(".process-compact.jsonl.*.tmp"))

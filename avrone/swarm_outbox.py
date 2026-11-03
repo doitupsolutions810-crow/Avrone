@@ -26,6 +26,10 @@ class RequestConflict(OutboxError):
     pass
 
 
+class DispatchLeaseLost(OutboxError):
+    """Raised when a dispatch attempt no longer owns a live lease."""
+
+
 class InvalidOutboxRecord(OutboxError):
     pass
 
@@ -338,7 +342,13 @@ class SwarmOutbox:
                 (message_id, owner_token))
             return cursor.rowcount == 1
 
-    def mark_queued(self, message_id: str, verified_receipt: dict[str, Any]) -> dict[str, Any]:
+    def mark_queued(
+        self, message_id: str, verified_receipt: dict[str, Any], *, owner_token: str,
+    ) -> dict[str, Any]:
+        if not isinstance(message_id, str) or not _ID.fullmatch(message_id):
+            raise InvalidOutboxRecord("message id is invalid")
+        if not isinstance(owner_token, str) or not re.fullmatch(r"[0-9a-f]{48}", owner_token):
+            raise InvalidOutboxRecord("dispatch lease token is invalid")
         if not isinstance(verified_receipt, dict):
             raise InvalidOutboxRecord("verified receipt must be an object")
         receipt_raw = _json_bytes(verified_receipt, MAX_RECEIPT_BYTES)
@@ -354,12 +364,24 @@ class SwarmOutbox:
                 if row[0] == "queued":
                     if bytes(row[1]) != receipt_raw or row[2] != receipt_digest:
                         raise RequestConflict("message already has a different verified receipt")
-                elif row[0] != "pending":
+                    self._db.execute("COMMIT")
+                    return self.get(message_id)
+                if row[0] != "pending":
                     raise OutboxError("only pending requests can become queued")
-                else:
-                    self._db.execute("UPDATE swarm_outbox SET state='queued',receipt_json=?,receipt_sha256=?,updated_at=? WHERE message_id=?",
-                                     (receipt_raw, receipt_digest, now, message_id))
-                    self._db.execute("DELETE FROM dispatch_leases WHERE message_id=?", (message_id,))
+                lease = self._db.execute(
+                    "SELECT owner_token,lease_until FROM dispatch_leases WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+                if lease is None or lease[0] != owner_token or lease[1] <= now:
+                    raise DispatchLeaseLost("dispatch lease was lost before queue result could be committed")
+                self._db.execute(
+                    "UPDATE swarm_outbox SET state='queued',receipt_json=?,receipt_sha256=?,updated_at=? WHERE message_id=?",
+                    (receipt_raw, receipt_digest, now, message_id),
+                )
+                self._db.execute(
+                    "DELETE FROM dispatch_leases WHERE message_id=? AND owner_token=?",
+                    (message_id, owner_token),
+                )
                 self._db.execute("COMMIT")
             except BaseException:
                 if self._db.in_transaction:
@@ -368,20 +390,45 @@ class SwarmOutbox:
             self._fsync_files()
         return self.get(message_id)
 
-    def mark_rejected(self, message_id: str, error_code: str) -> dict[str, Any]:
+    def mark_rejected(
+        self, message_id: str, error_code: str, *, owner_token: str,
+    ) -> dict[str, Any]:
+        if not isinstance(message_id, str) or not _ID.fullmatch(message_id):
+            raise InvalidOutboxRecord("message id is invalid")
+        if not isinstance(owner_token, str) or not re.fullmatch(r"[0-9a-f]{48}", owner_token):
+            raise InvalidOutboxRecord("dispatch lease token is invalid")
         if not isinstance(error_code, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", error_code):
             raise ValueError("error_code is invalid")
+        now = time.time()
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                row = self._db.execute("SELECT state FROM swarm_outbox WHERE message_id=?", (message_id,)).fetchone()
+                row = self._db.execute(
+                    "SELECT state,error_code FROM swarm_outbox WHERE message_id=?", (message_id,)
+                ).fetchone()
                 if row is None:
                     raise KeyError(message_id)
                 if row[0] == "queued":
                     raise OutboxError("queued request cannot become rejected")
-                self._db.execute("UPDATE swarm_outbox SET state='rejected',error_code=?,updated_at=? WHERE message_id=?",
-                                 (error_code, time.time(), message_id))
-                self._db.execute("DELETE FROM dispatch_leases WHERE message_id=?", (message_id,))
+                if row[0] == "rejected":
+                    if row[1] != error_code:
+                        raise RequestConflict("message already has a different rejection")
+                    self._db.execute("COMMIT")
+                    return self.get(message_id)
+                lease = self._db.execute(
+                    "SELECT owner_token,lease_until FROM dispatch_leases WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+                if lease is None or lease[0] != owner_token or lease[1] <= now:
+                    raise DispatchLeaseLost("dispatch lease was lost before rejection could be committed")
+                self._db.execute(
+                    "UPDATE swarm_outbox SET state='rejected',error_code=?,updated_at=? WHERE message_id=?",
+                    (error_code, now, message_id),
+                )
+                self._db.execute(
+                    "DELETE FROM dispatch_leases WHERE message_id=? AND owner_token=?",
+                    (message_id, owner_token),
+                )
                 self._db.execute("COMMIT")
             except BaseException:
                 if self._db.in_transaction:
@@ -427,7 +474,6 @@ class SwarmDispatcher:
                 "correlation_id": record["correlation_id"], "receipt": record["receipt"]}
 
     def _send(self, record: dict[str, Any]) -> dict[str, Any]:
-        from .swarm_client import UnknownOutcome, SwarmRejected
         request = record["request"]
         message_id = record["message_id"]
         lease = self.outbox.claim_dispatch(message_id)
@@ -442,11 +488,11 @@ class SwarmDispatcher:
                     "correlation_id": record["correlation_id"], "retryable": True,
                     "reason": "dispatch is already in progress"}
         try:
-            return self._send_claimed(record)
+            return self._send_claimed(record, lease)
         finally:
             self.outbox.release_dispatch(message_id, lease)
 
-    def _send_claimed(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _send_claimed(self, record: dict[str, Any], owner_token: str) -> dict[str, Any]:
         from .swarm_client import UnknownOutcome, SwarmRejected
         request = record["request"]
         message_id = record["message_id"]
@@ -456,9 +502,15 @@ class SwarmDispatcher:
             return {"state": "unknown", "message_id": message_id,
                     "correlation_id": record["correlation_id"], "retryable": True}
         except SwarmRejected as exc:
-            self.outbox.mark_rejected(message_id, f"http_{exc.status_code}")
+            error_code = f"http_{exc.status_code}"
+            try:
+                self.outbox.mark_rejected(message_id, error_code, owner_token=owner_token)
+            except DispatchLeaseLost:
+                return {"state": "unknown", "message_id": message_id,
+                        "correlation_id": record["correlation_id"], "retryable": True,
+                        "reason": "dispatch lease expired before rejection could be committed"}
             return {"state": "rejected", "message_id": message_id,
-                    "error_code": f"http_{exc.status_code}"}
+                    "error_code": error_code}
 
         if not isinstance(response, dict) or not isinstance(response.get("job"), dict):
             return {"state": "unknown", "message_id": message_id,
@@ -469,7 +521,12 @@ class SwarmDispatcher:
                     "correlation_id": record["correlation_id"], "retryable": True}
         receipt = response.get("receipt")
         self.client.verify_receipt(receipt, request)
-        self.outbox.mark_queued(message_id, receipt)
+        try:
+            self.outbox.mark_queued(message_id, receipt, owner_token=owner_token)
+        except DispatchLeaseLost:
+            return {"state": "unknown", "message_id": message_id,
+                    "correlation_id": record["correlation_id"], "retryable": True,
+                    "reason": "dispatch lease expired before queue result could be committed"}
         return {"state": "queued", "message_id": message_id,
                 "correlation_id": record["correlation_id"], "job_id": job["id"],
                 "receipt": receipt, "note": "Queue acceptance is not task completion."}

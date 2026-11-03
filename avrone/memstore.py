@@ -102,7 +102,49 @@ def remote_namespace(sender: str, ns: str) -> str:
 
 
 def is_local(ns: str) -> bool:
-    return bool(NS_RE.match(ns))
+    return isinstance(ns, str) and bool(NS_RE.match(ns))
+
+
+DEFAULT_REMOTE_NS_PER_SENDER, HARD_REMOTE_NS_PER_SENDER = 32, 4096
+
+
+def remote_ns_per_sender() -> int:
+    """Namespaces one fleet peer may own on this node (AVRONE_MEMORY_MAX_REMOTE_NS, default 32)."""
+    return _cap("AVRONE_MEMORY_MAX_REMOTE_NS", DEFAULT_REMOTE_NS_PER_SENDER, HARD_REMOTE_NS_PER_SENDER)
+
+
+def remote_ns_total() -> int:
+    """All peers together may own at most half the namespace cap, so the node's own agents always
+    have room. Before: one child pushing 200 one-entry namespaces filled the default 256-namespace
+    cap and every local agent's first memory_save on this node was refused from then on."""
+    return max(1, max_namespaces() // 2)
+
+
+def remote_sender(ns: str) -> str:
+    if isinstance(ns, str) and ns.startswith(REMOTE_PREFIX) and "/" in ns:
+        return ns[len(REMOTE_PREFIX):].split("/", 1)[0]
+    return ""
+
+
+def merge_key(v: Any) -> str | None:
+    """A foreign entry's key, or None when it is not a string or an integer. A dict or list key used
+    to be stored as its Python repr ("{'a': 1}")."""
+    if isinstance(v, bool) or not isinstance(v, (str, int)):
+        return None
+    return str(v).strip()
+
+
+def merge_value(v: Any) -> str | None:
+    """A foreign entry's value, or None when unusable. Local saves always store text, but merge used
+    str(): a null value arrived as the text "None" and a dict as its Python repr. A number is kept
+    as text; bools, null, objects and lists are refused."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int) or (isinstance(v, float) and math.isfinite(v)):
+        return str(v)
+    return None
 
 
 class MemoryRefused(ValueError):
@@ -252,7 +294,13 @@ class MemoryStore:
             pending: list[dict[str, Any]] = []
             evicted = False
             for e in entries:
-                key, value = str(e.get("key", "")).strip(), str(e.get("value", ""))
+                if not isinstance(e, dict):
+                    stats["rejected"] += 1
+                    continue
+                key, value = merge_key(e.get("key", "")), merge_value(e.get("value", ""))
+                if key is None or value is None:
+                    stats["rejected"] += 1
+                    continue
                 try:
                     raw_ts = e.get("ts", 0)
                     if isinstance(raw_ts, bool):
@@ -265,8 +313,16 @@ class MemoryStore:
                 except (TypeError, ValueError, OverflowError):
                     stats["rejected"] += 1
                     continue
-                have = spaces.get(ns, {}).get(key)
+                space = spaces.get(ns, {})
+                have = space.get(key)
                 if have is not None and float(have.get("ts", 0)) >= ts:
+                    stats["skipped"] += 1
+                    continue
+                # A NEW key into a full namespace evicts the oldest key. When the incoming entry is
+                # itself older than everything kept, it would evict a newer key and then be the
+                # next one evicted, so it was counted "merged" while the store lost a newer memory.
+                if have is None and len(space) >= max_entries() and space and \
+                        ts <= min(_ts(r.get("ts", 0)) for r in space.values()):
                     stats["skipped"] += 1
                     continue
                 rec = {"ns": ns, "key": key, "value": value, "ts": ts, **meta}

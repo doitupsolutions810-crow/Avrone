@@ -1325,19 +1325,38 @@ class FleetManager:
             raise ValueError(f"too many entries ({len(entries)} > {MEMORY_SYNC_MAX_ENTRIES})")
         groups: dict[str, list[dict[str, Any]]] = {}
         bad = 0
+        store = memstore.MemoryStore(self.data_dir / "memory.jsonl")
+        existing = set(store.namespaces())
+        mine = {n for n in existing if memstore.remote_sender(n) == sender}
+        remote_all = {n for n in existing if n.startswith(memstore.REMOTE_PREFIX)}
+        per_sender, total = memstore.remote_ns_per_sender(), memstore.remote_ns_total()
+        over_quota = 0
         for e in entries:
             ns = e.get("ns") if isinstance(e, dict) else None
             if not isinstance(ns, str) or not memstore.is_local(ns):  # sender may only name its own local ns
                 bad += 1
                 continue
-            groups.setdefault(memstore.remote_namespace(sender, ns), []).append(e)
-        store = memstore.MemoryStore(self.data_dir / "memory.jsonl")
+            target = memstore.remote_namespace(sender, ns)
+            if target not in existing and target not in groups:
+                # a peer's namespaces are capped per sender and in total (half the store's cap)
+                if len(mine) >= per_sender or len(remote_all) >= total:
+                    bad += 1
+                    over_quota += 1
+                    continue
+                mine.add(target)
+                remote_all.add(target)
+            groups.setdefault(target, []).append(e)
         stats = {"merged": 0, "skipped": 0, "rejected": bad}
         for target, items in groups.items():
             for k, v in store.merge(target, items, source=sender).items():
                 stats[k] += v
-        self._audit("fleet.memory.merge", sender=sender, namespaces=sorted(groups), **stats)
-        return {"ok": True, "node": self.node_id, "namespaces": sorted(groups), **stats}
+        self._audit("fleet.memory.merge", sender=sender, namespaces=sorted(groups), over_quota=over_quota, **stats)
+        out = {"ok": True, "node": self.node_id, "namespaces": sorted(groups), **stats}
+        if over_quota:
+            out["over_quota"] = over_quota
+            out["note"] = (f"{over_quota} entries refused: namespace quota ({per_sender} per sender, {total} "
+                           f"for all peers; AVRONE_MEMORY_MAX_REMOTE_NS / AVRONE_MEMORY_MAX_NAMESPACES)")
+        return out
 
     # ------------------------------------------------------------ agent migration (edgepack)
     def _workspace(self) -> Path:

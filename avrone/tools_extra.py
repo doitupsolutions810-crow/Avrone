@@ -603,7 +603,17 @@ async def t_memory_sync(ctx: "AgentContext", args: dict[str, Any]) -> str:
         spaces = {(ns := _mem_ns(ctx)): store.load(ns)}
     else:
         spaces = {ns: v for ns, v in store.namespaces().items() if memstore.is_local(ns)}
-    want = {str(k) for k in args.get("keys") or []}
+    raw_keys = args.get("keys")
+    if raw_keys in (None, "", []):
+        want: set[str] = set()
+    elif isinstance(raw_keys, (str, int)) and not isinstance(raw_keys, bool):
+        want = {str(raw_keys).strip()}  # a bare "db" used to be iterated into {"d", "b"}
+    elif isinstance(raw_keys, list):
+        want = {str(k).strip() for k in raw_keys if isinstance(k, (str, int)) and not isinstance(k, bool)}
+        if not want:
+            return "ERROR: keys must be a list of key names"
+    else:
+        return "ERROR: keys must be a key name or a list of key names"
     recs = [{"ns": ns, "key": r["key"], "value": r.get("value", ""), "ts": r.get("ts", 0),
              "agent": r.get("agent", "")}
             for ns, space in spaces.items() for r in space.values() if not want or r["key"] in want]

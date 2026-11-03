@@ -416,3 +416,10 @@ merge without his word.
 - **Clock skew:** a stale-request refusal now says how many seconds the sender is ahead or behind, and points to NTP. This shows only after the HMAC passes, so it leaks nothing to someone without the token.
 - **Weak token:** a token under 16 chars logs a warning with a generator command, and `info()` reports `token_weak`. It is still accepted.
 - Tests: tests/test_fleet_auth_robust.py (48). Mutation on round 30: 23 of 48 fail. The other 25 are regression guards (replay, tamper, wrong token, method) and pass on both versions by design.
+
+## Round 32: memory sync and merge between nodes (avrone/memstore.py, fleet.py, tools_extra.py)
+- **Peer namespace lockout fixed:** a child could push 200 one-entry namespaces and fill the parent's 256-namespace cap. After that, every local agent's first `memory_save` on the parent was refused. `receive_memory` now limits each sender to `AVRONE_MEMORY_MAX_REMOTE_NS` new namespaces (default 32, clamped 1..4096), and all peers together to half of `AVRONE_MEMORY_MAX_NAMESPACES`. Existing namespaces still update. Refused entries are counted as `over_quota` in the reply (with a note) and in the `fleet.memory.merge` audit.
+- **Typed merge:** `merge_value()` refuses null, bool, object and list values. A null used to be stored as the text "None", and a dict as its Python repr. Numbers are kept as text. `merge_key()` refuses non-string and non-integer keys. A non-dict entry is counted as rejected instead of crashing the merge (this also covers agentpack imports).
+- **Full namespace:** an incoming NEW key whose ts is not newer than the oldest kept key is skipped. Before, it evicted a newer memory, was evicted itself right after, and was still reported as "merged".
+- **memory_sync `keys`:** a bare string (`"db"`) is now one key. It used to be iterated into `{"d","b"}` and synced the wrong memories. A number counts as one key, and junk returns an error.
+- Tests: tests/test_memory_sync_robust.py (67). Mutation on round 31: 43 of 67 fail. The other 24 are guards that pass on both versions.

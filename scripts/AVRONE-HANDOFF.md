@@ -283,3 +283,10 @@ merge without his word.
 - **Duplicates:** exact duplicate calls in one message run once.
 - Unparseable args without truncation still reach the ARG ERROR path (round 14 behavior).
 - Tests: tests/test_gateway_toolcall_guard.py (26). Mutation on round 18: 24 of 26 fail.
+
+## Round 20 hardening (reply content shapes)
+- **Content parts:** `content_text()` joins OpenAI-style content-part lists (`[{"type":"text","text":...}]`, `output_text`, `{"text":{"value":...}}`, plain strings, a single part dict). Image and audio parts are skipped, and bytes are decoded. Before this, a parts list was `str()`-ed into a Python repr and became the agent's final answer.
+- **Prose preamble beside a tool call:** gpt-oss commentary such as "Let me list the files." next to a native tool call no longer ends the agent as a prose final. The tool call wins unless the text itself holds a JSON action (`{`). If the tool calls turn out unusable or cut off, the text is returned as before. **Behavior change:** round 14's `test_text_content_wins_over_tool_calls` now uses JSON text.
+- **Refusal:** with empty content and no usable tool call, a non-blank `message.refusal` is returned instead of "".
+- **Double-encoded arguments:** tool-call arguments JSON-encoded two or three times are unwrapped. A plain JSON string stays `_raw`.
+- Tests: tests/test_gateway_content_shapes.py (33). Mutation on round 19: 21 of 33 fail. The rest are pass-through guards.

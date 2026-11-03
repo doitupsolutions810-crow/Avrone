@@ -144,9 +144,8 @@ class Gateway:
             content = msg.get("content") or ""
         except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
             raise _Retry(f"{up.provider} bad response: {r.text[:200]}", r) from e
-        if not isinstance(content, str):
-            content = str(content)
-        if content.strip():
+        content = content_text(content)
+        if content.strip() and not _is_preamble(content, msg.get("tool_calls")):
             return content
         # gpt-oss on Ollama: the action sometimes comes back as a parsed native tool call with
         # empty content. AVRONE's actions are JSON text, so rewrite it into that form instead of
@@ -154,6 +153,11 @@ class Gateway:
         synth = tool_calls_as_action(msg.get("tool_calls"), choice.get("finish_reason"))
         if synth:
             return synth
+        if content.strip():
+            return content  # preamble whose tool calls were unusable: hand back the text after all
+        refusal = msg.get("refusal")
+        if isinstance(refusal, str) and refusal.strip():
+            return refusal
         if choice.get("finish_reason") == "length" and msg.get("tool_calls"):
             raise _Permanent(f"{up.provider} 200: tool call cut off mid-arguments (finish_reason=length); "
                              f"nothing ran. Raise max tokens or the context window for this model")
@@ -247,7 +251,47 @@ _FINAL_KEYS = ("final", "answer", "text", "content", "response", "result")
 _HARMONY = re.compile(r"<\|[a-z_]{1,24}\|>")
 
 
-def _parse_args(raw: Any) -> tuple[Any, bool]:
+_THINK = re.compile(r"<think>.*?(</think>|$)", re.S | re.I)
+
+
+def content_text(content: Any) -> str:
+    """message.content -> text. OpenAI-style content parts ([{"type": "text", "text": ...}])
+    are joined; non-text parts (images, audio) are skipped. Before round 20 a parts list was
+    str()-ed into a Python repr and handed to the agent as its final answer."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        content = [content]
+    if isinstance(content, (list, tuple)):
+        out: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                out.append(part)
+            elif isinstance(part, dict):
+                t = part.get("text")
+                if isinstance(t, dict):
+                    t = t.get("value")
+                if isinstance(t, str) and part.get("type", "text") in ("text", "output_text", "input_text"):
+                    out.append(t)
+        return "".join(out)
+    if isinstance(content, bytes):
+        return content.decode("utf-8", "replace")
+    return str(content)
+
+
+def _is_preamble(content: str, tool_calls: Any) -> bool:
+    """Prose beside a native tool call is gpt-oss's commentary ("Let me list the files."),
+    not a final answer. AVRONE treats prose as final, so the tool call wins unless the text
+    itself carries a JSON action."""
+    if not (isinstance(tool_calls, list) and tool_calls):
+        return False
+    text = _HARMONY.sub("", _THINK.sub("", content))
+    return "{" not in text
+
+
+def _parse_args(raw: Any, _depth: int = 0) -> tuple[Any, bool]:
     """Tool-call arguments -> (args, complete). complete=False means the JSON is cut off or
     unreadable. gpt-oss leaks harmony tokens (<|call|>) or trailing junk after a complete
     object; the first complete object is used then."""
@@ -259,7 +303,13 @@ def _parse_args(raw: Any) -> tuple[Any, bool]:
     if not text:
         return {}, True
     try:
-        return json.loads(text), True
+        val = json.loads(text)
+        if isinstance(val, str) and val.strip()[:1] in ("{", "[", '"') and _depth < 3:
+            # double-encoded: "{\"cmd\": \"ls\"}"
+            inner, ok = _parse_args(val, _depth + 1)
+            if ok:
+                return inner, True
+        return val, True
     except ValueError:
         pass
     start = text.find("{")

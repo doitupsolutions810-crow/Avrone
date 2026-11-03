@@ -63,9 +63,10 @@ def test_bad_arguments_are_kept_not_dropped(monkeypatch):
     assert json.loads(asyncio.run(g.chat(MSG))) == {"tool": "shell", "args": {"_raw": '{"cmd": "ls"'}}
 
 
-def test_text_content_wins_over_tool_calls(monkeypatch):
-    g = mk(monkeypatch, lambda r: resp({"content": "plain", "tool_calls": [tc("shell", "{}")]}))
-    assert asyncio.run(g.chat(MSG)) == "plain"
+def test_json_text_content_wins_over_tool_calls(monkeypatch):
+    # round 20: prose beside a tool call is a preamble (tool wins); a JSON action in the text still wins
+    g = mk(monkeypatch, lambda r: resp({"content": '{"final": "plain"}', "tool_calls": [tc("shell", "{}")]}))
+    assert asyncio.run(g.chat(MSG)) == '{"final": "plain"}'
 
 
 @pytest.mark.parametrize("calls", [None, [], "x", [{"function": {"name": ""}}], [{"nope": 1}], [None]])

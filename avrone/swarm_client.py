@@ -384,6 +384,9 @@ class SwarmClient:
         payload: dict[str, Any], delegation_correlation_id: str,
         delegation_ttl_seconds: int = 120, **enqueue_kwargs: Any,
     ) -> dict[str, Any]:
+        if "correlation_id" in enqueue_kwargs and enqueue_kwargs["correlation_id"] != delegation_correlation_id:
+            raise ValueError("Swarm envelope correlation_id must match delegation_correlation_id")
+        enqueue_kwargs["correlation_id"] = delegation_correlation_id
         delegated = authority_client.delegate(
             parent_capability=parent_capability,
             parent_signature=parent_signature,

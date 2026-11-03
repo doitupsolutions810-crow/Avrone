@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AVRONE-12 Lattice · Control704 Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121820;
+      --border: #1e2a38;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(34, 197, 94, 0.12);
+      color: var(--green);
+      border: 1px solid rgba(34, 197, 94, 0.35);
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+    }
+    .badge::before {
+      content: "";
+      width: 7px; height: 7px;
+      background: var(--green);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--green);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+    }
+    .card h2 {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .card .value { font-size: 1.25rem; font-weight: 600; }
+    .card .sub { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    th {
+      background: #0f1520;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tr:last-child td { border-bottom: none; }
+    .status-reg {
+      color: var(--green);
+      font-weight: 500;
+    }
+    .status-ready { color: var(--accent); }
+    footer {
+      margin-top: 28px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    code {
+      background: #1a2330;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85em;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>AVRONE-12 Lattice Runtime</h1>
+      <div class="sub" style="color:var(--muted);font-size:0.85rem;margin-top:4px">
+        Control704 VIP proxy · Avrone Due’Krey · Control12-lattice-op
+      </div>
+    </div>
+    <span class="badge">DEPLOYMENT_COMPLETE</span>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Schema</h2>
+      <div class="value">kg.production-training-result/v2</div>
+      <div class="sub">Canonical integrity source</div>
+    </div>
+    <div class="card">
+      <h2>Gate</h2>
+      <div class="value" style="color:var(--green)">ALLOW_AGENT_EXECUTION=true</div>
+      <div class="sub">Gate satisfied</div>
+    </div>
+    <div class="card">
+      <h2>Agents</h2>
+      <div class="value">6 registered</div>
+      <div class="sub">Grok-bot + A12LR coherent</div>
+    </div>
+    <div class="card">
+      <h2>Integrity</h2>
+      <div class="value">142 files · 100% deps</div>
+      <div class="sub">python_compile_ok</div>
+    </div>
+  </div>
+
+  <h2 style="font-size:0.9rem;margin-bottom:12px;color:var(--muted)">Agent Registry</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Role</th>
+        <th>Provider / Port</th>
+        <th>Status</th>
+        <th>Lattice</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>grok-bot-supervisor</code></td>
+        <td>LangGraph supervisor node</td>
+        <td>xAI Grok</td>
+        <td class="status-reg">registered</td>
+        <td>Control12</td>
+      </tr>
+      <tr>
+        <td><code>grok-bot-computer-use</code></td>
+        <td>Computer / browser bridge</td>
+        <td>Grok Bot + MCP</td>
+        <td class="status-reg">registered</td>
+        <td>Control12</td>
+      </tr>
+      <tr>
+        <td><code>grok-bot-github-bridge</code></td>
+        <td>Repository integration agent</td>
+        <td>GitHub + Grok</td>
+        <td class="status-reg">registered</td>
+        <td>Control12</td>
+      </tr>
+      <tr>
+        <td><code>avrone-fastapi-control</code></td>
+        <td>Control plane</td>
+        <td>port 8000</td>
+        <td class="status-ready">implementation_ready</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><code>avrone-react-dashboard</code></td>
+        <td>Live ops console</td>
+        <td>port 3000</td>
+        <td class="status-ready">implementation_ready</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><code>persistent-memory-agent</code></td>
+        <td>Multi-tier memory</td>
+        <td>—</td>
+        <td class="status-reg">registered</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Control704 IT Technician · High priority · Avrone Due’Krey / Control12-lattice-op<br />
+    Generated from gated AVRONE activators · No external long-running processes beyond this static dashboard
+  </footer>
+</body>
+</html>

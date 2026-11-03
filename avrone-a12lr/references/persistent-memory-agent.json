@@ -1,0 +1,17 @@
+{
+  "service": "persistent-memory-agent",
+  "status": "ok",
+  "authentication": "Bearer token required for /sessions/*",
+  "endpoints": {
+    "POST /sessions/:sessionId/chat": "send a message, get a memory-grounded reply",
+    "GET /sessions/:sessionId/facts": "list durable facts learned for this session",
+    "GET /sessions/:sessionId/history": "list recent transcript messages",
+    "GET /sessions/:sessionId/export/training": "export turns as TrainingRecord JSONL for custom-model-trainer",
+    "SAVE /sessions/:sessionId": "output all memory for this session"
+  },
+  "integration": {
+    "parent_runtime": "AVRONE Agent OS 1.0.0",
+    "gate": "ALLOW_AGENT_EXECUTION=true",
+    "registered_as": "persistent_memory_agent"
+  }
+}

@@ -96,8 +96,10 @@ def _read_private_file(path: str | os.PathLike[str], *, max_bytes: int) -> bytes
         raise RuntimeError("secret file is unavailable or is a symlink") from exc
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
-            raise RuntimeError("secret file must be a bounded regular file")
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("secret file must be a regular file")
+        if info.st_size > max_bytes:
+            raise RuntimeError("secret file exceeds size limit")
         if stat.S_IMODE(info.st_mode) & 0o077:
             raise RuntimeError("secret file must have mode 0600 or stricter")
         with os.fdopen(fd, "rb") as stream:

@@ -210,9 +210,23 @@ class CapabilityAuthorityClient:
         if (not isinstance(assertion, dict) or assertion.get("schema") != "capability-authority.delegation-assertion/v1"
                 or assertion.get("issuer") != self.requester or assertion.get("subject") != self.requester
                 or assertion.get("audience") != self.authority_issuer
-                or not isinstance(assertion.get("jti"), str) or not isinstance(assertion.get("signature"), str)
-                or len(assertion["signature"]) > 128):
+                or not isinstance(assertion.get("jti"), str) or not assertion["jti"].strip()
+                or len(assertion["jti"]) > 128
+                or not isinstance(assertion.get("signature"), str) or len(assertion["signature"]) > 128
+                or set(assertion) != {"schema", "issuer", "subject", "audience", "jti", "issued_at", "expires_at", "signature"}):
             raise ValueError("requester_assertion is malformed or bound to another workload")
+        unsigned_assertion = {key: value for key, value in assertion.items() if key != "signature"}
+        try:
+            signature_bytes = _b64(assertion["signature"], 64)
+            issued_at = datetime.fromisoformat(assertion["issued_at"].replace("Z", "+00:00"))
+            expires_at = datetime.fromisoformat(assertion["expires_at"].replace("Z", "+00:00"))
+            if issued_at.tzinfo is None or expires_at.tzinfo is None or expires_at <= issued_at:
+                raise ValueError("requester assertion timestamps are invalid")
+            self._requester_key.public_key().verify(signature_bytes, _jcs(unsigned_assertion))
+        except (InvalidSignature, TypeError, KeyError, AttributeError) as exc:
+            raise ValueError("requester_assertion signature verification failed") from exc
+        except (ValueError, OverflowError) as exc:
+            raise ValueError("requester_assertion timestamps or signature encoding are invalid") from exc
         args = {
             "parent_capability": parent_capability, "parent_signature": parent_signature,
             "audience": audience, "rights": rights, "ttl_seconds": ttl_seconds,

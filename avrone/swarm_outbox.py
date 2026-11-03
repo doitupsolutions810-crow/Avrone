@@ -45,7 +45,7 @@ def _json_bytes(value: Any, limit: int) -> bytes:
     return raw
 
 
-def _decode(raw: bytes) -> Any:
+def _decode(raw: bytes, *, label: str = "stored outbox record") -> Any:
     def reject_constant(_value: str):
         raise ValueError("non-finite JSON constant")
     def unique(pairs):
@@ -59,7 +59,7 @@ def _decode(raw: bytes) -> Any:
         return json.loads(raw.decode("utf-8"), parse_constant=reject_constant,
                           object_pairs_hook=unique)
     except (UnicodeError, ValueError, RecursionError) as exc:
-        raise InvalidOutboxRecord("stored outbox record is corrupt") from exc
+        raise InvalidOutboxRecord(f"{label} is corrupt: {exc}") from exc
 
 
 class SwarmOutbox:
@@ -174,10 +174,7 @@ class SwarmOutbox:
             raise InvalidOutboxRecord("persisted authority request exceeds size limit")
         if hashlib.sha256(raw).hexdigest() != row[1]:
             raise InvalidOutboxRecord("persisted authority request digest mismatch")
-        try:
-            request = _decode(raw)
-        except InvalidOutboxRecord as exc:
-            raise InvalidOutboxRecord("persisted authority request JSON is invalid") from exc
+        request = _decode(raw, label="persisted authority request")
         if not isinstance(request, dict) or request.get("correlation_id") != correlation_id:
             raise InvalidOutboxRecord("persisted authority request correlation mismatch")
         return {"correlation_id": correlation_id, "request": request,

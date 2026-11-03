@@ -1,0 +1,50 @@
+name: bridge-contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  bridge-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: Validate package metadata
+        run: python -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))"
+      - name: Install AVRONE test dependencies
+        run: |
+          set -o pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" 2>&1 | tee /tmp/bridge-pip.log
+      - name: Run reverse bridge contract tests
+        env:
+          AVRONE_LLM_MODE: mock
+          AVRONE_RUNNER: local
+        run: |
+          set -o pipefail
+          pytest -q tests/test_grokbot_bridge.py 2>&1 | tee /tmp/bridge-pytest.log
+      - name: Preserve bridge test evidence
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          cp /tmp/bridge-pip.log diagnostics/pip.log 2>/dev/null || true
+          cp /tmp/bridge-pytest.log diagnostics/pytest.log 2>/dev/null || true
+          python -V > diagnostics/python-version.txt 2>&1 || true
+          git status --short > diagnostics/git-status.txt 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: avrone-bridge-contract-${{ matrix.python }}-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7

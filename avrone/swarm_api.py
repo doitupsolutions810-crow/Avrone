@@ -10,7 +10,10 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .swarm_client import SwarmClient
+from .swarm_client import (
+    ACTION, AuthorityRejected, CapabilityAuthorityClient,
+    DelegationUnknownOutcome, SwarmClient, load_parent_capability_file,
+)
 from .swarm_outbox import SwarmOutbox, SwarmDispatcher, InvalidOutboxRecord
 
 _ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
@@ -19,8 +22,8 @@ _ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
 class SwarmEnqueueIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: str = Field(min_length=1, max_length=2000, strict=True)
-    capability: dict[str, Any] = Field(strict=True)
-    capability_signature: str = Field(min_length=1, max_length=256, strict=True)
+    capability: dict[str, Any] | None = Field(default=None, strict=True)
+    capability_signature: str | None = Field(default=None, min_length=1, max_length=256, strict=True)
     message_id: str | None = Field(default=None, pattern=_ID_PATTERN, strict=True)
     correlation_id: str | None = Field(default=None, pattern=_ID_PATTERN, strict=True)
 
@@ -33,10 +36,14 @@ def install_routes(
     *,
     client_factory: Callable[[], SwarmClient] | None = None,
     outbox_factory: Callable[[Path], SwarmOutbox] | None = None,
+    authority_client_factory: Callable[[], CapabilityAuthorityClient] | None = None,
+    parent_capability_loader: Callable[[], tuple[dict[str, Any], str]] | None = None,
 ):
     """Install explicit enqueue endpoints. Missing trust configuration fails closed."""
     client_factory = client_factory or SwarmClient.from_env
     outbox_factory = outbox_factory or SwarmOutbox
+    authority_client_factory = authority_client_factory or CapabilityAuthorityClient.from_env
+    parent_capability_loader = parent_capability_loader or load_parent_capability_file
 
     def dispatcher() -> SwarmDispatcher:
         current = getattr(app.state, "swarm_dispatcher", None)
@@ -77,14 +84,67 @@ def install_routes(
                 if existing is not None:
                     saved = existing["request"]
                     if (saved.get("payload", {}).get("objective") != objective
-                            or saved.get("capability") != body.capability
-                            or saved.get("capability_signature") != body.capability_signature
+                            or (body.capability is not None and saved.get("capability") != body.capability)
+                            or (body.capability_signature is not None and saved.get("capability_signature") != body.capability_signature)
                             or (body.correlation_id and existing["correlation_id"] != body.correlation_id)):
                         raise HTTPException(409, "message id is already bound to a different request")
                     return response(target.retry(body.message_id))
+
+            if (body.capability is None) != (body.capability_signature is None):
+                raise HTTPException(422, "capability and capability_signature must be supplied together")
+            capability, capability_signature = body.capability, body.capability_signature
+            if capability is None:
+                if not body.message_id or not body.correlation_id:
+                    raise HTTPException(422, "message_id and correlation_id are required for Authority delegation")
+                authority = None
+                try:
+                    parent_capability, parent_signature = parent_capability_loader()
+                    authority = authority_client_factory()
+                    audience = os.getenv("AVRONE_SWARM_AUDIENCE", "spiffe://prod/agent/swarm")
+                    try:
+                        ttl_seconds = int(os.getenv("AVRONE_SWARM_DELEGATION_TTL_SECONDS", "120"))
+                    except ValueError:
+                        raise HTTPException(503, "Swarm delegation TTL configuration is invalid") from None
+                    if not 1 <= ttl_seconds <= 300:
+                        raise HTTPException(503, "Swarm delegation TTL configuration is outside 1..300")
+                    delegated = authority.delegate(
+                        parent_capability=parent_capability,
+                        parent_signature=parent_signature,
+                        audience=audience,
+                        rights=[dict(ACTION)],
+                        ttl_seconds=ttl_seconds,
+                        correlation_id=body.correlation_id,
+                    )
+                    capability, capability_signature = delegated["capability"], delegated["signature"]
+                except DelegationUnknownOutcome:
+                    return JSONResponse(status_code=202, content={
+                        "state": "delegation_unknown",
+                        "correlation_id": body.correlation_id,
+                        "message_id": body.message_id,
+                        "error_code": "authority_outcome_unknown",
+                    })
+                except AuthorityRejected:
+                    return JSONResponse(status_code=403, content={
+                        "state": "rejected",
+                        "correlation_id": body.correlation_id,
+                        "message_id": body.message_id,
+                        "error_code": "authority_rejected",
+                    })
+                except HTTPException:
+                    raise
+                except (OSError, RuntimeError):
+                    raise HTTPException(503, "Capability Authority trust or parent credential is unavailable") from None
+                except ValueError:
+                    raise HTTPException(403, "Capability Authority delegation request was rejected locally") from None
+                finally:
+                    if authority is not None:
+                        http_client = getattr(authority, "_http", None)
+                        if http_client is not None:
+                            http_client.close()
+
             signed = target.client.build_request(
-                payload={"objective": objective}, capability=body.capability,
-                capability_signature=body.capability_signature,
+                payload={"objective": objective}, capability=capability,
+                capability_signature=capability_signature,
                 message_id=body.message_id, correlation_id=body.correlation_id,
             )
             return response(target.submit_request(signed))

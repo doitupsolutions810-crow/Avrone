@@ -150,3 +150,16 @@ def test_outbox_rejects_insecure_directory(tmp_path):
     directory.chmod(0o755)
     with pytest.raises(SwarmOutboxError, match="mode 0700"):
         SwarmOutbox(directory)
+
+
+def test_outbox_rejects_forged_persisted_queued_receipt(tmp_path):
+    directory = tmp_path / "forged-receipt"
+    outbox = SwarmOutbox(directory)
+    authority, swarm = FakeAuthority(), FakeSwarm()
+    submit(outbox, authority, swarm)
+    record_path = next(directory.glob("*.json"))
+    record = json.loads(record_path.read_text())
+    record["result"]["receipt"]["signature"] = "forged"
+    record_path.write_text(json.dumps(record))
+    with pytest.raises(SwarmOutboxError, match="independent verification"):
+        submit(outbox, authority, swarm)

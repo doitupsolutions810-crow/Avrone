@@ -357,3 +357,86 @@ def test_get_by_correlation_returns_none_when_not_found(tmp_path):
     box = SwarmOutbox(tmp_path / "outbox.sqlite3")
     assert box.get_by_correlation("not-yet-submitted") is None
     box.close()
+
+
+def authority_request(cid="ca-corr-1", jti="stable-jti", parent="parent-1"):
+    return {
+        "correlation_id": cid,
+        "parent_capability": {"id": parent},
+        "parent_signature": "parent-signature",
+        "audience": "spiffe://prod/agent/swarm",
+        "rights": [{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+        "ttl_seconds": 120,
+        "requester_assertion": {
+            "schema": "capability-authority.delegation-assertion/v1",
+            "issuer": "spiffe://prod/agent/avrone",
+            "subject": "spiffe://prod/agent/avrone",
+            "audience": "spiffe://prod/broker",
+            "jti": jti,
+            "issued_at": "2026-11-03T09:00:00.000Z",
+            "expires_at": "2026-11-03T09:00:30.000Z",
+            "signature": "signed-assertion",
+        },
+    }
+
+
+def test_authority_request_exact_bytes_survive_restart(tmp_path):
+    path = tmp_path / "outbox.sqlite3"
+    first = SwarmOutbox(path)
+    saved = first.prepare_authority_request("ca-corr-1", authority_request())
+    digest = saved["request_sha256"]
+    first.close()
+    second = SwarmOutbox(path)
+    recovered = second.get_authority_request("ca-corr-1")
+    assert recovered["request"] == authority_request()
+    assert recovered["request_sha256"] == digest
+    assert second.prepare_authority_request("ca-corr-1", authority_request())["request_sha256"] == digest
+    second.close()
+
+
+def test_authority_correlation_cannot_be_rebound_to_new_assertion_or_parent(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare_authority_request("ca-corr-1", authority_request())
+    for changed in [authority_request(jti="different-jti"), authority_request(parent="other-parent")]:
+        with pytest.raises(RequestConflict):
+            box.prepare_authority_request("ca-corr-1", changed)
+    box.close()
+
+
+def test_authority_request_rejects_invalid_correlation_and_unsigned_assertion(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    with pytest.raises(InvalidOutboxRecord):
+        box.prepare_authority_request("../bad", authority_request("../bad"))
+    unsigned = authority_request()
+    unsigned["requester_assertion"]["signature"] = ""
+    with pytest.raises(InvalidOutboxRecord):
+        box.prepare_authority_request("ca-corr-1", unsigned)
+    box.close()
+
+
+def test_authority_request_detects_database_tampering(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    box.prepare_authority_request("ca-corr-1", authority_request())
+    with box._lock:
+        box._db.execute("UPDATE authority_delegations SET request_json=? WHERE correlation_id=?",
+                        (b'{"correlation_id":"ca-corr-1"}', "ca-corr-1"))
+    with pytest.raises(InvalidOutboxRecord, match="digest mismatch"):
+        box.get_authority_request("ca-corr-1")
+    box.close()
+
+
+def test_concurrent_authority_prepare_is_idempotent(tmp_path):
+    box = SwarmOutbox(tmp_path / "outbox.sqlite3")
+    results, errors = [], []
+    def prepare():
+        try:
+            results.append(box.prepare_authority_request("ca-corr-1", authority_request()))
+        except Exception as exc:
+            errors.append(exc)
+    threads = [threading.Thread(target=prepare) for _ in range(8)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join(timeout=5)
+    assert not errors and len(results) == 8
+    assert len({item["request_sha256"] for item in results}) == 1
+    assert box.get_authority_request("ca-corr-1")["request"] == authority_request()
+    box.close()

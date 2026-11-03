@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Emergent Evidence Console</title>
+<style>
+  :root { --bg:#0b0d12; --fg:#d7dde8; --muted:#7a8494; --ok:#3dd68c; --warn:#f5a524; --bad:#f31260; --cone:#8b5cf6; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--fg); font-family:ui-monospace,Consolas,monospace; padding:24px; }
+  h1 { font-size:18px; letter-spacing:.08em; margin-bottom:4px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:24px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+  .card { border:1px solid #1c2130; border-radius:10px; padding:14px; background:#10141d; }
+  .card .id { font-size:11px; color:var(--muted); margin-bottom:8px; }
+  .row { display:flex; justify-content:space-between; font-size:13px; margin:4px 0; }
+  .cone-floor { color:var(--cone); font-weight:bold; }
+  .above { color:var(--warn); }
+  .unmeasured { color:var(--muted); font-style:italic; }
+  .pass { color:var(--ok); } .fail { color:var(--bad); } .mixed { color:var(--warn); }
+  #status { position:fixed; bottom:12px; right:16px; font-size:11px; color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>EMERGENT EVIDENCE CONSOLE</h1>
+<div class="sub">harmonic telemetry &middot; cone floor = phi&minus;&sup2; &middot; residual is measured, never assumed</div>
+<div class="grid" id="grid"></div>
+<div id="status">connecting&mldr;</div>
+<script>
+const grid = document.getElementById('grid');
+const status = document.getElementById('status);
+const cards = new Map();
+function upsert(t) {
+  let c = cards.get(t.intent);
+  if (!c) { c = document.createElement('div'); c.className='card'; grid.appendChild(c); cards.set(t.intent,c); }
+  const cone = t.cone_status==='floor' ? 'cone-floor' : t.cone_status==='above' ? 'above' : 'unmeasured';
+  const ori = t.orientation || 'undefined';
+  c.innerHTML = `<div class="id">${t.intent} &middot; ${t.action||''} &middot; ${t.target_env||''}</div>
+    <div class="row"><span>cone</span><span class="${cone}">${t.cone_status||'unmeasured'}</span></div>
+    <div class="row"><span>orientation</span><span class="${ori}">${ori}</span></div>
+    <div class="row"><span>S</span><span>${t.residual&&t.residual.S!=null?Number(t.residual.S).toFixed(6):'&mdash;'}</span></div>
+    <div class="row"><span>psi</span><span>${t.psi!=null?Number(t.psi).toFixed(6):'&mdash;'}</span></div>
+    <div class="row"><span>attestation</span><span>${t.attestation?'present':'absent'}</span></div>`;
+}
+upsert({intent:'avrone-demo01',action:'deploy-canary',target_env:'staging',cone_status:'floor',orientation:'pass',residual:{S:0},psi:0.381966,attestation:'present'});
+upsert({intent:'avrone-demo02',action:'policy.evaluate',target_env:'development',cone_status:'above',orientation:'mixed',residual:{S:0.0564},psi:0.438366,attestation:null});
+status.textContent='seeded &middot; awaiting bus';
+</script>
+</body>
+</html>

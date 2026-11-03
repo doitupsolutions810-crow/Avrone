@@ -491,3 +491,22 @@ merge without his word.
 - **IPv6:** site-local fec0::/10 now counts as non-public.
 - **tls_inspect:** tries each vetted address (up to 4) instead of failing when the first one, often IPv6, is unreachable.
 - Tests: tests/test_recon_pinning_robust.py (124), including a real 127.0.0.1 HTTP server with a hostname that has no DNS at all, and real TLS SNI and certificate verification. Mutation: 71 of 124 fail on round 35's code.
+
+## Round 37: checkpoint/resume vs crashes and odd files (avrone/checkpoint.py)
+- **Durable saves:** the temp file is fsynced before `os.replace`, and the directory after it, best effort. A power cut on a delayed-allocation filesystem could otherwise leave a zero-length checkpoint.
+- **Poison values:**
+  - Before: a value JSON can't encode (a cycle, tuple dict keys, very deep nesting) went into the shared dict anyway, so every later save failed and the run silently stopped checkpointing.
+  - Now: `put` refuses that one value (returns False, `write_errors += 1`) and stores the JSON round trip of good values. `put` now returns a bool.
+- **Unusable files are renamed aside, not overwritten:**
+  - Corrupt JSON, the wrong shape or bad UTF-8 → `<name>.corrupt-<ts>`.
+  - Another format version → `.v<N>-<ts>`.
+  - Over `AVRONE_CHECKPOINT_MAX_BYTES` (default 64 MiB, clamped 64 KiB..1 GiB) → `.toobig-<ts>`.
+  - A zero-length file is simply a fresh start. A directory or an unreadable file is never touched.
+- **Stale temp files:** `<name>.*.tmp` older than 1 h (left by a killed writer) are removed on load. The glob is escaped, so names containing `[` work.
+- **Resume matching:** compared after a JSON round trip. A tuple extra used to be stored as a list, so it never matched again and every resume wiped the scope.
+- **Case-insensitive filesystems (macOS APFS):** the busy set and the file locks are keyed by the case-folded path. Before, "Job" and "job" were the same file there but could be claimed by two runs at once.
+- **list/describe:**
+  - Symlinks, directories and oversize files are skipped, so a symlink can't leak another JSON file through the API.
+  - Odd `updated` values (a string, NaN, Infinity) no longer crash sorting. Ties sort by id.
+  - Non-list `history`, bool or string `n`, and a non-string `mode` read as empty.
+- Tests: tests/test_checkpoint_robust.py (63), including a real SIGKILL of a writer process mid-write: the file stays loadable and every stored step is complete. Mutation: 47 of 63 fail on round 36's code.

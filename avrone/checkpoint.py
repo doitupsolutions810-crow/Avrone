@@ -34,6 +34,64 @@ from pathlib import Path
 from typing import Any
 
 VERSION = 1
+MAX_BYTES_DEFAULT = 64 * 1024 * 1024
+STALE_TMP_SECONDS = 3600
+
+
+def max_bytes() -> int:
+    """AVRONE_CHECKPOINT_MAX_BYTES (default 64 MiB, clamped 64 KiB..1 GiB). A bigger file is not
+    loaded into memory; it is set aside like a corrupt one."""
+    try:
+        v = int(str(os.getenv("AVRONE_CHECKPOINT_MAX_BYTES", "")).strip())
+    except ValueError:
+        return MAX_BYTES_DEFAULT
+    return max(64 * 1024, min(v, 1024 * 1024 * 1024))
+
+
+def _path_key(path: Path) -> str:
+    """One key per file even on a case-insensitive filesystem (macOS APFS default): "Job.json" and
+    "job.json" are the same file there, so they must share one lock and one busy flag. On a
+    case-sensitive filesystem this only makes two ids differing in case conflict, which is safe."""
+    try:
+        k = str(Path(path).resolve())
+    except (OSError, RuntimeError):
+        k = str(path)
+    return k.casefold()
+
+
+def _fsync_dir(d: Path) -> None:
+    try:
+        fd = os.open(str(d), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _set_aside(path: Path, why: str) -> Path | None:
+    """Rename an unusable checkpoint out of the way instead of letting the next save overwrite it."""
+    dest = path.with_name(f"{path.name}.{why}-{int(time.time())}")
+    n = 0
+    while dest.exists() and n < 100:
+        n += 1
+        dest = path.with_name(f"{path.name}.{why}-{int(time.time())}-{n}")
+    try:
+        os.replace(path, dest)
+        return dest
+    except OSError:
+        return None
+
+
+def _normalized(v: Any) -> Any:
+    """v as it reads back after a JSON round trip (tuples -> lists, int keys -> str keys)."""
+    try:
+        return json.loads(json.dumps(v, default=str))
+    except (TypeError, ValueError, RecursionError):
+        return v
 
 # One re-entrant lock per checkpoint file (resolved path), shared by every _Store on it. A put()
 # used to mutate the shared dict and serialise/os.replace it with no lock: two threads could
@@ -44,10 +102,7 @@ _FILE_LOCKS_GUARD = threading.Lock()
 
 
 def _file_lock(path: Path) -> threading.RLock:
-    try:
-        k = str(Path(path).resolve())
-    except OSError:
-        k = str(path)
+    k = _path_key(path)
     with _FILE_LOCKS_GUARD:
         return _FILE_LOCKS.setdefault(k, threading.RLock())
 
@@ -57,15 +112,57 @@ class _Store:
         self.path = Path(path)
         self.data: dict[str, Any] = {"version": VERSION, "steps": {}}
         self.write_errors = 0
+        self.set_aside: Path | None = None
         self.lock = _file_lock(self.path)
         self.load()
 
     def load(self) -> None:
-        try:
-            raw = json.loads(self.path.read_text())
+        """Read the file. A missing file is a fresh start. A file that exists but cannot be used
+        (corrupt JSON, wrong shape, another format version, over the size cap, not a regular file)
+        used to be treated as empty and then silently overwritten by the next save; it is now
+        renamed aside (<name>.corrupt-<ts> / .v<N>-<ts> / .toobig-<ts>) so nothing is lost."""
+        with self.lock:
+            self._clean_stale_tmp()
+            try:
+                st = self.path.stat()
+            except FileNotFoundError:
+                return
+            except OSError:
+                return
+            import stat as _stat
+            if not _stat.S_ISREG(st.st_mode):
+                return  # a directory or device: never read, never renamed
+            if st.st_size > max_bytes():
+                self.set_aside = _set_aside(self.path, "toobig")
+                return
+            try:
+                raw = json.loads(self.path.read_bytes().decode("utf-8"))
+            except OSError:
+                return
+            except (ValueError, RecursionError):
+                if st.st_size == 0:  # a crash between create and write: nothing to keep
+                    return
+                self.set_aside = _set_aside(self.path, "corrupt")
+                return
             if isinstance(raw, dict) and isinstance(raw.get("steps"), dict) and raw.get("version") == VERSION:
                 self.data = raw
-        except (OSError, ValueError):
+            elif isinstance(raw, dict) and raw.get("version") not in (None, VERSION) \
+                    and isinstance(raw.get("version"), int) and not isinstance(raw.get("version"), bool):
+                self.set_aside = _set_aside(self.path, f"v{raw.get('version')}")
+            else:
+                self.set_aside = _set_aside(self.path, "corrupt")
+
+    def _clean_stale_tmp(self) -> None:
+        """Temp files from a writer killed between mkstemp and os.replace pile up forever."""
+        try:
+            now = time.time()
+            for t in self.path.parent.glob(glob_escape(self.path.name) + ".*.tmp"):
+                try:
+                    if now - t.stat().st_mtime > STALE_TMP_SECONDS:
+                        t.unlink()
+                except OSError:
+                    pass
+        except OSError:
             pass
 
     def save(self) -> bool:
@@ -80,7 +177,12 @@ class _Store:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(self.data, f, default=str)
+                    # durable before the rename: without fsync a power cut after os.replace can
+                    # leave a zero-length checkpoint (delayed allocation), losing every step
+                    f.flush()
+                    os.fsync(f.fileno())
                 os.replace(tmp, self.path)
+                _fsync_dir(self.path.parent)
             except BaseException:
                 try:
                     os.unlink(tmp)
@@ -88,9 +190,14 @@ class _Store:
                     pass
                 raise
             return True
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError, RecursionError):
             self.write_errors += 1
             return False
+
+
+def glob_escape(name: str) -> str:
+    import glob as _glob
+    return _glob.escape(name)
 
 
 class Checkpoint:
@@ -121,10 +228,21 @@ class Checkpoint:
     def get(self, key: str, default: Any = None) -> Any:
         return self._store.data["steps"].get(self.prefix + key, default)
 
-    def put(self, key: str, value: Any) -> None:
+    def put(self, key: str, value: Any) -> bool:
+        """Store one step. A value that cannot be serialised (a cycle, non-string dict keys such as
+        tuples) used to go into the shared dict anyway, so every later save failed too and the run
+        silently stopped checkpointing. It is now refused alone (False, write_errors += 1) and the
+        stored copy is the JSON round trip, so a resume sees exactly what a fresh process would."""
+        try:
+            encoded = json.dumps(value, default=str)
+            stored = json.loads(encoded)
+        except (TypeError, ValueError, RecursionError):
+            with self._store.lock:
+                self._store.write_errors += 1
+            return False
         with self._store.lock:  # mutate + serialise + replace as one critical section
-            self._store.data["steps"][self.prefix + key] = value
-            self._store.save()
+            self._store.data["steps"][self.prefix + key] = stored
+            return self._store.save()
 
     def keys(self) -> list[str]:
         n = len(self.prefix)
@@ -146,8 +264,10 @@ class Checkpoint:
         A scope holding a different run is cleared so stale results can never leak in."""
         with self._store.lock:
             meta = self.get("meta")
-            want = {"task": task, "mode": mode, **extra}
-            if isinstance(meta, dict) and all(meta.get(k) == v for k, v in want.items()):
+            # compare as the values read back from JSON: a tuple extra (stored as a list) never
+            # matched, so every resume wiped the scope and started over
+            want = _normalized({"task": task, "mode": mode, **extra})
+            if isinstance(meta, dict) and isinstance(want, dict) and all(meta.get(k) == v for k, v in want.items()):
                 return meta
             if self.keys():
                 self.clear()
@@ -224,8 +344,11 @@ def managed_path(data_dir: str | Path, key: str) -> Path:
 
 def _read(path: Path) -> dict[str, Any] | None:
     try:
-        raw = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
+        p = Path(path)
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > max_bytes():
+            return None
+        raw = json.loads(p.read_bytes().decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
         return None
     return raw if isinstance(raw, dict) and isinstance(raw.get("steps"), dict) else None
 
@@ -267,12 +390,12 @@ def stamp_owner(path: str | Path, owner: str) -> None:
 
 
 def is_busy(path: str | Path) -> bool:
-    return str(Path(path).resolve()) in _active
+    return _path_key(Path(path)) in _active
 
 
 def claim(path: str | Path) -> Any:
     """Mark the checkpoint in use; returns a release() callable. CheckpointConflict when taken."""
-    k = str(Path(path).resolve())
+    k = _path_key(Path(path))
     with _active_lock:
         if k in _active:
             raise CheckpointConflict(f"checkpoint {Path(path).stem!r} is in use by a running job")
@@ -308,27 +431,39 @@ def describe(path: str | Path, full: bool = False) -> dict[str, Any] | None:
     meta = steps.get("meta") if isinstance(steps.get("meta"), dict) else {}
     result = steps.get("result")
     rounds = steps.get("rounds") if isinstance(steps.get("rounds"), dict) else {}
+    history = rounds.get("history")
+    mode = meta.get("mode")
     out: dict[str, Any] = {
-        "id": path.stem, "mode": meta.get("mode"), "task": _preview(meta.get("task")),
+        "id": path.stem, "mode": mode if isinstance(mode, str) else None, "task": _preview(meta.get("task")),
         "done_steps": sum(1 for k in steps if not (k == "meta" or k.endswith(".meta"))),
-        "done": isinstance(result, dict), "updated": data.get("updated"), "busy": is_busy(path),
+        "done": isinstance(result, dict), "updated": _num(data.get("updated")), "busy": is_busy(path),
     }
     if full:
-        out.update(run_id=meta.get("run_id"), started=meta.get("started"), owner=data.get("owner"),
-                   squad_size=meta.get("n"), keys=sorted(steps),
-                   rounds_done=len(rounds.get("history") or []))
+        n = meta.get("n")
+        out.update(run_id=meta.get("run_id"), started=_num(meta.get("started")), owner=data.get("owner"),
+                   squad_size=n if isinstance(n, int) and not isinstance(n, bool) else None,
+                   keys=sorted(str(k) for k in steps),
+                   rounds_done=len(history) if isinstance(history, list) else 0)
         if isinstance(result, dict):
             out["answer_preview"] = _preview(result.get("answer") or result.get("report"), 400)
     return out
+
+
+def _num(v: Any) -> float | None:
+    """A finite number or None: a hand-edited "updated": "yesterday" used to crash list sorting."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if v == v and v not in (float("inf"), float("-inf")) else None
 
 
 def list_managed(data_dir: str | Path) -> list[dict[str, Any]]:
     d = managed_dir(data_dir)
     rows = []
     for p in sorted(d.glob("*.json")) if d.is_dir() else []:
-        if _KEY_RE.match(p.stem) and (row := describe(p)) is not None:
+        # symlinks are skipped: a link to any JSON file elsewhere must not be read through the API
+        if _KEY_RE.match(p.stem) and not p.is_symlink() and (row := describe(p)) is not None:
             rows.append(row)
-    rows.sort(key=lambda r: r.get("updated") or 0, reverse=True)
+    rows.sort(key=lambda r: (r.get("updated") or 0.0, r["id"]), reverse=True)
     return rows
 
 

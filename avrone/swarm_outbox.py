@@ -99,6 +99,13 @@ class SwarmOutbox:
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )""")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS authority_delegations (
+            correlation_id TEXT PRIMARY KEY,
+            request_json BLOB NOT NULL,
+            request_sha256 TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )""")
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(swarm_outbox)")}
         if "receipt_sha256" not in columns:
             self._db.execute("ALTER TABLE swarm_outbox ADD COLUMN receipt_sha256 TEXT")
@@ -108,6 +115,60 @@ class SwarmOutbox:
     @classmethod
     def from_env(cls) -> "SwarmOutbox":
         return cls(os.getenv("AVRONE_SWARM_OUTBOX_DB", "./data/swarm-outbox.sqlite3"))
+
+    def prepare_authority_request(self, correlation_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Persist the exact signed CA request before network I/O; retries reuse identical bytes."""
+        if not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id):
+            raise InvalidOutboxRecord("authority correlation id is invalid")
+        if not isinstance(request, dict) or request.get("correlation_id") != correlation_id:
+            raise InvalidOutboxRecord("authority request correlation does not match")
+        assertion = request.get("requester_assertion")
+        if not isinstance(assertion, dict) or not isinstance(assertion.get("signature"), str):
+            raise InvalidOutboxRecord("authority request must contain a signed requester assertion")
+        raw = _json_bytes(request, 256 * 1024)
+        digest = hashlib.sha256(raw).hexdigest()
+        now = time.time()
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT request_json,request_sha256 FROM authority_delegations WHERE correlation_id=?",
+                    (correlation_id,)).fetchone()
+                if row:
+                    if row[1] != digest or bytes(row[0]) != raw:
+                        raise RequestConflict("authority correlation id already belongs to a different signed request")
+                else:
+                    self._db.execute(
+                        "INSERT INTO authority_delegations(correlation_id,request_json,request_sha256,created_at,updated_at) VALUES(?,?,?,?,?)",
+                        (correlation_id, raw, digest, now, now))
+                self._db.execute("COMMIT")
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+            self._fsync_files()
+        return self.get_authority_request(correlation_id)
+
+    def get_authority_request(self, correlation_id: str) -> dict[str, Any] | None:
+        if not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id):
+            raise InvalidOutboxRecord("authority correlation id is invalid")
+        with self._lock:
+            row = self._db.execute(
+                "SELECT request_json,request_sha256,created_at,updated_at FROM authority_delegations WHERE correlation_id=?",
+                (correlation_id,)).fetchone()
+        if row is None:
+            return None
+        raw = bytes(row[0])
+        if hashlib.sha256(raw).hexdigest() != row[1]:
+            raise InvalidOutboxRecord("persisted authority request digest mismatch")
+        try:
+            request = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise InvalidOutboxRecord("persisted authority request JSON is invalid") from exc
+        if not isinstance(request, dict) or request.get("correlation_id") != correlation_id:
+            raise InvalidOutboxRecord("persisted authority request correlation mismatch")
+        return {"correlation_id": correlation_id, "request": request,
+                "request_sha256": row[1], "created_at": row[2], "updated_at": row[3]}
 
     def get_by_correlation(self, correlation_id: str) -> dict[str, Any] | None:
         if not isinstance(correlation_id, str) or not _ID.fullmatch(correlation_id):

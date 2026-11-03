@@ -9,6 +9,7 @@ import sqlite3
 import stat
 import threading
 import time
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,12 @@ class SwarmOutbox:
             request_sha256 TEXT NOT NULL,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
+        )""")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS dispatch_leases (
+            message_id TEXT PRIMARY KEY,
+            owner_token TEXT NOT NULL,
+            lease_until REAL NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES swarm_outbox(message_id) ON DELETE CASCADE
         )""")
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(swarm_outbox)")}
         if "receipt_sha256" not in columns:
@@ -287,6 +294,50 @@ class SwarmOutbox:
                 (limit,)).fetchall()]
         return [record for mid in ids if (record := self.get(mid)) is not None]
 
+    def claim_dispatch(self, message_id: str, lease_seconds: int = 60) -> str | None:
+        """Atomically claim one pending message so concurrent processes do not send it twice.
+
+        A crashed process leaves a bounded lease; after expiry another process may recover it.
+        """
+        if not isinstance(message_id, str) or not _ID.fullmatch(message_id):
+            raise InvalidOutboxRecord("message id is invalid")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 1 <= lease_seconds <= 600:
+            raise ValueError("lease_seconds must be an integer in 1..600")
+        token = secrets.token_hex(24)
+        now = time.time()
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute("SELECT state FROM swarm_outbox WHERE message_id=?", (message_id,)).fetchone()
+                if row is None:
+                    raise KeyError(message_id)
+                if row[0] != "pending":
+                    self._db.execute("COMMIT")
+                    return None
+                self._db.execute("DELETE FROM dispatch_leases WHERE lease_until<=?", (now,))
+                cursor = self._db.execute(
+                    "INSERT OR IGNORE INTO dispatch_leases(message_id,owner_token,lease_until) VALUES(?,?,?)",
+                    (message_id, token, now + lease_seconds))
+                claimed = cursor.rowcount == 1
+                self._db.execute("COMMIT")
+                return token if claimed else None
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+
+    def release_dispatch(self, message_id: str, owner_token: str) -> bool:
+        """Release only the lease owned by this attempt; stale workers cannot release a successor."""
+        if not isinstance(message_id, str) or not _ID.fullmatch(message_id):
+            raise InvalidOutboxRecord("message id is invalid")
+        if not isinstance(owner_token, str) or not re.fullmatch(r"[0-9a-f]{48}", owner_token):
+            raise InvalidOutboxRecord("dispatch lease token is invalid")
+        with self._lock:
+            cursor = self._db.execute(
+                "DELETE FROM dispatch_leases WHERE message_id=? AND owner_token=?",
+                (message_id, owner_token))
+            return cursor.rowcount == 1
+
     def mark_queued(self, message_id: str, verified_receipt: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(verified_receipt, dict):
             raise InvalidOutboxRecord("verified receipt must be an object")
@@ -308,6 +359,7 @@ class SwarmOutbox:
                 else:
                     self._db.execute("UPDATE swarm_outbox SET state='queued',receipt_json=?,receipt_sha256=?,updated_at=? WHERE message_id=?",
                                      (receipt_raw, receipt_digest, now, message_id))
+                    self._db.execute("DELETE FROM dispatch_leases WHERE message_id=?", (message_id,))
                 self._db.execute("COMMIT")
             except BaseException:
                 if self._db.in_transaction:
@@ -329,6 +381,7 @@ class SwarmOutbox:
                     raise OutboxError("queued request cannot become rejected")
                 self._db.execute("UPDATE swarm_outbox SET state='rejected',error_code=?,updated_at=? WHERE message_id=?",
                                  (error_code, time.time(), message_id))
+                self._db.execute("DELETE FROM dispatch_leases WHERE message_id=?", (message_id,))
                 self._db.execute("COMMIT")
             except BaseException:
                 if self._db.in_transaction:
@@ -374,6 +427,20 @@ class SwarmDispatcher:
                 "correlation_id": record["correlation_id"], "receipt": record["receipt"]}
 
     def _send(self, record: dict[str, Any]) -> dict[str, Any]:
+        from .swarm_client import UnknownOutcome, SwarmRejected
+        request = record["request"]
+        message_id = record["message_id"]
+        lease = self.outbox.claim_dispatch(message_id)
+        if lease is None:
+            return {"state": "unknown", "message_id": message_id,
+                    "correlation_id": record["correlation_id"], "retryable": True,
+                    "reason": "dispatch is already in progress"}
+        try:
+            return self._send_claimed(record)
+        finally:
+            self.outbox.release_dispatch(message_id, lease)
+
+    def _send_claimed(self, record: dict[str, Any]) -> dict[str, Any]:
         from .swarm_client import UnknownOutcome, SwarmRejected
         request = record["request"]
         message_id = record["message_id"]

@@ -84,6 +84,8 @@ def main(argv=None):
         if missing:
             raise SystemExit("Swarm profile is missing configuration: " + ", ".join(missing))
         secret_dir = Path(configured("AVRONE_SECRET_DIR")).expanduser()
+        if not secret_dir.is_absolute():
+            secret_dir = ROOT / secret_dir
         if secret_dir.is_symlink() or not secret_dir.is_dir() or (secret_dir.stat().st_mode & 0o077):
             raise SystemExit("AVRONE_SECRET_DIR must be a non-symlink mode-0700 directory")
         expected_files = (

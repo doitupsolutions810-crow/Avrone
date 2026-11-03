@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 def _write_new_private_file(path: Path, data: bytes) -> None:
     temp = path.with_name("." + path.name + "." + uuid.uuid4().hex + ".tmp")
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    created = False
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
@@ -24,12 +25,19 @@ def _write_new_private_file(path: Path, data: bytes) -> None:
             os.fsync(stream.fileno())
         # link() is atomic and refuses to overwrite an existing credential.
         os.link(temp, path, follow_symlinks=False)
-        os.chmod(path, 0o600, follow_symlinks=False)
+        created = True
         dir_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
+    except BaseException:
+        if created:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
     finally:
         try:
             temp.unlink()

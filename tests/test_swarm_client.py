@@ -51,6 +51,7 @@ def client_for(keys, transport=None):
         capability_authority_public_key_b64=ca_public,
         swarm_receipt_public_key_pem=receipt.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
         http_client=httpx.Client(transport=transport) if transport else httpx.Client(),
+        allow_insecure_http=True,
     )
 
 

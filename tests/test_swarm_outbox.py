@@ -518,3 +518,47 @@ def test_authority_request_invalid_correlation_type_fails_closed(tmp_path):
     with pytest.raises(InvalidOutboxRecord):
         box.prepare_authority_request(7, authority_request())
     box.close()
+
+
+def test_dispatch_lease_is_shared_across_independent_sqlite_connections(tmp_path):
+    import threading
+
+    path = tmp_path / "outbox.sqlite3"
+    first_box = SwarmOutbox(path)
+    second_box = SwarmOutbox(path)
+    first_box.prepare(request())
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Client:
+        calls = 0
+        lock = threading.Lock()
+        def send_request(self, req):
+            with self.lock:
+                self.calls += 1
+            entered.set()
+            assert release.wait(timeout=3)
+            return {"job": {"id": "job-1", "status": "queued"},
+                    "receipt": {"message_id": "msg-1", "signature": "verified"}}
+        def verify_receipt(self, receipt, req):
+            assert receipt["message_id"] == req["envelope"]["message_id"]
+
+    client = Client()
+    first = SwarmDispatcher(client, first_box)
+    second = SwarmDispatcher(client, second_box)
+    results = []
+    thread = threading.Thread(target=lambda: results.append(first.submit_request(request())))
+    thread.start()
+    assert entered.wait(timeout=3)
+    competing = second.retry("msg-1")
+    assert competing["state"] == "unknown"
+    assert competing["reason"] == "dispatch is already in progress"
+    assert client.calls == 1
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert results[0]["state"] == "queued"
+    assert second.retry("msg-1")["state"] == "queued"
+    assert client.calls == 1
+    first_box.close()
+    second_box.close()

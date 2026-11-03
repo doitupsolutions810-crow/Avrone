@@ -652,6 +652,9 @@ async def events(ws: WebSocket):
 from .integration import install_routes as _install_integration_routes
 _install_integration_routes(app, core, require_local, settings)
 
+from .swarm_api import install_routes as _install_swarm_routes
+_install_swarm_routes(app, core, require_local, settings)
+
 
 def main() -> None:
     import os

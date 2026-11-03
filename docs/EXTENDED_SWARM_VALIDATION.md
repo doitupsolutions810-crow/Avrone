@@ -52,4 +52,12 @@ Syntax/format admission passed for **273 Python files, 56 JavaScript files, 6 sh
 
 The refreshed repository survey covers **39 repositories, 366 branch heads, 286 PR records and 447 recent default-branch commits**. Branch/PR lists were paginated to exhaustion. Default-branch commit history remains limited to 30 per repository. Public resource pins and proposal decisions are recorded in `REPOSITORY_UPGRADE_REVIEW.json` and `UPGRADE_REVIEW.md`.
 
-A final unfiltered run after the generated-document correction is recorded below when complete.
+## Final unfiltered result
+
+At source revision `30c62ea9a39b08ac2bb939f69655821ac837655b`, `python -m pytest -q -n 8` completed in **355.60 seconds** with **3,868 passed, 7 skipped, 0 failed**. No runtime source changed after the coverage run. The seven explicit skips are four unavailable PID/procfs visibility cases, two root-only permission limitations, and the optional barcode dependency.
+
+A real uvicorn process served the application HTML and status over loopback HTTP, completed a deliberately mocked chat and persisted six run events, refused all three signing routes without operator credentials, and returned 503 when Swarm trust was absent. A separate real-HTTP council probe returned **409**, with `A council requires live inference; mock mode cannot produce a verified receipt`. It issued no verified receipt. This confirms the mock-mode gate and does not establish live inference.
+
+Machine-readable counts, dependency versions, capability skips, evidence-file SHA-256 digests and revision pins are in [VALIDATION_RESULTS.json](VALIDATION_RESULTS.json). The unchanged Node contract selection passed **49/49**.
+
+GitHub Actions run [41681381893](https://github.com/doitupsolutions810-crow/Avrone/actions/runs/41681381893) failed without executing test steps: all three jobs had runner ID 0 and zero steps. Local results and remote CI status are separate; no remote pass is claimed. Docker builds, actual model-backed council/Swarm execution, persistent browser operation and a physical Mac remain unverified. The unmerged Authority, Trinity and Fusion proposals in the repository review are not activated by this change.

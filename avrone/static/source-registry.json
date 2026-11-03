@@ -525,8 +525,8 @@
     },
     {
       "path": "docs/SWARM_VALIDATION.md",
-      "sha256": "a13b41e6c981a3a5d4eece53881a8fc4fb0435bfbe6d175b98373668afa1164d",
-      "source": "local integration against the pinned AVRONE baseline"
+      "sha256": "cfb87342ec121f6251e3029727307e8e438c77093018c60dca14495c9c7348ba",
+      "source": "Final observed unfiltered tests and loopback HTTP diagnostics at source revision 30c62ea9a39b08ac2bb939f69655821ac837655b"
     },
     {
       "path": "docs/UPGRADE_REVIEW.md",
@@ -685,8 +685,8 @@
     },
     {
       "path": "docs/EXTENDED_SWARM_VALIDATION.md",
-      "sha256": "bae4d59429032ce517f08ee9bcbbac8e62fa75a9d4308b6febdf48796f2c5984",
-      "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
+      "sha256": "25fa72c8ffbf18ccdd872a38eb6fe108e25b045df1aa7f0de2469c61f349588a",
+      "source": "Final observed unfiltered tests and loopback HTTP diagnostics at source revision 30c62ea9a39b08ac2bb939f69655821ac837655b"
     },
     {
       "path": "avrone/fleet.py",
@@ -717,6 +717,11 @@
       "path": "tools/make_master_prompt.py",
       "sha256": "5241a5a9a602f8307812029c69922ee8b1009216cb8634f23bb9c22c1fcf1421",
       "source": "Generated inventory correction and refreshed revision-pinned GitHub review, November 3 2026"
+    },
+    {
+      "path": "docs/VALIDATION_RESULTS.json",
+      "sha256": "7ad34cea85adc470eb2b2cb3774ea34606e364a09b9e5f3e473557962f298199",
+      "source": "Final observed unfiltered tests and loopback HTTP diagnostics at source revision 30c62ea9a39b08ac2bb939f69655821ac837655b"
     }
   ],
   "upstream_updates": [
@@ -815,6 +820,17 @@
         "covered_statements": 13030,
         "total_statements": 13306
       }
+    },
+    {
+      "id": "final-unfiltered-20261103",
+      "report": "docs/EXTENDED_SWARM_VALIDATION.md",
+      "results": "docs/VALIDATION_RESULTS.json",
+      "python_passed": 3868,
+      "python_skipped": 7,
+      "python_failed": 0,
+      "node_passed": 49,
+      "full_suite": true,
+      "tested_revision": "30c62ea9a39b08ac2bb939f69655821ac837655b"
     }
   ]
 }

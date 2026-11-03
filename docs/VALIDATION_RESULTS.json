@@ -1,0 +1,128 @@
+{
+  "schema_version": "avrone.validation/v1",
+  "date": "2026-11-03",
+  "tested_revision": "30c62ea9a39b08ac2bb939f69655821ac837655b",
+  "runtime_revision": "df49d059d98cc63fc126cdb0c25d012c5c6d3f65",
+  "python": "3.12.14",
+  "dependencies": {
+    "pytest": "9.2.0",
+    "fastapi": "0.162.0",
+    "uvicorn": "0.54.0",
+    "httpx": "0.28.1",
+    "cryptography": "50.0.2",
+    "rfc8785": "0.1.4"
+  },
+  "final_suite": {
+    "command": "python -m pytest -q -n 8",
+    "tests": 3875,
+    "passed": 3868,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 7,
+    "seconds": 355.589,
+    "skips": [
+      {
+        "test": "tests.test_agentkit.test_qr_roundtrip",
+        "reason": "could not import 'zxingcpp': No module named 'zxingcpp'"
+      },
+      {
+        "test": "tests.test_autopilot_edges.test_readonly_drive",
+        "reason": "root ignores permissions"
+      },
+      {
+        "test": "tests.test_skill_r12.test_runaway_path",
+        "reason": "requires this process's PID namespace in /proc"
+      },
+      {
+        "test": "tests.test_tool_hostview.test_proc_status_sees_own_children",
+        "reason": "requires this process's PID namespace in /proc"
+      },
+      {
+        "test": "tests.test_tool_hostview.test_proc_status_zombie_and_caps",
+        "reason": "requires this process's PID namespace in /proc"
+      },
+      {
+        "test": "tests.test_autopilot_edges.test_stage_file_unreadable",
+        "reason": "root can read anything"
+      },
+      {
+        "test": "tests.test_autopilot_edges.test_sigterm_kills_whole_tree",
+        "reason": "procfs describes another PID namespace; pgrep cleanup verification is unavailable"
+      }
+    ]
+  },
+  "statement_coverage": {
+    "covered": 13030,
+    "total": 13306,
+    "percent": 97.92574778295506,
+    "measurement_revision": "df49d059d98cc63fc126cdb0c25d012c5c6d3f65",
+    "note": "Measured in the preceding unfiltered coverage run. Subsequent changes corrected generated documentation and repository-review metadata only."
+  },
+  "node_contracts": {
+    "passed": 49,
+    "failed": 0,
+    "command": "npm --prefix integrations/grok-bot test"
+  },
+  "syntax": {
+    "checked": {
+      "python": 273,
+      "json": 8,
+      "shell": 6,
+      "javascript": 56
+    },
+    "problems": []
+  },
+  "real_http_mock_runtime": {
+    "model_mode": "explicit mock",
+    "real_http": true,
+    "checks": {
+      "status": 200,
+      "application_html": 200,
+      "chat_run": 200,
+      "persisted_run_events": 6,
+      "unauthenticated_signing_routes": "all refused",
+      "missing_swarm_configuration": "503; no local fallback"
+    },
+    "ok": true
+  },
+  "real_http_mock_council": {
+    "transport": "real loopback HTTP",
+    "model_mode": "explicit mock",
+    "status_code": 409,
+    "detail": "A council requires live inference; mock mode cannot produce a verified receipt",
+    "verified_receipt_issued": false
+  },
+  "review_scope": {
+    "accessible_repositories": 39,
+    "branches": 366,
+    "pull_requests": 286,
+    "recent_default_branch_commits": 447,
+    "commit_window": "Up to 30 recent default-branch commits per repository; not a full-history audit.",
+    "empty_repositories": 1,
+    "public_repositories": 17
+  },
+  "inspected_remote_ci": {
+    "revision": "30c62ea9a39b08ac2bb939f69655821ac837655b",
+    "run_id": 41681381893,
+    "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/41681381893",
+    "executed_steps": 0,
+    "runner_ids": [
+      0
+    ],
+    "pass_claimed": false
+  },
+  "evidence_sha256": {
+    "final-suite.xml": "fd3b9b23417720b3c9dda9d43a809c18a06f04f276efb3612f0c78fffbd1faad",
+    "full-suite.xml": "f656e16e2995b86bf14161916c5cac8bd11f14b3c3348e73b16cb94718e80bad",
+    "full-coverage.json": "e7676bcaf308c34fb41865d7eaf40098012a0e2964a16f92a75230359184fed3",
+    "node-baseline.log": "20fd5c084fc43b05875c8cc671fd019b5df7d1cc3474899ecef682dd55e9ebc9",
+    "runtime-http.json": "c99cbb51962f631036d2013e85cb6abe35c1e55ef7e6867cf6a0a1798d9a73e1",
+    "council-http-result.json": "4d909ec9519964522dd6e263d4ed49a3538e4a19174b17c1860e576543ef52e8"
+  },
+  "live_gates": {
+    "docker_builds_verified": false,
+    "live_model_inference_verified": false,
+    "physical_mac_verified": false,
+    "pending_trinity_authority_and_fusion_proposals_activated": false
+  }
+}

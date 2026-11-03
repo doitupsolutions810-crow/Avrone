@@ -12,3 +12,7 @@ The bridge tests include real independent processes writing and compacting one j
 The repository review covers 38 repository inventories and their paginated branch/PR metadata. See [UPGRADE_REVIEW.md](UPGRADE_REVIEW.md) for the exact commit-window limit, revision pins and adoption decisions. No claim is made that every historic commit or every file in every repository was audited.
 
 Docker and a reachable model service remain absent in this execution environment. GitHub Actions previously reported jobs with runner ID 0 and no executed steps; local test results are recorded separately from remote CI.
+
+## Completed extension round
+
+See [EXTENDED_SWARM_VALIDATION.md](EXTENDED_SWARM_VALIDATION.md) and [VALIDATION_RESULTS.json](VALIDATION_RESULTS.json) for the final unfiltered run: **3,868 passed, 7 skipped, 0 failed**; statement coverage **97.9257%** on the unchanged runtime code; Node **49 passed**. The signed Swarm startup, queue expiry/cancellation and concurrent operator API fixes are pushed as successive tested checkpoints. The refreshed survey covers 39 repositories, 366 branches and 286 PR records with an explicit 30-commit window.

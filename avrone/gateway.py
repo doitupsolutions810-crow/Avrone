@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -150,9 +151,12 @@ class Gateway:
         # gpt-oss on Ollama: the action sometimes comes back as a parsed native tool call with
         # empty content. AVRONE's actions are JSON text, so rewrite it into that form instead of
         # handing the agent an empty reply.
-        synth = tool_calls_as_action(msg.get("tool_calls"))
+        synth = tool_calls_as_action(msg.get("tool_calls"), choice.get("finish_reason"))
         if synth:
             return synth
+        if choice.get("finish_reason") == "length" and msg.get("tool_calls"):
+            raise _Permanent(f"{up.provider} 200: tool call cut off mid-arguments (finish_reason=length); "
+                             f"nothing ran. Raise max tokens or the context window for this model")
         if choice.get("finish_reason") == "length":
             # Every token went to reasoning: retrying gives the same result. Say why plainly.
             raise _Permanent(f"{up.provider} 200: empty reply, output truncated (finish_reason=length); "
@@ -238,32 +242,93 @@ def _tool_name(raw: Any) -> str:
     return name
 
 
-def tool_calls_as_action(tool_calls: Any) -> str:
-    """OpenAI-style message.tool_calls -> AVRONE's JSON action text ("" when unusable)."""
+FINAL_TOOL_NAMES = {"final", "final_answer", "finalanswer"}
+_FINAL_KEYS = ("final", "answer", "text", "content", "response", "result")
+_HARMONY = re.compile(r"<\|[a-z_]{1,24}\|>")
+
+
+def _parse_args(raw: Any) -> tuple[Any, bool]:
+    """Tool-call arguments -> (args, complete). complete=False means the JSON is cut off or
+    unreadable. gpt-oss leaks harmony tokens (<|call|>) or trailing junk after a complete
+    object; the first complete object is used then."""
+    if raw is None:
+        return {}, True
+    if not isinstance(raw, str):
+        return raw, True
+    text = _HARMONY.sub("", raw).strip()
+    if not text:
+        return {}, True
+    try:
+        return json.loads(text), True
+    except ValueError:
+        pass
+    start = text.find("{")
+    if start >= 0:
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(text, start)
+            if isinstance(obj, dict):
+                return obj, True
+        except ValueError:
+            pass
+    return {"_raw": raw}, False
+
+
+def _final_from(args: Any) -> Any:
+    if isinstance(args, dict):
+        for k in _FINAL_KEYS:
+            if k in args:
+                return args[k]
+        if len(args) == 1:
+            return next(iter(args.values()))
+        return args
+    return args
+
+
+def tool_calls_as_action(tool_calls: Any, finish_reason: Any = None) -> str:
+    """OpenAI-style message.tool_calls -> AVRONE's JSON action text ("" when unusable).
+
+    Round 19 guards: a call whose arguments were cut off by finish_reason=length is never
+    dispatched (a half-written shell command must not run); a nameless call whose arguments
+    are themselves an action ({"tool": ...} / {"final": ...}) is used as that action; a call
+    named final/final_answer becomes {"final": ...}; exact duplicate calls run once."""
     if not isinstance(tool_calls, list):
         return ""
+    truncated = finish_reason == "length"
     actions: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for tc in tool_calls:
         fn = tc.get("function") if isinstance(tc, dict) else None
         if not isinstance(fn, dict):
             continue
+        args, complete = _parse_args(fn.get("arguments"))
+        if not complete and truncated:
+            continue  # cut off mid-arguments: never run it
         name = _tool_name(fn.get("name"))
+        action: dict[str, Any]
         if not name:
-            continue
-        args: Any = fn.get("arguments")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args) if args.strip() else {}
-            except ValueError:
+            if isinstance(args, dict) and isinstance(args.get("tool"), str) and args["tool"].strip():
+                action = {"tool": _tool_name(args["tool"]), "args": args.get("args", {})}
+            elif isinstance(args, dict) and "final" in args:
+                action = {"final": args["final"]}
+            else:
+                continue
+        elif name.lower() in FINAL_TOOL_NAMES:
+            action = {"final": _final_from(args)}
+        else:
+            if not isinstance(args, dict):
                 args = {"_raw": args}
-        if args is None:
-            args = {}
-        if not isinstance(args, dict):
-            args = {"_raw": args}
-        actions.append({"tool": name, "args": args})
+            action = {"tool": name, "args": args}
+        key = json.dumps(action, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        actions.append(action)
     if not actions:
         return ""
-    return json.dumps(actions[0] if len(actions) == 1 else {"tools": actions})
+    finals = [a for a in actions if "final" in a]
+    if finals and len(actions) > 1:
+        actions = [a for a in actions if "final" not in a]  # tools first; the agent finishes later
+    return json.dumps(actions[0] if len(actions) == 1 else {"tools": actions}, default=str)
 
 
 class _Retry(RuntimeError):

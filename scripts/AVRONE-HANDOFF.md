@@ -274,3 +274,12 @@ merge without his word.
 - **Context budget:** Ollama silently cuts an over-long prompt from the front, which drops the system prompt with its tool docs and JSON format. `AVRONE_CONTEXT_CHARS` (default 120000, clamped to 8000–2000000) now elides the oldest tool-result bodies before each turn, logging `context.compact`. The system prompt, the first user turn, every assistant turn, operator notes, and the newest 4 messages are never touched.
 - Inbox notes that aren't strings no longer crash the loop.
 - Tests: tests/test_agent_loop_context.py (22). Mutation on round 17 with stubs: 16 of 22 fail, including all 3 out-of-turns loop runs and the context-budget loop run.
+
+## Round 19 hardening (native tool-call dispatch guard)
+- **Cut-off calls:** a tool call whose arguments were cut off by `finish_reason=length` is never run, so a half-written shell command can't execute. Complete calls in the same message still run. If nothing complete is left, the gateway fails fast with "tool call cut off mid-arguments ... nothing ran" and doesn't retry.
+- **Junk around the arguments:** leaked harmony tokens (`<|call|>`, `<|end|>`, `<|constrain|>`), trailing text, or an extra brace around otherwise complete arguments are stripped. The first complete JSON object is used.
+- **Nameless calls:** a call with no name, whose arguments are themselves `{"tool": ...}` or `{"final": ...}`, is used as that action. Other nameless calls are dropped.
+- **`final` as a tool name:** `final`, `final_answer` (any namespace, any case) becomes `{"final": ...}`, taking final/answer/text/content/response/result, or a lone key. When it comes beside a real tool call, the tools run first.
+- **Duplicates:** exact duplicate calls in one message run once.
+- Unparseable args without truncation still reach the ARG ERROR path (round 14 behavior).
+- Tests: tests/test_gateway_toolcall_guard.py (26). Mutation on round 18: 24 of 26 fail.

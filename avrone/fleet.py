@@ -504,10 +504,42 @@ def request_capability(kind: str, payload: dict[str, Any]) -> str:
     return kind
 
 
+SIG_RE = re.compile(r"^[0-9a-f]{64}$")
+WEAK_TOKEN_CHARS = 16
+FLEET_PATH_MARK = "/api/fleet/"
+
+
+def canonical_path(path: Any) -> str:
+    """The part of a request path that is signed: from "/api/fleet/" on. Behind a reverse proxy
+    or tunnel that mounts AVRONE under a prefix (/avrone/api/fleet/run), the receiver saw the
+    prefixed path while the sender signed the bare one, so every request failed as "bad
+    signature"; a peer url with a path (http://host/avrone) did the same in the other direction.
+    The endpoint itself stays bound into the signature."""
+    p = str(path or "")
+    i = p.find(FLEET_PATH_MARK)
+    return p[i:] if i >= 0 else p
+
+
+def clean_token(raw: Any) -> str:
+    """AVRONE_FLEET_TOKEN as both sides should see it: whitespace trimmed and one pair of matching
+    surrounding quotes removed. A .env read by docker compose keeps "quotes" that a shell export
+    drops, so two nodes with the same line in their .env computed different signatures."""
+    t = str(raw or "").strip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "'\"":
+        t = t[1:-1].strip()
+    return t
+
+
+def skew_text(ts_i: int, now: float) -> str:
+    d = int(round(ts_i - now))
+    side = "ahead of" if d > 0 else "behind"
+    return f"the sender's clock is {abs(d)}s {side} this node's (window ±{WINDOW_S}s); sync clocks (NTP)"
+
+
 def sign(token: str, method: str, path: str, body: bytes, ts: str | None = None, nonce: str | None = None) -> dict[str, str]:
     ts = ts or str(int(time.time()))
     nonce = nonce or secrets.token_hex(12)
-    msg = "\n".join([method.upper(), path, ts, nonce, hashlib.sha256(body).hexdigest()]).encode()
+    msg = "\n".join([method.upper(), canonical_path(path), ts, nonce, hashlib.sha256(body).hexdigest()]).encode()
     sig = hmac.new(token.encode(), msg, hashlib.sha256).hexdigest()
     return {"x-avrone-ts": ts, "x-avrone-nonce": nonce, "x-avrone-sig": sig}
 
@@ -518,7 +550,15 @@ _LAZY_LOCK_GUARD = threading.Lock()
 class FleetManager:
     def __init__(self, core: "TrinityCore", data_dir: Path):
         self.core = core
-        self.token = _env("AVRONE_FLEET_TOKEN")
+        self.token = clean_token(_env("AVRONE_FLEET_TOKEN"))
+        # Rotation: during a token change, peers still signing with the old token keep working
+        # while AVRONE_FLEET_TOKEN_PREV holds it. Outbound requests always sign with the new one.
+        prev = clean_token(_env("AVRONE_FLEET_TOKEN_PREV"))
+        self.prev_token = prev if prev and prev != self.token else ""
+        if self.token and len(self.token) < WEAK_TOKEN_CHARS:
+            log.warning("AVRONE_FLEET_TOKEN is %d chars; use at least %d random chars "
+                        "(python -c 'import secrets; print(secrets.token_hex(32))')",
+                        len(self.token), WEAK_TOKEN_CHARS)
         self.max_hops = int(_env("AVRONE_FLEET_MAX_HOPS", "3") or 3)
         self.allow = {a.strip() for a in _env("AVRONE_FLEET_ALLOW").split(",") if a.strip()}
         self.require_allow = _env("AVRONE_FLEET_REQUIRE_ALLOW").lower() in TRUTHY
@@ -749,6 +789,8 @@ class FleetManager:
         return {"node_id": self.node_id, "enabled": self.enabled, "parent": self.parent or None,
                 "public_url": self.public_url or None, "max_hops": self.max_hops,
                 "privileged": self.privileged,
+                "token_weak": bool(self.token) and len(self.token) < WEAK_TOKEN_CHARS,
+                "token_rotating": bool(getattr(self, "prev_token", "")),
                 "children": len(self.nodes), "active_agents": sum(
                     1 for a in self.core.active.values() if a.get("status") == "working")}
 
@@ -799,12 +841,19 @@ class FleetManager:
         ts_i = int(ts)
         if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
             raise GatewayRefused("bad_nonce", "bad nonce (1-128 chars of [A-Za-z0-9_-])")
-        expect = sign(self.token, method, path, body, ts, nonce)["x-avrone-sig"]
-        if not (isinstance(sig, str) and sig.isascii() and hmac.compare_digest(expect, sig)):
+        if not isinstance(sig, str) or not SIG_RE.fullmatch(sig.lower()):
+            raise GatewayRefused("bad_signature", "bad signature")
+        sig = sig.lower()  # hex is case-insensitive; some proxies and clients upper-case it
+        ok = hmac.compare_digest(sign(self.token, method, path, body, ts, nonce)["x-avrone-sig"], sig)
+        prev = getattr(self, "prev_token", "")
+        if not ok and prev and hmac.compare_digest(sign(prev, method, path, body, ts, nonce)["x-avrone-sig"], sig):
+            ok = True
+            self._audit("fleet.token.prev", path=path)  # someone still signs with the old token
+        if not ok:
             raise GatewayRefused("bad_signature", "bad signature")
         now = time.time()
         if abs(now - ts_i) > WINDOW_S:
-            raise GatewayRefused("stale", "stale request (timestamp outside window)")
+            raise GatewayRefused("stale", f"stale request (timestamp outside window): {skew_text(ts_i, now)}")
         # A nonce must outlive every instant its request is still inside the window (ts + WINDOW_S);
         # keep it at least 2*WINDOW_S past first sight too, in case the clock steps backwards.
         # (The old "now - seen < 2*WINDOW_S" prune dropped a future-skewed nonce at exactly the

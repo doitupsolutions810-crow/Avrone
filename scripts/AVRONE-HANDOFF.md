@@ -407,3 +407,12 @@ merge without his word.
 - **Peer replies:** `_post` raises a clear error for a 200 that isn't JSON (captive portal, proxy) and names the content-type and a snippet. Non-object JSON is refused, because every caller calls `.get()` on the reply.
 - **register():** non-dict capabilities become {}. Children are filtered to strings and capped at 1000. `select_nodes(k)` coerces k.
 - Tests: tests/test_fleet_routing_robust.py (59). Mutation on round 29: 40 of 59 fail.
+
+## Round 31: fleet request signing and peer auth (avrone/fleet.py)
+- **Token rotation:** `AVRONE_FLEET_TOKEN_PREV` is also accepted on inbound requests, so peers can be moved to a new token one at a time. Outbound requests always sign with the current token. A request signed with the previous token is audited as `fleet.token.prev`. Replay, tamper, and window checks are unchanged for both tokens. `info()` reports `token_rotating`.
+- **Quoted tokens:** `clean_token()` trims whitespace and strips one matching pair of quotes. Docker compose keeps the quotes from a .env file and a shell export drops them, so two nodes with the same .env line used to compute different signatures. A token of `""` alone means the fleet is disabled.
+- **Proxy prefix:** `canonical_path()` signs from `/api/fleet/` onward. A receiver behind a reverse proxy or tunnel prefix (`/avrone/api/fleet/run`), or a peer url with a path, used to fail every request as "bad signature". The endpoint and the method are still bound into the signature.
+- **Signature format:** the signature must be 64 hex chars and is compared case-insensitively. An upper-cased sig used to be refused.
+- **Clock skew:** a stale-request refusal now says how many seconds the sender is ahead or behind, and points to NTP. This shows only after the HMAC passes, so it leaks nothing to someone without the token.
+- **Weak token:** a token under 16 chars logs a warning with a generator command, and `info()` reports `token_weak`. It is still accepted.
+- Tests: tests/test_fleet_auth_robust.py (48). Mutation on round 30: 23 of 48 fail. The other 25 are regression guards (replay, tamper, wrong token, method) and pass on both versions by design.

@@ -121,6 +121,8 @@ class AvroneMCPServer:
         self._write_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self._inflight = 0  # agent-running tool calls in progress (avrone_squad/chat/deep)
+        self._by_id: dict[Any, asyncio.Task] = {}  # in-flight requests by id, for notifications/cancelled
+        self._closed = False  # stdout gone (client exited): stop writing and stop serving
 
     # ---------------------------------------------------------------- core
     async def core(self):
@@ -135,10 +137,26 @@ class AvroneMCPServer:
 
     # ---------------------------------------------------------------- io
     async def send(self, obj: dict) -> None:
-        data = (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        """Write one JSON-RPC message. A result JSON cannot carry (NaN, a cycle, an object) used to
+        go out as invalid JSON (NaN) or raise mid-handler; it now becomes a -32603 error for that id.
+        A closed stdout (the client exited) stops all further writes instead of raising in every task."""
+        if self._closed:
+            return
+        try:
+            text = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError, RecursionError) as e:
+            text = json.dumps({"jsonrpc": "2.0", "id": _wire_id(obj.get("id")),
+                               "error": {"code": -32603,
+                                         "message": f"Internal error: result is not valid JSON ({type(e).__name__})"}},
+                              separators=(",", ":"))
+        # a lone surrogate (from a tool result) cannot be encoded as UTF-8; escape it instead of raising
+        data = (text + "\n").encode("utf-8", errors="backslashreplace")
         async with self._write_lock:
-            self._out.write(data)
-            self._out.flush()
+            try:
+                self._out.write(data)
+                self._out.flush()
+            except (BrokenPipeError, ConnectionResetError, ValueError, OSError):
+                self._closed = True
 
     async def serve(self, reader: asyncio.StreamReader, out) -> None:
         self._out = out
@@ -152,27 +170,84 @@ class AvroneMCPServer:
                 await self.send({"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32600, "message": "Invalid Request: line exceeds the size limit"}})
                 continue
-            if not raw:
+            if not raw or self._closed:
                 break
-            line = raw.decode(errors="replace").strip()
+            line = raw.decode(errors="replace").strip().lstrip("\ufeff").strip()
             if not line:
                 continue
             try:
                 msg = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
+                # ValueError covers JSONDecodeError and also an integer over Python's 4300-digit limit;
+                # RecursionError is very deep nesting. Both used to escape and kill the whole server.
                 await self.send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
                 continue
             if msg == []:
                 await self.send({"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32600, "message": "Invalid Request: empty batch"}})
                 continue
-            for m in (msg if isinstance(msg, list) else [msg]):
-                t = asyncio.create_task(self._handle_safe(m))
+            items = msg if isinstance(msg, list) else [msg]
+            cap = max_batch()
+            if len(items) > cap:
+                await self.send({"jsonrpc": "2.0", "id": None, "error": {
+                    "code": -32600, "message": f"Invalid Request: batch of {len(items)} exceeds {cap} (AVRONE_MCP_MAX_BATCH)"}})
+                continue
+            for m in items:
+                self._dispatch(m)
+        if self._tasks:
+            await self._drain()
+        await self.shutdown()
+
+    def _dispatch(self, m: Any) -> None:
+        if isinstance(m, dict) and m.get("method") == "notifications/cancelled":
+            self._cancel(m.get("params"))
+            return
+        if isinstance(m, dict) and isinstance(m.get("method"), str) and m.get("id") is not None and _valid_id(m["id"]):
+            key = _id_key(m["id"])
+            if key in self._by_id and not self._by_id[key].done():
+                t = asyncio.create_task(self.send({"jsonrpc": "2.0", "id": m["id"], "error": {
+                    "code": -32600, "message": "Invalid Request: a request with this id is still in progress"}}))
                 self._tasks.add(t)
                 t.add_done_callback(self._tasks.discard)
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        await self.shutdown()
+                return
+            t = asyncio.create_task(self._handle_safe(m))
+            self._by_id[key] = t
+            t.add_done_callback(lambda _t, k=key: self._by_id.pop(k, None) if self._by_id.get(k) is _t else None)
+        else:
+            t = asyncio.create_task(self._handle_safe(m))
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
+    def _cancel(self, params: Any) -> None:
+        """notifications/cancelled: stop the named in-flight request; per the spec no reply is sent.
+        Before this a cancelled squad or deep run kept running and kept its in-flight slot."""
+        if not isinstance(params, dict) or not _valid_id(params.get("requestId")) or params.get("requestId") is None:
+            return
+        t = self._by_id.get(_id_key(params["requestId"]))
+        if t is not None and not t.done():
+            t._avrone_cancelled = True  # type: ignore[attr-defined]
+            t.cancel()
+
+    async def _drain(self) -> None:
+        """stdin closed: the client is shutting down (MCP stdio lifecycle). Give in-flight work
+        AVRONE_MCP_SHUTDOWN_GRACE seconds, then cancel it and answer each request with an error,
+        instead of keeping an hours-long deep run alive for a client that is gone."""
+        grace = shutdown_grace()
+        pending = {t for t in self._tasks if not t.done()}
+        if pending:
+            _, pending = await asyncio.wait(pending, timeout=grace)
+        if pending:
+            ids = [k for k, t in list(self._by_id.items()) if t in pending]
+            for t in pending:
+                t._avrone_cancelled = True  # type: ignore[attr-defined]
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for k in ids:
+                await self.send({"jsonrpc": "2.0", "id": _wire_id(k), "error": {
+                    "code": -32603, "message": "server shutting down: input closed before the request finished"}})
+        rest = [t for t in self._tasks if not t.done()]
+        if rest:
+            await asyncio.gather(*rest, return_exceptions=True)
 
     async def shutdown(self) -> None:
         if self._core_task and self._core_task.done() and not self._core_task.exception():
@@ -191,6 +266,11 @@ class AvroneMCPServer:
         rid = m.get("id")
         is_request = "id" in m
         try:
+            if is_request and not _valid_id(rid):
+                rid = None
+                raise _RPCError(-32600, "Invalid Request: id must be a string, an integer or null")
+            if "jsonrpc" in m and m["jsonrpc"] != "2.0":
+                raise _RPCError(-32600, 'Invalid Request: jsonrpc must be "2.0"')
             if not isinstance(m["method"], str):
                 raise _RPCError(-32600, "Invalid Request: method must be a string")
             params = m.get("params")
@@ -249,6 +329,8 @@ class AvroneMCPServer:
             from .server import max_message_chars
             limit = max_message_chars()
             first = args.get("first_answer")
+            if first is not None and not isinstance(first, str):
+                return _err("'first_answer' must be a string")
             if len(task) > limit or (isinstance(first, str) and len(first) > limit):
                 return _err(f"task too long (max {limit} characters; AVRONE_MAX_MESSAGE_CHARS)")
             cap = max_inflight()
@@ -317,13 +399,54 @@ def max_inflight() -> int:
     return max(1, min(HARD_MCP_INFLIGHT, n))
 
 
+DEFAULT_MCP_BATCH = 64
+DEFAULT_SHUTDOWN_GRACE = 30.0
+
+
+def max_batch() -> int:
+    """Largest JSON-RPC batch accepted on one line (AVRONE_MCP_MAX_BATCH, 1..1024, default 64).
+    A 100k-element batch used to spawn 100k tasks at once."""
+    try:
+        n = int(str(os.environ.get("AVRONE_MCP_MAX_BATCH", "")).strip() or DEFAULT_MCP_BATCH)
+    except (TypeError, ValueError):
+        n = DEFAULT_MCP_BATCH
+    return max(1, min(1024, n))
+
+
+def shutdown_grace() -> float:
+    """Seconds in-flight work may finish after stdin closes (AVRONE_MCP_SHUTDOWN_GRACE, 0..3600, default 30)."""
+    try:
+        v = float(str(os.environ.get("AVRONE_MCP_SHUTDOWN_GRACE", "")).strip() or DEFAULT_SHUTDOWN_GRACE)
+    except (TypeError, ValueError):
+        v = DEFAULT_SHUTDOWN_GRACE
+    if v != v:
+        v = DEFAULT_SHUTDOWN_GRACE
+    return max(0.0, min(3600.0, v))
+
+
+def _valid_id(rid: Any) -> bool:
+    """JSON-RPC ids are a string, an integer or null (bools, floats, objects and arrays are refused)."""
+    return rid is None or isinstance(rid, str) or (isinstance(rid, int) and not isinstance(rid, bool))
+
+
+def _id_key(rid: Any) -> tuple[str, Any]:
+    # 1 and "1" are different ids
+    return ("s", rid) if isinstance(rid, str) else ("n", rid)
+
+
+def _wire_id(rid: Any) -> Any:
+    if isinstance(rid, tuple) and len(rid) == 2 and rid[0] in ("s", "n"):
+        return rid[1]
+    return rid if _valid_id(rid) else None
+
+
 def _clamp_size(size: Any) -> int | None:
     """Honour the advertised schema (1..8); junk or missing means 'use the default'."""
     if size is None or isinstance(size, bool):
         return None
     try:
         n = int(size)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # 1e999 parses as inf: int(inf) is OverflowError
         return None
     return max(1, min(8, n))
 

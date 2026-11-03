@@ -510,3 +510,20 @@ merge without his word.
   - Odd `updated` values (a string, NaN, Infinity) no longer crash sorting. Ties sort by id.
   - Non-list `history`, bool or string `n`, and a non-string `mode` read as empty.
 - Tests: tests/test_checkpoint_robust.py (63), including a real SIGKILL of a writer process mid-write: the file stays loadable and every stored step is complete. Mutation: 47 of 63 fail on round 36's code.
+
+## Round 38: AVRONE's own MCP server vs hostile clients (avrone/mcp_server.py)
+- **Two server-killing parse bugs fixed.** A line holding an integer over Python's 4300-digit limit raises `ValueError` (not `JSONDecodeError`). Very deep nesting raises `RecursionError`. Either one used to escape the read loop and kill the server. Both now return -32700 and serving continues. A UTF-8 BOM at the start of a line is tolerated.
+- **Envelope checks:**
+  - An id that is a bool, a float, an object or an array → -32600 with id null.
+  - `jsonrpc` present but not "2.0" → -32600. A missing `jsonrpc` is still tolerated.
+  - 1 and "1" are distinct ids.
+- **Cancellation:** `notifications/cancelled` cancels the in-flight request it names and sends no reply, per the spec. Its in-flight slot and checkpoint claim are freed. Before, a cancelled squad or deep run kept running.
+- **Duplicate ids:** a second request reusing an id that is still in flight → -32600. Null ids are never tracked.
+- **Batches** are capped by `AVRONE_MCP_MAX_BATCH` (default 64, clamped 1..1024). Before, a 100k-element line spawned 100k tasks.
+- **stdin closed** (the MCP stdio shutdown signal): in-flight work gets `AVRONE_MCP_SHUTDOWN_GRACE` seconds (default 30, clamped 0..3600). After that it is cancelled and each open request gets a -32603 "server shutting down" error. Before, the server stayed alive for hours for a client that was gone.
+- **Output:**
+  - A result JSON can't carry (NaN, objects) → -32603 for that id. Before, NaN went out as invalid JSON.
+  - A lone surrogate is backslash-escaped instead of raising.
+  - A broken or closed stdout stops writes and ends the serve loop.
+- **Arguments:** `squad_size` 1e999 (inf) falls back to the default instead of an OverflowError tool error. A non-string `first_answer` is refused.
+- Tests: tests/test_mcp_server_robust.py (88), including a real `python -m avrone.mcp_server` subprocess fed hostile lines over stdio.

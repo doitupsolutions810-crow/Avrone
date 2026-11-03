@@ -42,7 +42,7 @@ Implementations MUST share test vectors covering:
 - altered payload, signature, issuer, audience, capability, method, expiry, and replay;
 - duplicate delivery and conflicting reuse of message/correlation identifiers.
 
-## Deployment gates
+## Reference client\n\nAVRONE's producer-side client is `avrone/swarm_client.py`. It verifies the CA capability before signing the envelope, binds the action inside the payload digest, verifies the Swarm receipt, and preserves the exact signed request in `UnknownOutcome` so a timeout retry reuses the same message and correlation IDs. The client does not mint capabilities; it requires a valid CA-issued capability for the exact Swarm audience.\n\n## Deployment gates
 
 - AVRONE issuer public key and Capability Authority public key are separately pinned.
 - Swarm executor signing private key is provisioned independently and its public key is registered with AVRONE/Attested History.

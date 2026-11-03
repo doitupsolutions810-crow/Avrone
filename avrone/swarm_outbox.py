@@ -432,6 +432,12 @@ class SwarmDispatcher:
         message_id = record["message_id"]
         lease = self.outbox.claim_dispatch(message_id)
         if lease is None:
+            current = self.outbox.get(message_id)
+            if current is not None and current["state"] == "queued":
+                return self._queued_result(current)
+            if current is not None and current["state"] == "rejected":
+                return {"state": "rejected", "message_id": message_id,
+                        "error_code": current["error_code"]}
             return {"state": "unknown", "message_id": message_id,
                     "correlation_id": record["correlation_id"], "retryable": True,
                     "reason": "dispatch is already in progress"}

@@ -59,7 +59,24 @@ jobs:
         working-directory: integrations/grok-bot
         run: npm test
       - name: Combined Compose configuration
-        env: { AVRONE_ADMIN_TOKEN: ci-configuration-only-admin-token, GROK_BRIDGE_TOKEN: ci-configuration-only-research-token }
-        run: docker compose -f compose.grok.yml config --quiet
+        env:
+          AVRONE_ADMIN_TOKEN: ci-configuration-only-admin-token
+          GROK_BRIDGE_TOKEN: ci-configuration-only-research-token
+          AVRONE_SECRET_DIR: /tmp/avrone-secrets
+          AVRONE_CA_URL: https://authority.example.invalid
+          AVRONE_CA_PUBLIC_KEY_B64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          AVRONE_SWARM_URL: https://swarm.example.invalid
+          AVRONE_SWARM_ISSUER: spiffe://prod/agent/avrone-swarm-producer
+        run: |
+          docker compose -f compose.grok.yml config --quiet
+          install -d -m 0700 /tmp/avrone-secrets
+          touch /tmp/avrone-secrets/avrone-ca-requester.pem
+          touch /tmp/avrone-secrets/avrone-ca-requester.pub
+          touch /tmp/avrone-secrets/avrone-swarm-issuer.pem
+          touch /tmp/avrone-secrets/avrone-swarm-issuer.pub
+          touch /tmp/avrone-secrets/avrone-swarm-parent.json
+          touch /tmp/avrone-secrets/swarm-receipt.pub
+          chmod 0600 /tmp/avrone-secrets/*
+          docker compose -f compose.grok.yml -f compose.swarm.override.yml config --quiet
       - name: Verify source registry
         run: python3 scripts/verify-source-registry.py

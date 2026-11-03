@@ -142,7 +142,18 @@ class SwarmOutbox:
             if record.get("request_digest") != request_digest:
                 raise SwarmOutboxError("correlation_id already belongs to a different task or parent capability")
             if record.get("state") == "queued":
-                return dict(record["result"], idempotent_replay=True, outbox_path=str(path))
+                try:
+                    stored_request = record["request"]
+                    stored_result = record["result"]
+                    if stored_request["envelope"]["correlation_id"] != correlation_id:
+                        raise ValueError("outbox request correlation mismatch")
+                    swarm_client.verify_request(stored_request)
+                    swarm_client.verify_receipt(stored_result["receipt"], stored_request)
+                    if not isinstance(stored_result.get("job"), dict) or not isinstance(stored_result["job"].get("id"), str):
+                        raise ValueError("stored job receipt is incomplete")
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise SwarmOutboxError("stored queued result failed independent verification") from exc
+                return dict(stored_result, status="queued", idempotent_replay=True, outbox_path=str(path))
             if record.get("state") == "rejected":
                 return {"status": "rejected", "correlation_id": correlation_id, "reason": record.get("last_error", "previously rejected"), "outbox_path": str(path)}
 

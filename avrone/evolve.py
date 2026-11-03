@@ -38,6 +38,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import threading
 import time
@@ -74,7 +75,8 @@ def _emit(ctx: "AgentContext", kind: str, **data: Any) -> None:
 
 
 async def _sh(ctx: "AgentContext", cmd: str, cwd: Path, timeout: int = 600):
-    return await ctx.core.runner.run(f"cd {cwd} && {cmd}", timeout=timeout)
+    # quoted: an external drive like "/Volumes/My Passport" used to split into `cd /Volumes/My`
+    return await ctx.core.runner.run(f"cd {shlex.quote(str(cwd))} && {cmd}", timeout=timeout)
 
 
 def _meta_path(ctx: "AgentContext", pid: str) -> Path:
@@ -125,19 +127,47 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
     if wt.exists():
         return wt, branch
     # Clone the local repo (cheap, isolated) rather than add a worktree to the live .git.
-    r = await _sh(ctx, f"git clone -q --no-hardlinks . {wt} 2>&1", repo)
+    r = await _sh(ctx, f"git clone -q --no-hardlinks . {shlex.quote(str(wt))} 2>&1", repo)
     if r.exit_code != 0:
-        # Fallback: plain copy if not a git repo
-        shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(".git", "data", "*.egg-info", "__pycache__"))
+        # Fallback: plain copy if not a git repo. A failed clone can leave a half-made dir behind,
+        # which made copytree raise FileExistsError; runtime state and caches are never copied.
+        shutil.rmtree(wt, ignore_errors=True)
+        shutil.copytree(repo, wt, symlinks=True, ignore=shutil.ignore_patterns(*COPY_IGNORE))
         await _sh(ctx, "git init -q && git add -A && git -c user.email=a@a -c user.name=avrone commit -qm base", wt)
-    await _sh(ctx, f"git checkout -q -b {branch}", wt)
+    await _sh(ctx, f"git checkout -q -b {shlex.quote(branch)}", wt)
     return wt, branch
 
 
+COPY_IGNORE = (".git", "data", "agents", "*.egg-info", "__pycache__", ".pytest_cache", ".venv", "venv",
+               "node_modules", ".smoke-tmp", ".mypy_cache", ".ruff_cache")
+
+
+def commit_message(goal: Any) -> str:
+    """One shell-safe argument for `git commit -m`. The old `json.dumps(goal)[:200]` put the goal in
+    double quotes, where `$(...)` and backticks still run (an agent-written goal could execute
+    commands), and cutting at 200 chars could drop the closing quote so the commit never happened."""
+    text = " ".join(str(goal if goal is not None else "").split()) or "evolve proposal"
+    text = text.replace("\x00", "")
+    if len(text) > 200:
+        text = text[:199] + "\u2026"
+    return shlex.quote(text)
+
+
 def _in_repo(wt: Path, rel: str) -> Path:
+    """Resolve an agent-given repo-relative path inside the clone. The old string-prefix check let
+    `../wt-<pid>0/x` (a sibling clone whose name starts with this one's) through; .git is refused
+    because `.git/config` can set core.fsmonitor / core.hooksPath and make git run commands."""
+    rel = str(rel)
+    if not rel.strip() or "\x00" in rel:
+        raise ValueError(f"bad path: {rel[:80]!r}")
+    root = wt.resolve()
     p = (wt / rel).resolve()
-    if not str(p).startswith(str(wt.resolve())):
+    if p != root and root not in p.parents:
         raise ValueError(f"path escapes repo: {rel}")
+    if p == root:
+        raise ValueError(f"path is the repo root, not a file: {rel!r}")
+    if p.relative_to(root).parts[0] == ".git":
+        raise ValueError(f"edits inside .git are not allowed: {rel}")
     return p
 
 
@@ -174,19 +204,35 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
     t0 = _now()
     wt, branch = await _ensure_worktree(ctx, pid)
     changed = []
+    base_r = await _sh(ctx, "git rev-parse HEAD 2>/dev/null", wt, timeout=60)
+    base_sha = (base_r.stdout or "").strip() if getattr(base_r, "exit_code", 1) == 0 else ""
+    if not re.fullmatch(r"[0-9a-f]{7,64}", base_sha):
+        base_sha = ""
     for e in edits:
         try:
+            if not isinstance(e, dict):
+                raise ValueError(f"each edit must be an object with path and content, got {type(e).__name__}")
             p = _in_repo(wt, str(e["path"]))
             if confine_to is not None:
                 base = _in_repo(wt, confine_to)
                 if p == base or base not in p.parents:
                     raise ValueError(f"path escapes {confine_to}/: {e['path']}")
-        except (KeyError, ValueError, TypeError) as ex:
+            content = e.get("content")
+            if content is None:  # `null` used to be written as the literal text "None"
+                raise ValueError(f"edit for {e['path']} has no content (whole-file text is required)")
+            if not isinstance(content, str):
+                content = json.dumps(content, indent=2) if isinstance(content, (dict, list)) else str(content)
+            if p.is_dir():
+                raise ValueError(f"path is a directory: {e['path']}")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            # bytes, not write_text: no locale encoding surprise, no newline translation, and lone
+            # surrogates from a model's JSON become U+FFFD instead of a UnicodeEncodeError crash
+            p.write_bytes(content.encode("utf-8", errors="replace"))
+        except (KeyError, ValueError, TypeError, OSError) as ex:
             shutil.rmtree(wt, ignore_errors=True)
-            return {"pid": pid, "error": str(ex), "passed": False, "branch": None, "files": changed,
+            msg = str(ex) if not isinstance(ex, KeyError) else f"edit is missing {ex}"
+            return {"pid": pid, "error": msg, "passed": False, "branch": None, "files": changed,
                     "duration_s": round(_now() - t0, 3)}
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(e.get("content", "")))
         changed.append(str(e["path"]))
     # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
     # under the parallel-clone load of a squad and would reject good unit-level proposals.
@@ -195,23 +241,31 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
     timeout = max(1, int(timeout))
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.
-    res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=timeout)
+    pp = shlex.quote(str(wt))
+    res = await _sh(ctx, f"PYTHONPATH={pp}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=timeout)
     passed = res.exit_code == 0
     flaky = False
     if not passed and "pytest" in test_cmd:
         # Separate real failures from load flakes: re-run only what failed, once, alone.
-        again = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt,
+        again = await _sh(ctx, f"PYTHONPATH={pp}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt,
                           timeout=min(600, timeout))
         if again.exit_code == 0:
             passed, flaky = True, True
             res = again
     tail = "\n".join((res.stdout or res.stderr or "").splitlines()[-25:])
+    commit_error = ""
     if passed:
-        await _sh(ctx, f"git add -A && git -c user.email=a@a -c user.name=avrone commit -qm {json.dumps(goal)[:200]}", wt)
+        c = await _sh(ctx, f"git add -A && git -c user.email=a@a -c user.name=avrone -c core.hooksPath=/dev/null "
+                           f"commit -q --no-verify --allow-empty -m {commit_message(goal)} 2>&1", wt)
+        if getattr(c, "exit_code", 1) != 0:  # tests passed but nothing landed on the branch: say so
+            passed = False
+            commit_error = ("commit failed: " + str(getattr(c, "stdout", "") or getattr(c, "stderr", ""))[-300:]).strip()
+            tail = (tail + "\n" + commit_error).strip()
     duration = round(_now() - t0, 3)
     meta = {"pid": pid, "goal": goal, "branch": branch, "files": changed, "passed": passed,
             "by": ctx.name, "ts": time.time(), "test_cmd": test_cmd, "worktree": str(wt),
-            "flaky_retry": flaky, "test_tail": tail[-3000:], "duration_s": duration, **(extra_meta or {})}
+            "flaky_retry": flaky, "test_tail": tail[-3000:], "duration_s": duration, "base": base_sha,
+            **({"commit_error": commit_error} if commit_error else {}), **(extra_meta or {})}
     _meta_path(ctx, pid).write_text(json.dumps(meta))
     _emit(ctx, "evolve.propose", pid=pid, passed=passed, files=changed, duration_s=duration)
     return {"pid": pid, "passed": passed, "branch": branch if passed else None, "files": changed,
@@ -976,12 +1030,18 @@ async def t_evolve_skill_propose(ctx: "AgentContext", args: dict[str, Any]) -> s
 
 async def t_evolve_diff(ctx: "AgentContext", args: dict[str, Any]) -> str:
     pid = str(args.get("pid", ""))
-    mp, _, wt, err = _proposal(ctx, pid)
+    mp, meta, wt, err = _proposal(ctx, pid)
     if mp is None:
         return f"{err}. evolve_list to see them."
     if wt is None or not wt.is_dir():
         return err or f"ERROR: proposal {pid} worktree is gone"
-    r = await _sh(ctx, "git --no-pager diff HEAD~1..HEAD 2>/dev/null || git --no-pager diff", wt)
+    base = meta.get("base") if isinstance(meta, dict) else None
+    if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{7,64}", base):
+        # against the recorded base: shows a rejected (uncommitted) proposal's edits, new files
+        # included, instead of HEAD~1..HEAD, which then showed the repo's previous commit
+        r = await _sh(ctx, f"git add -A -N >/dev/null 2>&1; git --no-pager diff {base}", wt)
+    else:
+        r = await _sh(ctx, "git --no-pager diff HEAD~1..HEAD 2>/dev/null || git --no-pager diff", wt)
     return r.text(8000) or "(no diff)"
 
 

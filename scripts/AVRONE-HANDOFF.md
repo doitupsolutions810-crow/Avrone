@@ -375,3 +375,13 @@ merge without his word.
 - **Exit 125:** labeled "docker failed before the command ran" when the stderr is docker's.
 - `exec_argv` without a timeout keeps the old `bash -lc` shape. `run()` always passes the timeout.
 - Tests: tests/test_docker_runner_robust.py (36), run against a fake `docker` shim. Mutation on round 26: 25 of 36 fail. Not verified against a real Docker daemon.
+
+## Round 28: evolve proposal pipeline (branch avrone-a12lr-daemon)
+- **Spaces in paths:** `cd`, `git clone`, `git checkout`, and `PYTHONPATH` used unquoted paths. A repo or data dir on a drive like `/Volumes/My Passport` broke every evolve lane. All of them are now `shlex.quote`d.
+- **Commit-message injection:** the goal went into the commit as `json.dumps(goal)[:200]`, which is double-quoted, so `$(...)` and backticks in an agent-written goal ran as shell commands. Cutting at 200 chars could also drop the closing quote, and then the commit silently never happened. `commit_message()` now collapses whitespace, caps at 200 chars with an ellipsis, and `shlex.quote`s the result. The commit runs with `--no-verify`, `core.hooksPath=/dev/null`, and `--allow-empty`.
+- **Commit checked:** if tests pass but the commit fails, the proposal is now marked REJECTED with `commit_error` in its meta. Before, it showed ACCEPTED with nothing on the branch.
+- **Containment (`_in_repo`):** the string-prefix check let `../wt-<pid>0/x` write into a sibling clone. It's now a parents check. Writes into `.git` are refused (`.git/config` can set `core.fsmonitor`, which makes git run commands). Also refused: the repo root, directories, empty or whitespace paths, and NUL bytes.
+- **Edits:** non-object edits are refused. `content: null` is refused (it used to write the literal text "None"). dict/list content is written as JSON. Files are written as UTF-8 bytes with no newline translation, and lone surrogates become `?`. Write errors (OSError) come back as a result, and the clone is removed.
+- **Clone fallback:** a half-made dir from a failed clone used to crash `copytree` with FileExistsError. It's removed first now. The copy skips agents/, node_modules, venvs, and caches, and keeps symlinks as links.
+- **evolve_diff:** each proposal now records its `base` sha, and the diff runs against that base (new files included). A rejected, uncommitted proposal used to show the repo's previous commit instead of its own edits. A bad base value falls back to the old diff and never reaches the shell.
+- Tests: tests/test_evolve_propose_robust.py (45). Every test runs from a base path that contains a space. Mutation on round 27: 39 of 45 fail.

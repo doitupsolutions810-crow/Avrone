@@ -51,6 +51,60 @@ The browser sidecar now exposes an actual persistent CDP endpoint with its requi
 
 AVRONE routes retain the current local/admin policy. The combined Compose profile requires admin authentication across its private service network. A model-list response proves reachability only; successful inference is recorded by an actual council run. SHA-256 digests provide integrity checks, not signatures.
 
+## Optional Capability Authority + Swarm dispatch
+
+The default Grok council profile does not contact an external Swarm. To enable the separate, operator-authenticated \`/api/swarm/enqueue\` path, first provision trust material out of band:
+
+1. Create two independent AVRONE Ed25519 identities in a private directory:
+
+   \`\`\`sh
+   python3 scripts/provision_swarm_keys.py --directory ./secrets
+   chmod 700 ./secrets
+   \`\`\`
+
+   The script creates \`avrone-ca-requester.pem/.pub\` for requester assertions and \`avrone-swarm-issuer.pem/.pub\` for Swarm envelope signing. It refuses to overwrite existing files and never prints private key material.
+
+2. On the Capability Authority host, pin \`avrone-ca-requester.pub\` as \`PLANE_DELEGATION_REQUESTER_PUBLIC_KEY_FILE\`, set \`PLANE_DELEGATION_REQUESTER_ID=spiffe://prod/agent/avrone\`, and allow only \`spiffe://prod/agent/swarm\` in \`PLANE_DELEGATION_ALLOWED_AUDIENCES\`. Provision the narrow root parent using \`scripts/issue_avrone_swarm_parent.py\`. Give it a stable \`PLANE_AVRONE_PARENT_CAPABILITY_CORRELATION_ID\`; its rights are exactly \`Execute:swarm.jobs:POST\` and its lifetime is at most 300 seconds.
+
+3. Copy the signed \`avrone-swarm-parent.json\` output into \`./secrets/avrone-swarm-parent.json\`. Obtain the Swarm executor's receipt-verification public key as \`./secrets/swarm-receipt.pub\`, and provision \`avrone-swarm-issuer.pub\` in the Swarm executor's issuer trust configuration. Keep the directory and all six files mode \`0700\`/\`0600\`.
+
+4. Add the following values to \`.env.grok\` (do not commit this file):
+
+   \`\`\`dotenv
+   AVRONE_SECRET_DIR=./secrets
+   AVRONE_CA_URL=https://authority.example.internal
+   AVRONE_CA_REQUESTER_ID=spiffe://prod/agent/avrone
+   AVRONE_CA_ISSUER=spiffe://prod/broker
+   AVRONE_CA_PUBLIC_KEY_B64=REPLACE_WITH_PINNED_AUTHORITY_ED25519_PUBLIC_KEY_BASE64
+   AVRONE_SWARM_URL=https://swarm.example.internal
+   AVRONE_SWARM_ISSUER=spiffe://prod/agent/avrone-swarm-producer
+   AVRONE_SWARM_AUDIENCE=spiffe://prod/agent/swarm
+   AVRONE_SWARM_DELEGATION_TTL_SECONDS=120
+   \`\`\`
+
+   The Swarm verifier uses the same pinned Authority public key by default. The CA and Swarm endpoints must be reachable from the AVRONE container and use HTTPS. \`AVRONE_CA_ALLOW_HTTP=1\` or \`AVRONE_SWARM_ALLOW_HTTP=1\` is for an explicitly isolated test network only, never an internet-facing deployment.
+
+5. Start the optional profile:
+
+   \`\`\`sh
+   python3 scripts/grok-stack.py up --swarm
+   \`\`\`
+
+   The override mounts the credential directory read-only at \`/run/avrone-secrets\`. Without \`--swarm\`, the base council does not mount or load these credentials.
+
+6. Submit an authenticated enqueue with both stable IDs:
+
+   \`\`\`sh
+   curl --fail-with-body https://127.0.0.1:8710/api/swarm/enqueue \\
+     -H 'Content-Type: application/json' \\
+     -H "X-Admin-Token: $AVRONE_ADMIN_TOKEN" \\
+     -d '{"objective":"run the approved task","message_id":"task-2026-001","correlation_id":"task-2026-001"}'
+   \`\`\`
+
+   If the Authority call times out, AVRONE returns \`202 delegation_unknown\` and does not call Swarm. Repeat the same request with the same IDs to reconcile the Authority correlation. If the root parent or prior child has expired, the request is rejected; provision a fresh parent through the Authority's audited process. A Swarm \`queued\` receipt means accepted by the remote queue, not completed execution.
+
+**Operational boundary:** parent credentials are short-lived and are not auto-renewed. Rotating the parent file requires an operator-controlled replacement in the private secret directory. No production Authority, Swarm endpoint, signing key, or live worker is bundled in this repository.
+
 ## Validation
 
 ```sh

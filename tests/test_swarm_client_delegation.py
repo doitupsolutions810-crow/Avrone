@@ -34,14 +34,17 @@ def client_with_http(monkeypatch, response=None):
 
 
 def assertion():
+    now = datetime.now(timezone.utc)
+    issued = now - timedelta(seconds=5)
+    expires = issued + timedelta(seconds=30)
     return {
         "schema": "capability-authority.delegation-assertion/v1",
         "issuer": "spiffe://prod/agent/avrone",
         "subject": "spiffe://prod/agent/avrone",
         "audience": "spiffe://prod/broker",
         "jti": "fixed-jti",
-        "issued_at": "2026-11-03T09:00:00.000Z",
-        "expires_at": "2026-11-03T09:00:30.000Z",
+        "issued_at": issued.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "expires_at": expires.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "signature": "",
     }
 
@@ -153,6 +156,58 @@ def test_retry_reuses_exact_assertion_and_enables_parent_expiry_reconciliation(m
     assert seen == [True]
     assert client._http.requests[0][1]["requester_assertion"] == signed
 
+
+
+def test_delegate_rejects_expired_requester_assertion_for_new_delegation(monkeypatch):
+    client = client_with_http(monkeypatch)
+    stale = signed_assertion(client)
+    stale["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+    unsigned = {key: item for key, item in stale.items() if key != "signature"}
+    stale["signature"] = base64.b64encode(client._requester_key.sign(rfc8785.dumps(unsigned))).decode("ascii")
+    with pytest.raises(ValueError, match="requester assertion is expired"):
+        client.delegate(
+            parent_capability={"id": "parent"}, parent_signature="parent-sig",
+            audience="spiffe://prod/agent/swarm",
+            rights=[{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+            ttl_seconds=120, correlation_id="stable-correlation",
+            requester_assertion=stale,
+        )
+    assert client._http.requests == []
+
+
+def test_delegate_allows_expired_requester_assertion_only_for_explicit_replay(monkeypatch):
+    client = client_with_http(monkeypatch)
+    stale = signed_assertion(client)
+    stale["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+    unsigned = {key: item for key, item in stale.items() if key != "signature"}
+    stale["signature"] = base64.b64encode(client._requester_key.sign(rfc8785.dumps(unsigned))).decode("ascii")
+    client.delegate(
+        parent_capability={"id": "parent"}, parent_signature="parent-sig",
+        audience="spiffe://prod/agent/swarm",
+        rights=[{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+        ttl_seconds=120, correlation_id="stable-correlation",
+        requester_assertion=stale, allow_expired_parent_replay=True,
+    )
+    assert client._http.requests[0][1]["requester_assertion"] == stale
+
+
+def test_delegate_rejects_requester_assertion_issued_too_far_in_future(monkeypatch):
+    client = client_with_http(monkeypatch)
+    future = signed_assertion(client)
+    issued = datetime.now(timezone.utc) + timedelta(minutes=2)
+    future["issued_at"] = issued.isoformat().replace("+00:00", "Z")
+    future["expires_at"] = (issued + timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    unsigned = {key: item for key, item in future.items() if key != "signature"}
+    future["signature"] = base64.b64encode(client._requester_key.sign(rfc8785.dumps(unsigned))).decode("ascii")
+    with pytest.raises(ValueError, match="requester assertion timestamps are invalid"):
+        client.delegate(
+            parent_capability={"id": "parent"}, parent_signature="parent-sig",
+            audience="spiffe://prod/agent/swarm",
+            rights=[{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+            ttl_seconds=120, correlation_id="stable-correlation",
+            requester_assertion=future,
+        )
+    assert client._http.requests == []
 
 def test_parent_expiry_preflight_can_be_skipped_only_for_replay_after_signature_verification():
     authority_key = Ed25519PrivateKey.generate()

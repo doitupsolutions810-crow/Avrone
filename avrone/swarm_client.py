@@ -115,7 +115,11 @@ def _read_private_file(path: str | os.PathLike[str], *, max_bytes: int) -> bytes
 
 
 def load_parent_capability_file(path: str | os.PathLike[str] | None = None) -> tuple[dict[str, Any], str]:
-    configured = path or os.getenv("AVRONE_SWARM_PARENT_CAPABILITY_FILE", "")
+    primary = os.getenv("AVRONE_SWARM_PARENT_CAPABILITY_FILE", "")
+    alias = os.getenv("AVRONE_CA_PARENT_CAPABILITY_FILE", "")
+    if path is None and primary and alias and primary != alias:
+        raise RuntimeError("parent capability paths conflict; configure one protected file")
+    configured = path or primary or alias
     if not configured:
         raise RuntimeError("AVRONE_SWARM_PARENT_CAPABILITY_FILE is not configured")
     raw = _read_private_file(configured, max_bytes=64 * 1024)

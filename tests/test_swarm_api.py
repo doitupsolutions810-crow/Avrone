@@ -13,6 +13,7 @@ from avrone.swarm_client import ACTION, AuthorityRejected, DelegationUnknownOutc
 
 class FakeClient:
     def __init__(self, fail_first=False):
+        self.audience = "spiffe://prod/agent/swarm"
         self.calls = []
         self.fail_first = fail_first
         self._http = SimpleNamespace(close=lambda: None)
@@ -69,7 +70,8 @@ def body(message_id="msg-1", objective="run approved task"):
     return {"objective": objective,
             "capability": {"id": "cap-1", "audience": "spiffe://prod/agent/swarm"},
             "capability_signature": "signed-by-ca",
-            "message_id": message_id, "correlation_id": "corr-1"}
+            "message_id": message_id,
+            "correlation_id": "corr-1" if message_id == "msg-1" else "corr-" + message_id}
 
 
 def test_enqueue_requires_operator_authentication(tmp_path):
@@ -198,6 +200,9 @@ class FakeAuthority:
         self.calls = []
         self.outcomes = list(outcome) if isinstance(outcome, list) else [outcome]
         self._http = SimpleNamespace(close=lambda: None)
+
+    def _assertion(self):
+        return {"signature": "fake-contract-signature", "jti": "one-contract-assertion"}
 
     def delegate(self, **kwargs):
         self.calls.append(kwargs)

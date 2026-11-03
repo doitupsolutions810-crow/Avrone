@@ -27,6 +27,7 @@ later runs' worker prompts (AVRONE_LESSONS=off disables).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 import json
@@ -43,6 +44,16 @@ from .checkpoint import Checkpoint
 from .codex import Codex
 from .config import Settings
 from .ctxspawn import RECENT_CALLS
+
+
+def squad_dispatch_mode(dispatch: str | None = None) -> str:
+    allowed = {"local", "network", "hybrid", "swarm"}
+    if dispatch is None:
+        value = os.getenv("AVRONE_SQUAD_DISPATCH", "local").strip().lower()
+        return value if value in allowed else "local"
+    if not isinstance(dispatch, str) or dispatch not in allowed:
+        raise ValueError("dispatch must be local, network, hybrid or swarm")
+    return dispatch
 from .governor import Governor
 from .llm import LLM, LLMError
 from .sovereign import Runner
@@ -1007,18 +1018,80 @@ class TrinityCore:
         self.codex.emit(run_id, "lead.planned", "Planner", subtasks=subtasks)
         return subtasks
 
+    async def _dispatch_swarm(self, task: str, run_id: str,
+                              correlation_id: str | None = None) -> dict[str, Any]:
+        """Queue through the signed durable boundary; never fall back to local agents."""
+        if self._privileged_run():
+            result = {"state": "rejected", "reason": "privileged_run_cannot_be_exported"}
+        else:
+            from .swarm_client import AuthorityRejected, DelegationUnknownOutcome
+            from .swarm_outbox import InvalidOutboxRecord, RequestConflict
+            from .swarm_runtime import open_dispatcher, submit_objective
+            import sqlite3
+
+            correlation_id = correlation_id or "trinity:" + run_id
+            if (not isinstance(correlation_id, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", correlation_id)):
+                result = {"state": "rejected", "reason": "invalid_correlation_id"}
+            else:
+                message_id = "trinity-" + hashlib.sha256(correlation_id.encode()).hexdigest()[:40]
+
+                def send():
+                    with open_dispatcher(Path(self.settings.data_dir)) as target:
+                        return submit_objective(target, task, message_id, correlation_id)
+
+                try:
+                    result = await asyncio.to_thread(send)
+                except DelegationUnknownOutcome:
+                    result = {"state": "delegation_unknown", "retryable": True,
+                              "message_id": message_id, "correlation_id": correlation_id,
+                              "reason": "authority_outcome_unknown"}
+                except AuthorityRejected:
+                    result = {"state": "rejected", "reason": "authority_rejected"}
+                except RequestConflict:
+                    result = {"state": "rejected", "reason": "submission_identity_conflict"}
+                except (ValueError, InvalidOutboxRecord):
+                    result = {"state": "rejected", "reason": "signed_request_validation_failed"}
+                except (OSError, sqlite3.Error):
+                    result = {"state": "disabled", "reason": "durable_storage_unavailable"}
+                except RuntimeError:
+                    result = {"state": "disabled", "reason": "swarm_trust_configuration_unavailable"}
+        state = result["state"]
+        status = "pending" if state in {"unknown", "delegation_unknown"} else state
+        answer = {
+            "queued": "Swarm accepted the request into its queue. Task completion is unconfirmed.",
+            "pending": "Swarm acceptance is unknown. Retry with the same correlation ID.",
+            "rejected": "Swarm dispatch was rejected. No local agents were started.",
+            "disabled": "Swarm dispatch is unavailable. Configure trust and durable storage before retrying.",
+        }[status]
+        self.codex.emit(run_id, "swarm.dispatch", "Trinity", **result)
+        event = "run." + status if status in {"queued", "pending"} else "run.blocked"
+        self.codex.emit(run_id, event, "Trinity", status=status, answer=answer)
+        return {"run_id": run_id, "status": status, "answer": answer, "agents": [], "swarm": result}
+
     async def squad(self, task: str, n: int | None = None, run_id: str | None = None,
                     checkpoint: "Checkpoint | str | os.PathLike[str] | None" = None,
-                    dispatch: str | None = None) -> dict[str, Any]:
+                    dispatch: str | None = None,
+                    swarm_correlation_id: str | None = None) -> dict[str, Any]:
         """Plan, run the squad in parallel, merge with the lead.
 
-        `dispatch` (local|network|hybrid) overrides AVRONE_SQUAD_DISPATCH for this run (netsquad).
+        `dispatch` (local|network|hybrid|swarm) overrides AVRONE_SQUAD_DISPATCH.
+        Swarm queues the whole objective; it returns queue acceptance, not a worker answer.
 
         With `checkpoint` (a path or Checkpoint), the plan, every finished worker result and
         the final result are recorded; calling again with the same task and file resumes:
         finished workers are not re-run and a finished run is returned as is."""
+        mode = squad_dispatch_mode(dispatch)
+        if swarm_correlation_id is not None and mode != "swarm":
+            raise ValueError("swarm_correlation_id requires swarm dispatch")
         n = max(1, min(n or self.settings.squad_size, 8))
         ck, run_id, done = self._ck_open(checkpoint, task, "squad", run_id, n=n)
+        if mode == "swarm":
+            run_id = run_id or uuid.uuid4().hex[:10]
+            if ck is not None:
+                ck.begin(task, "squad", run_id, n=n)
+            self.codex.emit(run_id, "run.start", "Trinity", prompt=task, mode="squad", dispatch="swarm")
+            return await self._dispatch_swarm(task, run_id, swarm_correlation_id)
         if isinstance(done, dict):
             return done
         run_id = run_id or uuid.uuid4().hex[:10]
@@ -1140,6 +1213,8 @@ class TrinityCore:
         n = max(0, min(self.settings.deep_squad_size if n is None else int(n), MAX_DEEP))
         max_rounds = resolve_deep_rounds(rounds, self.settings)
         given = first_answer if first_answer and str(first_answer).strip() else None
+        if given is None and squad_dispatch_mode() == "swarm":
+            raise ValueError("deep requires an existing first_answer when squad dispatch is swarm")
         ck, run_id, done = self._ck_open(checkpoint, task, "deep", run_id, n=n, first_answer=given)
         if isinstance(done, dict):
             return done

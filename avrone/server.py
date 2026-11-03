@@ -16,12 +16,12 @@ import anyio
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import __version__
 from .bootstrap import build_core, run_cleanups
 from .config import settings
-from .trinity import TrinityCore, clamp_deep_rounds
+from .trinity import TrinityCore, clamp_deep_rounds, squad_dispatch_mode
 
 log = logging.getLogger("avrone.server")
 
@@ -242,8 +242,10 @@ class ChatIn(BaseModel):
     # squad/deep: server-managed checkpoint (data_dir/checkpoints/<id>.json). Re-posting the same
     # id and task resumes an interrupted (or background) run; a different task is refused (409).
     checkpoint_id: str | None = None
-    # squad only: netsquad placement for this request (local|network|hybrid); default AVRONE_SQUAD_DISPATCH
+    # squad only: local|network|hybrid|swarm; default AVRONE_SQUAD_DISPATCH
     dispatch: str | None = None
+    swarm_correlation_id: str | None = Field(default=None, min_length=1, max_length=128,
+                                             pattern=r"^[A-Za-z0-9_.:-]+$", strict=True)
 
 
 class TerminalIn(BaseModel):
@@ -315,8 +317,17 @@ async def chat(body: ChatIn, request: Request, x_admin_token: str | None = Heade
     if body.dispatch is not None:
         if body.mode != "squad":
             raise HTTPException(400, "dispatch works with mode squad")
-        if body.dispatch not in ("local", "network", "hybrid"):
-            raise HTTPException(400, f"Unknown dispatch {body.dispatch!r}. Use local, network or hybrid.")
+        if body.dispatch not in ("local", "network", "hybrid", "swarm"):
+            raise HTTPException(400, f"Unknown dispatch {body.dispatch!r}. Use local, network, hybrid or swarm.")
+    mode = squad_dispatch_mode(body.dispatch)
+    if body.swarm_correlation_id is not None and (body.mode != "squad" or mode != "swarm"):
+        raise HTTPException(400, "swarm_correlation_id requires mode squad and dispatch swarm")
+    if body.mode == "squad" and mode == "swarm":
+        require_swarm_operator(request, x_admin_token)
+        if not body.message.strip() or len(body.message.strip()) > 2000:
+            raise HTTPException(422, "Swarm objective must contain 1..2000 characters")
+    if body.mode == "deep" and mode == "swarm" and not (body.first_answer or "").strip():
+        raise HTTPException(400, "deep requires first_answer when squad dispatch is swarm")
     run_id = uuid.uuid4().hex[:10]
     ck: dict = {}
     cid, release = None, None
@@ -329,6 +340,8 @@ async def chat(body: ChatIn, request: Request, x_admin_token: str | None = Heade
         if body.mode == "squad":
             # Only pass dispatch when asked, so cores without the knob keep working.
             dk = {"dispatch": body.dispatch} if body.dispatch is not None else {}
+            if body.swarm_correlation_id is not None:
+                dk["swarm_correlation_id"] = body.swarm_correlation_id
             job = c.squad(body.message, body.squad_size, run_id, **ck, **dk)
         elif body.mode == "chat":
             job = c.chat(body.message, run_id)

@@ -56,8 +56,12 @@ def _decode(raw: bytes, *, label: str = "stored outbox record") -> Any:
             result[key] = value
         return result
     try:
-        return json.loads(raw.decode("utf-8"), parse_constant=reject_constant,
-                          object_pairs_hook=unique)
+        value = json.loads(raw.decode("utf-8"), parse_constant=reject_constant,
+                           object_pairs_hook=unique)
+        # parse_constant does not catch exponent overflow (1e999), and an
+        # escaped surrogate can decode successfully but cannot be sent as UTF-8.
+        _json_bytes(value, MAX_REQUEST_BYTES)
+        return value
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise InvalidOutboxRecord(f"{label} is corrupt: {exc}") from exc
 
@@ -111,21 +115,63 @@ class SwarmOutbox:
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )""")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS submission_intents (
+            correlation_id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL UNIQUE,
+            intent_json BLOB NOT NULL,
+            intent_sha256 TEXT NOT NULL
+        )""")
         self._db.execute("""CREATE TABLE IF NOT EXISTS dispatch_leases (
             message_id TEXT PRIMARY KEY,
             owner_token TEXT NOT NULL,
             lease_until REAL NOT NULL,
             FOREIGN KEY(message_id) REFERENCES swarm_outbox(message_id) ON DELETE CASCADE
         )""")
-        columns = {row[1] for row in self._db.execute("PRAGMA table_info(swarm_outbox)")}
-        if "receipt_sha256" not in columns:
-            self._db.execute("ALTER TABLE swarm_outbox ADD COLUMN receipt_sha256 TEXT")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row[1] for row in self._db.execute("PRAGMA table_info(swarm_outbox)")}
+            if "receipt_sha256" not in columns:
+                self._db.execute("ALTER TABLE swarm_outbox ADD COLUMN receipt_sha256 TEXT")
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            self._db.close()
+            raise
         os.chmod(self.path, 0o600)
         self._fsync_files()
 
     @classmethod
     def from_env(cls) -> "SwarmOutbox":
         return cls(os.getenv("AVRONE_SWARM_OUTBOX_DB", "./data/swarm-outbox.sqlite3"))
+
+    def bind_submission(self, message_id: str, correlation_id: str, objective: str) -> None:
+        """Bind both stable IDs to one task before any Authority network call."""
+        if any(not isinstance(value, str) or not _ID.fullmatch(value)
+               for value in (message_id, correlation_id)):
+            raise InvalidOutboxRecord("submission identity is invalid")
+        if not isinstance(objective, str) or not objective.strip() or len(objective) > 2000:
+            raise InvalidOutboxRecord("submission objective must contain 1..2000 characters")
+        raw = _json_bytes({"message_id": message_id, "correlation_id": correlation_id,
+                           "objective": objective}, 16 * 1024)
+        digest = hashlib.sha256(raw).hexdigest()
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._db.execute(
+                    "SELECT intent_json,intent_sha256 FROM submission_intents WHERE correlation_id=? OR message_id=?",
+                    (correlation_id, message_id)).fetchall()
+                if rows:
+                    if len(rows) != 1 or bytes(rows[0][0]) != raw or rows[0][1] != digest:
+                        raise RequestConflict("submission identity already belongs to a different objective")
+                else:
+                    self._db.execute("INSERT INTO submission_intents VALUES(?,?,?,?)",
+                                     (correlation_id, message_id, raw, digest))
+                self._db.execute("COMMIT")
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+            self._fsync_files()
 
     def prepare_authority_request(self, correlation_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Persist the exact signed CA request before network I/O; retries reuse identical bytes."""
@@ -247,6 +293,10 @@ class SwarmOutbox:
                         raise RequestConflict("message id already belongs to a different signed request")
                     self._db.execute("COMMIT")
                     return self.get(message_id)
+                other = self._db.execute(
+                    "SELECT message_id FROM swarm_outbox WHERE correlation_id=?", (correlation_id,)).fetchone()
+                if other is not None:
+                    raise RequestConflict("correlation id already belongs to a different message")
                 self._db.execute("""INSERT INTO swarm_outbox
                     (message_id,correlation_id,request_json,request_sha256,state,created_at,updated_at)
                     VALUES(?,?,?,?,?,?,?)""",

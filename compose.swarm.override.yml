@@ -1,6 +1,7 @@
 services:
   avrone:
     environment:
+      AVRONE_SQUAD_DISPATCH: ${AVRONE_SQUAD_DISPATCH:-swarm}
       AVRONE_CA_URL: ${AVRONE_CA_URL:?set AVRONE_CA_URL to the HTTPS Capability Authority endpoint}
       AVRONE_CA_REQUESTER_ID: ${AVRONE_CA_REQUESTER_ID:-spiffe://prod/agent/avrone}
       AVRONE_CA_ISSUER: ${AVRONE_CA_ISSUER:-spiffe://prod/broker}

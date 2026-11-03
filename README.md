@@ -2,6 +2,8 @@
 
 **Grok Bot integration:** this checkout now includes the Node runtime and a shared council interface. See [INTEGRATION.md](INTEGRATION.md) for the single-checkout launch command, source registry, bridge receipts and observed validation limits.
 
+**Signed Swarm dispatch:** squad mode can queue an objective through the durable Authority/Swarm boundary. See [SWARM_DISPATCH.md](docs/SWARM_DISPATCH.md) for configuration, operator access and exact-ID retries. [FUSION_SWARM_VALIDATION.md](docs/FUSION_SWARM_VALIDATION.md) records the repository sweep and actual cross-service transport checks.
+
 A self-hosted chat + search system where agents don't just answer, they **work**:
 they get a real terminal, a workspace, network access and Docker, they spawn
 sub-agents, and every action they take is logged and shown live on a HUD.

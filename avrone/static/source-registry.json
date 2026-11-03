@@ -465,12 +465,12 @@
     },
     {
       "path": "MASTER_PROMPT.md",
-      "sha256": "c73a904c6e643c550a585d0ae51050f87646d0384ceb319803131f06a3ba36e7",
+      "sha256": "e34fc83d13e342ee75c08fd5307f5ccd342675786b26f8ccd283efb640d4dbba",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "README.md",
-      "sha256": "1d92d33c9cdf5e86d78164112a2c87c9548003a982f71cb07ea03158b61d1611",
+      "sha256": "53fb7bde05e945853525a517dc24317cbe48256249d4ff59ae04bcf99b903ba3",
       "source": "local integration against the pinned AVRONE baseline"
     },
     {
@@ -490,7 +490,7 @@
     },
     {
       "path": "avrone/server.py",
-      "sha256": "c2c416df9c0955daaa9ce176487a67e032d521756ac6d247de2b6e74dc50f347",
+      "sha256": "03a620dda6d935cf69d3ab88245559f77f58a29d8ce26f3acafc86cf3a82fd39",
       "source": "Adapted from AVRONE PR 20 at 8cca4083eb94da32240a17a5a7ce87db519cdf7b, with local strict JSON and durable cross-process fan-in fixes; 180 tests passed"
     },
     {
@@ -530,7 +530,7 @@
     },
     {
       "path": "docs/UPGRADE_REVIEW.md",
-      "sha256": "58bebb2e8a9e33183bf3d847101c804717b787eb0dd7103fcf050b77297e8dc9",
+      "sha256": "7f2459bd3df9547988debe55001426de529def16b2475eaa361823528778669d",
       "source": "Adapted from AVRONE PR 20 at 8cca4083eb94da32240a17a5a7ce87db519cdf7b, with local strict JSON and durable cross-process fan-in fixes; 180 tests passed"
     },
     {
@@ -640,22 +640,22 @@
     },
     {
       "path": "avrone/swarm_api.py",
-      "sha256": "649ee7579f86b9470988723fe0bcb31ba97aefd1f86e020d46c7b28138a1b7bc",
+      "sha256": "a57a86e4aa9dd4b5292d75f66a687f7bb490d0c644e1c148fbcd71739bb14ebf",
       "source": "Local Swarm concurrency and operator-boundary repair; 133 targeted tests passed"
     },
     {
       "path": "avrone/swarm_client.py",
-      "sha256": "0b8a9d02319f917d69fcfd75b542090bee4c644f158adbcdcf6edd25c03b0ee3",
+      "sha256": "650298ee15bf0dce4365c4979369042df65f38c6063f14200b2080a288969c1c",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "avrone/swarm_outbox.py",
-      "sha256": "34001403ef6f136de35ba08b712c2839035440cc337190111edd4a6f140bc762",
+      "sha256": "7371200b57671d24f97e53d920e6e7864819be8ae1092b0619186ad537b26e59",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
       "path": "compose.swarm.override.yml",
-      "sha256": "d0595bd0dd4257bc9aed277ef1be9ae21b6fd9e14d539ec3f56c23662ef4b578",
+      "sha256": "75c381b83fadb38f5546bb26e196d8d9dc53f89c79dfd1f855cbb70d7490a71d",
       "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
@@ -665,12 +665,12 @@
     },
     {
       "path": "tests/test_swarm_api.py",
-      "sha256": "b1946f1612317ecea580f014cddcf01bbe73b6962fb91efa81d5d5dc1e666959",
+      "sha256": "c0d1f8e5a0a26e49db8be85d68c4b2f7e6e0dd2981b3fd130996307758528e70",
       "source": "AVRONE signed Swarm snapshot 5c0488da4b07d5672411a1d115c6454287999027 plus locally tested startup repair"
     },
     {
       "path": "tests/test_swarm_authority_client.py",
-      "sha256": "08d184811560c5babbde19b88bb9fb10863eafad5b5531e8d10d73ed1eb9d49f",
+      "sha256": "6dd8356a47aeaa7523b1f639b7470af324f4e0ebb57fb952ff4273bc21b59fe6",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
@@ -745,7 +745,7 @@
     },
     {
       "path": "docs/FUSION_SWARM_VALIDATION.md",
-      "sha256": "8e0beaa555221501bed49f49af092b64b088f791a3f18b5950a46851bf7b9c5c",
+      "sha256": "4142a7f89875bba483f41422608326497761731b0435183877e5993df39bb75f",
       "source": "Reviewed PR 19 signing/outbox file blobs, adapted with existing protected file loaders and thread locks; 122 tests passed"
     },
     {
@@ -757,6 +757,26 @@
       "path": "tests/test_http_body_limit.py",
       "sha256": "18bf87ad92c10ba2d62d6a0619f472781dc914612e4e8a5ba743c4236584ca84",
       "source": "Actual TCP regression for bounded Fusion blackboard refusal"
+    },
+    {
+      "path": "avrone/swarm_runtime.py",
+      "sha256": "4d0677105ed900b4bbfa0edc890d9e0c447cc545050aa1951ce89000ded72495",
+      "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
+    },
+    {
+      "path": "tests/test_swarm_runtime.py",
+      "sha256": "37f4ed30a4fc84d6f351a64c3d6994bafdd15b7c2f11010eecdb564a52d7ece6",
+      "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
+    },
+    {
+      "path": "tests/test_trinity_swarm_dispatch.py",
+      "sha256": "682f899950d3a77625785dc685abf4cdf512b0588af7df751b0b00daab1f477f",
+      "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
+    },
+    {
+      "path": "docs/SWARM_DISPATCH.md",
+      "sha256": "e1e8c251ea13d9fdccaf0bb2418be583cb61d37d276cd271939036e583e585a5",
+      "source": "Locally validated shared Trinity/API/CLI Swarm submission boundary"
     }
   ],
   "upstream_updates": [
@@ -819,6 +839,18 @@
         "tests/test_tool_env_report.py"
       ],
       "role": "Authenticated bounded fusion blackboard; adapted with strict JSON, durable acknowledgement and cross-process cursor fixes"
+    },
+    {
+      "id": "trinity-swarm-replay-20261103",
+      "repository": "https://github.com/doitupsolutions810-crow/Avrone",
+      "reviewed_pr": 19,
+      "reviewed_head": "1215437b63e4d716f4fe461692e0311b2a5cd87d",
+      "reviewed_blobs": {
+        "avrone/swarm_client.py": "e60a253c70c32968407b8a3d83b071cee3011eed",
+        "avrone/swarm_outbox.py": "2537b1b28e345a11b20f9896ce83f27aeda6cbdd",
+        "avrone/trinity.py": "c70d127ae885b5be2767f134beb7944ac8785081"
+      },
+      "role": "Selected replay/outbox concepts adapted; protected loaders retained; shared submission and routing hardened locally"
     }
   ],
   "repository_review": {
@@ -900,6 +932,12 @@
       "python_passed": 97,
       "relay_cycles": 50,
       "cross_repository_assertions": 21,
+      "full_suite": false
+    },
+    {
+      "id": "trinity-swarm-wired-20261103",
+      "report": "docs/FUSION_SWARM_VALIDATION.md",
+      "python_passed": 259,
       "full_suite": false
     }
   ]

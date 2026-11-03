@@ -216,6 +216,26 @@ def test_parent_credential_loader_accepts_private_canonical_file(tmp_path):
     assert load_parent_capability_file(path) == (capability, signature)
 
 
+def test_parent_file_alias_keeps_protected_loader_and_rejects_conflicts(tmp_path, monkeypatch):
+    import json
+    from avrone.swarm_client import load_parent_capability_file
+    tmp_path.chmod(0o700)
+    path = tmp_path / "parent.json"
+    signature = base64.b64encode(b"x" * 64).decode("ascii")
+    path.write_text(json.dumps({"capability": {"id": "parent"}, "signature": signature}))
+    path.chmod(0o600)
+    monkeypatch.delenv("AVRONE_SWARM_PARENT_CAPABILITY_FILE", raising=False)
+    monkeypatch.setenv("AVRONE_CA_PARENT_CAPABILITY_FILE", str(path))
+    assert load_parent_capability_file() == ({"id": "parent"}, signature)
+    monkeypatch.setenv("AVRONE_SWARM_PARENT_CAPABILITY_FILE", str(tmp_path / "other.json"))
+    with pytest.raises(RuntimeError, match="conflict"):
+        load_parent_capability_file()
+    monkeypatch.setenv("AVRONE_SWARM_PARENT_CAPABILITY_FILE", str(path))
+    path.chmod(0o644)
+    with pytest.raises(RuntimeError, match="0600"):
+        load_parent_capability_file()
+
+
 def test_parent_credential_loader_rejects_symlink_and_permissive_mode(tmp_path):
     from avrone.swarm_client import load_parent_capability_file
     tmp_path.chmod(0o700)

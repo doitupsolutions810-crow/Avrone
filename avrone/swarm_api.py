@@ -14,10 +14,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .swarm_client import (
-    ACTION, AuthorityRejected, CapabilityAuthorityClient,
+    AuthorityRejected, CapabilityAuthorityClient,
     DelegationUnknownOutcome, SwarmClient, load_parent_capability_file,
 )
 from .swarm_outbox import SwarmOutbox, SwarmDispatcher, InvalidOutboxRecord, RequestConflict
+from .swarm_runtime import submit_objective
 
 _ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
 
@@ -60,7 +61,8 @@ def install_routes(
         client = None
         try:
             client = client_factory()
-            outbox = outbox_factory(Path(settings.data_dir) / "swarm-outbox.sqlite3")
+            outbox = outbox_factory(Path(os.getenv("AVRONE_SWARM_OUTBOX_DB") or
+                                        Path(settings.data_dir) / "swarm-outbox.sqlite3"))
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             if client is not None:
                 try:
@@ -105,26 +107,12 @@ def install_routes(
                 if capability is None:
                     if not body.message_id or not body.correlation_id:
                         raise HTTPException(422, "message_id and correlation_id are required for Authority delegation")
-                    authority = None
                     try:
-                        parent_capability, parent_signature = parent_capability_loader()
-                        authority = authority_client_factory()
-                        audience = os.getenv("AVRONE_SWARM_AUDIENCE", "spiffe://prod/agent/swarm")
-                        try:
-                            ttl_seconds = int(os.getenv("AVRONE_SWARM_DELEGATION_TTL_SECONDS", "120"))
-                        except ValueError:
-                            raise HTTPException(503, "Swarm delegation TTL configuration is invalid") from None
-                        if not 1 <= ttl_seconds <= 300:
-                            raise HTTPException(503, "Swarm delegation TTL configuration is outside 1..300")
-                        delegated = authority.delegate(
-                            parent_capability=parent_capability,
-                            parent_signature=parent_signature,
-                            audience=audience,
-                            rights=[dict(ACTION)],
-                            ttl_seconds=ttl_seconds,
-                            correlation_id=body.correlation_id,
-                        )
-                        capability, capability_signature = delegated["capability"], delegated["signature"]
+                        return response(submit_objective(
+                            target, objective, body.message_id, body.correlation_id,
+                            authority_factory=authority_client_factory,
+                            parent_loader=parent_capability_loader,
+                        ))
                     except DelegationUnknownOutcome:
                         return JSONResponse(status_code=202, content={
                             "state": "delegation_unknown",
@@ -139,17 +127,10 @@ def install_routes(
                             "message_id": body.message_id,
                             "error_code": "authority_rejected",
                         })
-                    except HTTPException:
+                    except RequestConflict:
                         raise
                     except (OSError, RuntimeError):
                         raise HTTPException(503, "Capability Authority trust or parent credential is unavailable") from None
-                    except ValueError:
-                        raise HTTPException(403, "Capability Authority delegation request was rejected locally") from None
-                    finally:
-                        if authority is not None:
-                            http_client = getattr(authority, "_http", None)
-                            if http_client is not None:
-                                http_client.close()
 
                 signed = target.client.build_request(
                     payload={"objective": objective}, capability=capability,

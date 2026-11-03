@@ -60,6 +60,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["check", "up", "verify", "down"])
     parser.add_argument("--open", action="store_true", help="open both consoles after startup")
+    parser.add_argument("--swarm", action="store_true", help="enable the separately provisioned Capability Authority + Swarm profile")
     parser.add_argument("--task", default="Independently calculate 17 times 19, explain a verification check and identify any unavailable evidence. Do not perform external writes.")
     args = parser.parse_args(argv)
     report = preflight()
@@ -69,8 +70,31 @@ def main(argv=None):
     if args.action == "check" or report["state"] != "READY":
         print(json.dumps({k: v for k, v in report.items() if k != "sources"}, indent=2))
         return 0 if report["state"] == "READY" else 1
+    if args.swarm and args.action not in {"up", "down"}:
+        parser.error("--swarm is supported only with up and down")
     env = credentials()
     command = ["docker", "compose", "--env-file", str(ENV), "-f", str(ROOT / "compose.grok.yml")]
+    if args.swarm:
+        required = (
+            "AVRONE_SECRET_DIR", "AVRONE_CA_URL", "AVRONE_CA_PUBLIC_KEY_B64",
+            "AVRONE_SWARM_URL", "AVRONE_SWARM_ISSUER",
+        )
+        missing = [name for name in required if not os.environ.get(name)]
+        if missing:
+            raise SystemExit("Swarm profile is missing configuration: " + ", ".join(missing))
+        secret_dir = Path(os.environ["AVRONE_SECRET_DIR"]).expanduser()
+        if secret_dir.is_symlink() or not secret_dir.is_dir() or (secret_dir.stat().st_mode & 0o077):
+            raise SystemExit("AVRONE_SECRET_DIR must be a non-symlink mode-0700 directory")
+        expected_files = (
+            "avrone-ca-requester.pem", "avrone-ca-requester.pub",
+            "avrone-swarm-issuer.pem", "avrone-swarm-issuer.pub",
+            "avrone-swarm-parent.json", "swarm-receipt.pub",
+        )
+        for name in expected_files:
+            path = secret_dir / name
+            if path.is_symlink() or not path.is_file() or (path.stat().st_mode & 0o077):
+                raise SystemExit("missing, symlinked, or permissive Swarm credential: " + name)
+        command += ["-f", str(ROOT / "compose.swarm.override.yml")]
     if args.action == "down":
         return subprocess.run(command + ["down"], cwd=ROOT).returncode
     if args.action == "up":

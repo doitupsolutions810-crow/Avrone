@@ -166,3 +166,20 @@ def test_enqueue_with_delegation_rejects_correlation_mismatch_before_delegating(
             delegation_correlation_id="stable-task-001",
             correlation_id="different-task",
         )
+
+
+def test_send_request_verifies_envelope_signature_digest_and_expiry(keys):
+    client = client_for(keys)
+    capability, signature = capability_for(keys)
+    request = client.build_request(payload={"objective": "verify before transport"}, capability=capability, capability_signature=signature)
+    assert client.verify_request(request) is None
+    tampered = json.loads(json.dumps(request))
+    tampered["payload"]["objective"] = "changed after signing"
+    with pytest.raises(ValueError, match="digest"):
+        client.verify_request(tampered)
+    tampered = json.loads(json.dumps(request))
+    tampered["envelope"]["signature"] = "A" * 88
+    with pytest.raises(ValueError, match="signature"):
+        client.verify_request(tampered)
+    with pytest.raises(ValueError, match="expired"):
+        client.verify_request(request, now=datetime.now(timezone.utc) + timedelta(minutes=6))

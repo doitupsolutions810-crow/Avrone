@@ -63,3 +63,23 @@ async def test_unknown_dispatch_value_is_rejected():
     core._ck_open = lambda *args, **kwargs: (None, args[3], None)
     with pytest.raises(ValueError, match="dispatch must be"):
         await core.squad("task", run_id="run-3", dispatch="magic")
+
+
+@pytest.mark.asyncio
+async def test_swarm_resume_rechecks_outbox_instead_of_trusting_cached_checkpoint(monkeypatch):
+    core = TrinityCore.__new__(TrinityCore)
+    core.settings = SimpleNamespace(squad_size=4)
+    core.codex = FakeCodex()
+    class Checkpoint:
+        def begin(self, *args, **kwargs):
+            pass
+    checkpoint = Checkpoint()
+    core._ck_open = lambda *args, **kwargs: (checkpoint, "run-cached", {"status": "queued", "swarm": {"job": {"id": "stale"}}})
+    calls = []
+    async def dispatch(task, run_id, correlation_id):
+        calls.append((task, run_id, correlation_id))
+        return {"run_id": run_id, "status": "queued", "answer": "reverified", "agents": []}
+    core._dispatch_swarm = dispatch
+    result = await core.squad("task", checkpoint=checkpoint, dispatch="swarm")
+    assert result["answer"] == "reverified"
+    assert calls == [("task", "run-cached", None)]

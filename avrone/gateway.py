@@ -204,6 +204,13 @@ class Gateway:
                         nudge = True
                     if attempt < per_up_tries - 1:
                         await asyncio.sleep(_delay(e.response, self.s.llm_backoff, attempt))
+                except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
+                    # A malformed base URL fails identically every time: no retry, fail over.
+                    # (InvalidURL is not an httpx.HTTPError, so before round 23 it escaped chat()
+                    # as a raw exception instead of an LLMError.)
+                    up.record(False, self.threshold, self.cooldown)
+                    errors.append(f"{up.provider} bad base URL {up.base_url!r}: {e}")
+                    break
                 except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                     up.record(False, self.threshold, self.cooldown)
                     errors.append(f"{up.provider} unreachable: {e}")

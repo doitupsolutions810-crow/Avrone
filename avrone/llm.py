@@ -64,6 +64,8 @@ class LLM:
                 async with httpx.AsyncClient(timeout=self.s.llm_timeout,
                                              trust_env=not is_loopback_url(url)) as client:
                     r = await client.post(url, headers=headers, json=body)
+            except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
+                raise LLMError(f"Model backend URL is invalid ({url!r}): {e}") from e
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 raise LLMError(f"Model backend unreachable at {url}: {e}") from e
             except httpx.HTTPError as e:  # read timeouts, dropped connections: retry

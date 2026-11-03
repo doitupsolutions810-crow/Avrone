@@ -314,3 +314,14 @@ merge without his word.
   - Extra keys are dropped. A valid `name` is kept. Junk entries are skipped, and the caller's list is never mutated.
 - **`safe_temperature()`**: NaN or inf (which made the JSON invalid) and non-numbers fall back to 0.7. Other values are clamped to 0–2.
 - Tests: tests/test_gateway_outbound.py (43). Mutation on round 21: 35 of 43 fail.
+
+## Round 23: endpoint and config values (branch avrone-a12lr-daemon)
+- **`normalize_base_url()`** in config.resolve_provider covers both the gateway and the legacy LLM:
+  - Strips quotes, whitespace, trailing slashes, and a pasted full `/chat/completions` or `/completions` endpoint. That used to double into a 404.
+  - Adds a missing scheme: http:// for local or LAN hosts and :11434, https:// otherwise.
+  - For Ollama, a bare `host:11434`, or `/api`, `/api/chat`, or `/api/generate`, becomes `/v1`.
+- **`clean_api_key()`**: removes quotes, whitespace, and newlines, plus a leading `Bearer ` (that used to send "Bearer Bearer", a 401). Model names are unquoted.
+- **Numeric env vars** (`_int`/`_float`): blank, junk ("30s"), NaN, or inf now fall back to the default with a stderr note. Before, this raised ValueError at import (`settings = Settings()`), so nothing started. Underscores, quotes, and "1e1" are accepted.
+- **.env parser** (`parse_dotenv_line`): handles `export KEY=`, a BOM, CRLF, and a quoted value that contains " #". Keys with spaces are rejected. A non-UTF-8 file or a directory named .env no longer crashes.
+- **Malformed URL at request time**: httpx.InvalidURL (not an HTTPError, so it used to escape chat() raw) and UnsupportedProtocol now fail over at once with no retry. The legacy client raises LLMError.
+- Tests: tests/test_config_endpoint.py (70). Mutation on round 22: 49 of 70 fail.

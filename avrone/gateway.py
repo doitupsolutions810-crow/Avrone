@@ -139,9 +139,12 @@ class Gateway:
             # Permanent for this upstream (bad request, auth): don't retry it, but fail over.
             raise _Permanent(f"{up.provider} {r.status_code}: {r.text[:300]}")
         try:
-            choice = r.json()["choices"][0]
-            msg = choice["message"]
+            choice, msg = extract_choice(r.text)
             content = msg.get("content") or ""
+        except _UpstreamError as e:
+            if e.permanent:
+                raise _Permanent(f"{up.provider} 200: {e}") from e
+            raise _Retry(f"{up.provider} 200: {e}", r) from e
         except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
             raise _Retry(f"{up.provider} bad response: {r.text[:200]}", r) from e
         content = content_text(content)
@@ -381,6 +384,113 @@ def tool_calls_as_action(tool_calls: Any, finish_reason: Any = None) -> str:
     return json.dumps(actions[0] if len(actions) == 1 else {"tools": actions}, default=str)
 
 
+class _UpstreamError(ValueError):
+    def __init__(self, msg: str, permanent: bool = False):
+        super().__init__(msg)
+        self.permanent = permanent
+
+
+_PERMANENT_ERR = ("not found", "does not exist", "unknown model", "invalid api key", "unauthorized",
+                  "invalid_api_key", "model_not_found", "no such model", "pull the model")
+
+
+def _error_text(err: Any) -> str:
+    if isinstance(err, dict):
+        for k in ("message", "error", "detail", "msg"):
+            if isinstance(err.get(k), str) and err[k].strip():
+                return err[k].strip()
+            if isinstance(err.get(k), dict):
+                return _error_text(err[k])
+        return json.dumps(err, default=str)[:300]
+    return str(err).strip()[:300]
+
+
+def _sse_message(text: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """A proxy that forces streaming answers with SSE ("data: {...}" lines). Join the deltas."""
+    parts: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    finish = None
+    seen = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        if isinstance(chunk, dict) and chunk.get("error") is not None:
+            raise _UpstreamError(_error_text(chunk["error"]),
+                                 any(w in _error_text(chunk["error"]).lower() for w in _PERMANENT_ERR))
+        chs = chunk.get("choices") if isinstance(chunk, dict) else None
+        if not (isinstance(chs, list) and chs and isinstance(chs[0], dict)):
+            continue
+        seen = True
+        ch = chs[0]
+        finish = ch.get("finish_reason") or finish
+        d = ch.get("delta") or ch.get("message") or {}
+        if not isinstance(d, dict):
+            continue
+        if isinstance(d.get("content"), str):
+            parts.append(d["content"])
+        for i, tc in enumerate(d.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            idx = tc.get("index", i) if isinstance(tc.get("index", i), int) else i
+            slot = calls.setdefault(idx, {"function": {"name": "", "arguments": ""}})
+            fn = tc.get("function") or {}
+            if isinstance(fn, dict):
+                if isinstance(fn.get("name"), str):
+                    slot["function"]["name"] += fn["name"]
+                if isinstance(fn.get("arguments"), str):
+                    slot["function"]["arguments"] += fn["arguments"]
+                elif isinstance(fn.get("arguments"), dict):
+                    slot["function"]["arguments"] = fn["arguments"]
+    if not seen:
+        return None
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(parts)}
+    if calls:
+        msg["tool_calls"] = [calls[k] for k in sorted(calls)]
+    return {"finish_reason": finish, "message": msg}, msg
+
+
+def extract_choice(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A 200 body -> (choice, message). Accepts the OpenAI chat shape plus what other
+    "OpenAI-compatible" servers send: legacy completions (choices[0].text), a single streamed
+    chunk (choices[0].delta), Ollama's native /api/chat ({"message": ...}), an SSE stream, and a
+    200 carrying {"error": ...} (surfaced instead of "bad response"; model-not-found and auth
+    errors are permanent)."""
+    body = text.lstrip("\ufeff").strip()
+    if body.startswith("data:") or "\ndata:" in body[:2000]:
+        got = _sse_message(body)
+        if got is not None:
+            return got
+    data = json.loads(body)
+    if not isinstance(data, dict):
+        raise ValueError("response is not an object")
+    if data.get("error") is not None and not data.get("choices"):
+        err = _error_text(data["error"])
+        raise _UpstreamError(err or "error", any(w in err.lower() for w in _PERMANENT_ERR))
+    choices = data.get("choices")
+    if choices is None and isinstance(data.get("message"), dict):  # Ollama /api/chat
+        msg = data["message"]
+        return {"message": msg, "finish_reason": data.get("done_reason")}, msg
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise TypeError("choice is not an object")
+    msg = choice.get("message")
+    if msg is None and isinstance(choice.get("delta"), dict):
+        msg = choice["delta"]
+    if msg is None and isinstance(choice.get("text"), str):
+        msg = {"role": "assistant", "content": choice["text"]}
+    if not isinstance(msg, dict):
+        raise TypeError("message is not an object")
+    return choice, msg
+
+
 class _Retry(RuntimeError):
     def __init__(self, msg: str, response: httpx.Response | None = None):
         super().__init__(msg)
@@ -391,11 +501,36 @@ class _Permanent(RuntimeError):
     pass
 
 
+def retry_after_seconds(value: Any, now: float | None = None) -> float | None:
+    """Retry-After as delay-seconds or an HTTP-date (RFC 9110). None when unusable."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        secs = float(text)
+    except ValueError:
+        from email.utils import parsedate_to_datetime
+        try:
+            when = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            import datetime as _dt
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        secs = when.timestamp() - (time.time() if now is None else now)
+    if secs != secs:  # NaN
+        return None
+    return max(0.0, secs)
+
+
 def _delay(r: httpx.Response | None, base: float, attempt: int) -> float:
     delay = base * (2 ** attempt)
     if r is not None:
-        try:
-            delay = max(delay, min(float(r.headers.get("retry-after", "")), 30.0))
-        except ValueError:
-            pass
+        ra = retry_after_seconds(r.headers.get("retry-after"))
+        if ra is not None:
+            delay = max(delay, min(ra, 30.0))
     return delay

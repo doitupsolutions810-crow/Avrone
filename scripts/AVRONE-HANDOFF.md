@@ -290,3 +290,15 @@ merge without his word.
 - **Refusal:** with empty content and no usable tool call, a non-blank `message.refusal` is returned instead of "".
 - **Double-encoded arguments:** tool-call arguments JSON-encoded two or three times are unwrapped. A plain JSON string stays `_raw`.
 - Tests: tests/test_gateway_content_shapes.py (33). Mutation on round 19: 21 of 33 fail. The rest are pass-through guards.
+
+## Round 21 hardening (response body shapes and Retry-After)
+- **`extract_choice()`** reads a 200 body even when it isn't the plain OpenAI chat shape:
+  - legacy completions (`choices[0].text`)
+  - a lone streamed chunk (`choices[0].delta`)
+  - Ollama's native `/api/chat` body (`{"message": ...}`, where `done_reason` maps to finish_reason, so length still fails fast)
+  - a BOM or surrounding whitespace
+  - an SSE stream from a proxy that forces streaming. Content deltas and tool-call argument fragments are joined by index, and a cut-off streamed call still never runs.
+- **200 with `{"error": ...}`:** the message is surfaced instead of "bad response". Model not found, does not exist, invalid API key, and unauthorized are permanent (no retry, fail over). Anything else is retried with its message. SSE error chunks are handled the same way.
+- **Retry-After:** accepts an HTTP-date as well as seconds. A past date gives 0, NaN or junk is ignored, and the delay is still capped at 30 s.
+- Unusable bodies (empty choices, HTML, arrays) still give "bad response" and retry, as before.
+- Tests: tests/test_gateway_response_shapes.py (36). Mutation on round 20: 19 of 36 fail. The rest are pass-through guards.

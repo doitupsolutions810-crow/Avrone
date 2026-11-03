@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import math
 import os
+import stat
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -83,6 +85,61 @@ class DelegationUnknownOutcome(SwarmError):
         self.correlation_id = args["correlation_id"]
 
 
+def _read_private_file(path: str | os.PathLike[str], *, max_bytes: int) -> bytes:
+    target = Path(path).expanduser()
+    try:
+        parent_stat = target.parent.stat()
+        if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_IMODE(parent_stat.st_mode) & 0o077:
+            raise RuntimeError("secret directory must be private (mode 0700 or stricter)")
+        fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise RuntimeError("secret file is unavailable or is a symlink") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+            raise RuntimeError("secret file must be a bounded regular file")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise RuntimeError("secret file must have mode 0600 or stricter")
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            raw = stream.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise RuntimeError("secret file exceeds size limit")
+        return raw
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def load_parent_capability_file(path: str | os.PathLike[str] | None = None) -> tuple[dict[str, Any], str]:
+    configured = path or os.getenv("AVRONE_SWARM_PARENT_CAPABILITY_FILE", "")
+    if not configured:
+        raise RuntimeError("AVRONE_SWARM_PARENT_CAPABILITY_FILE is not configured")
+    raw = _read_private_file(configured, max_bytes=64 * 1024)
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate credential JSON key")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-finite credential JSON value: " + value)
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique, parse_constant=reject_constant)
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise RuntimeError("parent capability file is not valid bounded JSON") from exc
+    if not isinstance(value, dict) or set(value) != {"capability", "signature"}:
+        raise RuntimeError("parent capability file schema mismatch")
+    if not isinstance(value["capability"], dict) or not isinstance(value["signature"], str):
+        raise RuntimeError("parent capability file fields are invalid")
+    _b64(value["signature"], 64)
+    return value["capability"], value["signature"]
+
+
 class CapabilityAuthorityClient:
     def __init__(
         self, *, endpoint: str, requester: str, authority_issuer: str,
@@ -102,6 +159,27 @@ class CapabilityAuthorityClient:
             raise ValueError("requester assertion signing key must be Ed25519")
         self._authority_key = Ed25519PublicKey.from_public_bytes(_b64(authority_public_key_b64, 32))
         self._http = http_client or httpx.Client()
+
+    @classmethod
+    def from_env(cls, http_client: httpx.Client | None = None) -> "CapabilityAuthorityClient":
+        required = {
+            "AVRONE_CA_URL": os.getenv("AVRONE_CA_URL", ""),
+            "AVRONE_CA_REQUESTER_ID": os.getenv("AVRONE_CA_REQUESTER_ID", "spiffe://prod/agent/avrone"),
+            "AVRONE_CA_REQUESTER_KEY_FILE": os.getenv("AVRONE_CA_REQUESTER_KEY_FILE", ""),
+            "AVRONE_CA_PUBLIC_KEY_B64": os.getenv("AVRONE_CA_PUBLIC_KEY_B64", ""),
+        }
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise RuntimeError("Capability Authority client is not configured: " + ", ".join(missing))
+        return cls(
+            endpoint=required["AVRONE_CA_URL"],
+            requester=required["AVRONE_CA_REQUESTER_ID"],
+            authority_issuer=os.getenv("AVRONE_CA_ISSUER", "spiffe://prod/broker"),
+            requester_private_key_pem=_read_private_file(required["AVRONE_CA_REQUESTER_KEY_FILE"], max_bytes=16 * 1024),
+            authority_public_key_b64=required["AVRONE_CA_PUBLIC_KEY_B64"],
+            http_client=http_client,
+            allow_insecure_http=os.getenv("AVRONE_CA_ALLOW_HTTP", "0") == "1",
+        )
 
     def _assertion(self, now: datetime | None = None) -> dict[str, Any]:
         current = now or datetime.now(timezone.utc)

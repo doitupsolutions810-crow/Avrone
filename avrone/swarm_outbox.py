@@ -69,9 +69,11 @@ class SwarmOutbox:
             os.close(fd)
 
     def _read(self, path: Path, correlation_id: str) -> dict[str, Any] | None:
+        if path.is_symlink():
+            raise SwarmOutboxError("outbox record must not be a symlink")
         if not path.exists():
             return None
-        if path.is_symlink() or not path.is_file():
+        if not path.is_file():
             raise SwarmOutboxError("outbox record must be a regular file")
         if path.stat().st_size > self.MAX_RECORD_BYTES:
             raise SwarmOutboxError("outbox record exceeds size limit")
@@ -141,6 +143,8 @@ class SwarmOutbox:
                 raise SwarmOutboxError("correlation_id already belongs to a different task or parent capability")
             if record.get("state") == "queued":
                 return dict(record["result"], idempotent_replay=True, outbox_path=str(path))
+            if record.get("state") == "rejected":
+                return {"status": "rejected", "correlation_id": correlation_id, "reason": record.get("last_error", "previously rejected"), "outbox_path": str(path)}
 
             if not isinstance(record.get("delegated_capability"), dict):
                 try:

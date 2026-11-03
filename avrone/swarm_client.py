@@ -349,6 +349,35 @@ class SwarmClient:
         return {"envelope": {**unsigned, "signature": signature}, "payload": payload,
                 "capability": capability, "capability_signature": capability_signature}
 
+    def verify_request(self, request: dict[str, Any], now: datetime | None = None) -> None:
+        if not isinstance(request, dict) or set(request) != {'envelope', 'payload', 'capability', 'capability_signature'}:
+            raise ValueError('Swarm request schema mismatch')
+        envelope, payload = request['envelope'], request['payload']
+        if not isinstance(envelope, dict) or not isinstance(payload, dict):
+            raise ValueError('Swarm envelope and payload must be objects')
+        if envelope.get('schema') != ENVELOPE_SCHEMA or envelope.get('issuer') != self.issuer or envelope.get('audience') != self.audience:
+            raise ValueError('Swarm envelope identity mismatch')
+        if payload.get('action') != ACTION or not isinstance(payload.get('objective'), str) or not payload['objective'].strip():
+            raise ValueError('Swarm payload action/objective is invalid')
+        if envelope.get('payload_digest') != _digest(payload):
+            raise ValueError('Swarm payload digest mismatch')
+        current = now or datetime.now(timezone.utc)
+        try:
+            issued = datetime.fromisoformat(envelope['issued_at'].replace('Z', '+00:00'))
+            expires = datetime.fromisoformat(envelope['expires_at'].replace('Z', '+00:00'))
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            raise ValueError('Swarm envelope timestamps are invalid') from exc
+        if _iso(issued) != envelope['issued_at'] or _iso(expires) != envelope['expires_at'] or issued > current + timedelta(seconds=30) or expires <= current or expires <= issued or (expires - issued).total_seconds() > 300:
+            raise ValueError('Swarm envelope timestamps are invalid or expired')
+        capability = request['capability']
+        if not isinstance(capability, dict) or envelope.get('capability_id') != capability.get('id'):
+            raise ValueError('Swarm envelope capability binding mismatch')
+        self._verify_capability(capability, request['capability_signature'], current)
+        unsigned = {key: value for key, value in envelope.items() if key != 'signature'}
+        try:
+            self._issuer_key.public_key().verify(_b64(envelope['signature'], 64), _jcs(unsigned))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError('invalid AVRONE envelope signature') from exc
     def verify_receipt(self, receipt: dict[str, Any], request: dict[str, Any]) -> None:
         if not isinstance(receipt, dict) or set(receipt) != RECEIPT_FIELDS:
             raise ValueError("receipt schema mismatch")
@@ -371,6 +400,7 @@ class SwarmClient:
             raise ValueError("receipt timestamp is not canonical UTC")
 
     def send_request(self, request: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
+        self.verify_request(request)
         try:
             response = self._http.post(self.endpoint, json=request, timeout=timeout)
         except (httpx.TimeoutException, httpx.TransportError) as exc:

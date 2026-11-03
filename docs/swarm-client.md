@@ -74,3 +74,22 @@ except UnknownOutcome as unknown:
 The client does not mint capabilities. The current Capability Authority issue #16 tracks authenticated delegation to an explicit Swarm audience. Until that issue is implemented and verified, this client can be exercised with test capabilities but must not be treated as a production-ready live route.
 
 The client is a transport adapter, not an execution engine. A successful signed receipt means the job was durably accepted into Swarm's queue. It does not mean the four role workers have completed real work; their executor adapters remain fail-closed.
+
+## Trinity dispatch and durable outbox
+
+Swarm is an explicit dispatch mode, not an automatic replacement for local squads:
+
+```python
+result = await trinity.squad(
+    "Investigate and fix the approved task",
+    run_id="stable-run-identifier",
+    dispatch="swarm",
+    swarm_correlation_id="stable-job-correlation-id",
+)
+```
+
+Or set `AVRONE_SQUAD_DISPATCH=swarm` for an operator-configured default. The normal default remains local. Swarm dispatch refuses privileged AVRONE runs and never falls back to local agents when configuration, Authority delegation, or remote enqueue fails.
+
+The outbox is stored under `AVRONE_SWARM_OUTBOX_DIR` (default `~/.avrone/swarm-outbox`). Its directory is mode `0700`; records and lock files are mode `0600`, atomically replaced and fsync-backed. It stores the original task, parent/child capabilities, signed Swarm envelope, correlation ID and last known state. After an ambiguous enqueue timeout, the next call with the same `run_id` or `swarm_correlation_id` retries the exact same envelope. After an ambiguous Authority response, it repeats delegation with the same correlation ID and a fresh short-lived assertion.
+
+The result status is `queued`, `pending`, `rejected`, or `disabled`. `queued` means only that Swarm durably accepted the job. It does not mean the debugger, coder, tester or governance roles have completed.

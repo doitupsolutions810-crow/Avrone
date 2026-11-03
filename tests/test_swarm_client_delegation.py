@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 import base64
 
@@ -6,7 +7,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import rfc8785
 
-from avrone.swarm_client import CapabilityAuthorityClient
+from avrone.swarm_client import CapabilityAuthorityClient, DelegationUnknownOutcome
 
 
 def client_with_http(monkeypatch, response=None):
@@ -106,3 +107,67 @@ def test_delegate_rejects_tampered_persisted_assertion_signature(monkeypatch):
     bad['jti'] = 'attacker-substituted-jti'
     with pytest.raises(ValueError, match='signature verification failed'):
         client.delegate(parent_capability={'id': 'parent'}, parent_signature='parent-sig', audience='spiffe://prod/agent/swarm', rights=[{'type': 'Execute', 'resource': 'swarm.jobs', 'method': 'POST'}], ttl_seconds=120, correlation_id='stable-correlation', requester_assertion=bad)
+
+
+def test_expired_parent_is_allowed_only_for_explicit_persisted_assertion_replay(monkeypatch):
+    client = client_with_http(monkeypatch)
+    signed = signed_assertion(client)
+    seen = []
+    client._verify_parent = lambda *args, **kwargs: seen.append(kwargs.get("allow_expired_for_replay"))
+    client.delegate(
+        parent_capability={"id": "parent"}, parent_signature="parent-sig",
+        audience="spiffe://prod/agent/swarm",
+        rights=[{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+        ttl_seconds=120, correlation_id="stable-correlation",
+        requester_assertion=signed, allow_expired_parent_replay=True,
+    )
+    assert seen == [True]
+
+
+def test_expired_parent_replay_cannot_mint_a_new_requester_assertion(monkeypatch):
+    client = client_with_http(monkeypatch)
+    with pytest.raises(ValueError, match="persisted requester assertion"):
+        client.delegate(
+            parent_capability={"id": "parent"}, parent_signature="parent-sig",
+            audience="spiffe://prod/agent/swarm",
+            rights=[{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+            ttl_seconds=120, correlation_id="stable-correlation",
+            allow_expired_parent_replay=True,
+        )
+
+
+def test_retry_reuses_exact_assertion_and_enables_parent_expiry_reconciliation(monkeypatch):
+    client = client_with_http(monkeypatch)
+    signed = signed_assertion(client)
+    seen = []
+    client._verify_parent = lambda *args, **kwargs: seen.append(kwargs.get("allow_expired_for_replay"))
+    args = {
+        "parent_capability": {"id": "parent"}, "parent_signature": "parent-sig",
+        "audience": "spiffe://prod/agent/swarm",
+        "rights": [{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+        "ttl_seconds": 120, "correlation_id": "stable-correlation",
+        "requester_assertion": signed,
+    }
+    unknown = DelegationUnknownOutcome("authority timeout", args)
+    client.retry(unknown)
+    assert seen == [True]
+    assert client._http.requests[0][1]["requester_assertion"] == signed
+
+
+def test_parent_expiry_preflight_can_be_skipped_only_for_replay_after_signature_verification():
+    authority_key = Ed25519PrivateKey.generate()
+    client = CapabilityAuthorityClient.__new__(CapabilityAuthorityClient)
+    client.authority_issuer = "spiffe://prod/broker"
+    client._authority_key = authority_key.public_key()
+    now = datetime.now(timezone.utc)
+    parent = {
+        "id": "parent-expired", "issuer": client.authority_issuer,
+        "audience": "spiffe://prod/agent/avrone",
+        "issued_at": now.timestamp() - 120, "expires_at": now.timestamp() - 5,
+        "rights": [{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}],
+    }
+    signature = base64.b64encode(authority_key.sign(rfc8785.dumps(parent))).decode("ascii")
+    rights = [{"type": "Execute", "resource": "swarm.jobs", "method": "POST"}]
+    with pytest.raises(ValueError, match="expired"):
+        client._verify_parent(parent, signature, rights, now)
+    client._verify_parent(parent, signature, rights, now, allow_expired_for_replay=True)

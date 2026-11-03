@@ -252,6 +252,15 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
+# One id for this process. The fusion relay treats a change as a restart
+# that dropped in-memory dedup, and the same value as the same peer.
+BOOT_ID = uuid.uuid4().hex
+
+
+def boot_id() -> str:
+    return BOOT_ID
+
+
 @app.get("/api/status")
 async def status():
     c = core()
@@ -267,6 +276,7 @@ async def status():
         "tools": len(c.tools.names()),
         "admin_enabled": bool(settings.admin_token),
         "agents": c.active,
+        "boot": BOOT_ID,
     }
 
 
@@ -618,7 +628,7 @@ async def blackboard_get(since: str | None = None, x_admin_token: str | None = H
     require_blackboard_admin(x_admin_token)
     from .bridge import blackboard_posts
     posts = await asyncio.to_thread(blackboard_posts, core(), since)
-    return {"posts": posts, "count": len(posts)}
+    return {"posts": posts, "count": len(posts), "boot": BOOT_ID}
 
 
 @app.post(FUSION_BLACKBOARD_PATH)

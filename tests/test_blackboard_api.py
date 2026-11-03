@@ -65,7 +65,8 @@ def test_missing_and_wrong_token_are_401(client):
     assert _post(client, {"text": "secret"}, headers={}).status_code == 401
     assert _post(client, {"text": "secret"}, headers={"X-Admin-Token": ""}).json()["detail"] == "Bad admin token"
     assert _post(client, {"text": "secret"}, headers={"X-Admin-Token": "test-token-x"}).status_code == 401
-    assert _ids(client) == {"posts": [], "count": 0}  # nothing was stored
+    empty = _ids(client)  # nothing was stored
+    assert empty["posts"] == [] and empty["count"] == 0
 
 
 def test_previous_token_is_exact_and_untrimmed(monkeypatch):
@@ -111,6 +112,32 @@ def test_previous_admin_token_opens_blackboard_only(client, monkeypatch):
     monkeypatch.setattr(server.settings, "admin_token", "")
     assert client.get("/api/blackboard", headers=prev).status_code == 403
     assert _post(client, {"text": "no"}, headers=prev).status_code == 403
+
+
+def test_boot_id_is_stable_for_the_process_and_changes_on_restart(client):
+    import re
+    import subprocess
+    import sys
+    status = client.get("/api/status").json()
+    board = client.get("/api/blackboard", headers=AUTH).json()
+    again = client.get("/api/status").json()
+    board_again = client.get("/api/blackboard?since=missing", headers=AUTH).json()
+    boot = status["boot"]
+    assert isinstance(boot, str) and re.fullmatch(r"[0-9a-f]{32}", boot)
+    assert boot == server.boot_id() == again["boot"] == board["boot"] == board_again["boot"]
+
+    def spawned() -> str:
+        out = subprocess.check_output(
+            [sys.executable, "-c", "from avrone.server import boot_id; print(boot_id(), end='')"],
+            text=True,
+            timeout=60,
+        )
+        return out
+
+    first, second = spawned(), spawned()
+    assert re.fullmatch(r"[0-9a-f]{32}", first)
+    assert re.fullmatch(r"[0-9a-f]{32}", second)
+    assert len({boot, first, second}) == 3
 
 
 def test_open_reads_stay_open_but_blackboard_does_not(client):
@@ -452,7 +479,8 @@ def test_pagination_follows_accept_order(client):
     assert [p["id"] for p in _ids(client)["posts"]] == ["c-late", "a-early", "b-mid"]
     assert [p["id"] for p in _ids(client, since="c-late")["posts"]] == ["a-early", "b-mid"]
     assert [p["id"] for p in _ids(client, since="a-early")["posts"]] == ["b-mid"]
-    assert _ids(client, since="b-mid") == {"posts": [], "count": 0}
+    tail = _ids(client, since="b-mid")
+    assert tail["posts"] == [] and tail["count"] == 0
     assert [p["id"] for p in _ids(client, since="no-such-id")["posts"]] == ["c-late", "a-early", "b-mid"]
     assert [p["id"] for p in _ids(client, since="")["posts"]] == ["c-late", "a-early", "b-mid"]
     # Each run's own bridge is unchanged; the board is the fan-in.

@@ -527,3 +527,21 @@ merge without his word.
   - A broken or closed stdout stops writes and ends the serve loop.
 - **Arguments:** `squad_size` 1e999 (inf) falls back to the default instead of an OverflowError tool error. A non-string `first_answer` is refused.
 - Tests: tests/test_mcp_server_robust.py (88), including a real `python -m avrone.mcp_server` subprocess fed hostile lines over stdio.
+
+## Round 39: Governor on macOS, in containers, and with junk inputs (avrone/governor.py)
+- **Mac memory without psutil.** Before, a Mac without psutil had no memory reading at all, because `/proc/meminfo` doesn't exist there. That mattered on an M4 holding gpt-oss:120b (~65 GB). Now:
+  - `sysctl -n hw.memsize` plus `vm_stat` give the reading. The page size comes from the header (16 KiB on Apple Silicon). Available counts free, inactive, speculative and purgeable pages.
+  - `kern.memorystatus_vm_pressure_level` raises the reading: warn (2) to at least 90%, critical (4) to at least 96%.
+- **Mac thermal signal.** macOS has no readable temperature without root. A new sensor, `thermal_limit_pct`, reads the CPU speed limit from `pmset -g therm` (the smaller of CPU_Speed_Limit and CPU_Scheduler_Limit).
+  - It ramps parallelism from 100% down to 50%.
+  - `is_hot()` fires at or under `AVRONE_THERMAL_LIMIT_HOT_PCT` (default 80). Before, edgepack thermal migration could never fire on a Mac.
+- **Probes are bounded.** Every probe command has a 2 s timeout (`CMD_TIMEOUT_S`), stdin is DEVNULL, and any failure gives None. The governor runs on the event loop's thread.
+- **Containers.**
+  - Memory is the worse of the host reading and the cgroup limit: v2 `memory.max`/`current`, or v1 `limit_in_bytes`/`usage_in_bytes`, minus `inactive_file`, the way `docker stats` does it. Unlimited or junk limits are ignored. Before, a container at 96% of its own limit read as a healthy host.
+  - Load per CPU divides by the usable CPUs: the smallest of `os.cpu_count()`, the affinity mask and the cgroup CPU quota. Before, a saturated 2-CPU container on a 16-core host read as 0.25 load.
+- **Fallbacks.**
+  - If psutil raises or returns NaN, the fallback readers are used.
+  - `/proc/meminfo` parsing skips odd lines; one bad line used to lose the whole reading.
+  - A negative millidegree sysfs value (a powered-off sensor at -274000) is dropped.
+- **Junk inputs never raise.** `target(want)` accepts NaN, inf, strings and bools. `max_parallel` and `min_parallel` accept inf, "2.0" and junk (`max_parallel` is clamped to 4096). A NaN `ttl_s` falls back to 2 s.
+- Tests: tests/test_governor_platform_robust.py (127). macOS command output is simulated from the documented formats and **not checked on a real Mac**.

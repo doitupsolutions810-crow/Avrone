@@ -147,6 +147,8 @@ class CapabilityAuthorityClient:
             self._authority_key.verify(_b64(signature, 64), _jcs(child))
         except (InvalidSignature, ValueError) as exc:
             raise ValueError("invalid delegated capability signature") from exc
+        if not isinstance(child.get("id"), str) or not child["id"].strip():
+            raise ValueError("delegated capability id is required")
         if child.get("issuer") != self.authority_issuer or child.get("audience") != audience or child.get("parent_id") != parent["id"]:
             raise ValueError("delegated capability identity or parent binding mismatch")
         if child.get("rights") != rights or child.get("constraints") != parent.get("constraints"):
@@ -193,8 +195,14 @@ class CapabilityAuthorityClient:
             raise DelegationUnknownOutcome("Capability Authority returned non-JSON response", args) from exc
         if response.status_code >= 500:
             raise DelegationUnknownOutcome(f"Capability Authority returned ambiguous status {response.status_code}", args)
-        if response.status_code >= 400 or body.get("status") != "ok":
+        if response.status_code >= 400:
             raise AuthorityRejected(body)
+        if not isinstance(body, dict):
+            raise DelegationUnknownOutcome("Capability Authority returned a non-object response", args)
+        if body.get("status") != "ok":
+            raise AuthorityRejected(body)
+        if body.get("correlation_id") != correlation:
+            raise DelegationUnknownOutcome("Capability Authority response correlation mismatch", args)
         try:
             child, signature = body["capability"], body["signature"]
             self._verify_child(child, signature, parent_capability, audience, rights, ttl_seconds, current)

@@ -75,7 +75,7 @@ def test_signs_requester_assertion_and_verifies_child_capability(setup_client):
         assert assertion["audience"] == AUTHORITY
         assert payload["audience"] == SWARM
         child, signature = child_for(parent, authority)
-        return httpx.Response(200, json={"status": "ok", "capability": child, "signature": signature, "idempotent_replay": False})
+        return httpx.Response(200, json={"status": "ok", "correlation_id": payload["correlation_id"], "capability": child, "signature": signature, "idempotent_replay": False})
     client._http = httpx.Client(transport=httpx.MockTransport(handler))
     result = client.delegate(parent_capability=parent, parent_signature=parent_sig, audience=SWARM, rights=[RIGHT], correlation_id="job-1")
     assert result["capability"]["audience"] == SWARM
@@ -103,7 +103,7 @@ def test_unknown_outcome_retry_reuses_correlation_with_fresh_assertion(setup_cli
         if len(calls) == 1:
             raise httpx.ReadTimeout("response lost")
         child, signature = child_for(parent, authority)
-        return httpx.Response(200, json={"status": "ok", "capability": child, "signature": signature})
+        return httpx.Response(200, json={"status": "ok", "correlation_id": body["correlation_id"], "capability": child, "signature": signature})
     client._http = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(DelegationUnknownOutcome) as caught:
         client.delegate(parent_capability=parent, parent_signature=parent_sig, audience=SWARM, rights=[RIGHT], correlation_id="stable-job-2")
@@ -119,9 +119,9 @@ def test_rejects_authority_policy_error_and_malformed_child(setup_client):
     with pytest.raises(AuthorityRejected):
         client.delegate(parent_capability=parent, parent_signature=parent_sig, audience=SWARM, rights=[RIGHT])
     child, signature = child_for(parent, authority, audience="spiffe://prod/agent/attacker")
-    client._http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"status": "ok", "capability": child, "signature": signature})))
+    client._http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"status": "ok", "correlation_id": "corr-malformed", "capability": child, "signature": signature})))
     with pytest.raises(DelegationUnknownOutcome, match="independently verified"):
-        client.delegate(parent_capability=parent, parent_signature=parent_sig, audience=SWARM, rights=[RIGHT])
+        client.delegate(parent_capability=parent, parent_signature=parent_sig, audience=SWARM, rights=[RIGHT], correlation_id="corr-malformed")
 
 
 def test_rejects_invalid_ttl_and_noncanonical_parent_signature(setup_client):

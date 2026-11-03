@@ -396,3 +396,14 @@ merge without his word.
 - **Worker loop:** it survives claim errors ("database is locked", I/O) with capped backoff, and survives `fail()` errors. It exits quietly once the queue is closed.
 - **Inputs:** a bad `lease_s` (0, negative, NaN, inf, non-number) falls back to 900. `max_attempts` is clamped to 1..1000. A bad priority becomes 0. `kind` becomes a str. An unserializable payload raises at enqueue time.
 - Tests: tests/test_jobqueue_robust.py (41). Mutation on round 28: 38 of 41 fail.
+
+## Round 30: fleet routing and failover (avrone/fleet.py)
+- **Peer load values:** `node_load()` clamps them to an int 0..10000. A string load from a heartbeat used to make `select_nodes`' sort raise TypeError, so every auto dispatch failed. A negative load made a peer look idle forever. `register()`, saved fleet.json records, `health_table`, and the dispatch counters all go through it.
+- **Heartbeat setting:** `heartbeat_env()` clamps AVRONE_FLEET_HEARTBEAT to 1..3600, default 15. "abc" used to crash FleetManager at boot, and 0 made every peer read as offline.
+- **Clock skew:** a `last_seen` more than 3 heartbeats in the future now reads as offline. After the clock stepped back, a dead peer used to stay "online" until the clock caught up. Junk `last_seen` values read as offline.
+- **Failover:** auto dispatch (no route) now tries up to `FAILOVER_MAX`=3 peers, best health first. It fails over only on ConnectError, ConnectTimeout, or PoolTimeout, where the request never reached the peer. A read timeout, a dropped connection, or a 5xx may mean the job already started, so those never fail over. Explicit routes never fail over. When only one peer was tried, the original exception type is kept. Otherwise it raises `RuntimeError("peer unreachable (a, b, c): …")`.
+- **Cooldown:** an unreachable peer gets `cooldown_until = now + 2 heartbeats`, which `select_nodes` skips. Its next `register()` builds a fresh record without the cooldown. Each one is audited as `fleet.unreachable`.
+- **Load counter:** each attempt's increment and decrement is paired on that attempt's node, so failover can't leak or steal load.
+- **Peer replies:** `_post` raises a clear error for a 200 that isn't JSON (captive portal, proxy) and names the content-type and a snippet. Non-object JSON is refused, because every caller calls `.get()` on the reply.
+- **register():** non-dict capabilities become {}. Children are filtered to strings and capped at 1000. `select_nodes(k)` coerces k.
+- Tests: tests/test_fleet_routing_robust.py (59). Mutation on round 29: 40 of 59 fail.

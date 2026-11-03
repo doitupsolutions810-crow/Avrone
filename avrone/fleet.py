@@ -350,6 +350,42 @@ def bridge_merge(core: Any, posts: Any, origin: str, run_id: Any = None) -> int:
         return 0
 
 
+def _finite(v: Any, default: float) -> float:
+    """A float from a peer- or file-supplied value; `default` for junk, bools, NaN and inf."""
+    if isinstance(v, bool):
+        return default
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
+def node_load(n: Any) -> int:
+    """In-flight load of a node record, always an int 0..10000. The peer sends it in its heartbeat:
+    a string there made select_nodes' sort raise TypeError (every auto dispatch failed) and a
+    negative one made that peer look idle forever."""
+    if not isinstance(n, dict):
+        return 0
+    return int(max(0.0, min(10_000.0, _finite(n.get("load", 0), 0.0))))
+
+
+def heartbeat_env() -> float:
+    """AVRONE_FLEET_HEARTBEAT in seconds, clamped 1..3600. "abc" used to crash FleetManager at boot,
+    and 0 made every peer read as offline forever."""
+    v = _finite(_env("AVRONE_FLEET_HEARTBEAT", "15") or 15, 15.0)
+    return 15.0 if v <= 0 else max(1.0, min(3600.0, v))
+
+
+FAILOVER_MAX = 3  # auto dispatch tries at most this many peers when the first can't be reached
+
+
+def _unreachable(e: BaseException) -> bool:
+    """True only for errors raised before the request reached the peer, so a retry elsewhere can't
+    run the job twice. A read timeout or a 5xx may mean the peer already started it: no failover."""
+    return isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+
 def local_health(core: Any) -> dict[str, Any] | None:
     """Compact health block from this node's governor, for heartbeats. Never raises; None if unknown."""
     from .governor import Governor
@@ -495,7 +531,7 @@ class FleetManager:
         self.privileged_max_hops = max(1, min(ph, self.max_hops))
         self.parent = _env("AVRONE_FLEET_PARENT").rstrip("/")
         self.public_url = _env("AVRONE_PUBLIC_URL").rstrip("/")
-        self.heartbeat_s = float(_env("AVRONE_FLEET_HEARTBEAT", "15") or 15)
+        self.heartbeat_s = heartbeat_env()
         self.data_dir = Path(data_dir)
         self.path = Path(data_dir) / "fleet.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -509,7 +545,8 @@ class FleetManager:
         self.node_id = nid
         raw_nodes = saved.get("nodes")
         self.nodes: dict[str, dict[str, Any]] = (
-            {k: v for k, v in raw_nodes.items() if isinstance(k, str) and isinstance(v, dict)}
+            {k: {**v, "load": node_load(v), "last_seen": _finite(v.get("last_seen"), 0.0)}
+             for k, v in raw_nodes.items() if isinstance(k, str) and isinstance(v, dict)}
             if isinstance(raw_nodes, dict) else {})
         # The replay cache survives a restart: a request captured within its window must not run again
         # just because the node rebooted. If the saved cache cannot be read, nothing signed before this
@@ -641,7 +678,12 @@ class FleetManager:
                 raise
 
     def status_of(self, n: dict[str, Any]) -> str:
-        age = time.time() - n.get("last_seen", 0)
+        age = time.time() - _finite(n.get("last_seen", 0) if isinstance(n, dict) else 0, 0.0)
+        if age < -3 * self.heartbeat_s:
+            # last_seen far in the future (the clock stepped back, or a hand-edited fleet.json): it
+            # used to read as online until the clock caught up, even for a dead peer. A live peer
+            # re-registers within one heartbeat and is online again.
+            return "offline"
         if age < 3 * self.heartbeat_s:
             return "online"
         if age < 10 * self.heartbeat_s:
@@ -675,9 +717,21 @@ class FleetManager:
                 continue
             if self.node_state(n) in EXCLUDED_STATES:
                 continue
+            if _finite(n.get("cooldown_until"), 0.0) > time.time():
+                continue  # just failed to connect: skip it until the cooldown ends or it re-registers
             cands.append(n)
-        cands.sort(key=lambda n: (-health_score(n), n.get("load", 0) or 0, str(n.get("node_id"))))
-        return cands[:max(0, int(k))]
+        cands.sort(key=lambda n: (-health_score(n), node_load(n), str(n.get("node_id"))))
+        try:
+            k = int(k)
+        except (TypeError, ValueError, OverflowError):
+            k = 1
+        return cands[:max(0, k)]
+
+    def mark_unreachable(self, n: dict[str, Any], err: BaseException) -> None:
+        """Connection to a peer failed: keep auto picks off it for two heartbeats. Its next
+        successful register() builds a fresh record without the cooldown."""
+        n["cooldown_until"] = time.time() + 2 * self.heartbeat_s
+        self._audit("fleet.unreachable", node=str(n.get("node_id")), error=f"{type(err).__name__}: {err}"[:200])
 
     def health_table(self) -> list[dict[str, Any]]:
         """Per-child health for telemetry / tools: status, state, score, eligibility."""
@@ -687,7 +741,7 @@ class FleetManager:
             rows.append({"node_id": n.get("node_id"), "status": st, "state": hs,
                          "score": health_score(n) if st == "online" else None,
                          "eligible": st == "online" and hs not in EXCLUDED_STATES and self.allowed(str(n.get("node_id"))),
-                         "load": n.get("load", 0), "health": n.get("health"),
+                         "load": node_load(n), "health": n.get("health"),
                          "netsquad": self.netsquad_counts.get(str(n.get("node_id")), 0)})
         return rows
 
@@ -1104,10 +1158,12 @@ class FleetManager:
         if not self.allowed(nid):
             raise PermissionError(f"node {nid} not in AVRONE_FLEET_ALLOW")
         url = check_node_url(url_raw)
+        caps = payload.get("capabilities", {})
+        kids = payload.get("children", [])
         rec = {"node_id": nid, "url": url, "last_seen": time.time(),
-               "capabilities": payload.get("capabilities", {}),
-               "children": payload.get("children", []),
-               "load": payload.get("load", 0),
+               "capabilities": caps if isinstance(caps, dict) else {},
+               "children": [c for c in kids if isinstance(c, str)][:1000] if isinstance(kids, list) else [],
+               "load": node_load(payload),
                "presence": payload.get("presence"),
                "health": sanitize_health(payload.get("health"))}
         try:
@@ -1175,7 +1231,17 @@ class FleetManager:
             r = await c.post(base + path, content=body, headers=headers)
         if r.status_code >= 400:
             raise RuntimeError(f"{base}{path} -> {r.status_code}: {r.text[:300]}")
-        return r.json()
+        try:
+            data = r.json()
+        except ValueError:
+            # a captive portal, proxy or wrong service answering 200 with HTML: name it, instead of
+            # surfacing a bare JSONDecodeError
+            ctype = r.headers.get("content-type", "?")
+            raise RuntimeError(f"{base}{path} -> {r.status_code} but not JSON ({ctype}): "
+                               f"{' '.join(r.text[:200].split())}") from None
+        if not isinstance(data, dict):  # every caller does .get() on it
+            raise RuntimeError(f"{base}{path} -> {r.status_code} but JSON {type(data).__name__}, not an object")
+        return data
 
     # ------------------------------------------------------------ memory sync
     async def push_memory(self, entries: list[dict[str, Any]], origin: str) -> dict[str, Any]:
@@ -1512,11 +1578,26 @@ class FleetManager:
             if mode == "chat":
                 raise ValueError("checkpoint_id works with mode squad or deep")
             payload["checkpoint_id"] = sanitize_ckpt_id(checkpoint_id)
-        node["load"] = node.get("load", 0) + 1
-        try:
-            return await self._post(node["url"], "/api/fleet/run", payload, timeout=900)
-        finally:
-            node["load"] = max(0, node.get("load", 1) - 1)
+        auto = not route
+        tried: list[str] = []
+        while True:
+            cur = node
+            cur["load"] = node_load(cur) + 1
+            try:
+                return await self._post(cur["url"], "/api/fleet/run", payload, timeout=900)
+            except Exception as e:  # noqa: BLE001
+                if not _unreachable(e):
+                    raise
+                self.mark_unreachable(cur, e)
+                tried.append(str(cur.get("node_id")))
+                nxt = [c for c in self.select_nodes(FAILOVER_MAX) if str(c.get("node_id")) not in tried]
+                if not auto or len(tried) >= FAILOVER_MAX or not nxt:
+                    if len(tried) == 1:
+                        raise  # nothing else was tried: keep the original error type for callers
+                    raise RuntimeError(f"peer unreachable ({', '.join(tried)}): {type(e).__name__}: {e}") from e
+                node = nxt[0]
+            finally:
+                cur["load"] = max(0, node_load(cur) - 1)
 
     async def send_message(self, route: list[str], agent: str, text: str, sender: str, hops: int = 0,
                            wait: bool = False) -> dict[str, Any]:

@@ -355,9 +355,14 @@ class SwarmClient:
         envelope, payload = request['envelope'], request['payload']
         if not isinstance(envelope, dict) or not isinstance(payload, dict):
             raise ValueError('Swarm envelope and payload must be objects')
+        expected_fields = {'schema', 'message_id', 'correlation_id', 'issued_at', 'expires_at', 'issuer', 'audience', 'capability_id', 'payload_digest', 'signature'}
+        if set(envelope) != expected_fields:
+            raise ValueError('Swarm envelope schema mismatch')
         if envelope.get('schema') != ENVELOPE_SCHEMA or envelope.get('issuer') != self.issuer or envelope.get('audience') != self.audience:
             raise ValueError('Swarm envelope identity mismatch')
-        if payload.get('action') != ACTION or not isinstance(payload.get('objective'), str) or not payload['objective'].strip():
+        if not isinstance(envelope.get('message_id'), str) or not envelope['message_id'].strip() or not isinstance(envelope.get('correlation_id'), str) or not envelope['correlation_id'].strip():
+            raise ValueError('Swarm message_id and correlation_id are required')
+        if payload.get('action') != ACTION or not isinstance(payload.get('objective'), str) or not payload['objective'].strip() or len(payload['objective']) > 2000:
             raise ValueError('Swarm payload action/objective is invalid')
         if envelope.get('payload_digest') != _digest(payload):
             raise ValueError('Swarm payload digest mismatch')
@@ -367,7 +372,7 @@ class SwarmClient:
             expires = datetime.fromisoformat(envelope['expires_at'].replace('Z', '+00:00'))
         except (KeyError, AttributeError, TypeError, ValueError) as exc:
             raise ValueError('Swarm envelope timestamps are invalid') from exc
-        if _iso(issued) != envelope['issued_at'] or _iso(expires) != envelope['expires_at'] or issued > current + timedelta(seconds=30) or expires <= current or expires <= issued or (expires - issued).total_seconds() > 300:
+        if issued.tzinfo is None or expires.tzinfo is None or _iso(issued) != envelope['issued_at'] or _iso(expires) != envelope['expires_at'] or issued > current + timedelta(seconds=30) or expires <= current or expires <= issued or (expires - issued).total_seconds() > 300:
             raise ValueError('Swarm envelope timestamps are invalid or expired')
         capability = request['capability']
         if not isinstance(capability, dict) or envelope.get('capability_id') != capability.get('id'):

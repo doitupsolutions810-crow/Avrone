@@ -4,6 +4,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)
     strategy:
+      fail-fast: false    # Descent XI: a leg cancelled by its sibling's failure is an echo, not a trial (measured: run 335 — 3.11 fail -> 3.12 cancelled); let both legs complete so the pair can be measured
       matrix: { python: ["3.11", "3.12"] }
     steps:
       - uses: actions/checkout@v4

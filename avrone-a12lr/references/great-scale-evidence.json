@@ -1,0 +1,29 @@
+{
+  "schema": "great-scale-evidence/v1",
+  "source": "avrone-a12lr scale-edge suite",
+  "peer": "avrone/greatscale.py evidence_snapshot",
+  "observed": {
+    "failures": 0,
+    "runs": 15,
+    "p": 0.0,
+    "S": 0.0,
+    "logCoord": 0.0,
+    "psi": 0.3819660112501052,
+    "cone": 0.3819660112501052,
+    "coneOk": true,
+    "onConeFloor": true,
+    "orientation": "pass",
+    "n": 8.0,
+    "lambda": 0.02128623625220818,
+    "singleRunDetect": 0.0,
+    "detectInRuns": 0.0,
+    "runsFor95": null,
+    "missedRate95": 0.18103627252208465
+  },
+  "orientation_control_all_fail": {
+    "orientation": "fail",
+    "onConeFloor": true,
+    "S": 0.0
+  },
+  "mitigation": "Do not read the cone floor as correctness. Read orientation. Do not read zero failures as p=0. Read missedRate95."
+}

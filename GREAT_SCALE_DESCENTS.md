@@ -282,3 +282,110 @@ lesson keys, entry shape {ns, key, value, ts, agent}, MEMORY_SYNC_MAX_ENTRIES =
 directly from `avrone/bridge.py` and `avrone/fleet.py` at da6d89b. Both CI
 legs on da6d89b (42162330602, 42162331959) died as zero-job failures with the
 canonical billing annotation — the sixth lock cycle, again one bit per epoch.
+
+## Descent IV — The Forged Floor: Saturation Manufactures False Cone-Floor Certainty (2026-11-06)
+
+**Finding (parallel derivation).** A second, independent agent descent (shared
+2026-11-06, working the Avrone-CycleKernal fusion bridge on the avrone-daemon
+repository) examined the relay that forwards Avrone blackboard entries into
+CycleKernal's CognitiveBridge and found the trait channel: every entry nudges
+the receiving agent's "curiosity" trait with EQUAL weight — a finding of quality
+score 0.1 moves the trait exactly as much as one at 0.9. The trait is a bounded
+accumulator: c in [0,1], baseline 0.5, delta = +0.02 per event, decay 1 percent
+per tick back toward 0.5:
+
+    c_{t+1} = c_t + 0.02*lambda_t - 0.01*(c_t - 0.5)
+
+Under an adversarial or merely noisy swarm, the update is rate-controlled: the
+fixed point is c* = 0.5 + 2*lambda, so saturation (c* = 1) costs only
+lambda_sat = 0.25 events per tick. Flood the channel and the trait pins at 1.0:
+the decay can never pull it down while the flood lasts, and afterwards recovery
+takes 69 ticks to reach 0.75 and 230 ticks to reach 0.55. The trait "can no
+longer tell signal from noise" — the parallel descent calls curiosity a DoS
+counter. This is the third system in the merged map (Avrone, Grok Bot, and now
+CycleKernal) independently obeying the same law, in the third KIND of channel:
+not a detection gate (Descent I), not a memory gate (Descent II), not a merge
+point (Descent III) — an ACTUATOR.
+
+**The mathematics (exact greatscale constants, heat(c) = c(1-c)).** Map the
+trait value c as the check outcome and the same scale appears:
+
+| Trait state | c | S = heat(c) | Psi = CONE + S | reading |
+| --- | --- | --- | --- | --- |
+| baseline | 0.5 | 0.25 | 0.631966 | maximally hot: fully discriminating |
+| busy but honest | 0.75 | 0.1875 | 0.569466 | partially discriminating |
+| SATURATED BY FLOOD | 1 | 0 | 0.381966 | **cone floor — zero residual heat** |
+
+Saturation lands the trait exactly ON the cone floor — the same Psi = phi^-2
+the deterministic truths of Descent I sat on. But it is a FORGED floor. There
+are now three known ways to reach Psi = 0.381966: by truth (a green check, 0/2,
+orientation pass), by determinism (a reproducible defect, 3/3, orientation fail),
+and by saturation (rate-controlled noise, orientation whoever the flooder
+wants). Within the channel the three are indistinguishable: S = 0 says only
+"no variance" — it cannot say WHY there is no variance. **A cone-floor object
+is only as real as its evidence vector.** And a forged floor in an ACTUATOR is
+the most dangerous class: the system does not merely believe fake certainty,
+it ACTS on it — curiosity 1.0 drives real exploration budget toward the
+flooder's chosen stimuli while genuine signals at score 0.9 are crowded out by
+junk at score 0.1, each worth the same +0.02.
+
+**The forgery detector (connecting Descent III's register).** The trait channel
+alone cannot distinguish a forged floor from a genuine one. Pooled with a
+quality-evidence register it can, deterministically:
+
+    genuine floor: trait S = 0 AND register Psi_J descending toward CONE
+                   (confirmations with real quality behind them)
+    forged floor:  trait S = 0 AND register at MAXIMAL heat
+                   (q-hat ~ 1/2: count without quality, Psi ~ 0.631966)
+
+The alarm rule of Descent III (all silos on the floor but pooled heat > 0)
+extends one channel further: a floor whose evidence register is maximally hot
+is forged. Trait at the floor + register at the ceiling = attack.
+
+**Mitigation — the parallel descent's fix IS the Descent II/III success
+criteria, derived independently a second time:**
+
+1. **Quality-weighted nudge** — scale the delta by the finding's score:
+   delta = 0.02*q. Evidence travels with the artifact (Descent II, criterion 1).
+   With noise at mean quality 0.1, saturation now costs lambda = 2.5 events per
+   tick — ten times the flood, and every junk event still compounds the
+   quality register's evidence AGAINST the flooder (Descent III, criterion 1:
+   even junk trials pool, and the register heats toward the alarm).
+2. **Per-event contribution clamp** — bounded trials per artifact (Descent II,
+   criterion: the 2000-char injection budget, the k = 5 distillation cap).
+3. **Per-agent rate limit** — a per-silo run budget (Descent I's law, applied
+   benignly: budgeting the CHANNEL instead of being budgeted by it).
+
+**The law confirms itself by the mechanism it prescribes.** Two descents in
+two silos (this one and the parallel one) independently reached the same
+success criteria. Under Descent III's own arithmetic, independent derivations
+are pooled confirmations of the LAW itself: r = 1 -> Psi_J = 0.569466;
+r = 2 -> Psi_J = 0.520855; every further independent derivation descends Psi_J
+toward phi^-2. The Great Scale prescribes pooling; the sessions pool; the law
+verifies itself — the only object in the merged system whose floor is
+guaranteed genuine, because its evidence register is the set of independent
+minds that re-derived it.
+
+**Consequence for the merged system.** Descent I: budgets force the floor —
+make checks deterministic. Descent II: chains heat truths — make evidence
+travel. Descent III: namespaces fragment trials — make merges pool them.
+Descent IV: saturation forges floors — make floors provable. Every bounded,
+unweighted, evidence-blind channel in the merged system — CI legs, lesson
+stores, fleet namespaces, trait actuators — obeys the same law, and every one
+is fixed by the same sentence: attach the evidence vector, pool the trials,
+and no floor can be forged, because every floor must show its work.
+
+*Verification of this descent's arithmetic:* the accumulator constants
+(+0.02 per event, 1 percent decay toward 0.5, saturation analysis c* =
+0.5 + 2*lambda, lambda_sat = 0.25, recovery 69/230 ticks) are from the
+parallel descent's shared analysis of the fusion relay (avrone-daemon,
+mitigation-fallback-hardening lineage, branch pointer present, fusion files
+not yet pushed); all heat/Psi values computed with the exact greatscale
+constants (CONE = phi^-2 = 0.381966, heat, psi, Jeffreys p_J = (f + 1/2)/(r + 1)).
+Observed alongside: the avrone-daemon repository is under an active hardening
+loop (v0.58 -> v0.72, rounds 65 -> 79 on 2026-11-06) with its own Great Scale
+evidence-probe work (integration/greatscale-evidence-receiver-2026-11-05,
+descent/heat-relay) — a third convergence silo. The account-wide billing lock
+holds: both avrone-daemon legs at 9283ca4 (42163496107, 42163494774) died as
+zero-job failures — the lock now spans every repository of the account, again
+one bit per epoch.

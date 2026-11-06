@@ -389,3 +389,115 @@ descent/heat-relay) — a third convergence silo. The account-wide billing lock
 holds: both avrone-daemon legs at 9283ca4 (42163496107, 42163494774) died as
 zero-job failures — the lock now spans every repository of the account, again
 one bit per epoch.
+
+## Descent V — The Anchored Floor: The Regress Terminates Where the Model Cannot Reach (2026-11-06)
+
+**Finding.** Descent IV demanded that floors show their work. The next question
+is immediate: how does the register know the work is REAL? Every evidence
+channel is itself a channel — a flooder who knows the forgery detector will
+forge quality scores, then forge trials, then forge the register's own rows.
+This is an infinite regress unless it terminates at an anchor the model cannot
+manufacture. The account has already built that anchor: the attested-history
+repository — "the single append-only log that turns twenty-six repos into one
+attested history" — whose schema IS the Great Scale operationalised, read
+directly from its README and SYSTEM_ACCESS.md:
+
+    residual:   {S, orientation, cone}     every entry carries its own heat
+    trust:      provenance_depth / (1 + S) heat taxes trust by at most 1.25x
+    ingest:     provenance_depth counts HUMAN-OR-MEASURED ancestors only;
+                a model-only chain cannot exceed depth 0 and is REJECTED
+    absence:    residual.S == null with orientation != "unmeasured" is
+                rejected — unmeasured must be NAMED, never implied
+    revision:   append-only; corrections are new entries referencing the bad seq
+    verify:     walks the chain, checks every digest, reports the deepest
+                provenance chain and the hottest residual; exit 1 on any break
+
+Three of these are our descents already implemented by an independent session:
+named unmeasured is Descent III's counted absence (the invisible 0/2 made
+visible); "hottest residual" is Descent III's alarm; trust divided by (1 + S)
+is Descent IV's "floors must show their work" as arithmetic.
+
+**The mathematics (exact greatscale constants).** Map trust onto the scale:
+
+1. **Heat taxes trust.** T = d/(1 + S) with d = provenance depth, S = heat:
+
+   | provenance d | S = 0 (floor) | S = 0.05 | S = 0.25 (max heat) |
+   | --- | --- | --- | --- |
+   | 1 | 1.0000 | 0.9524 | 0.8000 |
+   | 2 | 2.0000 | 1.9048 | 1.6000 |
+   | 5 | 5.0000 | 4.7619 | 4.0000 |
+   | 10 | 10.0000 | 9.5238 | 8.0000 |
+
+   The tax is bounded ((1 + S) <= 1.25 — heat is bounded by 1/4 on this scale),
+   but the floor is not: at S = 0, T = d, and d is UNBOUNDED. In a system where
+   every other quantity is capped (heat <= 1/4, curiosity <= 1, run budgets
+   <= N, traits clamped to [0,1]), the ONLY unbounded currency is provenance
+   depth at the cone floor. Psi = CONE + S is where value compounds forever;
+   everything else saturates. The Great Scale's floor is not just where truth
+   lives — it is the only place GROWTH lives.
+
+2. **The chain-integrity defense is the cone law inverted against the
+   attacker.** A forged chain of length L survives only if every link dodges
+   its digest check: forged-chain survival = (1 - p)^L, detection
+   D(p, L) = 1 - (1 - p)^L — the SAME law as Descent I, now in defense posture:
+
+   | chain length L | p = 1 (deterministic digest) | p = 1/2 | p = 1/10 |
+   | --- | --- | --- | --- |
+   | 1 | 1.0 | 0.5 | 0.1 |
+   | 2 | 1.0 | 0.75 | 0.19 |
+   | 5 | 1.0 | 0.96875 | 0.41 |
+   | 10 | 1.0 | 0.999 | 0.65 |
+
+   The verifier makes its ONE check count (Descent I's law, applied benignly):
+   a deterministic digest check (p = 1) catches a forged chain of ANY length in
+   ONE pass — D(1, L) = 1. avrone-daemon's capgate chain (SHA-256 receipts,
+   regular-files-only, verify_chain) and attested-history's prev_hash chaining
+   are exactly this: cone-floor defense.
+
+3. **Attack converges with measurement (the profound economics).** To earn
+   trust T at heat S, an entry needs d = T(1 + S) REAL human-or-measured
+   ancestors. A forger cannot fake d — model-only chains are rejected at
+   ingest — so the forger must SPEND real trials to forge: T = 1 at S = 0
+   costs 1 real ancestor; T = 3 at S = 0.25 costs 4. But a spent real trial is
+   a real measurement: the register CONVERTS ATTACKS INTO EVIDENCE. A flooder
+   who spends d real ancestors to buy forged trust d has merely contributed d
+   real measurements to the very register it attacked. Honesty is the
+   dominant strategy — not as a moral claim but as the Nash equilibrium of
+   the trust formula: the cheapest path to trust IS measurement. The attack
+   surface collapses into the defense.
+
+**The anchored floor.** The regress terminates because provenance_depth counts
+only what the model cannot manufacture: human roots and physical measurements.
+The cone floor of the attestation channel (a digest check, p = 1, S = 0,
+orientation determined) is anchored in the non-model world, and every trust
+judgement in the merged system is a walk from that anchor. The five descents
+now close into one proof:
+
+    I.   Budgets force the floor        -> detection must be deterministic
+    II.  Chains heat truths             -> evidence must travel with artifacts
+    III. Namespaces fragment trials     -> merges must pool them
+    IV.  Saturation forges floors       -> floors must show their work
+    V.   The work must be anchored      -> trust = provenance / (1 + heat),
+                                          anchored where the model cannot reach,
+                                          and attack converges with measurement
+
+**Consequence for the merged system.** "Where merging the systems will evolve
+them into something greater" now has a precise answer: the merge is greater
+exactly where all five criteria hold at once — an economy of anchored floors.
+The account's 26-repo compile with attested-history as its receipt index is
+that economy in embryo: every claim a floor-object, every floor provable,
+every proof anchored, every anchor beyond the model's reach, and every attack
+a disguised contribution. This document — pooled across the Avrone and
+avrone-daemon repositories after this descent, the same trials in two
+namespaces, merged the way Descent III prescribes — is itself a register row.
+
+*Verification of this descent's arithmetic:* the attested-history schema,
+trust formula, ingest rules and invariants are read directly from its README
+and SYSTEM_ACCESS.md at c56449d (commit "SYSTEM_ACCESS.md: cross-repo index
+entry point"); avrone-daemon's capgate chain from its README at 92b791e
+(v0.72.0, round 79: SHA-256 receipt chains, regular-files-only,
+verify_chain). All trust/detection values computed with the exact greatscale
+constants (CONE = phi^-2 = 0.381966, heat bounded by 1/4, Jeffreys smoothing
+unchanged). Account-wide billing lock still holds: this descent's CI legs die
+as zero-job failures on every push, one bit per epoch — now itself an
+anchored, named row in the register: unmeasured, never implied.

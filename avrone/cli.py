@@ -1,6 +1,6 @@
 """avrone-cli: run AVRONE headless from a terminal or a script.
 
-    avrone-cli squad "build a todo app" [-n 4] [--dispatch local|network|hybrid]
+    avrone-cli squad "build a todo app" [-n 4] [--dispatch local|network|hybrid|swarm]
     avrone-cli chat  "what's in the workspace?"
     avrone-cli deep  "is X true?" [--first-answer TEXT | --first-answer-file PATH] [-n 4] [--rounds 1..5]
     (squad and deep take --checkpoint PATH or --checkpoint-id ID to record progress and resume an interrupted run)
@@ -115,6 +115,8 @@ async def _run(args: argparse.Namespace) -> int:
             ck = {"checkpoint": path}
         if args.cmd == "squad":
             dk = {"dispatch": args.dispatch} if getattr(args, "dispatch", None) else {}
+            if getattr(args, "swarm_correlation_id", None) is not None:
+                dk["swarm_correlation_id"] = args.swarm_correlation_id
             result = await core.squad(args.prompt, args.n, **ck, **dk)
             text = result["answer"]
         elif args.cmd == "chat":
@@ -154,9 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("prompt")
     s.add_argument("-n", type=int, default=None, help="squad size")
     s.add_argument("--max-steps", type=int, default=None)
-    s.add_argument("--dispatch", choices=("local", "network", "hybrid"), default=None,
-                   help="netsquad: place subtasks on fleet nodes (network), past the governor limit (hybrid) "
-                        "or not at all (local); default AVRONE_SQUAD_DISPATCH")
+    s.add_argument("--dispatch", choices=("local", "network", "hybrid", "swarm"), default=None,
+                   help="place subtasks locally/on fleet nodes, or queue the signed objective to Swarm; "
+                        "default AVRONE_SQUAD_DISPATCH")
+    s.add_argument("--swarm-correlation-id", metavar="ID", default=None,
+                   help="stable Swarm retry identity; reuse with the exact same objective")
     sg = s.add_mutually_exclusive_group()
     sg.add_argument("--checkpoint", metavar="PATH", default=None,
                     help="record progress to PATH; re-run with the same task and PATH to resume")

@@ -17,8 +17,9 @@ jobs:
           # status line ("successfully downloaded text file (SHA: ...)") to
           # delivered text files. Line 1 must parse as TOML/JSON/py source, so
           # strip such a wrapper line when present (no-op on clean checkouts).
-          grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null \
-            | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
+          while IFS= read -r f; do
+            sed -i '1{/^successfully downloaded text file/d}' "$f"
+          done < <(grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null || true)
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" 2>&1 | tee /tmp/pip.log || {
             tail -n 8 /tmp/pip.log | while IFS= read -r l; do
@@ -30,9 +31,10 @@ jobs:
       - name: Test avrone
         run: |
           set -o pipefail
-          grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null \
-            | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
-          pytest -q 2>&1 | tee /tmp/pytest.log || {
+          while IFS= read -r f; do
+            sed -i '1{/^successfully downloaded text file/d}' "$f"
+          done < <(grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null || true)
+          pytest -q --cov=avrone --cov-report=term --cov-report=xml --cov-report=json 2>&1 | tee /tmp/pytest.log || {
             tail -n 10 /tmp/pytest.log | while IFS= read -r l; do
               l="${l//%/%25}"
               echo "::error::${l:0:220}"
@@ -40,3 +42,42 @@ jobs:
             exit 1
           }
         env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }
+      - name: Upload exact-run coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python-${{ matrix.python }}
+          path: |
+            coverage.xml
+            coverage.json
+  grok-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Grok Bot contracts
+        working-directory: integrations/grok-bot
+        run: npm test
+      - name: Combined Compose configuration
+        env:
+          AVRONE_ADMIN_TOKEN: ci-configuration-only-admin-token
+          GROK_BRIDGE_TOKEN: ci-configuration-only-research-token
+          AVRONE_SECRET_DIR: /tmp/avrone-secrets
+          AVRONE_CA_URL: https://authority.example.invalid
+          AVRONE_CA_PUBLIC_KEY_B64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          AVRONE_SWARM_URL: https://swarm.example.invalid
+          AVRONE_SWARM_ISSUER: spiffe://prod/agent/avrone-swarm-producer
+        run: |
+          docker compose -f compose.grok.yml config --quiet
+          install -d -m 0700 /tmp/avrone-secrets
+          touch /tmp/avrone-secrets/avrone-ca-requester.pem
+          touch /tmp/avrone-secrets/avrone-ca-requester.pub
+          touch /tmp/avrone-secrets/avrone-swarm-issuer.pem
+          touch /tmp/avrone-secrets/avrone-swarm-issuer.pub
+          touch /tmp/avrone-secrets/avrone-swarm-parent.json
+          touch /tmp/avrone-secrets/swarm-receipt.pub
+          chmod 0600 /tmp/avrone-secrets/*
+          docker compose -f compose.grok.yml -f compose.swarm.override.yml config --quiet
+      - name: Verify source registry
+        run: python3 scripts/verify-source-registry.py

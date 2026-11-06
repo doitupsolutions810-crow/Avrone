@@ -10,3 +10,4 @@ workspace/
 .pytest_cache/
 .coverage
 *.egg-info/
+secrets/

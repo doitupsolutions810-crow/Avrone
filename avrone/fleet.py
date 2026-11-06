@@ -1570,11 +1570,24 @@ class FleetManager:
 
     async def run_job(self, kind: str, p: dict[str, Any]) -> dict[str, Any]:
         """Queue handler: retried by the JobQueue if the target node is down."""
+        if kind not in ("run", "message") or not isinstance(p, dict):
+            raise ValueError("unknown fleet job kind or invalid payload")
+        required = ("agent", "message") if kind == "message" else ("task",)
+        if any(not isinstance(p.get(key), str) or not p[key].strip() for key in required):
+            raise ValueError("fleet job requires nonblank text fields")
+        if kind == "run" and p.get("mode", "squad") not in SPAWN_MODES:
+            raise ValueError("unsupported fleet queue run mode")
         route = [x for x in str(p.get("node", "local")).split("/") if x and x != "local"]
         if kind == "message":
             return await self.send_message(route, p["agent"], p["message"], p.get("from", self.node_id), 0, True)
         if not route and p.get("node") in ("local", "", None):
-            res = await (self.core.chat(p["task"]) if p.get("mode") == "chat" else self.core.squad(p["task"], p.get("n")))
+            mode = p.get("mode", "squad")
+            if mode == "chat":
+                res = await self.core.chat(p["task"])
+            elif mode == "deep":
+                res = await self.core.deep(p["task"], n=p.get("n"))
+            else:
+                res = await self.core.squad(p["task"], p.get("n"))
             return {"node": self.node_id, "answer": res.get("answer", "")}
         return await self.dispatch(route, p.get("mode", "squad"), p["task"], 0, p.get("n"))
 

@@ -1,0 +1,100 @@
+name: avrone-grok
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment: { PING: 1, INFO: 1, CONTAINERS: 1, EXEC: 1, POST: 1, PULL: 1, IMAGES: 1, NETWORKS: 0, VOLUMES: 0 }
+    volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    networks: [control]
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes: [ollama_models:/root/.ollama]
+    networks: [control, egress]
+  browser:
+    build: ./integrations/grok-bot/browser-service
+    restart: unless-stopped
+    volumes: [browser_profile:/profile]
+    networks: [control, egress]
+  avrone:
+    build: .
+    init: true
+    restart: unless-stopped
+    environment:
+      AVRONE_HOST: 0.0.0.0
+      AVRONE_PORT: "8710"
+      AVRONE_PROVIDER: ollama
+      AVRONE_LLM_MODE: live
+      AVRONE_LLM_BASE_URL: http://ollama:11434/v1
+      AVRONE_LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+      AVRONE_RUNNER: local
+      AVRONE_PUBLIC_ACCESS: admin
+      AVRONE_ADMIN_TOKEN: ${AVRONE_ADMIN_TOKEN:?run python3 scripts/grok-stack.py up to initialize credentials}
+      GROK_BRIDGE_TOKEN: ${GROK_BRIDGE_TOKEN:?research bridge credential is required}
+      AVRONE_GROKBOT_URL: http://grok-bot:3000
+      AVRONE_SQUAD_SIZE: "2"
+      AVRONE_MAX_PARALLEL: "2"
+      AVRONE_BRIDGE_ROUNDS: "1"
+      AVRONE_ALLOW_NETWORK: "false"
+      AVRONE_SELF_CHANGES: ${AVRONE_SELF_CHANGES:-allow}
+      AVRONE_SELF_EVOLVE: ${AVRONE_SELF_EVOLVE:-allow}
+      AVRONE_WORKSPACE: /srv/workspace
+      AVRONE_DATA_DIR: /srv/data
+    ports: [127.0.0.1:8710:8710]
+    volumes: [avrone_workspace:/srv/workspace, avrone_data:/srv/data]
+    networks: [control]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [ollama]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8710/api/status', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+  grok-bot:
+    build: ./integrations/grok-bot
+    init: true
+    restart: unless-stopped
+    ports: [127.0.0.1:3000:3000]
+    environment:
+      PORT: "3000"
+      DOCKER_HOST: tcp://socket-proxy:2375
+      LLM_PROVIDER: ollama
+      OLLAMA_URL: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+      MODELS_REQUIRED: ${MODELS_REQUIRED:-qwen2.5:3b,nomic-embed-text}
+      MODEL_CHAIN: ${MODEL_CHAIN:-}
+      BROWSER_WS: http://browser:3000
+      BOOT_STRICT: "true"
+      AVRONE_URL: http://avrone:8710
+      AVRONE_ADMIN_TOKEN: ${AVRONE_ADMIN_TOKEN:?AVRONE credential is required}
+      GROK_BRIDGE_TOKEN: ${GROK_BRIDGE_TOKEN:?research bridge credential is required}
+      GROK_SANDBOX_NETWORK: avrone-grok-control
+      GROK_SANDBOX_CONTAINER: avrone-grok-sandbox
+      ALLOWED_TERMINAL_CONTAINERS: avrone-grok-sandbox
+      GROK_SQUAD_N: "2"
+      GROK_MAX_PARALLEL: "2"
+      GROK_MIN_PARALLEL: "1"
+      SKILLS_DIR: /app/skills
+    volumes: [grok_data:/app/data, grok_config:/app/config]
+    networks: [control, egress]
+    depends_on:
+      avrone: { condition: service_healthy }
+      socket-proxy: { condition: service_started }
+      browser: { condition: service_started }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/status').then(r=>r.json()).then(d=>process.exit(d.ready===true?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      start_period: 60s
+      retries: 180
+volumes:
+  ollama_models: {}
+  browser_profile: {}
+  avrone_workspace: {}
+  avrone_data: {}
+  grok_data: {}
+  grok_config: {}
+networks:
+  control: { name: avrone-grok-control, internal: true }
+  egress: {}

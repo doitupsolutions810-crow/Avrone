@@ -139,8 +139,8 @@ bg_wait(){ "$@" & local p=$!; wait_pid "$p"; }   # TERM/INT act at once even dur
 descendants(){ local c; for c in $(pgrep -P "$1" 2>/dev/null); do descendants "$c"; echo "$c"; done; }
 cleanup(){
   local rc=$?
-  for p in $LANE_PIDS $SLEEP_PID; do kill "$p" 2>/dev/null; done
   local tree; tree="$(descendants $$)"   # collect first, then kill: lanes -> timeout -> python -> pytest clones
+  for p in $LANE_PIDS $SLEEP_PID; do kill "$p" 2>/dev/null; done
   [ -n "$tree" ] && { kill $tree 2>/dev/null; sleep 1; kill -9 $tree 2>/dev/null; }
   [ -n "$OLLAMA_PID" ] && kill "$OLLAMA_PID" 2>/dev/null
   [ -z "${LOCK_GONE:-}" ] && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
@@ -635,7 +635,7 @@ while :; do
   check_drive
   PHASE="report"; report; end_cycle_health; PHASE="sleep"
   [ "$CYCLES" != "0" ] && [ "$n" -ge "$CYCLES" ] && break
-  sleep "${CYCLE_SLEEP:-30}" & SLEEP_PID=$!; wait "$SLEEP_PID"; SLEEP_PID=""   # backgrounded so TERM/INT act immediately
+  sleep "${CYCLE_SLEEP:-30}" & SLEEP_PID=$!; wait_pid "$SLEEP_PID"; SLEEP_PID=""   # retain the child across ignored HUP/USR1
 done
 log "done. results in $OUT"
 exit 0

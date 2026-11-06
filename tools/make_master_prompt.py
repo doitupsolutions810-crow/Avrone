@@ -29,7 +29,7 @@ def tree() -> str:
         if top == "avrone":
             out.append("├── avrone/                 # the package")
             for f in sorted(d.glob("*.py")):
-                out.append(f"│   ├── {f.name:<24} {first_doc_line(f)}")
+                out.append(f"│   ├── {f.name:<24} {first_doc_line(f)}".rstrip())
         elif top == "skills":
             names = sorted(x.name for x in d.iterdir() if (x / "SKILL.md").exists())
             out.append(f"├── skills/                 # {len(names)} agent skills, one SKILL.md each")
@@ -99,13 +99,14 @@ from a command you ran.
 ```bash
 git clone https://github.com/doitupsolutions810-crow/Avrone.git avrone && cd avrone
 python -m pip install -e ".[dev]" pytest-cov websockets
-python -m pytest -q                       # full gate: expect ~{tests} passed, 1 skipped
-cd /tmp && python -m pytest -q "$OLDPWD/tests" -m integration   # real-uvicorn tests: 5 passed
-cd - && python -m pytest -q --cov=avrone  # coverage: expect 99%
+python -m pytest -q                       # measure the current full gate and capability skips
+cd /tmp && python -m pytest -q "$OLDPWD/tests" -m integration   # real-uvicorn integration checks
+cd - && python -m pytest -q --cov=avrone  # measure coverage for this exact source tree
 python tools/make_master_prompt.py        # regenerates this file from the code
 ```
-If the gate is not green before you touch anything, stop and fix that first. GitHub Actions CI is
-blocked (account billing lock since 2026-10-28), so local gates are the source of truth.
+Fix a failing baseline before treating a change as verified. Record actual pass, failure, skip
+and coverage results in the validation report. Recent GitHub Actions jobs had runner ID 0 and no
+executed steps; do not infer their cause or claim a remote pass without executed checks.
 
 Run the server (mock LLM, no keys needed):
 ```bash

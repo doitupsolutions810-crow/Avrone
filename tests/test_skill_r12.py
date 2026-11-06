@@ -36,7 +36,7 @@ def test_valid_and_grounded(name):
         assert env in src, env
 
 
-@pytest.mark.skipif(not os.path.isdir("/proc"), reason="Linux /proc only")
+@pytest.mark.skipif(not hv.proc_namespace_visible(), reason="requires this process's PID namespace in /proc")
 def test_runaway_path(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_PROC_LONG_S", "0.3")
     s = Settings()

@@ -7,3 +7,10 @@ data/
 *.egg-info/
 avrone.egg-info/
 .coverage
+.env.grok
+.venv/
+node_modules/
+coverage.xml
+coverage.json
+.smoke-tmp/
+secrets/

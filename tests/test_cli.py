@@ -128,6 +128,21 @@ def test_squad_quiet_and_max_steps(fake, capsys):
     assert fake["core"].codex.subs == []
 
 
+def test_swarm_cli_forwards_stable_identity_and_writes_explicit_queue_result(fake, monkeypatch, tmp_path):
+    async def squad(self, prompt, n, **kwargs):
+        self.seen["swarm"] = (prompt, kwargs)
+        return {"answer": "Queue acceptance; completion unconfirmed", "status": "queued", "agents": []}
+
+    monkeypatch.setattr(FakeCore, "squad", squad)
+    output = tmp_path / "result.json"
+    assert cli.main(["squad", "approved objective", "--dispatch", "swarm",
+                     "--swarm-correlation-id", "stable-id", "-q", "--json", str(output)]) == 0
+    assert fake["core"].seen["swarm"] == (
+        "approved objective", {"dispatch": "swarm", "swarm_correlation_id": "stable-id"})
+    assert json.loads(output.read_text())["status"] == "queued"
+    assert fake["cleaned"] == 1
+
+
 def test_chat_streams_events_to_stderr(fake, capsys):
     assert cli.main(["chat", "hello"]) == 0
     cap = capsys.readouterr()

@@ -166,3 +166,119 @@ this document triggered two more CI legs (42161832147, 42161830477 on
 canonical annotation "The job was not started because your account is locked
 due to a billing issue", a fifth lock cycle and a live confirmation of
 Descent I: the meta-system again transmitted exactly one bit per epoch.
+
+## Descent III — The Namespaced Fragmentation: Merge Points Pool Artifacts, Never Trials (2026-11-06)
+
+**Finding.** Descent II followed one artifact down one node's gate chain. Descent
+III examines the merge operation itself — the thing that is supposed to make two
+systems greater when joined. Read in `avrone/bridge.py` and `avrone/fleet.py`,
+EVERY merge point in the merged system merges artifacts and none merges trials:
+
+    merge_remote (bridge.py)  dedupe by post id — the same truth derived on two nodes
+                              is two posts; ids never sum
+    lesson_key (bridge.py)    sha1 of normalized text — the same truth rephrased is two
+                              lessons; hashes never sum
+    push_memory (fleet.py)    entries `{ns, key, value, ts, agent}`, at most
+                              MEMORY_SYNC_MAX_ENTRIES = 200 per push, filed by
+                              receive_memory under `fleet:<sender>/<ns>` — the SAME key
+                              from two senders lands in two DIFFERENT namespaces: it
+                              cannot collide, so it can never pool
+
+The security design namespaces values so "a push can never overwrite the
+receiver's own namespaces" — fragmenting VALUES to be safe, and in the same
+stroke fragmenting EVIDENCE. But evidence counts are exactly the data that was
+safe to merge all along: f and r are additive, order-independent and monotone.
+Sum(f_i)/Sum(r_i) cannot overwrite, corrupt or impersonate a local fact; it can
+only add. The namespace guard can stay untouched for values, with one additive
+channel for counts.
+
+**The mathematics of pooling vs fragmentation.** Each silo i estimates
+p_i = f_i/r_i with heat S_i = heat(p_i), Psi_i = CONE + S_i. The pooled register
+estimates p = Sum(f_i)/Sum(r_i) — Jeffreys-smoothed for finite-N honesty as
+p_J = (f + 1/2)/(r + 1), so a 2/2 silo is not "certain" but Psi_J = 0.520855.
+Three consequences, computed with the exact greatscale constants
+(CONE = phi^-2 = 0.381966, heat, psi, runs_to_detect at alpha = 0.05):
+
+1. **Confirmation never compounds when fragmented.** Two silos each confirming
+   2/2 hold S_J = 0.138889 each — FOREVER: nothing in the merged system adds
+   their trials. Pooled, the same four runs give 4/4 -> p_J = 0.9, S_J = 0.09,
+   Psi_J = 0.471966; ten confirmations -> 0.425354; forty -> 0.394012; as pooled
+   r grows, Psi descends monotonically toward CONE:
+
+   | pooled r (all confirmations) | p_J | S_J = heat(p_J) | 4S_J | Psi_J | 4(Psi_J - CONE) |
+   | --- | --- | --- | --- | --- | --- |
+   | 1 | 0.7500 | 0.187500 | 0.75 | 0.569466 | 0.75 |
+   | 2 | 0.8333 | 0.138889 | ~0.556 | 0.520855 | ~0.556 |
+   | 4 | 0.9000 | 0.090000 | 0.36 | 0.471966 | 0.36 |
+   | 10 | 0.9545 | 0.043388 | ~0.174 | 0.425354 | ~0.174 |
+   | 40 | 0.9878 | 0.012046 | ~0.048 | 0.394012 | ~0.048 |
+   | 400 | 0.9988 | 0.001245 | ~0.005 | 0.383211 | ~0.005 |
+
+   **The pooled register is the only accumulator of heat the system has: the
+   descent of Psi toward phi^-2 IS the system learning.** Fragmented, every
+   node re-derives — and re-pays for — certainty the fleet already owns.
+
+2. **Contradiction is invisible without pooling (the reverse inversion).**
+   Descent II showed composing gates transposes cone-floor truths into heat —
+   a loss. Pooling does the opposite on FALSE certainty — a gain:
+
+   | Register | f/r | p | S | Psi | cone floor | orientation | runs for 95% |
+   | --- | --- | --- | --- | --- | --- | --- | --- |
+   | silo A alone | 2/2 | 1 | 0 | 0.381966 | yes | fail | 1 |
+   | silo B alone | 0/2 | 0 | 0 | 0.381966 | yes | pass | — |
+   | BOTH, fragmented (system view) | 2/2 + 0/2 | 1 and 0 | 0 and 0 | 0.381966 | yes | fail AND pass | — |
+   | the same trials POOLED | 2/4 | 1/2 | 0.25 | 0.631966 | NO | mixed | 5 |
+
+   The fragmented merged system holds BOTH certainties simultaneously with zero
+   heat anywhere and never notices. Pooled, 2/4 lands on the maximally hot
+   point of the whole scale. **Pooling does not create heat; it reveals heat
+   that fragmentation hid.** The alarm rule: every silo on the cone floor but
+   pooled S > 0 => a hidden context variable exists WITH CERTAINTY (an
+   environment flag, a node difference, a load condition) — the single most
+   informative state the merged system can reach. This is the exact state
+   Descent I's lock produced between CI and local: the 2026-10-28 boot defect
+   was measured 3/3 in CI while local verify.sh was never executed — the merged
+   system's knowledge of its most consequential defect came from ONE silo, and
+   "untested in the other environment" was an invisible absence instead of a
+   counted, visible 0/2 row in a shared register.
+
+3. **Averaging destroys the alarm.** If the register averaged the two
+   orientations ("fails half the time, passes half the time — call it mixed and
+   move on") the contradiction would dissolve into an unexplained coin flip.
+   The pooled heat is not noise to be smoothed: it is a POINTER at the hidden
+   variable. The success criteria below promote it, never average it.
+
+**Mitigation — success criteria for every merge point (completing Descent II's
+criteria, one scale up).**
+
+1. **Merge trials, not just artifacts.** Every merge point — merge_remote,
+   distill_lessons, push_memory/receive_memory, the cross-repo bridge — carries
+   and SUMS (f, r, origin) alongside the artifact: f_total = Sum(f_i),
+   r_total = Sum(r_i).
+2. **Counts are the trust-safe payload.** The namespace guard stays exactly as
+   designed for values; counts need no guard — addition is commutative,
+   associative and monotone. One additive channel per merge point.
+3. **Promote contradictions, never average them.** All silos cone-floor +
+   pooled S > 0 => the register's top-priority object: a hidden context
+   variable, named by which silos disagreed.
+4. **Smooth for finite N.** Jeffreys p_J = (f + 1/2)/(r + 1) keeps small
+   samples honest (2/2 is Psi_J = 0.520855, not the floor) and lets
+   confirmations compound toward it.
+
+**Consequence for the merged system.** Descent I: a run budget forces the cone
+floor — make checks deterministic and self-describing. Descent II: gate chains
+heat truths — make evidence travel WITH the artifact. Descent III: namespacing
+fragments trials — make merge points POOL them. Merging artifacts only
+replicates the two systems side by side; merging trials is what evolves them
+into something greater: a register whose Psi descends toward phi^-2 with every
+confirming run on any node, and which rings a maximal-heat alarm the moment two
+of its certainties disagree.
+
+*Verification of this descent's arithmetic:* the tables were computed with the
+exact `greatscale` constants (PHI, CONE = phi^-2 = 0.381966, heat, psi,
+runs_to_detect, alpha = 0.05). The merge-point constants (post-id dedupe, sha1
+lesson keys, entry shape {ns, key, value, ts, agent}, MEMORY_SYNC_MAX_ENTRIES =
+200, `fleet:<sender>/<ns>` namespacing in push_memory/receive_memory) are read
+directly from `avrone/bridge.py` and `avrone/fleet.py` at da6d89b. Both CI
+legs on da6d89b (42162330602, 42162331959) died as zero-job failures with the
+canonical billing annotation — the sixth lock cycle, again one bit per epoch.

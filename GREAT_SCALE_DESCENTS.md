@@ -66,3 +66,103 @@ inherits this: contract checks executed under the lock must be deterministic
 and self-describing on failure, and anything statistical belongs on a host
 where N can grow. This is why the swarm-executor contracts run as assertions
 with named causes, not as flaky retries.
+
+## Descent II — The Multiplicative Chain: Layered Systems Select for Determinism Compulsively (2026-11-06)
+
+**Finding.** Descent I found the cone law in one layer — the run budget. The
+deeper finding is that the merged system is not one Bernoulli gate but a CHAIN
+of them, and transmissions across the chain compose MULTIPLICATIVELY. Read in
+`avrone/bridge.py`, the memory path of a defect lesson passes four gates:
+
+    G1 detection      a defect of rate p is exposed in N runs: D(p,N) = 1-(1-p)^N
+    G2 distillation   distill_lessons() keeps only the k = 5 NEWEST conclusions of a
+                      run (recency, not evidence); text is clipped to 500 chars and
+                      the post's refs — the only trace of its evidence — are discarded
+    G3 retention     `lesson_key` = sha1(normalized text) dedupes identical re-derivations
+                      WITHOUT counting them (no reinforcement: a re-found truth never
+                      gains evidence), a rephrasing fragments into a new key, and the
+                      store trims to M = 200 oldest-evicted — truth and falsehood age
+                      out at exactly the same rate (heat-blind LRU; expected lifetime
+                      M/k = 40 runs at full distillation)
+    G4 retrieval      relevant_lessons() gates on keyword overlap with the future task
+                      (rate w) inside a 2000-char injection budget
+
+So a defect's lesson reaches the prompt of a future run where it applies with
+probability T = D(p,N) x q x s x w — a product, not a sum. The composition law:
+
+    T_total = D(p,N) * q * s * w          (each gate multiplies)
+    S_eff   = heat(T_total) = T(1-T)       the chain's effective heat
+    Psi_eff = CONE + S_eff
+
+**The inversion.** Composing gates does not merely lose truth — it transposes
+cone-floor truths into residual heat. A deterministic defect (p = 1, S = 0,
+Psi = 0.381966) forced through only two 50% gates (q = s = 1/2, a realistic
+distillation pick rate for a 10-conclusion run and a half-overlapping task)
+emerges with T = 1/4:
+
+| Chain (measured constants from bridge.py) | T | S=heat(T) | 4S | Psi | cone floor | orientation | runs for 95% |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Descent I reference: defect alone, p = 1 | 1 | 0 | 0 | 0.381966 | yes | fail | 1 |
+| + two gates q = 1/2, w = 1/2 | 1/4 | 0.1875 | 0.75 | 0.569466 | no | mixed | 11 |
+| + four gates 1/2 each (q, s, w1, w2) | 1/16 | 0.0586 | ~0.234 | 0.44056 | no | mixed | 47 |
+| flaky p = 1/2 through two gates | 1/8 | 0.1094 | ~0.438 | 0.491341 | no | mixed | 23 |
+| SAME defect, evidence carried edge-to-edge | 1 | 0 | 0 | 0.381966 | yes | fail | 1 |
+
+The starkest reading: the maximally flaky check (p = 1/2) has S = 0.25, but a
+100%-reproducible truth through four half-gates has S = 0.0586 and needs 47
+runs to re-find — **a fact the system already proved becomes harder to
+recover than a coin flip is to detect.** Every layer added without an
+evidence channel makes the system forget harder, exactly as Descent I's lock
+made it see less. The cone law is not a property of CI; it is a property of
+EVERY orientation-blind, non-accumulating channel.
+
+**The last unconnected connection.** `avrone.greatscale.evidence_snapshot`
+exists — failures/runs, p, S, Psi, orientation, runsFor95 — yet has no edge
+into `bridge.distill_lessons`: the snapshot is stripped exactly where memory
+is written. Evidence does not flow across the layer boundary, so downstream
+layers cannot distinguish a cone-floor truth from a lucky one-off; heat is
+unobservable in memory, and (because the hash-dedupe discards repeat
+derivations) it can never accumulate there either. The system can ADD lessons
+but cannot REINFORCE them.
+
+**Mitigation — success criteria for every inter-layer edge (derived from the
+Descent I escapes, generalised).** Information must travel with the artifact:
+
+1. **Carry the evidence vector across every boundary.** A lesson saved by
+   distill_lessons should carry its snapshot (f/r, p-hat, S, Psi,
+   orientation) and the refs of the posts it came from, so any downstream
+   consumer can compute heat at read time — the same move as the in-run
+   ::error:: annotation: maximize information per artifact, not per run.
+2. **Make dedupe an accumulator, not a discarder.** A re-derived identical
+   lesson should increment its confirmation count (f += 1, r += 1) — this is
+   precisely the N-accumulation the billing-lock regime could not afford.
+   Memory is where the merged system CAN buy the runs CI cannot: every new
+   run re-derives the truth for free, and the store converts those repeats
+   into shrinking heat: S_hat = p-hat(1 - p-hat) -> 0 as confirmations grow.
+   A 40-run LRU horizon then renews on evidence, not on age.
+3. **Retrieve by heat, not by word count alone.** relevant_lessons should
+   weight matches by (1 - S) and orientation agreement — cone-floor lessons
+   first — so the 2000-char injection budget is spent on the coldest truths,
+   not the loudest phrasings.
+
+**Consequence for the merged system.** Descent I said: under a run budget,
+only the deterministic is detectable, so make checks deterministic and
+self-describing. Descent II generalises it: under a chain of lossy gates,
+only evidence that TRAVELS stays true, so every edge — CI to bridge, bridge
+to lesson, lesson to prompt, node to fleet node — must carry the snapshot.
+The bridge already does this for posts (refs, origin_node, ts survive
+merge_remote); lessons are the one edge that strips it. Close that edge and
+the merged system becomes what the cone prescribes: a memory whose truths
+grow colder (S -> 0, Psi -> CONE) with every confirming run, on any host,
+with no budget required.
+
+*Verification of this descent's arithmetic:* the table above was computed
+with the exact `greatscale` constants (PHI, CONE = phi^-2 = 0.381966,
+heat, psi, runs_to_detect with alpha = 0.05); the gate constants (k = 5,
+LESSON_TEXT = 500, lessons_max = 200, LESSONS_CHARS = 2000, keyword-overlap
+retrieval) are read directly from `avrone/bridge.py` at 88b17a2. The push of
+this document triggered two more CI legs (42161832147, 42161830477 on
+88b17a2's successor) — both died in 2 seconds with empty step arrays and the
+canonical annotation "The job was not started because your account is locked
+due to a billing issue", a fifth lock cycle and a live confirmation of
+Descent I: the meta-system again transmitted exactly one bit per epoch.

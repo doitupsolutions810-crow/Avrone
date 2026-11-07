@@ -1,0 +1,25 @@
+{
+  "schema": "great-scale-evidence/v8",
+  "finding": "uid 0 and uid 1000 are two pure gates. A user namespace flips the orientation without setting ALLOW_ROOT. Process substitution is a third pure fail on a host with no /dev/fd. The here-string of the same command is the pass.",
+  "cone": 0.3819660112501052,
+  "rootGate": {
+    "uid": 0,
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "userNamespace": {
+    "uid": 1000,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "processSubstitution": "fail",
+  "hereString": "pass",
+  "suite": "15 passed in 11.51s (squad + trailing-slash + happy path + lanes, uid 1000)",
+  "autopilotFile": "338 passed, 19 failed in 971.50s as uid 1000. Isolated rerun of the patch test fails only because scripts/mac-local-squad.sh is a tracked change on top of 1121d26.",
+  "docker": false,
+  "mitigation": "Replace `read < <(tools_for \u2026)` with `read <<< \"$(tools_for \u2026)\"`."
+}

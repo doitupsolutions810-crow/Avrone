@@ -518,7 +518,7 @@ PY
 reintro_step(){   # Track A: smoke-test the next batch; advance when coherent
   local S CUR NEXT P
   S="$(read_stage)"
-  read -r CUR NEXT < <(tools_for "$S")
+  read -r CUR NEXT <<< "$(tools_for "$S")"
   [ "$NEXT" = "-" ] && { log "reintro complete: $NB/$NB, all $(echo "$CUR" | tr , '\n' | wc -l | tr -d ' ') tools active"; return 0; }
   log "reintro stage $S/$NB — smoke-testing: $NEXT"
   P="Tool check. Reply ONLY with one JSON object {\"tool\":NAME,\"args\":{...}} per turn. Call each of these tools exactly once with small, safe, valid arguments (read each tool's args doc; use path '.', text 'hello', host 127.0.0.1 where needed): $NEXT. Guardrails: port_scan only 127.0.0.1 with authorized=true and <=5 ports; shell/priv_shell/priv_admin only read-only commands (id, uname -a, df -h); fs_delete only a file you created; docker_run/env_install only if available (an 'unavailable' error counts as exercised); bridge_post then bridge_read then bridge_reply on the same post; spawn one tiny sub-agent with a one-line task. Finish with one line per tool: NAME OK or FAIL."
@@ -543,7 +543,7 @@ lane(){   # Track B — exits with the agent's rc (254 = lane not selected) so t
   local d="$DATA/lane-$1" CUR rc
   check_drive
   mkdir -p "$d"
-  read -r CUR _ < <(tools_for "$(read_stage)")
+  read -r CUR _ <<< "$(tools_for "$(read_stage)")"
   log "lane $1 start ($(echo "$CUR" | tr , '\n' | wc -l | tr -d ' ') tools)"
   touch "$d/.lane-start"
   AVRONE_TOOLS_ONLY="$CUR" AVRONE_MAX_STEPS=96 AVRONE_DATA_DIR="$d" \

@@ -1,0 +1,23 @@
+{
+  "schema": "great-scale-evidence/v6",
+  "finding": "Sourcing env.sh is a different process from the one that activated the venv. A bare python in that file is the PATH predicate (orientation fail, S = 0). The absolute venv path is the pass predicate, and it survives a space in the path.",
+  "cone": 0.3819660112501052,
+  "path_python": {
+    "executable": "/usr/local/bin/python",
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "venv_python": {
+    "executable": "/tmp/avrone-venv/bin/python",
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "sourcedFirstTokenHasSpace": true,
+  "suite": "17 passed, 1 skipped in 3.04s",
+  "docker": false,
+  "mitigation": "AVRONE_EVOLVE_TEST_CMD in env.sh is the quoted absolute venv interpreter plus the pytest args."
+}

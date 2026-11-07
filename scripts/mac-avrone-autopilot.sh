@@ -453,6 +453,11 @@ fi
 [ -f .venv/bin/activate ] || { rm -rf .venv; die "broken .venv (no activate) — rerun"; }
 # shellcheck disable=SC1091
 source .venv/bin/activate
+# Absolute interpreter. `python` after activate is only this process's PATH.
+# env.sh is sourced by later processes that did not activate, and bare `python`
+# there is whatever PATH finds, which may not have pytest.
+VENV_PY="$REPO/.venv/bin/python"
+[ -x "$VENV_PY" ] || die "venv python missing at $VENV_PY"
 if [ "${AUTOPILOT_NO_INSTALL:-0}" != "1" ]; then
   if ! bg_wait pip install -q -e ".[dev]" > "$OUT/pip.log" 2>&1; then
     # offline (plane, captive wifi) with everything already installed is fine: say so and carry on
@@ -464,7 +469,7 @@ if [ "${AUTOPILOT_NO_INSTALL:-0}" != "1" ]; then
   fi
 fi
 if [ "${SKIP_GATE:-0}" != "1" ]; then
-  GATE_CMD="${GATE_CMD:-python -m pytest -q -p no:cacheprovider -m 'not integration'}"
+  GATE_CMD="${GATE_CMD:-$VENV_PY -m pytest -q -p no:cacheprovider -m 'not integration'}"
   log "baseline gate: $GATE_CMD"
   if ! bg_wait bash -c "$GATE_CMD" > "$OUT/baseline.txt" 2>&1; then
     log "baseline RED — fix main before evolving:"; tail -20 "$OUT/baseline.txt"; exit 1
@@ -484,7 +489,7 @@ export AVRONE_MCP_CONFIG=$(q "$STATE/mcp.json")
 export AVRONE_RECON_ALLOWLIST=127.0.0.1,localhost
 export AVRONE_BRIDGE_MAX_POSTS=1000 AVRONE_MAX_PARALLEL=2
 export NO_PROXY=127.0.0.1,localhost
-export AVRONE_EVOLVE_TEST_CMD="python -m pytest -q -x -p no:cacheprovider -m 'not integration' tests"
+export AVRONE_EVOLVE_TEST_CMD="$(q "$VENV_PY") -m pytest -q -x -p no:cacheprovider -m 'not integration' tests"
 EOF
 python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$STATE/mcp.json" 2>/dev/null || echo '{"servers":{}}' > "$STATE/mcp.json"
 # shellcheck disable=SC1091

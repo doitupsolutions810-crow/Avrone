@@ -49,12 +49,14 @@ log "warming $MODEL"; ollama run "$MODEL" "say ready" </dev/null | head -1 | tee
 cd "$REPO"
 [ -d .venv ] || python3 -m venv .venv
 source .venv/bin/activate
+VENV_PY="$REPO/.venv/bin/python"
+[ -x "$VENV_PY" ] || { log "venv python missing at $VENV_PY"; exit 1; }
 pip install -q -e ".[dev]"
 
 # 4. Check the tests pass before any lane runs
 if [ "${SKIP_GATE:-0}" != "1" ]; then
   log "running baseline gate"
-  if ! python -m pytest -q -m "not integration" -x > "$OUT/baseline.txt" 2>&1; then
+  if ! "$VENV_PY" -m pytest -q -m "not integration" -x > "$OUT/baseline.txt" 2>&1; then
     log "baseline RED - fix main before evolving. tail:"; tail -15 "$OUT/baseline.txt"; exit 1
   fi
   log "baseline: $(tail -1 "$OUT/baseline.txt")"
@@ -74,7 +76,7 @@ lane(){
   case " $LANES " in *" $1 "*) ;; *) return;; esac
   local d="$DRIVE/avrone-data/$1"; mkdir -p "$d"
   log "lane $1 start"
-  AVRONE_DATA_DIR="$d" timeout "$LANE_TIMEOUT" python -m avrone.cli chat "$COMMON$2" --json "$OUT/$1.json" > "$OUT/$1.txt" 2> "$OUT/$1.err"
+  AVRONE_DATA_DIR="$d" timeout "$LANE_TIMEOUT" "$VENV_PY" -m avrone.cli chat "$COMMON$2" --json "$OUT/$1.json" > "$OUT/$1.txt" 2> "$OUT/$1.err"
   log "lane $1 rc=$?"
 }
 command -v timeout >/dev/null || { brew install coreutils >/dev/null 2>&1; alias timeout=gtimeout; command -v timeout >/dev/null || timeout(){ gtimeout "$@"; }; }

@@ -1,0 +1,38 @@
+{
+  "schema": "great-scale-evidence/v4",
+  "finding": "Width 40 is stable across fresh processes: the max timeout count is 0. Width 80 is hot in both and both leave the cone floor, but p is not a constant. On timeouts>24 this sitting gave 0.667 and 0.533, gap 0.133. Carry the width split and the heat. Do not publish one p.",
+  "cone": 0.3819660112501052,
+  "process_a": {
+    "width40_max": 0,
+    "width80_min": 18,
+    "width80_max": 64,
+    "predicate": "timeouts > 24",
+    "failures": 20,
+    "runs": 30,
+    "p": 0.6666666666666666,
+    "S": 0.22222222222222224,
+    "psi": 0.6041882334723274,
+    "logCoord": 0.888888888888889,
+    "orientation": "mixed",
+    "onConeFloor": false,
+    "effectiveRuns": 30
+  },
+  "process_b": {
+    "width40_max": 0,
+    "width80_min": 17,
+    "width80_max": 43,
+    "predicate": "timeouts > 24",
+    "failures": 16,
+    "runs": 30,
+    "p": 0.5333333333333333,
+    "S": 0.24888888888888888,
+    "psi": 0.630854900138994,
+    "logCoord": 0.9955555555555555,
+    "orientation": "mixed",
+    "onConeFloor": false,
+    "effectiveRuns": 30
+  },
+  "abs_p_gap": 0.1333333333333333,
+  "squad": "12 passed in 0.65s",
+  "mitigation": "Carry the quiet width and the fact of heat across processes. Do not carry a single p or a single batch count. Counts in this sitting still swung from 17 to 64."
+}

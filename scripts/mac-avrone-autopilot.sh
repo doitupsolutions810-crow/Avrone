@@ -4,9 +4,18 @@ if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 # launched with stdout/stderr/stdin closed (launchd, cron, `>&-`)? point them at /dev/null so tools that
 # print (ollama list, git) still work — a closed fd 1 made `ollama list` fail and triggered a needless re-pull
 # (bash's `test` checks /dev/fd/N against the real descriptor; order matters — fix 0,1,2 before anything opens a pipe)
-[ -e /dev/fd/0 ] || exec 0</dev/null
-[ -e /dev/fd/1 ] || exec 1>/dev/null
-[ -e /dev/fd/2 ] || exec 2>/dev/null
+# /dev/fd is absent in some containers even while 0,1,2 are open. Treating that absence as "closed"
+# sent a live stdout to /dev/null, so every FATAL was invisible. Fall back to /proc/self/fd, and if
+# neither exists do not silence a descriptor we cannot see.
+_fd_ok() {
+  if [ -d /dev/fd ]; then [ -e "/dev/fd/$1" ]
+  elif [ -d /proc/self/fd ]; then [ -e "/proc/self/fd/$1" ]
+  else return 0
+  fi
+}
+_fd_ok 0 || exec 0</dev/null
+_fd_ok 1 || exec 1>/dev/null
+_fd_ok 2 || exec 2>/dev/null
 # AVRONE autopilot for Apple Silicon Macs — finds the system, configures it and its bridges,
 # installs a big free local model, and resumes the work exactly where it left off:
 #   Track A: tool reintroduction (stage N of 9 in scripts/avrone-state/)

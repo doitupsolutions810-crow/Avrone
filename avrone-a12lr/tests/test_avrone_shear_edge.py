@@ -70,7 +70,7 @@ def main() -> int:
     )
     rec("honest single-trial bound is 0.95", abs(det["missedRate95"] - (1 - pow(0.05, 1))) < 1e-12)
 
-    # Stochastic channel: concurrent accept and refuse. Score correctness, not the gate bit.
+    # Overlap of two pure predicates. Copies still do not create a rate sample.
     def accept(_i):
         code, out, _ = run(["bash", str(MASTER), "status"], env={"ALLOW_AGENT_EXECUTION": "true"})
         return code == 0 and "DEPLOYMENT_COMPLETE" in out
@@ -80,15 +80,18 @@ def main() -> int:
         return code not in (0, -1) and "DEPLOYMENT_COMPLETE" not in out
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        flags = list(pool.map(accept, range(12))) + list(pool.map(refuse, range(12)))
-    sto_fail = flags.count(False)
-    sto = channel_snapshot(sto_fail, len(flags), "stochastic")
-    rec(f"stochastic concurrent gate {len(flags) - sto_fail}/{len(flags)}", sto_fail == 0)
-    rec("stochastic keeps the full N", sto["effectiveRuns"] == len(flags) == 24)
+        accepted = list(pool.map(accept, range(12)))
+        refused = list(pool.map(refuse, range(12)))
+    rec("concurrent accept holds", accepted == [True] * 12)
+    rec("concurrent refuse holds", refused == [True] * 12)
+    opened = channel_snapshot(accepted.count(False), 12, "deterministic")
+    closed = channel_snapshot(refused.count(False), 12, "deterministic")
+    rec("two pure predicates stay at N=1 each", opened["effectiveRuns"] == closed["effectiveRuns"] == 1)
+    pooled = channel_snapshot(0, 24, "stochastic")
     rec(
-        "stochastic miss bound uses 24, not 1",
-        sto["missedRate95"] is not None and sto["missedRate95"] < 0.2,
-        f"p<{sto['missedRate95']:.4f}",
+        "pooling the copies would fake a 24-trial bound",
+        pooled["missedRate95"] < opened["missedRate95"],
+        f"fake p<{pooled['missedRate95']:.4f} honest p<{opened['missedRate95']:.4f}",
     )
 
     # New gate strings, not used in the rift or scale suites.
@@ -120,24 +123,18 @@ def main() -> int:
         "schema": "great-scale-evidence/v2",
         "finding": (
             "A pure function repeated N times is one Bernoulli trial. "
-            "The miss bound uses effectiveRuns, not the copy count."
+            "Two pure predicates do not pool into one rate. "
+            "Only a check that can flip under the same input earns N greater than 1."
         ),
         "deterministic_gate": det,
-        "stochastic_gate": {
-            "failures": sto["failures"],
-            "runs": sto["runs"],
-            "effectiveRuns": sto["effectiveRuns"],
-            "orientation": sto["orientation"],
-            "S": sto["S"],
-            "psi": sto["psi"],
-            "missedRate95": sto["missedRate95"],
-            "channel": sto["channel"],
-        },
+        "open_gate_predicate": {"copies": 12, "effectiveRuns": opened["effectiveRuns"], "missedRate95": opened["missedRate95"]},
+        "closed_gate_predicate": {"copies": 12, "effectiveRuns": closed["effectiveRuns"], "missedRate95": closed["missedRate95"]},
+        "illegal_pooled_bound": {"runs": pooled["runs"], "missedRate95": pooled["missedRate95"], "channel": "stochastic-if-mislabelled"},
         "squad": squad,
         "docker": docker_up,
         "mitigation": (
-            "Tag each check deterministic or stochastic before applying missedRate95. "
-            "Do not buy a tighter bound by repeating a script that cannot flip."
+            "Tag a check stochastic only when the same input can flip. "
+            "Do not buy a tighter bound by repeating a script, or by pooling two pure predicates."
         ),
     }
     out = ROOT / "references" / "great-scale-shear-evidence.json"
@@ -149,8 +146,8 @@ def main() -> int:
         f"naive p<{det['naiveMissedRate95']:.4f} honest p<{det['missedRate95']:.4f}"
     )
     print(
-        f"stochastic runs={sto['runs']} effectiveRuns={sto['effectiveRuns']} "
-        f"p<{sto['missedRate95']:.4f} orientation={sto['orientation']}"
+        f"open predicate copies=12 effectiveRuns={opened['effectiveRuns']} honest p<{opened['missedRate95']:.4f}; "
+        f"illegal pool of 24 would claim p<{pooled['missedRate95']:.4f}"
     )
     return 0 if FAIL == 0 else 1
 

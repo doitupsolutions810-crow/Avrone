@@ -65,6 +65,31 @@ def evidence_snapshot(failures: int, runs: int, alpha: float = 0.05) -> dict[str
     }
 
 
+def channel_snapshot(failures: int, runs: int, channel: str, alpha: float = 0.05) -> dict[str, Any]:
+    """Apply the Bernoulli miss bound only where the trials are actually independent.
+
+    A pure function that returns the same bytes every time is one trial, no matter
+    how many copies are executed. Plugging that copy count into missedRate95
+    reports a tighter bound than the sample contains. Stochastic checks (races,
+    timeouts, concurrent workers) keep the full run count.
+    """
+    snap = evidence_snapshot(failures, runs, alpha)
+    snap["naiveMissedRate95"] = snap["missedRate95"]
+    snap["channel"] = channel
+    pure = failures in (0, runs)
+    if channel == "deterministic" and pure:
+        snap["effectiveRuns"] = 1
+        snap["missedRate95"] = None if failures == runs else 1.0 - math.exp(math.log(alpha) / 1.0)
+        snap["boundNote"] = (
+            "identical pure-function runs are one trial; "
+            "naiveMissedRate95 illegally divides by the copy count"
+        )
+    else:
+        snap["effectiveRuns"] = runs
+        snap["boundNote"] = "trials can flip; the run count is the sample size"
+    return snap
+
+
 def load_repo_greatscale():
     """Import avrone.greatscale from a sibling checkout without pulling httpx."""
     here = Path(__file__).resolve()

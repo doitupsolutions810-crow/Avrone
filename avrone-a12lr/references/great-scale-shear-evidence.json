@@ -1,0 +1,43 @@
+{
+  "schema": "great-scale-evidence/v2",
+  "finding": "A pure function repeated N times is one Bernoulli trial. The miss bound uses effectiveRuns, not the copy count.",
+  "deterministic_gate": {
+    "failures": 0,
+    "runs": 24,
+    "p": 0.0,
+    "S": 0.0,
+    "logCoord": 0.0,
+    "psi": 0.3819660112501052,
+    "cone": 0.3819660112501052,
+    "coneOk": true,
+    "onConeFloor": true,
+    "orientation": "pass",
+    "n": 8.0,
+    "lambda": 0.02128623625220818,
+    "singleRunDetect": 0.0,
+    "detectInRuns": 0.0,
+    "runsFor95": null,
+    "missedRate95": 0.95,
+    "naiveMissedRate95": 0.1173461561549487,
+    "channel": "deterministic",
+    "effectiveRuns": 1,
+    "boundNote": "identical pure-function runs are one trial; naiveMissedRate95 illegally divides by the copy count"
+  },
+  "stochastic_gate": {
+    "failures": 0,
+    "runs": 24,
+    "effectiveRuns": 24,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "missedRate95": 0.1173461561549487,
+    "channel": "stochastic"
+  },
+  "squad": {
+    "ran": true,
+    "exit": 0,
+    "summary": "43 passed in 0.82s"
+  },
+  "docker": false,
+  "mitigation": "Tag each check deterministic or stochastic before applying missedRate95. Do not buy a tighter bound by repeating a script that cannot flip."
+}

@@ -1,0 +1,87 @@
+{
+  "schema": "great-scale-evidence/v3",
+  "finding": "The same 1.6ms sleep against a 2ms deadline is one trial when run alone (0/200 timeouts). It becomes a coin only when 80 of those waits share the loop. Contention is the hidden input. A 3600s-versus-0.5s hang is neither.",
+  "cone": 0.3819660112501052,
+  "sharp_5ms": {
+    "below": [
+      0,
+      40
+    ],
+    "at": [
+      40,
+      40
+    ],
+    "effectiveRuns": 1
+  },
+  "isolated_2ms": {
+    "delay": 0.0016,
+    "timeout": 0.002,
+    "timeouts": 0,
+    "runs": 200,
+    "effectiveRuns": 1,
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "orientation": "pass"
+  },
+  "loaded_80": {
+    "batch": 80,
+    "batches": 30,
+    "counts": [
+      31,
+      23,
+      28,
+      39,
+      65,
+      22,
+      24,
+      20,
+      20,
+      28,
+      20,
+      27,
+      35,
+      30,
+      19,
+      22,
+      23,
+      18,
+      21,
+      17,
+      27,
+      33,
+      29,
+      19,
+      30,
+      19,
+      28,
+      21,
+      20,
+      28
+    ],
+    "min": 17,
+    "max": 65,
+    "predicate": "timeouts > 24",
+    "failures": 14,
+    "p": 0.4666666666666667,
+    "S": 0.24888888888888888,
+    "psi": 0.630854900138994,
+    "logCoord": 0.9955555555555555,
+    "orientation": "mixed",
+    "onConeFloor": false,
+    "effectiveRuns": 30,
+    "runsFor95": 5
+  },
+  "official_hang": {
+    "sleep": 3600,
+    "timeout": 0.5,
+    "ratio": 7200,
+    "copies": 20,
+    "timeouts": 20,
+    "effectiveRuns": 1,
+    "honestMissedRate95": 0.95,
+    "naiveMissedRate95": 0.13910834066826516
+  },
+  "squad": "43 passed in 0.76s",
+  "docker": false,
+  "mitigation": "Do not call eighty concurrent waits the same trial as one wait. Do not sample a 0.5s-versus-3600s hang as if it were a coin."
+}

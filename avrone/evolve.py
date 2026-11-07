@@ -13,7 +13,8 @@ Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_start / evo
        evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate),
        evolve_history (finished-loop summaries).
 Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; also checked between
-     iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
+     iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: the
+     running interpreter, `sys.executable -m pytest -q`, not whatever `python` PATH finds),
      AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
      AVRONE_EVOLVE_MAX_BG (concurrent background loops per process; default 2, hard cap 4),
      AVRONE_EVOLVE_SKILL_MAX_BYTES (proposed skill size ceiling; default/hard cap 16384),
@@ -40,6 +41,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
@@ -191,6 +193,19 @@ def _new_pid(ctx: "AgentContext") -> str:
     return SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
 
 
+def default_test_cmd() -> str:
+    """Run the gate with the interpreter that is running this process.
+
+    Bare `python` follows PATH. If that interpreter has no pytest, every proposal
+    is rejected. That miss is deterministic: heat is zero and the orientation is fail.
+    """
+    return f'{shlex.quote(sys.executable)} -m pytest -q -m "not integration"'
+
+
+def _resolve_test_cmd(test_cmd: str | None) -> str:
+    return str(test_cmd or os.getenv("AVRONE_EVOLVE_TEST_CMD") or default_test_cmd())
+
+
 async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: str | None = None,
                         timeout: int = 900, extra_meta: dict[str, Any] | None = None,
                         confine_to: str | None = None) -> dict[str, Any]:
@@ -236,8 +251,7 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
         changed.append(str(e["path"]))
     # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
     # under the parallel-clone load of a squad and would reject good unit-level proposals.
-    test_cmd = str(test_cmd or os.getenv("AVRONE_EVOLVE_TEST_CMD")
-                   or 'python -m pytest -q -m "not integration"')
+    test_cmd = _resolve_test_cmd(test_cmd)
     timeout = max(1, int(timeout))
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.

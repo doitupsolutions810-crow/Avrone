@@ -1,0 +1,28 @@
+{
+  "schema": "great-scale-evidence/v5",
+  "finding": "PATH python and the running interpreter are two pure predicates. Both have S = 0. One fails, one passes. The gate must call the one that passes.",
+  "cone": 0.3819660112501052,
+  "path_python": {
+    "executable": "/usr/local/bin/python",
+    "canImportPytest": false,
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "orientation": "fail",
+    "effectiveRuns": 1,
+    "onConeFloor": true
+  },
+  "running_interpreter": {
+    "executable": "/tmp/avrone-venv/bin/python",
+    "canImportPytest": true,
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "orientation": "pass",
+    "effectiveRuns": 1,
+    "onConeFloor": true
+  },
+  "defaultTestCmd": "/tmp/avrone-venv/bin/python -m pytest -q -m \"not integration\"",
+  "evolveAndSquad": "17 passed in 2.44s",
+  "squad": "17 passed in 2.44s",
+  "docker": false,
+  "mitigation": "default_test_cmd quotes sys.executable. AVRONE_EVOLVE_TEST_CMD and an explicit argument still override it."
+}

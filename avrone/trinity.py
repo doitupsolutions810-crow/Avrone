@@ -297,6 +297,10 @@ def _first_action(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             i = text.find("{", i + 1)
             continue
+        except RecursionError:
+            # A nested reply can blow the decoder before the time bound runs.
+            # That input cannot be an action; stop rather than sink the agent.
+            return None
         if _is_action(obj):
             return obj
         i = text.find("{", end)  # skip past the whole non-action object: keeps the scan linear

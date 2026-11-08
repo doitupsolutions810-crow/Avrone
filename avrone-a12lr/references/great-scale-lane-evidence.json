@@ -1,0 +1,17 @@
+{
+  "schema": "great-scale-evidence/v26",
+  "finding": "The lane check allows only deepcov, newmods, tools, robust. Unknown lanes and shell syntax in a lane name all refuse, even with ALLOW_ROOT=1 and a valid drive and model. A valid lane list passes the check and reaches the next one. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "refused": [
+    "notalane",
+    "$(id)",
+    "deepcov;id",
+    "deepcov bogus"
+  ],
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The lane check holds."
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "great-scale-evidence/v32",
+  "finding": "The script refuses when git or python3 is missing from PATH. Neither, python3 only, and git only all refuse. Both present continues. The script re-adds Homebrew prefixes, so the probe points those at a nonexistent directory. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "refused": [
+    "neither",
+    "python3 only",
+    "git only"
+  ],
+  "both": "continue",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The required-command checks hold."
+}

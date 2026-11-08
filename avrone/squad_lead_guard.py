@@ -1,12 +1,14 @@
 """Squad Lead residual guard.
 
-Counts worker results the same way Trinity's ``_reviewer_failed`` does
-(empty, or a line matching ``[name failed: ...]``), then calls signed admit.
+Only a list or a tuple is a squad. A generator, dict, set, string, or other
+iterable is ``not_a_squad`` and is not walked, so an endless generator cannot
+stall Lead.
 
-``None`` is a missing result and counts as a failure before ``str()``.
-The text ``"None"`` is a real report and does not.
-A ``__str__`` that raises counts as a failure (fail closed, no crash).
-A string or bytes object is not a squad.
+``None``, blank text, ``[name failed: ...]``, and a ``__str__`` that raises
+count as worker failures. The text ``"None"`` does not.
+
+A structural reject is unmeasured: S, Psi, and fourST are None, not the heat
+peak 1/4.
 
 This module does not edit trinity.py.
 """
@@ -22,10 +24,18 @@ _FAILED_RE = re.compile(r"^\[[^\]\n]*? failed: ")
 
 def _reject(reason: str) -> dict[str, Any]:
     snap = admit()
-    snap["reasons"] = [reason, *snap["reasons"]]
+    snap["reasons"] = [reason]
     snap["accepted"] = False
+    snap["measured"] = False
+    snap["S"] = None
+    snap["Psi"] = None
+    snap["fourST"] = None
+    snap["p"] = None
+    snap["orientation"] = "unmeasured"
     if snap["gate"]:
         snap["action"] = "lead.rejected"
+    else:
+        snap["action"] = "lead.merge"
     return snap
 
 
@@ -43,17 +53,14 @@ def worker_failed(result: Any) -> bool:
 
 
 def guard_squad(results: Any) -> dict[str, Any]:
-    if isinstance(results, (str, bytes, bytearray)):
+    if not isinstance(results, (list, tuple)):
         return _reject("not_a_squad")
-    try:
-        items = list(results)
-    except TypeError:
-        return _reject("not_a_squad")
-    n = len(items)
+    n = len(results)
     if n < 1:
         return _reject("no_workers")
-    n_fail = sum(1 for r in items if worker_failed(r))
+    n_fail = sum(1 for r in results if worker_failed(r))
     snap = admit(failures=n_fail, runs=n)
+    snap["measured"] = True
     snap["workers"] = n
     snap["worker_failures"] = n_fail
     return snap

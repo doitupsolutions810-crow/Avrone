@@ -1,0 +1,21 @@
+{
+  "schema": "great-scale-evidence/v25",
+  "finding": "The MODEL check allows only plain identifiers. Eight shell-syntax variants ($(id), backticks, semicolon, pipe, ampersand, redirect, newline, space) all refuse, even with ALLOW_ROOT=1 and a valid drive. A plain model passes the check and reaches the next one. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "refused": [
+    "$(id)",
+    "`id`",
+    "model;id",
+    "model|id",
+    "model&id",
+    "model>out",
+    "model\nid",
+    "model name"
+  ],
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The MODEL check holds."
+}

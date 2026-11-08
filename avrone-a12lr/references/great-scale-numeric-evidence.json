@@ -1,0 +1,22 @@
+{
+  "schema": "great-scale-evidence/v27",
+  "finding": "The numeric checks allow only whole numbers in range. CYCLES, CTX, and LANE_TIMEOUT all refuse decimals, suffixes, negatives, and out-of-range values, even with ALLOW_ROOT=1 and a valid drive, model, and lanes. Plain values pass and reach the next check. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "refused": [
+    "CYCLES=1.5",
+    "CYCLES=1h",
+    "CYCLES=-3",
+    "CYCLES=1e3",
+    "CTX=1.5",
+    "CTX=100",
+    "LANE_TIMEOUT=1.5",
+    "LANE_TIMEOUT=0",
+    "LANE_TIMEOUT=1h"
+  ],
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The numeric checks hold."
+}

@@ -1,0 +1,45 @@
+{
+  "schema": "great-scale-evidence/v18",
+  "finding": "Two full runs of the autopilot edge file, as uid 1000. Both: 352 passed, 5 failed, same five names. Nothing flipped. The five are deterministic on this host. The 352 are stable. The comparison is one trial. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "run1": {
+    "passed": 352,
+    "failed": 5,
+    "durationSeconds": 1269,
+    "names": [
+      "test_ollama_dies_mid_run_is_restarted",
+      "test_ollama_restart_storm_gives_up",
+      "test_our_own_hung_ollama_is_killed_and_restarted",
+      "test_real_bisect_in_progress_refused",
+      "test_offline_rerun_with_deps_installed_continues"
+    ]
+  },
+  "run2": {
+    "passed": 352,
+    "failed": 5,
+    "durationSeconds": 1266,
+    "names": [
+      "test_ollama_dies_mid_run_is_restarted",
+      "test_ollama_restart_storm_gives_up",
+      "test_our_own_hung_ollama_is_killed_and_restarted",
+      "test_real_bisect_in_progress_refused",
+      "test_offline_rerun_with_deps_installed_continues"
+    ]
+  },
+  "flips": {
+    "count": 0,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "eachRun": {
+    "orientation": "mixed",
+    "S": 0.01380944534676616,
+    "psi": 0.39577545659687136,
+    "effectiveRuns": 357
+  },
+  "suite": "12 passed in 19.62s",
+  "docker": false,
+  "mitigation": "No new mitigation. The five are deterministic. They will not move on their own."
+}

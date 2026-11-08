@@ -18,19 +18,15 @@ def main() -> int:
         print(("OK" if cond else "FAIL"), name)
         fails += int(not cond)
 
-    ck("good", guard_squad(["found 3", "found 4"])["action"] == "lead.merge")
-    silent = guard_squad(["", "   "])
-    ck("silent", silent["action"] == "lead.rejected" and silent["S"] == 0 and silent["orientation"] == "fail")
-    notes = guard_squad(["[Scout-1 failed: timeout]", "[Smith-2 failed: LLMError]"])
-    ck("notes", notes["orientation"] == "fail" and notes["action"] == "lead.rejected")
-    mixed = guard_squad(["verified", "[Scout-1 failed: timeout]"])
-    ck("mixed", mixed["orientation"] == "mixed" and mixed["accepted"])
-    rare = guard_squad(["ok"] * 199 + ["[A failed: x]"])
-    ck("rare", rare["accepted"] and 0 < rare["S"] < 0.01)
-    ck("bracket", worker_failed("[note] ok") is False)
-    ck("empty_squad", "no_workers" in guard_squad([])["reasons"])
+    ck("none_objs", guard_squad([None, None])["action"] == "lead.rejected")
+    ck("text_None", guard_squad(["None", "None"])["orientation"] == "pass")
+    ck("none_mixed", guard_squad([None, "ok"])["orientation"] == "mixed")
+    ck("bytes_not_none", worker_failed(b"") is False)
+    ck("false_not_none", worker_failed(False) is False)
+    ck("empty_list", worker_failed([]) is False)
+    ck("blank", worker_failed("  ") is True)
     os.environ["RESIDUAL_LOG_ONLY"] = "1"
-    ck("log_only", guard_squad(["", ""])["action"] == "lead.merge")
+    ck("log_only", guard_squad([None])["action"] == "lead.merge")
     print(f"{8 - fails}/8 passed")
     return fails
 

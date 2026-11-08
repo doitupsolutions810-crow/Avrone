@@ -1,0 +1,20 @@
+{
+  "schema": "great-scale-evidence/v24",
+  "finding": "The drive checks run before the root gate. ALLOW_ROOT=1 does not bypass them. Symlink into the repo, home folder, filesystem root, inside the repo, and a missing drive all refuse. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "checks": {
+    "refuses": [
+      "symlink into repo",
+      "home folder",
+      "filesystem root",
+      "inside repo",
+      "missing"
+    ],
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "docker": false,
+  "mitigation": "None needed. The drive checks hold even when root is allowed."
+}

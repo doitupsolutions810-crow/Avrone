@@ -1,0 +1,30 @@
+{
+  "schema": "great-scale-evidence/v22",
+  "finding": "Three lattice suites rerun after the /proc fix. HUP: 8 passed. SIGTERM: 6 passed. Budget: 7 passed. They agree with the tree. The five known names are still the only failures. No suite moved. All pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "hup": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "sigterm": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "budget": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "results": {
+    "test_avrone_hup_edge.py": true,
+    "test_avrone_sigterm_edge.py": true,
+    "test_avrone_budget_edge.py": true
+  },
+  "docker": false,
+  "mitigation": "None needed. The lattice agrees with the tree."
+}

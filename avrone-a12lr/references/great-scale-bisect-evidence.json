@@ -1,0 +1,22 @@
+{
+  "schema": "great-scale-evidence/v11",
+  "finding": "git bisect start will not check out over the scripts/ overlay, so the test's bisect never begins and BISECT_LOG is never written. The script is right to continue. After the overlay is stashed, a real bisect writes BISECT_LOG and the script's check would fire. Both are one trial. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "overlayBlocksBisect": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1,
+    "meaning": "no BISECT_LOG, script continues"
+  },
+  "realBisect": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1,
+    "meaning": "BISECT_LOG present, script must refuse"
+  },
+  "suite": "12 passed in 0.76s",
+  "docker": false,
+  "mitigation": "Do not change the bisect check. The test cannot start a bisect on a dirty tracked file. Stash the overlay first, or the refusal is about a bisect that never existed."
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "great-scale-evidence/v20",
+  "finding": "Four edge files, as uid 1000: agentkit, fleet, gateway, server. 142 passed, 0 failed, 2.10s. No names that fail. These files are clean. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "census": {
+    "files": [
+      "agentkit",
+      "fleet",
+      "gateway",
+      "server"
+    ],
+    "passed": 142,
+    "failed": 0,
+    "durationSeconds": 2.1,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "suite": "142 passed, 1 warning in 2.13s",
+  "docker": false,
+  "mitigation": "None needed. These files are clean."
+}

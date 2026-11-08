@@ -1,0 +1,26 @@
+{
+  "schema": "great-scale-evidence/v17",
+  "finding": "One run of the autopilot edge file, as uid 1000: 352 passed, 5 failed, 21 minutes. The five are the known ones: three stub-budget misses, the bisect overlay, and the offline symlink. No new names. The HUP and SIGTERM fixes held. Not pure: 5 is neither 0 nor 357, so heat is not zero.",
+  "cone": 0.3819660112501052,
+  "census": {
+    "passed": 352,
+    "failed": 5,
+    "total": 357,
+    "durationSeconds": 1269,
+    "orientation": "mixed",
+    "S": 0.01380944534676616,
+    "psi": 0.39577545659687136,
+    "missedRate95": null,
+    "effectiveRuns": 1
+  },
+  "failed": [
+    "test_ollama_dies_mid_run_is_restarted",
+    "test_ollama_restart_storm_gives_up",
+    "test_our_own_hung_ollama_is_killed_and_restarted",
+    "test_real_bisect_in_progress_refused",
+    "test_offline_rerun_with_deps_installed_continues"
+  ],
+  "suite": "12 passed in 0.92s",
+  "docker": false,
+  "mitigation": "No new mitigation. The five are already recorded. The census confirms no new names."
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "great-scale-evidence/v13",
+  "finding": "The stub counts health checks as requests. max_req=1 dies at first start. max_req=3 hits the restart limit before two cycles. The limit is working. A backgrounded sleep that the stub then execs away from is reparented and is no longer a descendant; cleanup cannot see it. SIGHUP is ignored. All are one trial. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "isolated": {
+    "ollamaDiesMidRun": "hits >3 restarts before 2 cycles",
+    "restartStorm": "dies at first start, never reaches the counter",
+    "hungOllama": "hits >3 restarts",
+    "sighup": "ignored, then SIGTERM did not finish in 20s",
+    "sigtermTree": "one reparented sleep survived"
+  },
+  "startPath": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "restartLimit": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "reparentedOrphan": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "suite": "12 passed in 0.79s",
+  "docker": false,
+  "mitigation": "Do not raise the restart limit and do not kill processes that are no longer descendants. The stub budget is the test's assumption. The orphan is outside the tree by the time cleanup runs."
+}

@@ -277,8 +277,23 @@ for f in MERGE_ME.md MERGE_ME.md.tmp; do grep -qxF "/$f" "$EXCL" || echo "/$f" >
 if git ls-files --error-unmatch agents >/dev/null 2>&1; then log "agents/ is tracked in git — left untouched"; fi
 if ! { grep -q "def apply_tool_focus" avrone/bootstrap.py && grep -q "def coerce_args" avrone/trinity.py; }; then
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    git status --short --untracked-files=no | head -10
-    die "uncommitted changes in tracked files — commit or stash them first (nothing was touched)"
+    # The unpatched fixture copies the current scripts onto the base commit.
+    # scripts/mac-local-squad.sh is the one tracked file that differs. The
+    # carried patches do not touch scripts/. A dirty file outside scripts/
+    # is still a user edit of the tree the patches will change.
+    dirty="$(git status --porcelain --untracked-files=no | awk '{print $NF}')"
+    bad=""
+    for f in $dirty; do
+      case "$f" in
+        scripts/*) ;;
+        *) bad="$bad $f" ;;
+      esac
+    done
+    if [ -n "$bad" ]; then
+      git status --short --untracked-files=no | head -10
+      die "uncommitted changes in tracked files — commit or stash them first (nothing was touched)"
+    fi
+    log "WARN: only scripts/ is dirty (harness overlay) — patches do not touch scripts/, continuing"
   fi
   if ! git symbolic-ref -q HEAD >/dev/null; then   # detached HEAD: commits made here are lost on the next checkout
     _br=avrone-autopilot; git show-ref -q --verify "refs/heads/$_br" && _br="avrone-autopilot-$(date +%Y%m%d-%H%M%S)"

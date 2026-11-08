@@ -1,0 +1,25 @@
+{
+  "schema": "great-scale-evidence/v9",
+  "finding": "At 1121d26 only scripts/mac-local-squad.sh is tracked. The fixture overlay dirties it. The patches touch avrone/ and tests/, not scripts/. A scripts/ overlay is the harness. A dirty file outside scripts/ is still a user edit. Both are one trial. Heat is zero. Orientation separates them.",
+  "cone": 0.3819660112501052,
+  "scriptsOverlay": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1,
+    "onConeFloor": true
+  },
+  "userEditOutsideScripts": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1,
+    "onConeFloor": true
+  },
+  "trackedAtBase": [
+    "scripts/mac-local-squad.sh"
+  ],
+  "suite": "15 passed in 26.41s",
+  "docker": false,
+  "mitigation": "Refuse a dirty tracked file only when it is outside scripts/. The carried patches do not touch scripts/. A user edit of avrone/ or tests/ still stops the run."
+}

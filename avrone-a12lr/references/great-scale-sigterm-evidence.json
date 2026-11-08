@@ -1,0 +1,20 @@
+{
+  "schema": "great-scale-evidence/v15",
+  "finding": "The stub backgrounds a sleep and execs. The sleep is still a child of the lane process at cleanup time. descendants used pgrep, which this host lacks, so the sleep survived. The /proc walk finds it and kills it. No new code. Both are one trial. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "before": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "after": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "suite": "13 passed in 9.26s",
+  "docker": false,
+  "mitigation": "Already in place: descendants reads /proc. The sleep is still a child when cleanup runs."
+}

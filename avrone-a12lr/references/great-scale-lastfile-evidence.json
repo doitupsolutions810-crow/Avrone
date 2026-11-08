@@ -1,0 +1,35 @@
+{
+  "schema": "great-scale-evidence/v21",
+  "finding": "Seven edge files, as uid 1000: mcp client, netdiag, plugins, telemetry, edgecases v018, edgepack, edgeroute. 200 passed, 0 failed, 3.25s. No names that fail. Every edge file in tests/ has now been run as uid 1000. The only failures in the whole tree are the five known names in the autopilot edge file. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "census": {
+    "files": [
+      "mcp_client",
+      "netdiag",
+      "plugins",
+      "telemetry",
+      "edgecases_v018",
+      "edgepack",
+      "edgeroute"
+    ],
+    "passed": 200,
+    "failed": 0,
+    "durationSeconds": 3.25,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "tree": {
+    "onlyFailures": [
+      "test_ollama_dies_mid_run_is_restarted",
+      "test_ollama_restart_storm_gives_up",
+      "test_our_own_hung_ollama_is_killed_and_restarted",
+      "test_real_bisect_in_progress_refused",
+      "test_offline_rerun_with_deps_installed_continues"
+    ]
+  },
+  "suite": "200 passed in 3.19s",
+  "docker": false,
+  "mitigation": "None needed. The tree is clean except the five known names."
+}

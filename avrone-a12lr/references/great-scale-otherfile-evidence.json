@@ -1,0 +1,32 @@
+{
+  "schema": "great-scale-evidence/v19",
+  "finding": "Other files, as uid 1000. Squad and bootstrap: 38 passed. Evolve: 25 passed. Userns suite: 10 passed. No failures. No names that moved. These files are clean on this host. All pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "squadBootstrap": {
+    "passed": 38,
+    "failed": 0,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "evolve": {
+    "passed": 25,
+    "failed": 0,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "userns": {
+    "passed": 10,
+    "failed": 0,
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "suite": "38 passed in 0.76s",
+  "docker": false,
+  "mitigation": "None needed. These files are clean."
+}

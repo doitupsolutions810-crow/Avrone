@@ -1,0 +1,31 @@
+{
+  "schema": "great-scale-evidence/v10",
+  "finding": "Isolation cleared 11 of the 19 prior autopilot failures. The remaining 8 are not the scripts/ overlay. Five are ollama-stub or signal timing on this host. Three are environment: a real bisect was not refused, an offline pip had no installed AVRONE, and a dangling venv had no activate. The overlay gate itself is one trial, heat zero, orientation pass.",
+  "cone": 0.3819660112501052,
+  "isolatedRerun": {
+    "passed": 11,
+    "failed": 8,
+    "seconds": 133.42,
+    "uid": 1000
+  },
+  "stillFailing": [
+    "test_ollama_dies_mid_run_is_restarted",
+    "test_ollama_restart_storm_gives_up",
+    "test_sighup_is_survived",
+    "test_our_own_hung_ollama_is_killed_and_restarted",
+    "test_sigterm_kills_whole_tree",
+    "test_real_bisect_in_progress_refused",
+    "test_offline_rerun_with_deps_installed_continues",
+    "test_dangling_venv_python_after_brew_upgrade_is_rebuilt"
+  ],
+  "overlayGate": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1,
+    "onConeFloor": true
+  },
+  "squad": "12 passed in 0.89s",
+  "docker": false,
+  "mitigation": "Do not treat the remaining 8 as the overlay. Rerun the bisect refusal alone; the script looks for BISECT_LOG, and a real bisect on this host does create it."
+}

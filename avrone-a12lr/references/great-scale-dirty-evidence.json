@@ -1,0 +1,15 @@
+{
+  "schema": "great-scale-evidence/v29",
+  "finding": "The dirty-tree check refuses a tracked change outside scripts/ and allows one inside scripts/. It is skipped entirely when the carried patches are already applied. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "outsideScripts": "refuse",
+  "insideScripts": "allow",
+  "clean": "allow",
+  "skippedWhenPatchesPresent": true,
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The check holds. It only runs when the patches are missing."
+}

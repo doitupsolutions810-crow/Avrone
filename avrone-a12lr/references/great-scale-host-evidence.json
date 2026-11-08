@@ -1,0 +1,21 @@
+{
+  "schema": "great-scale-evidence/v28",
+  "finding": "The host check allows only host:port characters. Shell syntax and a space refuse, even with ALLOW_ROOT=1 and valid drive, model, lanes, and numbers. A slash is stripped and a missing port is appended before the check, so those are normalizations, not refusals. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "refused": [
+    "$(id)",
+    "host;id",
+    "127.0.0.1 11434"
+  ],
+  "normalized": [
+    "127.0.0.1:11434/api",
+    "127.0.0.1:11434",
+    "127.0.0.1"
+  ],
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The host check holds for shell syntax. The slash and missing port are normalized."
+}

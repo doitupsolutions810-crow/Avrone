@@ -1,0 +1,31 @@
+{
+  "schema": "great-scale-evidence/v16",
+  "finding": "The stub counts every GET, including the script's /api/version health check. max_req=1 dies at first start and never reaches the counter. max_req=3 and the hung stub hit the >3 restart limit before two cycles. The /proc fix did not move them. They are budget misses, not cleanup misses. All are one trial. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "isolated": {
+    "ollamaDiesMidRun": "hits >3 restarts before 2 cycles",
+    "restartStorm": "dies at first start, never reaches the counter",
+    "hungOllama": "hits >3 restarts"
+  },
+  "maxReq1": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "maxReq3": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "hung": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "suite": "12 passed in 0.77s",
+  "docker": false,
+  "mitigation": "Do not raise the restart limit. The stub budget is the test's assumption. The limit is working."
+}

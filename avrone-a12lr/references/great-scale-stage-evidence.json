@@ -1,0 +1,19 @@
+{
+  "schema": "great-scale-evidence/v35",
+  "finding": "The stage check repairs a corrupt reintro-stage.txt. It does not refuse. A decimal, a negative, two lines, and a suffix are all restored from the repo. A plain integer is accepted. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "repaired": [
+    "1.5",
+    "-3",
+    "two lines",
+    "1h"
+  ],
+  "accepted": "3",
+  "behavior": "repair, not refuse",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The stage check holds. It repairs instead of refusing."
+}

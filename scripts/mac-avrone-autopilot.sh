@@ -145,7 +145,15 @@ wait_pid(){ local p="$1" rc rc2
     wait "$p" 2>/dev/null; rc2=$?; [ "$rc2" = 127 ] && return "$rc"; return "$rc2"
   done; }
 bg_wait(){ "$@" & local p=$!; wait_pid "$p"; }   # TERM/INT act at once even during long steps
-descendants(){ local c; for c in $(pgrep -P "$1" 2>/dev/null); do descendants "$c"; echo "$c"; done; }
+# ppid from /proc. pgrep and ps are not on every host (this one has neither).
+_ppid(){ local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; s="${s##*)}"; set -- $s; echo "$2"; }
+descendants(){ local c p
+  for c in /proc/[0-9]*; do
+    [ -r "$c/stat" ] || continue
+    p="${c##*/}"
+    [ "$(_ppid "$p")" = "$1" ] || continue
+    descendants "$p"; echo "$p"
+  done; }
 cleanup(){
   local rc=$?
   for p in $LANE_PIDS $SLEEP_PID; do kill "$p" 2>/dev/null; done
@@ -667,7 +675,12 @@ while :; do
   check_drive
   PHASE="report"; report; end_cycle_health; PHASE="sleep"
   [ "$CYCLES" != "0" ] && [ "$n" -ge "$CYCLES" ] && break
-  sleep "${CYCLE_SLEEP:-30}" & SLEEP_PID=$!; wait "$SLEEP_PID"; SLEEP_PID=""   # backgrounded so TERM/INT act immediately
+  sleep "${CYCLE_SLEEP:-30}" & SLEEP_PID=$!
+  # HUP interrupts wait and returns. Do not clear SLEEP_PID or start a
+  # second sleep while the first is still alive: the first holds the
+  # stdout pipe, and cleanup only knows the pid it was told.
+  while kill -0 "$SLEEP_PID" 2>/dev/null; do wait "$SLEEP_PID" || true; done
+  SLEEP_PID=""
 done
 log "done. results in $OUT"
 exit 0

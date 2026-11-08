@@ -1,0 +1,20 @@
+{
+  "schema": "great-scale-evidence/v12",
+  "finding": "python3.11 here has no ensurepip, so a plain venv creation fails. --without-pip produces activate and python. A symlink to the venv python with no pyvenv.cfg beside it is not a venv: Python resolves to the system interpreter and pytest is missing. The offline check is right to refuse that. Both are one trial. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "withoutPip": {
+    "orientation": "pass",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "bareSymlink": {
+    "orientation": "fail",
+    "S": 0.0,
+    "psi": 0.3819660112501052,
+    "effectiveRuns": 1
+  },
+  "suite": "13 passed in 3.97s",
+  "docker": false,
+  "mitigation": "Retry `python -m venv --without-pip` when ensurepip is missing. Do not weaken the import check: a symlink without pyvenv.cfg is not an installed AVRONE."
+}

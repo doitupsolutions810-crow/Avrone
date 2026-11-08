@@ -1,0 +1,18 @@
+{
+  "schema": "great-scale-evidence/v33",
+  "finding": "The script refuses when the reintro plan is missing or malformed. Missing, not JSON, missing core, and empty batches all refuse. A valid plan continues. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "refused": [
+    "missing",
+    "not json",
+    "missing core",
+    "empty batches"
+  ],
+  "valid": "continue",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The plan check holds."
+}

@@ -88,3 +88,7 @@ The next integration increments should be separate and contract-driven:
 6. Connect UI work only after selecting the exact Replit app/account. The currently connected Wix account returned no sites; Adobe assets are an optional design-input layer, not an execution dependency.
 
 This is an integration foundation and reviewable first patch—not a claim that every repo is already one production system.
+
+## Verification checkpoint — 2026-11-09
+
+The independently verified AVRONE Runtime v0.82.1 hotfix is documented in `docs/RUNTIME_GATEWAY_VERIFICATION_v0.82.1.md`; the archive itself is not vendored here. The JSON-parser depth/checkout workflow repair was separately tested on Python 3.11 and 3.12 and merged into `main` through [PR #21](https://github.com/doitupsolutions810-crow/Avrone/pull/21). This integration PR remains draft until its own **pull-request** CI checks against updated main pass; push-workflow success alone is not sufficient.

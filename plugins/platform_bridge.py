@@ -81,7 +81,13 @@ def _targets() -> dict[str, str]:
         if not isinstance(base, str) or not base.strip():
             continue
         base = base.strip().rstrip("/")
-        parsed = urlsplit(base)
+        try:
+            parsed = urlsplit(base)
+            port = parsed.port  # validates malformed and out-of-range ports
+        except ValueError:
+            continue
+        if port is not None and port < 1:
+            continue
         if (parsed.scheme not in {"http", "https"} or not parsed.hostname
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             continue
@@ -135,7 +141,7 @@ async def _request(
         if (not isinstance(idempotency_key, str) or not idempotency_key.strip()
                 or idempotency_key != idempotency_key.strip()
                 or len(idempotency_key) > 200
-                or any(ord(ch) < 33 or ord(ch) == 127 for ch in idempotency_key)):
+                or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key)):
             return json.dumps({"ok": False, "target": target, "error": "invalid idempotency key"})
         headers["Idempotency-Key"] = idempotency_key
     url = base + path
@@ -265,7 +271,7 @@ def register(registry, settings=None):
             return "ERROR: mission objective must contain 1–4000 characters."
         if (not isinstance(idem_key, str) or not idem_key.strip()
                 or idem_key != idem_key.strip() or len(idem_key) > 200
-                or any(ord(ch) < 33 or ord(ch) == 127 for ch in idem_key)):
+                or any(ord(ch) < 33 or ord(ch) > 126 for ch in idem_key)):
             return "ERROR: idempotency_key is required and must be 1–200 printable non-space characters."
         return await _request(
             "runtime", "POST", "/v1/missions",
@@ -281,7 +287,7 @@ def register(registry, settings=None):
             return "ERROR: AVRONE_BRIDGE_RUNTIME_TOKEN must contain a tenant-scoped Runtime API key."
         mission_id = args.get("mission_id")
         if (not isinstance(mission_id, str)
-                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", mission_id)):
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", mission_id)):
             return "ERROR: mission_id must be a safe 1–128 character identifier."
         return await _request("runtime", "GET", f"/v1/missions/{mission_id}")
 
@@ -320,7 +326,7 @@ def register(registry, settings=None):
             return "ERROR: one or more requested Runtime capabilities are not present in the operator-configured allowlist."
         if (not isinstance(idem_key, str) or not idem_key.strip()
                 or idem_key != idem_key.strip() or len(idem_key) > 190
-                or any(ord(ch) < 33 or ord(ch) == 127 for ch in idem_key)):
+                or any(ord(ch) < 33 or ord(ch) > 126 for ch in idem_key)):
             return "ERROR: idempotency_key is required and must be 1–190 printable non-space characters."
 
         async def call_json(path, payload, key_suffix, phase):
@@ -357,7 +363,7 @@ def register(registry, settings=None):
         # because core create_mission/create_swarm return snapshots, not strings.
         if isinstance(mission_id, dict):
             mission_id = mission_id.get("mission_id")
-        if not isinstance(mission_id, str) or not mission_id:
+        if not isinstance(mission_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", mission_id):
             return json.dumps({"ok": False, "phase": "mission", "error": "Runtime did not return a mission_id."})
 
         task_payload = {"project_id": project_id.strip(), "capabilities": [c.strip() for c in capabilities]}
@@ -365,7 +371,7 @@ def register(registry, settings=None):
         if error:
             return json.dumps({**error, "partial": True, "mission_id": mission_id})
         task_id = task.get("task_id")
-        if not isinstance(task_id, str) or not task_id:
+        if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id):
             return json.dumps({
                 "ok": False, "phase": "task", "partial": True, "mission_id": mission_id,
                 "error": "Runtime did not return a task_id.",
@@ -381,7 +387,7 @@ def register(registry, settings=None):
         swarm_id = swarm.get("swarm_id")
         if isinstance(swarm_id, dict):
             swarm_id = swarm_id.get("swarm_id")
-        if not isinstance(swarm_id, str) or not swarm_id:
+        if not isinstance(swarm_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", swarm_id):
             return json.dumps({
                 "ok": False, "phase": "swarm", "partial": True, "mission_id": mission_id, "task_id": task_id,
                 "error": "Runtime did not return a swarm_id.",

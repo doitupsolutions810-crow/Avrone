@@ -144,10 +144,21 @@ class AvroneMCPServer:
 
     # ---------------------------------------------------------------- io
     async def send(self, obj: dict) -> None:
-        data = (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        try:
+            data = (json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError):
+            # A non-finite number or lone surrogate must not crash the JSON-RPC stream.
+            rid = obj.get("id") if isinstance(obj, dict) else None
+            data = (json.dumps({"jsonrpc": "2.0", "id": rid,
+                                "error": {"code": -32603, "message": "response not JSON-encodable"}},
+                               separators=(",", ":")) + "\n").encode()
         async with self._write_lock:
-            self._out.write(data)
-            self._out.flush()
+            try:
+                self._out.write(data)
+                self._out.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client gone (EPIPE/ECONNRESET): drop the write so serve() can shut down cleanly.
+                return
 
     async def serve(self, reader: asyncio.StreamReader, out) -> None:
         self._out = out

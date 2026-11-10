@@ -70,9 +70,11 @@ def _read_mem_pct_proc() -> float | None:
             for line in f:
                 k, _, v = line.partition(":")
                 try:
-                    info[k.strip()] = float(v.split()[0])
+                    n = float(v.split()[0])
                 except (ValueError, IndexError):
                     continue
+                if math.isfinite(n):
+                    info[k.strip()] = n
     except OSError:
         return None
     total = info.get("MemTotal") or 0
@@ -145,7 +147,13 @@ def make_disk_reader(path: str = ".") -> Reader:
             u = shutil.disk_usage(p or ".")
         except OSError:  # vanished mount / unreadable path: no reading rather than an exception
             return None
-        return 100.0 * u.free / u.total if u.total else None
+        if not u.total:
+            return None
+        try:
+            pct = 100.0 * u.free / u.total
+        except (OverflowError, TypeError, ValueError, ZeroDivisionError):
+            return None
+        return pct if 0.0 <= pct <= 100.0 else None
     return read_disk_free_pct
 
 

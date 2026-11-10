@@ -262,3 +262,55 @@ tests/edge_extra/test_sovereign_edges.py
 ```
 
 Nothing was pushed. Nothing was merged to `main`. The user still needs to name the push target before any GitHub write.
+
+---
+
+# Round 3 — harder protocol, framing, overflow, and Codex edges (2026-11-10 18:58 America/Detroit / EST)
+
+Base: `fix/macos-and-edge` at `3fd5a743c95156fe74f0873596f582c1b6d0dd25` (Avrone main tip `5cceb52` plus the Round 1–2 fixes). Work stays on a fresh branch `edge/round-3` off that tip. The previous 61 `tests/edge_extra` cases were left intact; this round adds 60 genuinely new tests (121 total in the suite). Production recon guardrails were not weakened (port cap stays 32; 127.0.0.1 and all non-public addresses remain refused even with `authorized=True`; successful mocked scans still use ≤5 ports and never open a real remote socket).
+
+## New tests (60)
+
+| File | Count | What they cover |
+|---|---|---|
+| `tests/edge_extra/test_mcp_protocol_edges.py` | 19 | Mixed request+notification JSON-RPC batch; `id` as null/float/bool; `params` as array; unknown ping params; empty/unknown method names; `tools/call` arguments as array; Content-Length header vs newline framing; truncated multibyte UTF-8 split across chunks; embedded NUL; trailing garbage after valid JSON; empty/whitespace-only lines; just-under 16 MiB line; interleaved partial frames from two logical writers; shutdown while 3 `tools/call` are in flight; simultaneous mixed valid/invalid tool ids; `send()` EPIPE does not kill `serve()`; non-finite tool result does not crash the stream |
+| `tests/edge_extra/test_governor_overflow_edges.py` | 8 | Combined thousands+decimal meminfo (`1,000.5`); `1e400` / `nan` MemTotal; uint64-boundary kB figures; disk free > total, negative free, 2^64 totals; `Governor.target()` with inf/NaN sensors stays in `[1, max_parallel]` |
+| `tests/edge_extra/test_sovereign_more_edges.py` | 5 | Workspace removed after `start()`; child that rmdirs its own cwd mid-run; env value with an embedded NUL; missing `PATH`; `_reap()` of a `wait()` that hangs is bounded by the 2s cap |
+| `tests/edge_extra/test_recon_reserved_edges.py` | 24 | `t_port_scan(..., authorized=True)` refuses IPv6 loopback (`::1`, `[::1]`), link-local (`fe80::1`, `169.254.1.1`), multicast (`ff02::1`, `224.0.0.1`, `239.255.255.250`), reserved (`240.0.0.1`, `0.0.0.0`, `255.255.255.255`, `198.18.0.1`); the same ranges refused when a public-looking name resolves to them (including mixed public+multicast); mocked happy path stays at ≤5 ports on `93.184.216.34`; default-deny holds with no allowlist |
+| `tests/edge_extra/test_codex_edges.py` | 4 | `emit` sanitizes NaN/inf and lone surrogates so the JSONL is strict UTF-8 JSON; `emit("../..")` cannot write outside `log_dir`; `replay`/`runs` sanitize a legacy poisoned log so the API can re-encode it; slash `run_id` does not create subdirectories |
+
+## Bugs found and fixed (root cause, Linux + macOS)
+
+1. **`avrone/governor.py:73-77`** — `_read_mem_pct_proc` accepted `float("1e400")` → `inf`. Then `100 * (1 - finite/inf)` became `100.0`, so a corrupt meminfo was treated as 100% used and silently throttled the squad. Non-finite values are now skipped (same 0..100 clamp still applies afterward).
+2. **`avrone/governor.py:150-156`** — `make_disk_reader` returned `100.0 * free / total` with no range check, so a mocked/corrupt `disk_usage` with `free > total` or a negative free would feed an out-of-range percent into the governor. Now returns `None` unless the percent is in `0..100`, and guards the division.
+3. **`avrone/mcp_server.py:146-161`** — `AvroneMCPServer.send()` used `json.dumps` without `allow_nan=False` and wrote to the client with no pipe error handling. A closed client (`BrokenPipeError` / `OSError`) escaped `serve()` and killed the stdio loop; a NaN/surrogate in a tool result could also crash the encode. `send()` now dumps with `allow_nan=False` (falling back to a `-32603` JSON-RPC error if the payload is unencodable) and swallows `BrokenPipeError`/`ConnectionResetError`/`OSError` on write/flush.
+4. **`avrone/codex.py:31-50`, `179-196`, `233`, `253`** — `Codex.emit` wrote `json.dumps(..., default=str)` (NaN/Infinity legal) and joined `log_dir / f"{run_id}.jsonl"` with no confinement, so `run_id="../codex-escape"` wrote *outside* the log directory. `replay`/`runs` of a legacy NaN/surrogate log then failed `json.dumps(..., allow_nan=False)` on the API path. Added `_json_safe` (reuses `gateway.clean_text` for lone surrogates/NULs; non-finite floats become `None`), dump with `allow_nan=False`, and only write when `path.resolve().is_relative_to(log_dir.resolve())`. `OSError` on write is swallowed so a missing parent dir cannot crash `emit`. `replay`/`runs` also run `_json_safe` on returned records.
+
+No production recon policy was changed. No syntax errors found beyond the defects above.
+
+## Gates (0 failed, 0 errored)
+
+Full non-integration:
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration'
+3454 passed, 362 deselected, 1 warning in 57.64s
+```
+
+Shuffled (pytest-randomly):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -p randomly -m 'not integration'
+3454 passed, 362 deselected, 1 warning in 64.63s
+```
+
+Edge suite (61 previous + 60 new = 121):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
+121 passed in 8.99s
+```
+
+3454 = previous 3394 + 60 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
+
+Round 2 was already pushed as `fix/macos-and-edge` @ `3fd5a74`. This round is committed and pushed only on `edge/round-3`. `main` is left at `5cceb52`. No PR opened.

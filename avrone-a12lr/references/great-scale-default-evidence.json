@@ -1,0 +1,13 @@
+{
+  "schema": "great-scale-evidence/v42",
+  "finding": "The script falls through to the default 0 when backup and repo are both unavailable. A valid repo stage is used when present. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "default": "0",
+  "repoStage": "7",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The default-stage check holds."
+}

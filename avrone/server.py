@@ -110,7 +110,7 @@ def caller_allowed(host: str | None, token: str | None) -> bool:
     policy = access_policy()
     if policy == "all":
         return True
-    if settings.admin_token and token is not None and hmac.compare_digest(str(token), settings.admin_token):
+    if _exact_token(token, settings.admin_token):
         return True
     return policy == "loopback" and (host or "") in LOOPBACK_HOSTS
 

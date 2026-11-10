@@ -1,35 +1,13 @@
 {
-  "schema": "great-scale-evidence/v23",
-  "finding": "The lattice gate is a literal compare to 'true'. Unset, empty, 'true ', and 'True' all refuse. Only 'true' passes. The autopilot root gate is a presence check: unset and empty refuse, any non-empty value passes. Both work as written. They are not the same gate. Pure. Heat is zero.",
+  "schema": "great-scale-evidence/v53",
+  "finding": "The script refuses when the baseline pytest fails and continues when SKIP_GATE=1. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
   "cone": 0.3819660112501052,
-  "lattice": {
-    "rule": "literal compare to 'true'",
-    "refuses": [
-      "unset",
-      "empty",
-      "true ",
-      "True"
-    ],
-    "accepts": [
-      "true"
-    ],
-    "orientation": "pass",
-    "S": 0.0,
-    "psi": 0.3819660112501052,
-    "effectiveRuns": 1
-  },
-  "root": {
-    "rule": "presence check, -z",
-    "refuses": [
-      "unset",
-      "empty"
-    ],
-    "accepts": [
-      "1",
-      "true",
-      "1 "
-    ]
-  },
+  "pytestFails": "refuse, baseline RED",
+  "skipGate": "continue",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
   "docker": false,
-  "mitigation": "Do not make them the same gate. The lattice gate is strict. The root gate is a presence check."
+  "mitigation": "None needed. The baseline-gate check holds."
 }

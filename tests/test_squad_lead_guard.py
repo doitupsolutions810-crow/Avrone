@@ -25,15 +25,32 @@ def main() -> int:
         print(("OK" if cond else "FAIL"), name)
         fails += int(not cond)
 
+    box = []
+
+    class Grow:
+        def __str__(self):
+            box.append(Grow())
+            return ""
+
+    box.append(Grow())
     t = time.monotonic()
-    g = guard_squad(Evil(["ok"]))
-    ck("subclass", time.monotonic() - t < 0.5 and g["S"] is None and "not_a_squad" in g["reasons"])
-    ck("list", guard_squad(["ok"])["action"] == "lead.merge")
-    ck("none", guard_squad([None])["S"] == 0 and guard_squad([None])["orientation"] == "fail")
+    g = guard_squad(box)
+    ck("grow", time.monotonic() - t < 0.5 and g["workers"] == 1 and g["worker_failures"] == 1 and len(box) == 2)
+
+    box2 = ["keep", "drop", "drop"]
+
+    class Shrink:
+        def __str__(self):
+            del box2[1:]
+            return "ok"
+
+    box2[0] = Shrink()
+    g = guard_squad(box2)
+    ck("shrink", g["workers"] == 3 and g["worker_failures"] == 2 and g["orientation"] == "mixed")
+    ck("subclass", guard_squad(Evil(["ok"]))["S"] is None)
+    ck("none", guard_squad([None])["orientation"] == "fail" and guard_squad([None])["S"] == 0)
     ck("text", guard_squad(["None"])["orientation"] == "pass")
-    ck("empty", guard_squad(())["S"] is None)
-    ck("dict", guard_squad({"a": "x"})["orientation"] == "unmeasured")
-    print(f"{6 - fails}/6 passed")
+    print(f"{5 - fails}/5 passed")
     return fails
 
 

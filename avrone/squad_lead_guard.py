@@ -1,14 +1,16 @@
 """Squad Lead residual guard.
 
 Only an exact list or an exact tuple is a squad. Subclasses are rejected
-without calling ``len`` or iterating, so a ``__len__`` that never returns
-cannot stall Lead. Generators, dicts, sets, strings, and bytes are not squads.
+without calling ``len`` or iterating.
+
+The walk scores ``range(len(results))`` taken before any worker is printed.
+Items a ``__str__`` appends are not scored, and a slot that disappears is a
+failure. That stops a worker from growing the squad without bound.
 
 ``None``, blank text, ``[name failed: ...]``, and a ``__str__`` that raises
 count as worker failures. The text ``"None"`` does not.
 
-A structural reject is unmeasured: S, Psi, and fourST are None, not the heat
-peak 1/4.
+A structural reject is unmeasured: S, Psi, and fourST are None.
 
 This module does not edit trinity.py.
 """
@@ -58,7 +60,15 @@ def guard_squad(results: Any) -> dict[str, Any]:
     n = len(results)
     if n < 1:
         return _reject("no_workers")
-    n_fail = sum(1 for r in results if worker_failed(r))
+    n_fail = 0
+    for i in range(n):
+        try:
+            item = results[i]
+        except IndexError:
+            n_fail += 1
+            continue
+        if worker_failed(item):
+            n_fail += 1
     snap = admit(failures=n_fail, runs=n)
     snap["measured"] = True
     snap["workers"] = n

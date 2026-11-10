@@ -171,17 +171,19 @@ def test_serve_roundtrip_batch_parse_error_and_notifications():
         [{"jsonrpc": "2.0", "id": 2, "method": "ping"},
          {"jsonrpc": "2.0", "id": 3, "method": "bogus"}],            # batch
         {"jsonrpc": "2.0", "id": 4, "result": {}},                   # stray response: ignored
-        "42",                                                        # junk scalar: ignored
+        "42",                                                        # junk scalar: Invalid Request
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
          "params": {"name": "avrone_squad", "arguments": {"task": "t"}}},
     ])
-    by_id = {m["id"]: m for m in msgs}
+    by_id = {m["id"]: m for m in msgs if m.get("id") is not None}
+    null_errs = [m["error"]["code"] for m in msgs if m.get("id") is None]
     assert by_id[1]["result"]["serverInfo"]["name"] == "avrone"
-    assert by_id[None]["error"]["code"] == -32700
+    assert -32700 in null_errs  # parse error on "{not json"
+    assert -32600 in null_errs  # non-object request "42"
     assert by_id[2]["result"] == {}
     assert by_id[3]["error"]["code"] == -32601
     assert by_id[5]["result"]["content"][0]["text"] == "squad:t"
-    assert 4 not in by_id and len(msgs) == 5
+    assert 4 not in by_id and len(msgs) == 6
 
 
 def test_serve_internal_error_maps_to_32603(monkeypatch):

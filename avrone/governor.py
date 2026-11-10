@@ -62,20 +62,75 @@ def read_load() -> float | None:
     return one / max(1, os.cpu_count() or 1)
 
 
-def read_mem_pct() -> float | None:
-    ps = _psutil()
-    if ps is not None:
-        return float(ps.virtual_memory().percent)
+def _read_mem_pct_proc() -> float | None:
+    """Linux /proc/meminfo reader. Returns None when the file is missing or unreadable."""
     info: dict[str, float] = {}
-    with open("/proc/meminfo") as f:
-        for line in f:
-            k, _, v = line.partition(":")
-            info[k.strip()] = float(v.split()[0])
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                try:
+                    info[k.strip()] = float(v.split()[0])
+                except (ValueError, IndexError):
+                    continue
+    except OSError:
+        return None
     total = info.get("MemTotal") or 0
     avail = info.get("MemAvailable", info.get("MemFree"))
     if not total or avail is None:
         return None
-    return 100.0 * (1 - avail / total)
+    used = 100.0 * (1 - avail / total)
+    # Match the macOS helper: a corrupt or inverted meminfo must not yield
+    # a used-percent outside 0..100 (that would silently skew the governor).
+    return used if 0.0 <= used <= 100.0 else None
+
+
+def _read_mem_pct_macos() -> float | None:
+    """Best-effort used-memory percent from sysctl/vm_stat when /proc/meminfo is absent."""
+    import platform
+    import re
+    import subprocess
+    if platform.system() != "Darwin":
+        return None
+    try:
+        total = int(subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"], text=True, timeout=2).strip())
+        raw = subprocess.check_output(["vm_stat"], text=True, timeout=2)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    page_size = 4096
+    pages: dict[str, int] = {}
+    for i, line in enumerate(raw.splitlines()):
+        if i == 0:
+            m = re.search(r"page size of (\d+) bytes", line)
+            if m:
+                page_size = int(m.group(1))
+            continue
+        k, _, v = line.partition(":")
+        try:
+            pages[k.strip()] = int(v.strip().rstrip("."))
+        except ValueError:
+            continue
+    avail = page_size * (
+        pages.get("Pages free", 0)
+        + pages.get("Pages speculative", 0)
+        + pages.get("Pages inactive", 0)
+        + pages.get("Pages purgeable", 0)
+    )
+    if not total:
+        return None
+    used = 100.0 * (1 - avail / total)
+    return used if 0.0 <= used <= 100.0 else None
+
+
+def read_mem_pct() -> float | None:
+    ps = _psutil()
+    if ps is not None:
+        return float(ps.virtual_memory().percent)
+    proc = _read_mem_pct_proc()
+    if proc is not None:
+        return proc
+    return _read_mem_pct_macos()
 
 
 def make_disk_reader(path: str = ".") -> Reader:

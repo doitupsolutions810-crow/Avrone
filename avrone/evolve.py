@@ -13,7 +13,7 @@ Tools: evolve_propose, evolve_loop (bounded multi-iteration), evolve_start / evo
        evolve_reset, evolve_skill_propose (a NEW skills/<name>/SKILL.md through the same gate),
        evolve_history (finished-loop summaries).
 Env: AVRONE_REPO_DIR (repo root), AVRONE_SELF_EVOLVE=allow|deny (default allow; also checked between
-     iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: python -m pytest -q),
+     iterations, so flipping it to deny stops a running loop), AVRONE_EVOLVE_TEST_CMD (default: <this interpreter> -m pytest -q),
      AVRONE_EVOLVE_MAX_ITERS / AVRONE_EVOLVE_TIME_BUDGET (loop default + node ceiling; hard caps 10 / 1800s),
      AVRONE_EVOLVE_MAX_BG (concurrent background loops per process; default 2, hard cap 4),
      AVRONE_EVOLVE_SKILL_MAX_BYTES (proposed skill size ceiling; default/hard cap 16384),
@@ -38,7 +38,9 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
@@ -162,6 +164,11 @@ def _new_pid(ctx: "AgentContext") -> str:
     return SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
 
 
+def _default_test_cmd() -> str:
+    """Gate command using this process's interpreter (``python`` is often absent on PATH)."""
+    return f"{shlex.quote(sys.executable)} -m pytest -q -m \"not integration\""
+
+
 async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: str | None = None,
                         timeout: int = 900, extra_meta: dict[str, Any] | None = None,
                         confine_to: str | None = None) -> dict[str, Any]:
@@ -192,7 +199,7 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
     # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
     # under the parallel-clone load of a squad and would reject good unit-level proposals.
     test_cmd = str(test_cmd or os.getenv("AVRONE_EVOLVE_TEST_CMD")
-                   or 'python -m pytest -q -m "not integration"')
+                   or _default_test_cmd())
     timeout = max(1, int(timeout))
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.

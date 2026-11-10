@@ -19,15 +19,17 @@ from .config import Settings
 
 
 async def _reap(proc) -> None:
-    """Kill a child that may already have exited, then wait for it (never raises ProcessLookupError)."""
+    """Kill a child that may already have exited, then wait for it (never raises, never hangs)."""
     if proc.returncode is None:
         try:
             proc.kill()
         except ProcessLookupError:
             pass
     try:
-        await proc.wait()
-    except Exception:  # noqa: BLE001 - reaping is best effort
+        # If the subprocess transport was already torn down (stdio-server shutdown),
+        # proc.wait() may never wake; bound it so cancellation can finish.
+        await asyncio.wait_for(proc.wait(), timeout=2)
+    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
         pass
 
 
@@ -80,6 +82,7 @@ class Runner:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=str(cwd) if cwd else None, env={**os.environ, **env} if env else None,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         except (OSError, ValueError) as e:  # E2BIG, missing cwd/binary, bad env: a result, not a crash
             return CommandResult(cmd, -1, "", f"could not start command: {type(e).__name__}: {e}"[:500])
@@ -90,8 +93,12 @@ class Runner:
             await _reap(proc)
             return CommandResult(cmd, -1, "", "command timed out", timed_out=True)
         except asyncio.CancelledError:
-            # a cancelled run (evolve_cancel, client gone, squad shutdown) must not leave the child running
-            await asyncio.shield(_reap(proc))
+            # a cancelled run (evolve_cancel, client gone, squad shutdown) must not leave the child running.
+            # Bound the reap so a dead transport cannot pin the event loop during asyncio.run cleanup.
+            try:
+                await asyncio.shield(asyncio.wait_for(_reap(proc), timeout=2))
+            except (asyncio.TimeoutError, Exception):
+                pass
             raise
 
 

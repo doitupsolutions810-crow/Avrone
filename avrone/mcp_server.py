@@ -93,23 +93,32 @@ async def build_core():
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.workspace.mkdir(parents=True, exist_ok=True)
     runner = await establish(settings)
-    core = TrinityCore(settings, LLM(settings), runner, Codex(settings.data_dir))
     extras: dict[str, Any] = {"runner": runner, "mcp": None}
     try:
-        from .plugins import load_plugins
-        load_plugins(core.tools, settings)
-    except Exception as e:  # never fatal
-        log.warning("plugins not loaded: %s", e)
-    if not os.getenv(_CHILD_ENV):
-        os.environ[_CHILD_ENV] = "1"  # inherited by MCP children, so a nested AVRONE skips this step
+        core = TrinityCore(settings, LLM(settings), runner, Codex(settings.data_dir))
         try:
-            from .mcp_client import MCPManager
-            mgr = MCPManager()
-            await mgr.start(core.tools)
-            extras["mcp"] = mgr
-        except Exception as e:
-            log.warning("MCP servers not loaded: %s", e)
-    return core, extras
+            from .plugins import load_plugins
+            load_plugins(core.tools, settings)
+        except Exception as e:  # never fatal
+            log.warning("plugins not loaded: %s", e)
+        if not os.getenv(_CHILD_ENV):
+            os.environ[_CHILD_ENV] = "1"  # inherited by MCP children, so a nested AVRONE skips this step
+            try:
+                from .mcp_client import MCPManager
+                mgr = MCPManager()
+                await mgr.start(core.tools)
+                extras["mcp"] = mgr
+            except Exception as e:
+                log.warning("MCP servers not loaded: %s", e)
+        return core, extras
+    except BaseException:
+        # stdin EOF / task cancel during boot must still stop the runner so the loop can exit
+        with contextlib.suppress(Exception):
+            await runner.stop()
+        if extras.get("mcp"):
+            with contextlib.suppress(Exception):
+                await extras["mcp"].stop()
+        raise
 
 
 class AvroneMCPServer:
@@ -162,9 +171,19 @@ class AvroneMCPServer:
             except json.JSONDecodeError:
                 await self.send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
                 continue
+            except RecursionError:
+                # Deeply nested JSON can blow the parser; keep the server serving later lines.
+                await self.send({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32700, "message": "Parse error: nesting too deep"}})
+                continue
             if msg == []:
                 await self.send({"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32600, "message": "Invalid Request: empty batch"}})
+                continue
+            if not isinstance(msg, (dict, list)):
+                # JSON-RPC 2.0: a Request must be an Object (or a non-empty Array of those).
+                await self.send({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32600, "message": "Invalid Request"}})
                 continue
             for m in (msg if isinstance(msg, list) else [msg]):
                 t = asyncio.create_task(self._handle_safe(m))
@@ -175,7 +194,14 @@ class AvroneMCPServer:
         await self.shutdown()
 
     async def shutdown(self) -> None:
-        if self._core_task and self._core_task.done() and not self._core_task.exception():
+        task = self._core_task
+        if task is not None and not task.done():
+            # Client closed stdin while the core was still booting. Cancel the boot
+            # so asyncio.run can exit; build_core stops a partially started runner.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if task is not None and task.done() and not task.cancelled() and not task.exception():
             mgr = self._extras.get("mcp")
             if mgr:
                 with contextlib.suppress(Exception):
@@ -186,7 +212,12 @@ class AvroneMCPServer:
                     await runner.stop()
 
     async def _handle_safe(self, m: Any) -> None:
-        if not isinstance(m, dict) or "method" not in m:
+        if not isinstance(m, dict):
+            # A batch item that is not an Object is an Invalid Request (JSON-RPC 2.0).
+            await self.send({"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32600, "message": "Invalid Request"}})
+            return
+        if "method" not in m:
             return  # responses to requests we never send, or junk
         rid = m.get("id")
         is_request = "id" in m
@@ -351,11 +382,35 @@ def _err(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
+def _stdin_already_eof() -> bool:
+    """True when stdin is a char device like /dev/null (epoll may refuse it; treat as EOF)."""
+    import stat
+    try:
+        fd = sys.stdin.fileno()
+        st = os.fstat(fd)
+    except (OSError, AttributeError, ValueError):
+        return False
+    return stat.S_ISCHR(st.st_mode) and not sys.stdin.isatty()
+
+
 async def _stdin_reader() -> asyncio.StreamReader:
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader(limit=16 * 1024 * 1024)
-    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+    if _stdin_already_eof():
+        reader.feed_eof()
+        return reader
+    transport, _proto = await loop.connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+    # Stash the pipe transport so amain can close it after stdin EOF and let the loop exit.
+    reader._avrone_pipe_transport = transport  # type: ignore[attr-defined]
     return reader
+
+
+def _close_stdin_transport(reader: object) -> None:
+    transport = getattr(reader, "_avrone_pipe_transport", None) or getattr(reader, "_transport", None)
+    if transport is not None:
+        with contextlib.suppress(Exception):
+            transport.close()
 
 
 async def amain() -> None:
@@ -363,7 +418,12 @@ async def amain() -> None:
     # Anything else that prints must not corrupt the JSON-RPC stream.
     sys.stdout = sys.stderr
     server = AvroneMCPServer()
-    await server.serve(await _stdin_reader(), out)
+    reader = await _stdin_reader()
+    try:
+        await server.serve(reader, out)
+    finally:
+        # Drop the stdin read-pipe transport so asyncio.run can exit promptly after EOF.
+        _close_stdin_transport(reader)
 
 
 def main() -> None:

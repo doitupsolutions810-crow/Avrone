@@ -89,6 +89,45 @@ def test_replay_rejects_path_traversal(tmp_path):
     assert c.replay("../secret") == []
 
 
+def test_emit_does_not_write_outside_the_log_dir(tmp_path):
+    c = Codex(tmp_path)
+    escaped = (c.log_dir / "../codex-escape.jsonl").resolve()
+    escaped.unlink(missing_ok=True)
+    c.emit("../codex-escape", "run.start", "T", prompt="nope")
+    assert not escaped.exists()
+    assert not escaped.is_relative_to(c.log_dir.resolve())
+    assert list(c.log_dir.glob("*.jsonl")) == []
+
+
+def test_emit_does_not_follow_a_symlink_outside_the_log_dir(tmp_path):
+    c = Codex(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    (c.log_dir / "linked.jsonl").symlink_to(outside)
+    c.emit("linked", "run.start", "T", prompt="nope")
+    assert not outside.exists()
+
+
+def test_replay_and_runs_survive_nan_and_surrogate(tmp_path):
+    c = Codex(tmp_path)
+    poison = {
+        "run_id": "poison", "kind": "run.start", "agent": "T",
+        "data": {"prompt": "pre\ud800post"}, "ts": float("nan"), "id": "e1",
+    }
+    (c.log_dir / "poison.jsonl").write_text(json.dumps(poison) + "\n", encoding="utf-8")
+    ev = c.replay("poison")
+    assert ev and ev[0]["data"]["prompt"] == "pre\ufffdpost"
+    assert ev[0]["ts"] is None
+    json.dumps(ev, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    listed = c.runs()
+    row = [r for r in listed if r["run_id"] == "poison"][0]
+    assert row["prompt"] == "pre\ufffdpost" and row["started"] is None
+    json.dumps(listed, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    c.emit("fresh", "run.start", "T", prompt="hi\ud800", value=float("nan"))
+    fresh = (c.log_dir / "fresh.jsonl").read_text(encoding="utf-8")
+    assert "\\ud800" not in fresh and "NaN" not in fresh
+    json.dumps(c.replay("fresh"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
 def test_api_replay_and_runs_survive_truncated_log(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from avrone import server

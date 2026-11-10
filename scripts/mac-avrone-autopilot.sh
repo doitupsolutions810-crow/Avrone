@@ -444,7 +444,15 @@ if [ ! -d .venv ]; then
   for c in "$PY" python3.13 python3.12 python3.11 python3; do
     command -v "$c" >/dev/null || continue
     "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null || continue
-    if "$c" -m venv .venv >> "$OUT/venv.log" 2>&1 && [ -x .venv/bin/python ]; then _made="$c"; break; fi
+    # A full venv needs ensurepip. Debian/Ubuntu often ship the interpreter
+    # without it; --without-pip still yields python + activate, and pip is
+    # only required when AUTOPILOT_NO_INSTALL is off.
+    if "$c" -m venv .venv >> "$OUT/venv.log" 2>&1 && [ -x .venv/bin/python ] && [ -f .venv/bin/activate ]; then _made="$c"; break; fi
+    rm -rf .venv
+    if "$c" -m venv --without-pip .venv >> "$OUT/venv.log" 2>&1 && [ -x .venv/bin/python ] && [ -f .venv/bin/activate ]; then
+      log "WARN: $c has no ensurepip; created .venv without pip"
+      _made="$c"; break
+    fi
     rm -rf .venv; log "WARN: $c could not create a venv (see $OUT/venv.log) — trying another python"
   done
   [ -n "$_made" ] || die "venv creation failed for every python >= 3.11 (see $OUT/venv.log)"

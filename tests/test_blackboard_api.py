@@ -140,6 +140,199 @@ def test_boot_id_is_stable_for_the_process_and_changes_on_restart(client):
     assert len({boot, first, second}) == 3
 
 
+def test_surrogate_and_nul_cannot_break_later_reads(client):
+    """A lone surrogate used to be stored, then every GET raised UnicodeEncodeError."""
+    raw = b'{"id":"sur1","text":"x\\ud800","agent":"a\\ud800b"}'
+    posted = client.post("/api/blackboard", content=raw, headers=AUTH)
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["duplicate"] is False
+    first = client.get("/api/blackboard", headers=AUTH)
+    assert first.status_code == 200, first.text
+    row = [p for p in first.json()["posts"] if p["id"] == "sur1"][0]
+    assert row["text"] == "x\ufffd" and row["agent"] == "a\ufffdb"
+    assert "\ud800" not in first.text
+    again = client.get("/api/blackboard", headers=AUTH)
+    assert again.status_code == 200 and "\ud800" not in again.text
+    # Restart: drop the in-memory rings and reread the file that was just written.
+    core = server.state["core"]
+    getattr(core, "_bridges", {}).clear()
+    if hasattr(core, "_blackboard_order"):
+        del core._blackboard_order
+    reloaded = client.get("/api/blackboard", headers=AUTH)
+    assert reloaded.status_code == 200, reloaded.text
+    row = [p for p in reloaded.json()["posts"] if p["id"] == "sur1"][0]
+    assert row["text"] == "x\ufffd" and "\ud800" not in reloaded.text
+    only_nul = client.post("/api/blackboard", content=b'{"id":"nul0","text":"\\u0000"}', headers=AUTH)
+    assert only_nul.status_code == 400 and only_nul.json()["detail"] == "text is required"
+    kept = client.post("/api/blackboard", content=b'{"id":"nul1","text":"a\\u0000b"}', headers=AUTH)
+    assert kept.status_code == 200
+    assert [p for p in _ids(client)["posts"] if p["id"] == "nul1"][0]["text"] == "ab"
+    # A post already sitting in memory with a surrogate must not sink the next GET.
+    from avrone.bridge import for_core
+    live = for_core(core, "live-poison")
+    with live._lock:
+        live._posts["mem1"] = {
+            "id": "mem1", "run_id": "live-poison", "agent": "a", "role": "",
+            "kind": "finding", "text": "q\ud800", "refs": [], "ts": 9.0, "origin_node": "local",
+        }
+    poisoned = client.get("/api/blackboard", headers=AUTH)
+    assert poisoned.status_code == 200, poisoned.text
+    assert [p for p in poisoned.json()["posts"] if p["id"] == "mem1"][0]["text"] == "q\ufffd"
+    json.dumps(poisoned.json(), ensure_ascii=False).encode("utf-8")
+
+
+def test_odd_since_values_do_not_500(client):
+    from avrone.bridge import blackboard_posts, safe_since
+    assert _post(client, {"id": "keep1", "text": "visible", "ts": 3}).status_code == 200
+    # Query strings the HTTP client can encode. A lone surrogate cannot be percent-encoded
+    # as UTF-8, so that cursor is handed to the read path directly below.
+    for query in (
+        "since=a%00b",
+        "since=%00keep1",
+        "since=a%2Fb%20c",
+        "since=%0A",
+        "since=*",
+        "since=%C3%A9",
+        "since=" + "z" * 400,
+    ):
+        r = client.get("/api/blackboard?" + query, headers=AUTH)
+        assert r.status_code == 200, (query, r.status_code, r.text[:180])
+    assert safe_since("x\ud800") == "x\ufffd"
+    assert safe_since("a\x00b") == "ab"
+    assert safe_since("\x00keep1") == "keep1"
+    posts = blackboard_posts(server.state["core"], "x\ud800")
+    json.dumps({"posts": posts, "count": len(posts)}, ensure_ascii=False).encode("utf-8")
+    assert any(p["text"] == "visible" for p in posts)
+    paged = blackboard_posts(server.state["core"], "\x00keep1")
+    assert all(p["id"] != "keep1" for p in paged)
+
+
+def _encodes(payload) -> None:
+    json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def test_emoji_survives_and_lone_halves_do_not(client):
+    """A real surrogate pair is one character. Each half alone is not."""
+    pair = '{"id":"emo1","text":"hi \\uD83D\\uDE00","role":"r\\uD83D\\uDE00"}'.encode()
+    assert client.post("/api/blackboard", content=pair, headers=AUTH).status_code == 200
+    row = [p for p in _ids(client)["posts"] if p["id"] == "emo1"][0]
+    assert row["text"] == "hi 😀" and row["role"] == "r😀"
+    halves = b'{"id":"halves","text":"\\uD800\\uD800-\\uDFFF","origin_node":"n\\u0000ode"}'
+    assert client.post("/api/blackboard", content=halves, headers=AUTH).status_code == 200
+    row = [p for p in _ids(client)["posts"] if p["id"] == "halves"][0]
+    assert row["text"] == "\ufffd\ufffd-\ufffd"
+    assert row["origin_node"] == "node"
+    assert "\ud800" not in json.dumps(row) and "\udfff" not in json.dumps(row)
+    # Clip after cleaning, so a surrogate sitting on the cut cannot be stored.
+    clipped = json.dumps({"id": "clip-sur", "text": ("q" * 4000) + "\ud800"}).encode()
+    assert len(clipped) <= 4096
+    assert client.post("/api/blackboard", content=clipped, headers=AUTH).status_code == 200
+    stored = [p for p in _ids(client)["posts"] if p["id"] == "clip-sur"][0]["text"]
+    assert len(stored) == 4000 and stored.endswith("...") and "\ud800" not in stored
+    _encodes(_ids(client))
+
+
+def test_nul_and_surrogate_fields_do_not_leak(client):
+    body = json.dumps({
+        "id": "fields",
+        "text": " \u0000keep\u0000 ",
+        "run_id": "run\ud800",
+        "agent": "\u0000scout",
+        "role": "lead\udfff",
+        "origin_node": "\u0000",
+        "refs": ["ok-id", "bad\ud800", "a\u0000b", "also-ok", "ok-id"],
+        "kind": "finding\u0000",
+        "ts": 4,
+    }).encode()
+    assert len(body) <= 4096
+    posted = client.post("/api/blackboard", content=body, headers=AUTH)
+    assert posted.status_code == 200, posted.text
+    row = [p for p in _ids(client)["posts"] if p["id"] == "fields"][0]
+    assert row["text"] == "keep"
+    assert row["kind"] == "finding"
+    assert row["agent"] == "scout"
+    assert row["role"] == "lead\ufffd"
+    assert row["origin_node"] == "local"  # only a NUL, so the default returns
+    assert row["run_id"] == "run\ufffd"
+    assert row["refs"] == ["ok-id", "ab", "also-ok"]
+    # A second write with a surrogate must not replace the stored text.
+    again = json.dumps({"id": "fields", "text": "nope\ud800", "kind": "conclusion"}).encode()
+    dup = client.post("/api/blackboard", content=again, headers=AUTH)
+    assert dup.json()["duplicate"] is True
+    assert [p for p in _ids(client)["posts"] if p["id"] == "fields"][0]["text"] == "keep"
+    blank = json.dumps({"id": "blank", "text": " \u00a0\u0000 "}).encode()
+    assert client.post("/api/blackboard", content=blank, headers=AUTH).status_code == 400
+    bad_id = json.dumps({"id": "id\ud800", "text": "x"}).encode()
+    refused = client.post("/api/blackboard", content=bad_id, headers=AUTH)
+    assert refused.status_code == 400 and refused.json()["detail"] == "bad post id"
+    assert client.get("/api/blackboard", headers=AUTH).status_code == 200
+
+
+def test_poisoned_disk_post_cannot_break_either_read(client):
+    """A file written before the cleaner still has to load, on both reads."""
+    core = server.state["core"]
+    folder = core.settings.data_dir / "bridge"
+    folder.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": "disk1", "run_id": "poison", "agent": "a\ud800", "role": "r\udfff",
+        "kind": "finding", "text": "t\ud800", "refs": ["ok", "no\ud800", "c\u0000d"],
+        "ts": "not-a-time", "origin_node": "o\ud800",
+    }
+    (folder / "poison.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    (folder / "_fanin_order.json").write_text(
+        json.dumps({"ids": ["disk1", "no\ud800", 3, ""]}), encoding="utf-8")
+    getattr(core, "_bridges", {}).pop("poison", None)
+    if hasattr(core, "_blackboard_order"):
+        del core._blackboard_order
+    board = client.get("/api/blackboard", headers=AUTH)
+    assert board.status_code == 200, board.text
+    _encodes(board.json())
+    row = [p for p in board.json()["posts"] if p["id"] == "disk1"][0]
+    assert row["text"] == "t\ufffd" and row["agent"] == "a\ufffd"
+    assert row["role"] == "r\ufffd" and row["origin_node"] == "o\ufffd"
+    assert "\ud800" not in board.text and "\udfff" not in board.text
+    one = client.get("/api/runs/poison/bridge", headers=AUTH)
+    assert one.status_code == 200, one.text
+    _encodes(one.json())
+    assert one.json()["posts"][0]["text"] == "t\ufffd"
+    # Invalid UTF-8 in the cursor, a repeated since, and a surrogate token are not 500s.
+    odd = client.get("/api/blackboard?since=%ED%A0%80", headers=AUTH)
+    assert odd.status_code < 500
+    _encodes(odd.json()) if odd.headers.get("content-type", "").startswith("application/json") else None
+    repeated = client.get("/api/blackboard?since=disk1&since=other", headers=AUTH)
+    assert repeated.status_code < 500
+    assert server._exact_token("test-token\ud800", "test-token") is False
+    assert server._exact_token("test-token\ud800", "test-token\ud800") is True
+    assert server._exact_token("nope\ud800", server.settings.admin_token) is False
+
+
+def test_bom_nested_text_and_blank_cursors(client):
+    """Bytes and shapes that sit next to the surrogate bug, without becoming a 500."""
+    bom = b'\xef\xbb\xbf{"id":"bom1","text":"from-bom"}'
+    got = client.post("/api/blackboard", content=bom, headers=AUTH)
+    assert got.status_code == 200, got.text
+    nested = json.dumps({"id": "nest1", "text": {"note": "x\ud800"}}).encode()
+    nested_r = client.post("/api/blackboard", content=nested, headers=AUTH)
+    assert nested_r.status_code == 200, nested_r.text
+    row = [p for p in _ids(client)["posts"] if p["id"] == "nest1"][0]
+    # A non-string text is stringified. The result must not contain a real surrogate.
+    assert isinstance(row["text"], str) and "\ud800" not in row["text"]
+    _encodes(_ids(client))
+    only_sur_run = json.dumps({"id": "srun", "text": "held", "run_id": "\ud800"}).encode()
+    assert client.post("/api/blackboard", content=only_sur_run, headers=AUTH).status_code == 200
+    held = [p for p in _ids(client)["posts"] if p["id"] == "srun"][0]
+    assert held["text"] == "held" and "\ud800" not in held["run_id"]
+    # Last duplicate key wins, and that value is still cleaned.
+    dup_keys = b'{"id":"dupk","text":"first","text":"second\\ud800"}'
+    assert client.post("/api/blackboard", content=dup_keys, headers=AUTH).status_code == 200
+    assert [p for p in _ids(client)["posts"] if p["id"] == "dupk"][0]["text"] == "second\ufffd"
+    for query in ("since=%20%20", "since=+", "since=%2Bkeep", "since=bom1&since=srun"):
+        r = client.get("/api/blackboard?" + query, headers=AUTH)
+        assert r.status_code < 500, (query, r.status_code, r.text[:160])
+        if r.status_code == 200:
+            _encodes(r.json())
+
+
 def test_open_reads_stay_open_but_blackboard_does_not(client):
     """AVRONE_PUBLIC_ACCESS=all lets /api/runs through. The blackboard still wants the token."""
     assert client.get("/api/status").status_code == 200

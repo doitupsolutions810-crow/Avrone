@@ -29,7 +29,8 @@ def repo(tmp):
     (r / "pkg" / "__init__.py").write_text("VALUE = 1\n")
     (r / "test_v.py").write_text("from pkg import VALUE\n\ndef test_v():\n    assert VALUE == 1\n")
     import subprocess
-    for c in ("git init -q", "git add -A", "git -c user.email=a@a -c user.name=a commit -qm base"):
+    for c in ("git init -q", "git add -A",
+              "git -c user.email=a@a -c user.name=a -c commit.gpgsign=false commit -qm base"):
         subprocess.run(["bash", "-c", f"cd {r} && {c}"], check=True)
     return r
 

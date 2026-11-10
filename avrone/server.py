@@ -55,20 +55,25 @@ def core() -> TrinityCore:
 def require_admin(token: str | None) -> None:
     if not settings.admin_token:
         raise HTTPException(403, "Admin access is off. Set AVRONE_ADMIN_TOKEN to enable it.")
-    if not _exact_token(token, settings.admin_token):
+    if not _exact_token(None if token is None else str(token), settings.admin_token):
         raise HTTPException(401, "Bad admin token")
+
+
+def _token_bytes(value: str) -> bytes:
+    """UTF-8 bytes of a token. Lone surrogates use surrogatepass so the compare cannot raise."""
+    return value.encode("utf-8", "surrogatepass")
 
 
 def _exact_token(presented: str | None, expected: str) -> bool:
     """True when ``presented`` is exactly ``expected``. Neither side is trimmed.
 
-    UTF-8 bytes, not ``str``, so the compare is constant-time for any token.
-    ``hmac.compare_digest`` on str rejects non-ASCII. An empty expected never
-    matches, including an empty header.
+    Bytes, not ``str``, so the compare is constant-time for any token.
+    ``hmac.compare_digest`` on str rejects non-ASCII, and a lone surrogate
+    cannot be encoded as strict UTF-8. An empty expected never matches.
     """
     if presented is None or not isinstance(presented, str) or expected == "":
         return False
-    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    return hmac.compare_digest(_token_bytes(presented), _token_bytes(expected))
 
 
 def require_blackboard_admin(token: str | None) -> None:
@@ -626,8 +631,9 @@ async def run_log(run_id: str, request: Request, x_admin_token: str | None = Hea
 async def blackboard_get(since: str | None = None, x_admin_token: str | None = Header(default=None)):
     """Fan-in of this node's bridge posts, oldest first. Admin token, not loopback."""
     require_blackboard_admin(x_admin_token)
-    from .bridge import blackboard_posts
-    posts = await asyncio.to_thread(blackboard_posts, core(), since)
+    from .bridge import blackboard_posts, public_post, safe_since
+    posts = await asyncio.to_thread(blackboard_posts, core(), safe_since(since))
+    posts = [public_post(p) for p in posts]
     return {"posts": posts, "count": len(posts), "boot": BOOT_ID}
 
 
@@ -641,14 +647,16 @@ async def blackboard_write(request: Request, x_admin_token: str | None = Header(
     if not raw:
         raise HTTPException(400, "body must be JSON")
     try:
-        data = json.loads(raw.decode("utf-8"))
+        # utf-8-sig drops a leading BOM so a signed export is still JSON.
+        data = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise HTTPException(400, "body must be JSON") from None
-    from .bridge import BridgeError, blackboard_accept, normalize_blackboard_post
+    from .bridge import BridgeError, blackboard_accept, normalize_blackboard_post, seal_blackboard_post
     post, err = normalize_blackboard_post(data)
     if err or post is None:
         raise HTTPException(400, err or "body must be JSON")
     try:
+        post = seal_blackboard_post(post)
         duplicate, pid = await asyncio.to_thread(blackboard_accept, core(), post)
     except BridgeError as exc:
         raise HTTPException(400, str(exc)) from None

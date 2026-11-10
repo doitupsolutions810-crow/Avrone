@@ -306,6 +306,33 @@ def test_poisoned_disk_post_cannot_break_either_read(client):
     assert server._exact_token("nope\ud800", server.settings.admin_token) is False
 
 
+def test_bom_nested_text_and_blank_cursors(client):
+    """Bytes and shapes that sit next to the surrogate bug, without becoming a 500."""
+    bom = b'\xef\xbb\xbf{"id":"bom1","text":"from-bom"}'
+    got = client.post("/api/blackboard", content=bom, headers=AUTH)
+    assert got.status_code == 200, got.text
+    nested = json.dumps({"id": "nest1", "text": {"note": "x\ud800"}}).encode()
+    nested_r = client.post("/api/blackboard", content=nested, headers=AUTH)
+    assert nested_r.status_code == 200, nested_r.text
+    row = [p for p in _ids(client)["posts"] if p["id"] == "nest1"][0]
+    # A non-string text is stringified. The result must not contain a real surrogate.
+    assert isinstance(row["text"], str) and "\ud800" not in row["text"]
+    _encodes(_ids(client))
+    only_sur_run = json.dumps({"id": "srun", "text": "held", "run_id": "\ud800"}).encode()
+    assert client.post("/api/blackboard", content=only_sur_run, headers=AUTH).status_code == 200
+    held = [p for p in _ids(client)["posts"] if p["id"] == "srun"][0]
+    assert held["text"] == "held" and "\ud800" not in held["run_id"]
+    # Last duplicate key wins, and that value is still cleaned.
+    dup_keys = b'{"id":"dupk","text":"first","text":"second\\ud800"}'
+    assert client.post("/api/blackboard", content=dup_keys, headers=AUTH).status_code == 200
+    assert [p for p in _ids(client)["posts"] if p["id"] == "dupk"][0]["text"] == "second\ufffd"
+    for query in ("since=%20%20", "since=+", "since=%2Bkeep", "since=bom1&since=srun"):
+        r = client.get("/api/blackboard?" + query, headers=AUTH)
+        assert r.status_code < 500, (query, r.status_code, r.text[:160])
+        if r.status_code == 200:
+            _encodes(r.json())
+
+
 def test_open_reads_stay_open_but_blackboard_does_not(client):
     """AVRONE_PUBLIC_ACCESS=all lets /api/runs through. The blackboard still wants the token."""
     assert client.get("/api/status").status_code == 200

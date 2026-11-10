@@ -647,7 +647,8 @@ async def blackboard_write(request: Request, x_admin_token: str | None = Header(
     if not raw:
         raise HTTPException(400, "body must be JSON")
     try:
-        data = json.loads(raw.decode("utf-8"))
+        # utf-8-sig drops a leading BOM so a signed export is still JSON.
+        data = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise HTTPException(400, "body must be JSON") from None
     from .bridge import BridgeError, blackboard_accept, normalize_blackboard_post, seal_blackboard_post

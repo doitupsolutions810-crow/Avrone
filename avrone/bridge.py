@@ -92,7 +92,10 @@ def _utf8_text(value: Any) -> str:
     if value is None:
         value = ""
     elif not isinstance(value, str):
-        value = str(value)
+        try:
+            value = str(value)
+        except (ValueError, RecursionError, OverflowError):
+            value = "..."
     return clean_text(value)
 
 
@@ -120,7 +123,10 @@ def _remote_ts(ts: Any) -> float:
     """A relayed post's ts: finite, non-bool number, else now."""
     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
         return time.time()
-    ts = float(ts)
+    try:
+        ts = float(ts)
+    except (ValueError, OverflowError):
+        return time.time()
     return ts if math.isfinite(ts) and ts > 0 else time.time()
 
 
@@ -185,7 +191,7 @@ class Bridge:
             return None
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             return None
         if not isinstance(rec, dict) or set(rec) != {"tombstones"} or not isinstance(rec["tombstones"], list):
             return None
@@ -205,7 +211,7 @@ class Bridge:
             return None
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             return None
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not _ID_RE.match(rec["id"]):
             return None
@@ -214,8 +220,9 @@ class Bridge:
         rec["refs"] = _refs(rec.get("refs"))
         rec["text"] = _clip(rec["text"])
         for key in ("agent", "role", "run_id", "origin_node"):
-            if isinstance(rec.get(key), str):
+            if key in rec and rec[key] is not None:
                 rec[key] = _utf8_text(rec[key])
+        rec["ts"] = _remote_ts(rec.get("ts"))
         return rec
 
     @contextlib.contextmanager
@@ -597,7 +604,10 @@ def _ts_key(post: dict[str, Any]) -> tuple[float, str]:
     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
         number = 0.0
     else:
-        number = float(ts)
+        try:
+            number = float(ts)
+        except (ValueError, OverflowError):
+            number = 0.0
         if not math.isfinite(number):
             number = 0.0
     return (number, str(post.get("id") or ""))
@@ -705,16 +715,68 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _json_safe(value: Any, seen: set[int] | None = None, *,
+               depth: int = 0, budget: list[int] | None = None) -> Any:
+    """Bounded JSON projection for historical or poisoned bridge records.
+
+    Preserve normal integers without a lossy float conversion. Only floats may
+    be non-finite; integers beyond Python's JSON digit limit become zero. The
+    depth/node bounds also cover cycles and hand-edited, deeply nested state.
+    """
+    if budget is None:
+        budget = [2_000]
+    if depth >= 32 or budget[0] <= 0:
+        return "..."
+    budget[0] -= 1
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except ValueError:
+            return 0
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    if seen is None:
+        seen = set()
+    mark = id(value)
+    if mark in seen:
+        return "..."
+    seen.add(mark)
+    try:
+        if isinstance(value, dict):
+            out = {}
+            for key, item in value.items():
+                if budget[0] <= 0:
+                    break
+                out[_utf8_text(key)] = _json_safe(item, seen, depth=depth + 1, budget=budget)
+            return out
+        if isinstance(value, (list, tuple)):
+            out = []
+            for item in value:
+                if budget[0] <= 0:
+                    break
+                out.append(_json_safe(item, seen, depth=depth + 1, budget=budget))
+            return out
+        return _utf8_text(value)
+    finally:
+        seen.discard(mark)
+
+
 def public_post(post: dict[str, Any]) -> dict[str, Any]:
     """A stored post safe to put in a JSON response. Does not rewrite the ring."""
-    out = dict(post)
-    for key in ("id", "run_id", "agent", "role", "kind", "text", "origin_node"):
-        if isinstance(out.get(key), str):
-            out[key] = _utf8_text(out[key])
-    refs = out.get("refs")
-    if isinstance(refs, list):
-        out["refs"] = [_utf8_text(r) for r in refs if isinstance(r, str)]
-    return out
+    if not isinstance(post, dict):
+        return {"text": _utf8_text(post)}
+    # Mandatory fields must survive even if historical extra fields exhaust
+    # the projection budget before the id in the original insertion order.
+    ordered = {key: post[key] for key in
+               ("id", "run_id", "agent", "role", "kind", "text", "ts", "origin_node", "refs")
+               if key in post}
+    ordered.update(post)
+    return _json_safe(ordered)
 
 
 def safe_since(since: str | None) -> str | None:

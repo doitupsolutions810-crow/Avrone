@@ -131,6 +131,10 @@ NONCE_CACHE_MAX = 100_000
 # rewriting fleet.json (quadratic), with megabytes of capabilities/presence per record.
 DEFAULT_MAX_NODES, HARD_MAX_NODES = 256, 4096
 MAX_NODE_RECORD_BYTES = 64 * 1024
+# A peer can stream its reply indefinitely; bound bytes before JSON is
+# materialized. Only identity-coded replies are accepted so decompression
+# cannot allocate an oversized chunk ahead of the check.
+MAX_PEER_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 def max_nodes() -> int:
@@ -1159,7 +1163,7 @@ class FleetManager:
 
     # ------------------------------------------------------------ client side
     def _client(self, timeout: float) -> httpx.AsyncClient:
-        kw: dict[str, Any] = {"timeout": timeout}
+        kw: dict[str, Any] = {"timeout": timeout, "trust_env": False, "follow_redirects": False}
         if HTTP_TRANSPORT is not None:
             kw["transport"] = HTTP_TRANSPORT
         return httpx.AsyncClient(**kw)
@@ -1170,12 +1174,42 @@ class FleetManager:
         except ValueError as e:
             raise RuntimeError(f"refusing to call peer url: {e}") from None
         body = json.dumps(payload).encode()
-        headers = {"content-type": "application/json", **sign(self.token, "POST", path, body)}
-        async with self._client(timeout) as c:
-            r = await c.post(base + path, content=body, headers=headers)
-        if r.status_code >= 400:
-            raise RuntimeError(f"{base}{path} -> {r.status_code}: {r.text[:300]}")
-        return r.json()
+        headers = {"content-type": "application/json", "accept-encoding": "identity",
+                   **sign(self.token, "POST", path, body)}
+        async with self._client(timeout) as c, asyncio.timeout(timeout):
+            async with c.stream("POST", base + path, content=body, headers=headers) as r:
+                if r.headers.get("content-encoding", "").strip().lower() not in ("", "identity"):
+                    raise RuntimeError("peer response must use identity content encoding")
+                length = r.headers.get("content-length")
+                if length is not None:
+                    if (not length.isascii() or not length.isdigit()
+                            or len(length) > 20 or int(length) > MAX_PEER_RESPONSE_BYTES):
+                        raise RuntimeError("peer response exceeds the byte limit or has an invalid length")
+                raw = bytearray()
+                async for chunk in r.aiter_bytes():
+                    if len(raw) + len(chunk) > MAX_PEER_RESPONSE_BYTES:
+                        raise RuntimeError("peer response exceeds the byte limit")
+                    raw.extend(chunk)
+                if not 200 <= r.status_code < 300:
+                    preview = bytes(raw).decode("utf-8", errors="replace")[:300]
+                    raise RuntimeError(f"{base}{path} -> {r.status_code}: {preview}")
+        try:
+            def reject_constant(value: str) -> None:
+                raise ValueError("non-finite JSON number")
+
+            def finite_float(value: str) -> float:
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError("non-finite JSON number")
+                return number
+
+            result = json.loads(bytes(raw).decode("utf-8"), parse_constant=reject_constant,
+                                parse_float=finite_float)
+        except (ValueError, RecursionError):
+            raise RuntimeError("peer response must be a UTF-8 JSON object with finite numbers") from None
+        if not isinstance(result, dict):
+            raise RuntimeError("peer response must be a JSON object")
+        return result
 
     # ------------------------------------------------------------ memory sync
     async def push_memory(self, entries: list[dict[str, Any]], origin: str) -> dict[str, Any]:

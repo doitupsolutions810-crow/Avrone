@@ -1,0 +1,15 @@
+{
+  "schema": "great-scale-evidence/v46",
+  "finding": "check_drive refuses when the token under the lock does not match the in-memory token. A matching token continues. A rewritten or missing token refuses. The script dies at Homebrew before reaching the call sites, so the logic is probed directly. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "matching": "continue",
+  "rewritten": "refuse",
+  "missing": "refuse",
+  "reachedInThisEnvironment": false,
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The check holds. It detects a drive swap."
+}

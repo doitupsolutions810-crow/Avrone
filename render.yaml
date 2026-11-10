@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: avrone-free-preview
+    runtime: python
+    plan: free
+    buildCommand: pip install .
+    startCommand: avrone
+    healthCheckPath: /api/status
+    envVars:
+      - key: AVRONE_HOST
+        value: 0.0.0.0
+      - key: AVRONE_PORT
+        value: "10000"
+      - key: AVRONE_LLM_MODE
+        value: mock
+      - key: AVRONE_RUNNER
+        value: local
+      - key: AVRONE_PUBLIC_ACCESS
+        value: admin
+      - key: AVRONE_ADMIN_TOKEN
+        sync: false
+      - key: AVRONE_ALLOW_NETWORK
+        value: "false"
+      - key: AVRONE_AGENTS_CAN_SHELL
+        value: "false"
+      - key: AVRONE_SELF_CHANGES
+        value: deny
+      - key: AVRONE_SELF_EVOLVE
+        value: deny
+      - key: AVRONE_RECON
+        value: deny
+      - key: AVRONE_SQUAD_SIZE
+        value: "2"
+      - key: AVRONE_MAX_PARALLEL
+        value: "2"
+      - key: AVRONE_MAX_STEPS
+        value: "4"
+      - key: AVRONE_MAX_SPAWN_DEPTH
+        value: "1"
+      - key: AVRONE_DATA_DIR
+        value: /tmp/avrone-data
+      - key: AVRONE_WORKSPACE
+        value: /tmp/avrone-workspace

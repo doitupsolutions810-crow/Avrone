@@ -1,0 +1,14 @@
+{
+  "schema": "great-scale-evidence/v43",
+  "finding": "The script exits 2 when a lock with a live pid is present, and removes a stale lock. A live pid exits 2. A stale pid is removed and the run continues. No lock continues. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "livePid": "exit 2",
+  "stalePid": "removed, continues",
+  "noLock": "continues",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The lock check holds."
+}

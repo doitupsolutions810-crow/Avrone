@@ -294,7 +294,7 @@ def _first_action(text: str) -> dict[str, Any] | None:
             break
         try:
             obj, end = _DECODER.raw_decode(text, i)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             i = text.find("{", i + 1)
             continue
         if _is_action(obj):

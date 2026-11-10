@@ -1,8 +1,8 @@
 """Squad Lead residual guard.
 
-Only a list or a tuple is a squad. A generator, dict, set, string, or other
-iterable is ``not_a_squad`` and is not walked, so an endless generator cannot
-stall Lead.
+Only an exact list or an exact tuple is a squad. Subclasses are rejected
+without calling ``len`` or iterating, so a ``__len__`` that never returns
+cannot stall Lead. Generators, dicts, sets, strings, and bytes are not squads.
 
 ``None``, blank text, ``[name failed: ...]``, and a ``__str__`` that raises
 count as worker failures. The text ``"None"`` does not.
@@ -53,7 +53,7 @@ def worker_failed(result: Any) -> bool:
 
 
 def guard_squad(results: Any) -> dict[str, Any]:
-    if not isinstance(results, (list, tuple)):
+    if type(results) is not list and type(results) is not tuple:
         return _reject("not_a_squad")
     n = len(results)
     if n < 1:

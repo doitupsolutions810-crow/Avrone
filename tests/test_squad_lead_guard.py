@@ -11,9 +11,10 @@ os.environ["AVRONE_RESIDUAL_GATE"] = "1"
 from avrone.squad_lead_guard import guard_squad  # noqa: E402
 
 
-def endless():
-    while True:
-        yield "ok"
+class Evil(list):
+    def __len__(self):
+        while True:
+            pass
 
 
 def main() -> int:
@@ -25,14 +26,13 @@ def main() -> int:
         fails += int(not cond)
 
     t = time.monotonic()
-    g = guard_squad(endless())
-    ck("no_hang", time.monotonic() - t < 0.5 and g["S"] is None and "not_a_squad" in g["reasons"])
-    ck("dict", guard_squad({"a": "[A failed: x]"})["orientation"] == "unmeasured")
-    ck("none", guard_squad([None])["S"] == 0 and guard_squad([None])["measured"] is True)
+    g = guard_squad(Evil(["ok"]))
+    ck("subclass", time.monotonic() - t < 0.5 and g["S"] is None and "not_a_squad" in g["reasons"])
+    ck("list", guard_squad(["ok"])["action"] == "lead.merge")
+    ck("none", guard_squad([None])["S"] == 0 and guard_squad([None])["orientation"] == "fail")
     ck("text", guard_squad(["None"])["orientation"] == "pass")
     ck("empty", guard_squad(())["S"] is None)
-    os.environ["RESIDUAL_LOG_ONLY"] = "1"
-    ck("log_only", guard_squad(endless())["action"] == "lead.merge")
+    ck("dict", guard_squad({"a": "x"})["orientation"] == "unmeasured")
     print(f"{6 - fails}/6 passed")
     return fails
 

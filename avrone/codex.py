@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 import time
 import uuid
@@ -29,6 +30,29 @@ class Event:
 def _redact_on() -> bool:
     import os
     return (os.getenv("AVRONE_CODEX_REDACT") or "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def _json_safe(v: Any, depth: int = 0) -> Any:
+    """A value ``JSONResponse`` can encode: no lone surrogates, no NaN or infinity.
+
+    A log line written by an older process (or by ``json.dumps`` with the default
+    ``allow_nan``) still has to load. ``json.dumps(..., ensure_ascii=False)`` then
+    ``.encode("utf-8")`` raises on a surrogate, and ``allow_nan=False`` raises on NaN.
+    """
+    from .gateway import clean_text
+    if isinstance(v, str):
+        return clean_text(v)
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        if depth > 12:
+            return clean_text(str(v))
+        return {clean_text(str(k)): _json_safe(x, depth + 1) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        if depth > 12:
+            return clean_text(str(v))
+        return [_json_safe(x, depth + 1) for x in v]
+    return v
 
 
 def _scrub(v: Any, depth: int = 0) -> Any:
@@ -155,10 +179,17 @@ class Codex:
     def emit(self, run_id: str, kind: str, agent: str, **data: Any) -> Event:
         if _redact_on():
             data = _scrub(data)
-        ev = Event(run_id=run_id, kind=kind, agent=agent, data=data)
-        line = json.dumps(asdict(ev), default=str) + "\n"
-        with self._write_lock, (self.log_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
-            f.write(line)
+        data = _json_safe(data)
+        ev = Event(run_id=run_id, kind=kind, agent=agent, data=data if isinstance(data, dict) else {})
+        line = json.dumps(asdict(ev), default=str, allow_nan=False) + "\n"
+        path = self.log_dir / f"{run_id}.jsonl"
+        try:
+            inside = path.resolve().is_relative_to(self.log_dir.resolve())
+        except OSError:
+            inside = False
+        if inside:
+            with self._write_lock, path.open("a", encoding="utf-8") as f:
+                f.write(line)
         self.emitted += 1
         for q in list(self._subscribers):
             self._deliver(q, ev)
@@ -196,7 +227,7 @@ class Codex:
                 continue
             data = start.get("data")
             prompt = data.get("prompt", "") if isinstance(data, dict) else ""
-            out.append({"run_id": p.stem, "started": start.get("ts"), "prompt": prompt})
+            out.append({"run_id": p.stem, "started": _json_safe(start.get("ts")), "prompt": _json_safe(prompt)})
         return out
 
     def replay(self, run_id: str, limit: int | None = None) -> list[dict[str, Any]]:
@@ -216,7 +247,7 @@ class Codex:
                 for line in iter_lines(f):
                     ev = self._parse_line(line) if line is not None else None
                     if ev is not None:
-                        keep.append(ev)
+                        keep.append(_json_safe(ev))
                         total += 1
         except OSError:
             return []

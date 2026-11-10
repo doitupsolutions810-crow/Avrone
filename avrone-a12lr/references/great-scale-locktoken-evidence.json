@@ -1,0 +1,15 @@
+{
+  "schema": "great-scale-evidence/v45",
+  "finding": "The lock decision does not look at the token. A live pid exits 2 whether the token is missing, wrong, or matching. The token is for check_drive (drive-swap detection), not for the lock. The lock only cares about the pid. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "noToken": "exit 2",
+  "wrongToken": "exit 2",
+  "matchingToken": "exit 2",
+  "tokenUsedBy": "check_drive",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The token is for a different check. The lock only cares about the pid."
+}

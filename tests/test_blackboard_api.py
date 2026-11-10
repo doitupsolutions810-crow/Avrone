@@ -7,6 +7,7 @@ dedup that reports duplicate:true and does not overwrite, and a positional
 """
 import asyncio
 import json
+import math
 import threading
 import time
 
@@ -331,6 +332,56 @@ def test_bom_nested_text_and_blank_cursors(client):
         assert r.status_code < 500, (query, r.status_code, r.text[:160])
         if r.status_code == 200:
             _encodes(r.json())
+
+
+def test_nested_surrogate_infinity_and_cycles_stay_encodable(client):
+    """A nested lone surrogate or a non-finite ts must not 500 either read."""
+    core = server.state["core"]
+    folder = core.settings.data_dir / "bridge"
+    folder.mkdir(parents=True, exist_ok=True)
+    # Written as text so ts stays a JSON number. json.dumps turns 1e309 into Infinity,
+    # which is not JSON and would be skipped on load.
+    (folder / "nested.jsonl").write_text(
+        '{"id":"nest-disk","run_id":"nested","agent":{"name":"a\\ud800"},'
+        '"role":["r\\udfff"],"kind":"finding","text":"plain",'
+        '"refs":[{"bad":"x\\ud800"},"ok-ref"],"ts":1e309,'
+        '"origin_node":"local","note":"tail\\ud800"}\n',
+        encoding="utf-8",
+    )
+    getattr(core, "_bridges", {}).pop("nested", None)
+    board = client.get("/api/blackboard", headers=AUTH)
+    assert board.status_code == 200, board.text
+    _encodes(board.json())
+    row = [p for p in board.json()["posts"] if p["id"] == "nest-disk"][0]
+    assert isinstance(row["agent"], str) and "\ud800" not in row["agent"]
+    assert isinstance(row["ts"], (int, float)) and row["ts"] > 0 and row["ts"] < 1e300
+    assert "\ud800" not in board.text and "Infinity" not in board.text
+    one = client.get("/api/runs/nested/bridge", headers=AUTH)
+    assert one.status_code == 200, one.text
+    _encodes(one.json())
+    for raw, pid in (
+        (b'{"id":"inf-ts","text":"clock","ts":1e309}', "inf-ts"),
+        (b'{"id":"nan-ts","text":"x","ts":NaN}', "nan-ts"),
+        (b'{"id":"neginf","text":"x","ts":-Infinity}', "neginf"),
+    ):
+        got = client.post("/api/blackboard", content=raw, headers=AUTH)
+        assert got.status_code == 200, (raw, got.text)
+        stored = [p for p in _ids(client)["posts"] if p["id"] == pid][0]
+        assert math.isfinite(stored["ts"]) and stored["ts"] > 0
+        assert "NaN" not in json.dumps(stored) and "Infinity" not in json.dumps(stored)
+    from avrone.bridge import for_core
+    live = for_core(core, "cycle-run")
+    loop = {"id": "cyc1", "run_id": "cycle-run", "agent": "a", "role": "", "kind": "finding",
+            "text": "loop\ud800", "refs": [], "ts": float("nan"), "origin_node": "local"}
+    loop["self"] = loop
+    with live._lock:
+        live._posts["cyc1"] = loop
+    cycled = client.get("/api/blackboard", headers=AUTH)
+    assert cycled.status_code == 200, cycled.text
+    _encodes(cycled.json())
+    seen = [p for p in cycled.json()["posts"] if p["id"] == "cyc1"][0]
+    assert seen["text"] == "loop\ufffd" and seen["self"] == "..."
+    assert seen["ts"] == 0.0
 
 
 def test_open_reads_stay_open_but_blackboard_does_not(client):

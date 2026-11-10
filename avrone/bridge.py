@@ -214,8 +214,9 @@ class Bridge:
         rec["refs"] = _refs(rec.get("refs"))
         rec["text"] = _clip(rec["text"])
         for key in ("agent", "role", "run_id", "origin_node"):
-            if isinstance(rec.get(key), str):
+            if key in rec and rec[key] is not None:
                 rec[key] = _utf8_text(rec[key])
+        rec["ts"] = _remote_ts(rec.get("ts"))
         return rec
 
     @contextlib.contextmanager
@@ -705,16 +706,36 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _json_safe(value: Any, seen: set[int] | None = None) -> Any:
+    """A JSON value that encodes as UTF-8. Lone surrogates and non-finite numbers cannot."""
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return value if math.isfinite(number) else 0.0
+    if seen is None:
+        seen = set()
+    mark = id(value)
+    if mark in seen:
+        return "..."
+    seen.add(mark)
+    try:
+        if isinstance(value, dict):
+            return {_utf8_text(k): _json_safe(v, seen) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_safe(v, seen) for v in value]
+        return _utf8_text(value)
+    finally:
+        seen.discard(mark)
+
+
 def public_post(post: dict[str, Any]) -> dict[str, Any]:
     """A stored post safe to put in a JSON response. Does not rewrite the ring."""
-    out = dict(post)
-    for key in ("id", "run_id", "agent", "role", "kind", "text", "origin_node"):
-        if isinstance(out.get(key), str):
-            out[key] = _utf8_text(out[key])
-    refs = out.get("refs")
-    if isinstance(refs, list):
-        out["refs"] = [_utf8_text(r) for r in refs if isinstance(r, str)]
-    return out
+    if not isinstance(post, dict):
+        return {"text": _utf8_text(post)}
+    return _json_safe(post)
 
 
 def safe_since(since: str | None) -> str | None:

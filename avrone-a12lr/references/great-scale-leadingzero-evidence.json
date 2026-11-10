@@ -1,0 +1,19 @@
+{
+  "schema": "great-scale-evidence/v40",
+  "finding": "The script normalizes a stage with a leading zero. '007' becomes 7. '00' becomes 0. '7' and '0' are left alone. It uses 10# arithmetic. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "normalized": {
+    "007": "7",
+    "00": "0"
+  },
+  "leftAlone": [
+    "7",
+    "0"
+  ],
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The leading-zero check holds."
+}

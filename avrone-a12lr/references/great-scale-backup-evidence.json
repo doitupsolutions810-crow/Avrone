@@ -1,0 +1,14 @@
+{
+  "schema": "great-scale-evidence/v41",
+  "finding": "The script restores a corrupt stage from the backup, then the repo. A valid backup is used. A missing or corrupt backup falls through to the repo. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "validBackup": "restored from backup",
+  "noBackup": "restored from repo",
+  "corruptBackup": "restored from repo",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The stage-backup check holds."
+}

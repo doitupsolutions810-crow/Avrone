@@ -1,0 +1,14 @@
+{
+  "schema": "great-scale-evidence/v38",
+  "finding": "The unreadable check moves a mode 000 reintro-stage.txt aside for uid 1000. Root bypasses it: root can read mode 000 on Linux, so the check does not fire and the stage check repairs the content instead. A readable file is read as-is. Pure. Heat is zero.",
+  "cone": 0.3819660112501052,
+  "uid1000": "moved aside",
+  "root": "bypassed, stage check repairs",
+  "readable": "read as-is",
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
+  "docker": false,
+  "mitigation": "None needed. The check holds for non-root. Root bypasses it because root can read anything on Linux."
+}

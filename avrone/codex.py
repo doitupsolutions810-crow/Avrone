@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 import time
 import uuid
@@ -29,6 +30,72 @@ class Event:
 def _redact_on() -> bool:
     import os
     return (os.getenv("AVRONE_CODEX_REDACT") or "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def _json_safe(value: Any, depth: int = 0, seen: set[int] | None = None,
+               budget: list[int] | None = None) -> Any:
+    """Project an event into bounded, strict JSON without modifying its stored record.
+
+    Older JSONL logs can contain lone surrogates and Python's NaN/Infinity
+    extensions. Live tool data can also be cyclic or contain non-JSON objects.
+    Truncate containers at a fixed depth and total node count; stringifying the
+    remaining container would recurse into the same hostile data again.
+    """
+    from .gateway import clean_text
+    if budget is None:
+        budget = [20_000]
+    if budget[0] <= 0:
+        return "..."
+    budget[0] -= 1
+
+    def text(item: Any) -> str:
+        try:
+            return clean_text(str(item))
+        except Exception:
+            return "<unprintable>"
+
+    if isinstance(value, str):
+        return clean_text(value)
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # Python's JSON encoder applies the interpreter's integer-string guard.
+        # Do not let one huge live tool value prevent the entire event from being
+        # persisted or delivered. The bit cap also bounds work if that guard is off.
+        if int.bit_length(value) > 16_384:
+            return "<integer exceeds JSON limit>"
+        if int.bit_length(value) > 2048:
+            try:
+                int.__repr__(value)
+            except ValueError:
+                return "<integer exceeds JSON limit>"
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if seen is None:
+        seen = set()
+    if isinstance(value, (dict, list, tuple)):
+        marker = id(value)
+        if depth >= 16 or marker in seen:
+            return "..."
+        seen.add(marker)
+        try:
+            if isinstance(value, dict):
+                out = {}
+                for key, item in value.items():
+                    if budget[0] <= 0:
+                        break
+                    out[text(key)] = _json_safe(item, depth + 1, seen, budget)
+                return out
+            out = []
+            for item in value:
+                if budget[0] <= 0:
+                    break
+                out.append(_json_safe(item, depth + 1, seen, budget))
+            return out
+        finally:
+            seen.remove(marker)
+    return text(value)
 
 
 def _scrub(v: Any, depth: int = 0) -> Any:
@@ -110,6 +177,22 @@ class Codex:
         self.emitted = 0
         self.refused = 0  # subscribe attempts turned away at AVRONE_MAX_WS_SUBSCRIBERS
 
+    def _log_path(self, run_id: str) -> Path | None:
+        """A direct regular log destination, or None for an unsafe/unreadable ID."""
+        from .gateway import clean_text
+        if (not isinstance(run_id, str) or not run_id or clean_text(run_id) != run_id
+                or "/" in run_id or "\\" in run_id):
+            return None
+        path = self.log_dir / f"{run_id}.jsonl"
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(self.log_dir.resolve()):
+                return None
+            if path.exists() and not path.is_file():
+                return None
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return path
+
     def subscribe(self) -> asyncio.Queue[Event]:
         # every emit fans out to every subscriber, and each queue holds up to 1000 events: unbounded
         # subscribers made each run's events cost O(subscribers) and memory grow per connection
@@ -153,11 +236,15 @@ class Codex:
             self.unsubscribe(q)
 
     def emit(self, run_id: str, kind: str, agent: str, **data: Any) -> Event:
+        path = self._log_path(run_id)
+        if path is None:
+            raise ValueError("unsafe run id for event log")
+        data = _json_safe(data)
         if _redact_on():
             data = _scrub(data)
-        ev = Event(run_id=run_id, kind=kind, agent=agent, data=data)
-        line = json.dumps(asdict(ev), default=str) + "\n"
-        with self._write_lock, (self.log_dir / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
+        ev = Event(run_id=run_id, kind=_json_safe(kind), agent=_json_safe(agent), data=data)
+        line = json.dumps(asdict(ev), default=str, allow_nan=False) + "\n"
+        with self._write_lock, path.open("a", encoding="utf-8") as f:
             f.write(line)
         self.emitted += 1
         for q in list(self._subscribers):
@@ -172,13 +259,15 @@ class Codex:
             return None
         try:
             obj = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             return None
         return obj if isinstance(obj, dict) else None
 
     def runs(self, limit: int = 50) -> list[dict[str, Any]]:
         stamped = []
         for p in self.log_dir.glob("*.jsonl"):
+            if self._log_path(p.stem) is None:
+                continue
             try:  # a log can vanish between listing and stat (cleanup, concurrent delete)
                 stamped.append((p.stat().st_mtime, p))
             except OSError:
@@ -196,7 +285,8 @@ class Codex:
                 continue
             data = start.get("data")
             prompt = data.get("prompt", "") if isinstance(data, dict) else ""
-            out.append({"run_id": p.stem, "started": start.get("ts"), "prompt": prompt})
+            out.append({"run_id": _json_safe(p.stem), "started": _json_safe(start.get("ts")),
+                        "prompt": _json_safe(prompt)})
         return out
 
     def replay(self, run_id: str, limit: int | None = None) -> list[dict[str, Any]]:
@@ -204,8 +294,8 @@ class Codex:
         order. Truncated/corrupt lines (e.g. a crash mid-write) are skipped, so one bad line never
         hides the rest of the audit log. Streams the file: a 200 MB log used to be read whole and
         parsed whole (1.4 GB RSS for one request)."""
-        p = self.log_dir / f"{run_id}.jsonl"
-        if not p.exists() or not p.resolve().is_relative_to(self.log_dir.resolve()):
+        p = self._log_path(run_id)
+        if p is None or not p.exists():
             return []
         from collections import deque
         n = replay_limit() if limit is None else max(1, int(limit))
@@ -216,7 +306,7 @@ class Codex:
                 for line in iter_lines(f):
                     ev = self._parse_line(line) if line is not None else None
                     if ev is not None:
-                        keep.append(ev)
+                        keep.append(_json_safe(ev))
                         total += 1
         except OSError:
             return []

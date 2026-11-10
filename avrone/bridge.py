@@ -108,7 +108,7 @@ def _refs(refs: Any) -> list[str]:
         return []
     out: list[str] = []
     for r in refs:
-        r = str(r).strip()
+        r = _utf8_text(r).strip()
         if r and _ID_RE.match(r) and r not in out:
             out.append(r)
         if len(out) >= MAX_REFS:
@@ -213,6 +213,9 @@ class Bridge:
             return None
         rec["refs"] = _refs(rec.get("refs"))
         rec["text"] = _clip(rec["text"])
+        for key in ("agent", "role", "run_id", "origin_node"):
+            if isinstance(rec.get(key), str):
+                rec[key] = _utf8_text(rec[key])
         return rec
 
     @contextlib.contextmanager
@@ -340,7 +343,7 @@ class Bridge:
     # ------------------------------------------------------------ reads
     def posts(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [dict(p) for p in self._posts.values()]
+            return [public_post(p) for p in self._posts.values()]
 
     def get(self, post_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -483,7 +486,7 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     """
     if not isinstance(data, dict):
         return None, "body must be JSON"
-    kind = str(data.get("kind") or "finding").strip().lower()
+    kind = _utf8_text(data.get("kind") or "finding").strip().lower()
     if kind not in KINDS:
         return None, f"kind must be one of {', '.join(KINDS)}"
     text = _clip(data.get("text"))
@@ -683,6 +686,16 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     for key in ("run_id", "agent", "role", "text", "origin_node"):
         if key in out:
             out[key] = _utf8_text(out[key])
+    if not str(out.get("run_id") or "").strip():
+        out["run_id"] = "run"
+    if not str(out.get("agent") or "").strip():
+        out["agent"] = "agent"
+    if not str(out.get("origin_node") or "").strip():
+        out["origin_node"] = "local"
+    out["run_id"] = str(out["run_id"])[:80]
+    out["agent"] = str(out["agent"])[:80]
+    out["role"] = str(out.get("role") or "")[:60]
+    out["origin_node"] = str(out["origin_node"])[:80]
     out["text"] = _clip(out.get("text"))
     if not out["text"]:
         raise BridgeError("text is required")

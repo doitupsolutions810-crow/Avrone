@@ -129,7 +129,8 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
     if r.exit_code != 0:
         # Fallback: plain copy if not a git repo
         shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(".git", "data", "*.egg-info", "__pycache__"))
-        await _sh(ctx, "git init -q && git add -A && git -c user.email=a@a -c user.name=avrone commit -qm base", wt)
+        await _sh(ctx, "git init -q && git add -A && git -c user.email=a@a -c user.name=avrone "
+                  "-c commit.gpgsign=false commit -qm base", wt)
     await _sh(ctx, f"git checkout -q -b {branch}", wt)
     return wt, branch
 
@@ -207,7 +208,8 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
             res = again
     tail = "\n".join((res.stdout or res.stderr or "").splitlines()[-25:])
     if passed:
-        await _sh(ctx, f"git add -A && git -c user.email=a@a -c user.name=avrone commit -qm {json.dumps(goal)[:200]}", wt)
+        await _sh(ctx, "git add -A && git -c user.email=a@a -c user.name=avrone -c commit.gpgsign=false "
+                  f"commit -qm {json.dumps(goal)[:200]}", wt)
     duration = round(_now() - t0, 3)
     meta = {"pid": pid, "goal": goal, "branch": branch, "files": changed, "passed": passed,
             "by": ctx.name, "ts": time.time(), "test_cmd": test_cmd, "worktree": str(wt),

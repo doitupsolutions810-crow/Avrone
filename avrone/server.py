@@ -55,20 +55,25 @@ def core() -> TrinityCore:
 def require_admin(token: str | None) -> None:
     if not settings.admin_token:
         raise HTTPException(403, "Admin access is off. Set AVRONE_ADMIN_TOKEN to enable it.")
-    if token is None or not hmac.compare_digest(str(token), settings.admin_token):
+    if not _exact_token(None if token is None else str(token), settings.admin_token):
         raise HTTPException(401, "Bad admin token")
+
+
+def _token_bytes(value: str) -> bytes:
+    """UTF-8 bytes of a token. Lone surrogates use surrogatepass so the compare cannot raise."""
+    return value.encode("utf-8", "surrogatepass")
 
 
 def _exact_token(presented: str | None, expected: str) -> bool:
     """True when ``presented`` is exactly ``expected``. Neither side is trimmed.
 
-    UTF-8 bytes, not ``str``, so the compare is constant-time for any token.
-    ``hmac.compare_digest`` on str rejects non-ASCII. An empty expected never
-    matches, including an empty header.
+    Bytes, not ``str``, so the compare is constant-time for any token.
+    ``hmac.compare_digest`` on str rejects non-ASCII, and a lone surrogate
+    cannot be encoded as strict UTF-8. An empty expected never matches.
     """
     if presented is None or not isinstance(presented, str) or expected == "":
         return False
-    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    return hmac.compare_digest(_token_bytes(presented), _token_bytes(expected))
 
 
 def require_blackboard_admin(token: str | None) -> None:

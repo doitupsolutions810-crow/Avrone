@@ -47,7 +47,8 @@ def mkrepo(tmp):
     r = tmp / "repo"
     (r / "pkg").mkdir(parents=True)
     (r / "pkg" / "__init__.py").write_text("VALUE = 1\n")
-    for c in ("git init -q -b main", "git add -A", "git -c user.email=a@a -c user.name=a commit -qm base"):
+    for c in ("git init -q -b main", "git add -A",
+              "git -c user.email=a@a -c user.name=a -c commit.gpgsign=false commit -qm base"):
         subprocess.run(["bash", "-c", f"cd {r} && {c}"], check=True)
     return r
 

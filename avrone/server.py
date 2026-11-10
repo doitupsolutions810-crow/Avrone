@@ -55,7 +55,7 @@ def core() -> TrinityCore:
 def require_admin(token: str | None) -> None:
     if not settings.admin_token:
         raise HTTPException(403, "Admin access is off. Set AVRONE_ADMIN_TOKEN to enable it.")
-    if token is None or not hmac.compare_digest(str(token), settings.admin_token):
+    if not _exact_token(token, settings.admin_token):
         raise HTTPException(401, "Bad admin token")
 
 
@@ -105,7 +105,7 @@ def caller_allowed(host: str | None, token: str | None) -> bool:
     policy = access_policy()
     if policy == "all":
         return True
-    if settings.admin_token and token is not None and hmac.compare_digest(str(token), settings.admin_token):
+    if _exact_token(token, settings.admin_token):
         return True
     return policy == "loopback" and (host or "") in LOOPBACK_HOSTS
 

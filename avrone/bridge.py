@@ -82,8 +82,22 @@ def safe_run_id(run_id: Any) -> str:
     return rid or "run"
 
 
+def _utf8_text(value: Any) -> str:
+    """Lone surrogates become U+FFFD and NULs are dropped (``gateway.clean_text``).
+
+    A stored surrogate survives ``json.dumps(..., ensure_ascii=True)`` and then
+    raises UnicodeEncodeError when a response is encoded as UTF-8.
+    """
+    from .gateway import clean_text
+    if value is None:
+        value = ""
+    elif not isinstance(value, str):
+        value = str(value)
+    return clean_text(value)
+
+
 def _clip(text: Any) -> str:
-    t = str(text if text is not None else "").strip()
+    t = _utf8_text(text).strip()
     return t if len(t) <= MAX_TEXT else t[: MAX_TEXT - 3] + "..."
 
 
@@ -482,17 +496,21 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
             return None, "bad post id"
     else:
         pid = uuid.uuid4().hex[:12]
-    return {
-        "id": pid,
-        "run_id": str(data.get("run_id") or "run")[:80],
-        "agent": str(data.get("agent") or "agent")[:80],
-        "role": str(data.get("role") or "")[:60],
-        "kind": kind,
-        "text": text,
-        "refs": _refs(data.get("refs")),
-        "ts": _remote_ts(data.get("ts")),
-        "origin_node": str(data.get("origin_node") or "local")[:80],
-    }, None
+    try:
+        sealed = seal_blackboard_post({
+            "id": pid,
+            "run_id": str(data.get("run_id") or "run")[:80],
+            "agent": str(data.get("agent") or "agent")[:80],
+            "role": str(data.get("role") or "")[:60],
+            "kind": kind,
+            "text": text,
+            "refs": _refs(data.get("refs")),
+            "ts": _remote_ts(data.get("ts")),
+            "origin_node": str(data.get("origin_node") or "local")[:80],
+        })
+    except BridgeError as exc:
+        return None, str(exc)
+    return sealed, None
 
 
 def _data_dir(core: Any) -> Path | None:
@@ -656,12 +674,53 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str
     return order
 
 
+def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
+    """Copy ``post`` with every string safe to store and to encode as UTF-8.
+
+    Empty text after that (a body that was only NULs) is refused.
+    """
+    out = dict(post)
+    for key in ("run_id", "agent", "role", "text", "origin_node"):
+        if key in out:
+            out[key] = _utf8_text(out[key])
+    out["text"] = _clip(out.get("text"))
+    if not out["text"]:
+        raise BridgeError("text is required")
+    refs = out.get("refs")
+    if isinstance(refs, list):
+        out["refs"] = _refs([_utf8_text(r) for r in refs])
+    return out
+
+
+def public_post(post: dict[str, Any]) -> dict[str, Any]:
+    """A stored post safe to put in a JSON response. Does not rewrite the ring."""
+    out = dict(post)
+    for key in ("id", "run_id", "agent", "role", "kind", "text", "origin_node"):
+        if isinstance(out.get(key), str):
+            out[key] = _utf8_text(out[key])
+    refs = out.get("refs")
+    if isinstance(refs, list):
+        out["refs"] = [_utf8_text(r) for r in refs if isinstance(r, str)]
+    return out
+
+
+def safe_since(since: str | None) -> str | None:
+    """A cursor that cannot carry a surrogate or NUL into the read path."""
+    if since is None:
+        return None
+    if not isinstance(since, str):
+        since = str(since)
+    since = _utf8_text(since)
+    return since or None
+
+
 def blackboard_posts(core: Any, since: str | None = None) -> list[dict[str, Any]]:
     """Fan-in of every run bridge, oldest first. ``since`` matches ``Bridge.export``."""
+    since = safe_since(since)
     with _blackboard_lock(core):
         by_id = _posts_by_id(core)
         order = _sync_order(core, by_id)
-        posts = [by_id[pid] for pid in order if pid in by_id]
+        posts = [public_post(by_id[pid]) for pid in order if pid in by_id]
         if since:
             ids = [post["id"] for post in posts]
             if since in ids:
@@ -673,8 +732,9 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     """Store ``post`` on its run bridge. Return ``(duplicate, id)``.
 
     A duplicate (already stored, or already evicted) is not rewritten. ``BridgeError``
-    when the bridge refuses the record.
+    when the bridge refuses the record. Strings are sealed before they are written.
     """
+    post = seal_blackboard_post(post)
     pid = str(post.get("id") or "")
     if not _ID_RE.match(pid):
         raise BridgeError("bad post id")

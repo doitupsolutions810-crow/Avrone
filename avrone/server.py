@@ -626,8 +626,9 @@ async def run_log(run_id: str, request: Request, x_admin_token: str | None = Hea
 async def blackboard_get(since: str | None = None, x_admin_token: str | None = Header(default=None)):
     """Fan-in of this node's bridge posts, oldest first. Admin token, not loopback."""
     require_blackboard_admin(x_admin_token)
-    from .bridge import blackboard_posts
-    posts = await asyncio.to_thread(blackboard_posts, core(), since)
+    from .bridge import blackboard_posts, public_post, safe_since
+    posts = await asyncio.to_thread(blackboard_posts, core(), safe_since(since))
+    posts = [public_post(p) for p in posts]
     return {"posts": posts, "count": len(posts), "boot": BOOT_ID}
 
 
@@ -644,11 +645,12 @@ async def blackboard_write(request: Request, x_admin_token: str | None = Header(
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise HTTPException(400, "body must be JSON") from None
-    from .bridge import BridgeError, blackboard_accept, normalize_blackboard_post
+    from .bridge import BridgeError, blackboard_accept, normalize_blackboard_post, seal_blackboard_post
     post, err = normalize_blackboard_post(data)
     if err or post is None:
         raise HTTPException(400, err or "body must be JSON")
     try:
+        post = seal_blackboard_post(post)
         duplicate, pid = await asyncio.to_thread(blackboard_accept, core(), post)
     except BridgeError as exc:
         raise HTTPException(400, str(exc)) from None

@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "source_of_truth": "great-scale/public/residual.cjs",
+    "cone": 0.38196601125010515,
+    "phi": 1.618033988749895,
+    "fixed_point": 4.5,
+    "residual_partition": [4, 3, 1],
+    "dual_atlas": {"4": "Watch", "3": "Observer", "1": "Forward"}
+  },
+  "heat": [
+    {"h": 0.0, "S": 0.0},
+    {"h": 0.06, "S": 0.0564},
+    {"h": 0.25, "S": 0.1875},
+    {"h": 0.5, "S": 0.25},
+    {"h": 0.75, "S": 0.1875},
+    {"h": 1.0, "S": 0.0}
+  ],
+  "psi": [
+    {"S": 0.0, "psi": 0.38196601125010515},
+    {"S": 0.0564, "psi": 0.43836601125010515},
+    {"S": 0.1875, "psi": 0.5694660112501052},
+    {"S": 0.25, "psi": 0.6319660112501052}
+  ],
+  "cascade_lambda": [
+    {"n": 0, "lambda": 1.0},
+    {"n": 1, "lambda": 0.618033988750},
+    {"n": 2.5, "lambda": 0.381966011251},
+    {"n": 8, "lambda": 0.021286237352}
+  ],
+  "topological_saturation": [
+    {"tau": 0.0, "S": 0.25, "n": 7.0, "lambda": 0.021286237352, "logCoord": 1.0, "psi": 0.6319660112501052, "coneOk": true},
+    {"tau": 0.3, "S": 0.2275, "n": 7.2725, "lambda": 0.018424739841, "logCoord": 0.91, "psi": 0.6094660112501052, "coneOk": true},
+    {"tau": 1.0, "S": 0.0, "n": 8.0, "lambda": 0.021286237352, "logCoord": 0.0, "psi": 0.38196601125010515, "coneOk": true}
+  ],
+  "soft_contract": [
+    {"x": 0, "out": 2.25},
+    {"x": 4.5, "out": 4.5},
+    {"x": 8.9, "out": 4.45},
+    {"x": 13, "out": 4.25},
+    {"x": -3, "out": 5.25}
+  ],
+  "residual_count": [
+    {"S": 0.0, "n": 8.0},
+    {"S": 0.25, "n": 7.0}
+  ],
+  "evidence_channel": [
+    {"failures": 0, "runs": 200, "p": 0.0, "S": 0.0, "orientation": "pass", "onConeFloor": true, "runsFor95": null},
+    {"failures": 9, "runs": 150, "p": 0.06, "S": 0.0564, "orientation": "mixed", "onConeFloor": false, "runsFor95": 49},
+    {"failures": 1, "runs": 200, "p": 0.005, "S": 0.004975, "orientation": "mixed", "onConeFloor": false, "runsFor95": 598},
+    {"failures": 200, "runs": 200, "p": 1.0, "S": 0.0, "orientation": "fail", "onConeFloor": true, "runsFor95": 1},
+    {"failures": 125, "runs": 200, "p": 0.625, "S": 0.234375, "orientation": "mixed", "onConeFloor": false, "runsFor95": 4}
+  ]
+}

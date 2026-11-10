@@ -3,9 +3,9 @@
 Only an exact list or an exact tuple is a squad. Subclasses are rejected
 without calling ``len`` or iterating.
 
-The walk scores ``range(len(results))`` taken before any worker is printed.
-Items a ``__str__`` appends are not scored, and a slot that disappears is a
-failure. That stops a worker from growing the squad without bound.
+Workers are snapshotted (a shallow copy) before any ``str``. Inserts,
+appends, and deletions on the original container are not part of the score.
+The copy is the evidence set.
 
 ``None``, blank text, ``[name failed: ...]``, and a ``__str__`` that raises
 count as worker failures. The text ``"None"`` does not.
@@ -57,18 +57,11 @@ def worker_failed(result: Any) -> bool:
 def guard_squad(results: Any) -> dict[str, Any]:
     if type(results) is not list and type(results) is not tuple:
         return _reject("not_a_squad")
-    n = len(results)
+    items = list(results)
+    n = len(items)
     if n < 1:
         return _reject("no_workers")
-    n_fail = 0
-    for i in range(n):
-        try:
-            item = results[i]
-        except IndexError:
-            n_fail += 1
-            continue
-        if worker_failed(item):
-            n_fail += 1
+    n_fail = sum(1 for item in items if worker_failed(item))
     snap = admit(failures=n_fail, runs=n)
     snap["measured"] = True
     snap["workers"] = n

@@ -734,6 +734,7 @@ test("verification artifact renderer tolerates null and malformed artifact rows"
   workflows:[{id:5,head_sha:"sha-28",path:".github/workflows/ci.yml",html_url:"https://github.com/run/5"}],
   artifacts:{"5":[null,[],false,{name:"coverage-xml-py3.11",id:8,expired:false}]}
  }});
+ c.edgeCases=[];
  const nodes={"evidence-state":{},"verification-list":{innerHTML:""},"artifact-list":{innerHTML:""},"edge-list":{innerHTML:""}};
  c.$=id=>nodes[id]||(nodes[id]={innerHTML:"",textContent:"",value:""});
  c.setPill=()=>{};

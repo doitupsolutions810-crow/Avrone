@@ -1,20 +1,13 @@
 {
-  "schema": "great-scale-evidence/v14",
-  "finding": "The process exited 143 but a reparented sleep 60 held the stdout pipe, so communicate waited. descendants used pgrep, which this host does not have, so cleanup never saw the abandoned sleep. HUP interrupts wait; the old code cleared SLEEP_PID and started a second sleep. descendants now reads /proc. The cycle sleep re-waits while its sleep is alive. communicate then returns in about a second. Both are one trial. Heat is zero.",
+  "schema": "great-scale-evidence/v63",
+  "finding": "The script traps SIGHUP and logs 'SIGHUP (terminal closed) \u2014 ignoring'. The trap is present. The script continues. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
   "cone": 0.3819660112501052,
-  "before": {
-    "orientation": "fail",
-    "S": 0.0,
-    "psi": 0.3819660112501052,
-    "effectiveRuns": 1
-  },
-  "after": {
-    "orientation": "pass",
-    "S": 0.0,
-    "psi": 0.3819660112501052,
-    "effectiveRuns": 1
-  },
-  "suite": "13 passed in 7.08s",
+  "trap": "present",
+  "continues": true,
+  "orientation": "pass",
+  "S": 0.0,
+  "psi": 0.3819660112501052,
+  "effectiveRuns": 1,
   "docker": false,
-  "mitigation": "Read children from /proc. Re-wait the cycle sleep while it is alive so HUP cannot abandon it."
+  "mitigation": "None needed. The HUP trap holds. It ignores the terminal closing."
 }

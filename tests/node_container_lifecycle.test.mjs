@@ -39,8 +39,7 @@ test("SIGTERM is propagated to a child and parent reaps it before exiting", asyn
     '  const deadline = setTimeout(() => process.exit(2), 4000);',
     '  child.once("exit", (code, signal) => {',
     '    clearTimeout(deadline);',
-    '    process.stdout.write("CHILD_EXITED=" + code + ":" + signal + "\\n");',
-    '    process.exit(code === 0 ? 0 : 3);',
+    '    process.stdout.write("CHILD_EXITED=" + code + ":" + signal + "\\n", () => process.exit(code === 0 ? 0 : 3));',
     '  });',
     '});',
     'setInterval(() => {}, 1000);'

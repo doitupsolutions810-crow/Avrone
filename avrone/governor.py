@@ -256,7 +256,8 @@ class Governor:
         """Build from a Settings-like object; missing attributes fall back to env/defaults."""
         enabled = getattr(settings, "governor", None)
         if enabled is None:
-            enabled = os.environ.get("AVRONE_GOVERNOR", "on").lower() not in {"0", "off", "false", "no"}
+            raw = (os.environ.get("AVRONE_GOVERNOR") or "on").strip().lower()
+            enabled = raw not in {"0", "off", "false", "no"}
         return cls(max_parallel=getattr(settings, "max_parallel", 1) or 1,
                    min_parallel=getattr(settings, "min_parallel", None),
                    thermal_max_c=getattr(settings, "thermal_max_c", None),
@@ -312,10 +313,18 @@ class Governor:
                     reason = "healthy" if t >= cap else f"throttled by {worst} (factor {fs[worst]:.2f})"
         except Exception as e:  # advisory: never break a run over a sensor bug
             t, reason = cap, f"governor error: {type(e).__name__}"
+        limit = cap
         if want is not None:
-            t = min(t, max(1, int(want)))
+            try:
+                w = int(want)
+            except (TypeError, ValueError, OverflowError):
+                w = None
+            if w is not None:
+                t = min(t, max(1, w))
+                if w:  # preserve `want or cap`: a 0 want does not shrink the throttle comparison
+                    limit = w
         t = max(1, t)
-        if t < min(cap, want or cap):
+        if t < min(cap, limit):
             self.throttle_count += 1
         self.last_target, self.last_reason = t, reason
         return t

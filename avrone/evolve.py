@@ -76,7 +76,7 @@ def _emit(ctx: "AgentContext", kind: str, **data: Any) -> None:
 
 
 async def _sh(ctx: "AgentContext", cmd: str, cwd: Path, timeout: int = 600):
-    return await ctx.core.runner.run(f"cd {cwd} && {cmd}", timeout=timeout)
+    return await ctx.core.runner.run(f"cd {shlex.quote(str(cwd))} && {cmd}", timeout=timeout)
 
 
 def _meta_path(ctx: "AgentContext", pid: str) -> Path:
@@ -164,6 +164,18 @@ def _new_pid(ctx: "AgentContext") -> str:
     return SAFE_ID.sub("-", f"{int(time.time())}-{ctx.name}-{uuid.uuid4().hex[:6]}")[:56]
 
 
+
+def _safe_test_cmd(cmd: str) -> str:
+    """Re-quote a gate command so shell metacharacters in an override cannot inject."""
+    try:
+        parts = shlex.split(cmd, posix=True)
+    except ValueError:
+        return shlex.quote(cmd)
+    if not parts:
+        return _default_test_cmd()
+    return " ".join(shlex.quote(p) for p in parts)
+
+
 def _default_test_cmd() -> str:
     """Gate command using this process's interpreter (``python`` is often absent on PATH)."""
     return f"{shlex.quote(sys.executable)} -m pytest -q -m \"not integration\""
@@ -198,20 +210,26 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
         changed.append(str(e["path"]))
     # The gate runs the deterministic suite by default: the real-uvicorn integration tests flake
     # under the parallel-clone load of a squad and would reject good unit-level proposals.
-    test_cmd = str(test_cmd or os.getenv("AVRONE_EVOLVE_TEST_CMD")
-                   or _default_test_cmd())
+    # An explicit test_cmd (including compound shell gates like `test -f && grep`) is used as-is.
+    # AVRONE_EVOLVE_TEST_CMD is re-quoted so metacharacters in the env override cannot inject.
+    if test_cmd:
+        test_cmd = str(test_cmd)
+    elif os.getenv("AVRONE_EVOLVE_TEST_CMD"):
+        test_cmd = _safe_test_cmd(os.getenv("AVRONE_EVOLVE_TEST_CMD") or "")
+    else:
+        test_cmd = _default_test_cmd()
     try:
         timeout = max(1, int(timeout))
     except (TypeError, ValueError):
         timeout = 900
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.
-    res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=timeout)
+    res = await _sh(ctx, f"PYTHONPATH={shlex.quote(str(wt))}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=timeout)
     passed = res.exit_code == 0
     flaky = False
     if not passed and "pytest" in test_cmd:
         # Separate real failures from load flakes: re-run only what failed, once, alone.
-        again = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt,
+        again = await _sh(ctx, f"PYTHONPATH={shlex.quote(str(wt))}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} --lf 2>&1", wt,
                           timeout=min(600, timeout))
         if again.exit_code == 0:
             passed, flaky = True, True

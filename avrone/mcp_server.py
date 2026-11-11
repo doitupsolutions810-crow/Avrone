@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import logging
 import os
 import sys
@@ -119,6 +120,21 @@ async def build_core():
             with contextlib.suppress(Exception):
                 await extras["mcp"].stop()
         raise
+
+
+def _ok_rpc_id(rid: Any) -> bool:
+    """JSON-RPC 2.0: id is a String, Number, or Null — never bool, object, or array."""
+    if rid is None:
+        return True
+    if isinstance(rid, bool):  # bool is a subclass of int
+        return False
+    if isinstance(rid, int):
+        return True
+    if isinstance(rid, float):
+        return math.isfinite(rid)
+    if isinstance(rid, str):
+        return True
+    return False
 
 
 class AvroneMCPServer:
@@ -232,6 +248,15 @@ class AvroneMCPServer:
             return  # responses to requests we never send, or junk
         rid = m.get("id")
         is_request = "id" in m
+        if m.get("jsonrpc") != "2.0":
+            if is_request:
+                await self.send({"jsonrpc": "2.0", "id": rid if _ok_rpc_id(rid) else None,
+                                 "error": {"code": -32600, "message": 'Invalid Request: jsonrpc must be "2.0"'}})
+            return
+        if is_request and not _ok_rpc_id(rid):
+            await self.send({"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32600, "message": "Invalid Request: bad id"}})
+            return
         try:
             if not isinstance(m["method"], str):
                 raise _RPCError(-32600, "Invalid Request: method must be a string")

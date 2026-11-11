@@ -372,3 +372,56 @@ AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
 3491 = previous 3454 + 37 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
 
 This round is committed and pushed only on `edge/round-4`. `main` is left at `5cceb52`. No PR opened.
+
+---
+
+# Round 5 — governor runtime, sovereign signals, MCP e2e, evolve quoting, HUD lifespan (2026-11-10 19:28 America/Detroit / EST)
+
+Base: `edge/round-4` at `b205efb1f4ebe5ea5141596c1902534082424d6c` (Avrone main tip `5cceb52` plus Rounds 1–4). Work is on a fresh branch `edge/round-5` off that tip. The previous 158 `tests/edge_extra` cases were left intact; this round adds 31 genuinely new tests (189 total). Production recon guardrails were not changed.
+
+## New tests (31)
+
+| File | Count | What they cover |
+|---|---|---|
+| `tests/edge_extra/test_governor_runtime_edges.py` | 7 | `from_settings` strips `AVRONE_GOVERNOR` whitespace; junk/`inf`/`nan` `want` does not raise; repeated `target()` honors TTL cache and increments `throttle_count`; custom/replaced sensor registry; `is_hot`/`state` while throttling is off; `NodeHealth.as_dict` rounding; 32 concurrent `target()` calls |
+| `tests/edge_extra/test_sovereign_runtime_edges.py` | 8 | spaces/quotes/newlines in `bash -lc` commands; unicode in argv and output; stdout+stderr both captured; non-zero exit preserved; SIGTERM and SIGKILL are results; timeout+_reap leaves no zombie (SIGTERM ignored, SIGKILL reaps, elapsed < 8s); very large env is a CommandResult (E2BIG or success); argv with spaces stays one argument |
+| `tests/edge_extra/test_mcp_jsonrpc_more_edges.py` | 6 | missing/`1.0`/numeric `jsonrpc` is -32600; empty-string and 10^50 ids are echoed; object/array/NaN ids are rejected with `id: null`; `tools/list` ignores `cursor` and has no `nextCursor`; a raising tool becomes `isError` not an RPC crash; 20 pings through a slow writer still complete (backpressure) |
+| `tests/edge_extra/test_mcp_e2e_client_server.py` | 2 | Real `MCPClient` over a real `python -m avrone.mcp_server` pipe: initialize, list, ping, `avrone_tools` (many builtins), mock chat, unknown tool raises `MCPError`, clean `_pending`; a tool-level error still lets a later ping succeed |
+| `tests/edge_extra/test_evolve_governor_interact.py` | 4 | `_safe_test_cmd` re-quotes `;` / `&&` so they are not operators; env override `true; echo INJECTED` under a throttling governor cannot inject; `_sh` quotes a worktree path that contains spaces; a 30s sleep honours timeout+2s reap cap |
+| `tests/edge_extra/test_server_lifespan_edges.py` | 4 | `/api/status` ignores adversarial query params; `/api/tools` and `/api/evolve` stay stable; checkpoint GET/DELETE junk ids are not 5xx; TestClient lifespan start/stop/start works and boot id is process-stable |
+
+## Bugs found and fixed (root cause, Linux + macOS)
+
+1. **`avrone/governor.py:259-260`** — `Governor.from_settings` did not strip `AVRONE_GOVERNOR`, so `" off "` left the governor enabled. Values are now `.strip().lower()` before the off-set check (aligned with `config._bool`).
+2. **`avrone/governor.py:316-328`** — `target(want=...)` did `int(want)` and `min(cap, want or cap)` *outside* the sensor `try`, so `want="nope"` / `inf` raised `TypeError`/`ValueError`/`OverflowError` out of `target()`. Junk wants are ignored; numeric wants still clamp the result.
+3. **`avrone/mcp_server.py:125-137, 251-259`** — `_handle_safe` did not check `jsonrpc` or the id type. Missing/wrong versions and object/array/bool/NaN ids are now `-32600` (bad ids are answered with `id: null` so the error stays encodable). Empty strings and large ints remain valid ids.
+4. **`avrone/evolve.py:79, 168-175, 213-218, 227, 232`** — `_sh` concatenated `cd {cwd}` unquoted (a space in the worktree broke the gate). `AVRONE_EVOLVE_TEST_CMD` was interpolated raw into `bash -lc`, so `true; echo INJECTED` ran a second command. Cwd and `PYTHONPATH` worktree are now `shlex.quote`d; env overrides go through `_safe_test_cmd` (explicit `test_cmd` arguments, including compound skill gates like `test -f && grep`, are left as-is).
+
+No production recon policy was changed.
+
+## Gates (0 failed, 0 errored)
+
+Full non-integration:
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration'
+3522 passed, 362 deselected, 1 warning in 65.23s
+```
+
+Shuffled (pytest-randomly):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -p randomly -m 'not integration'
+3522 passed, 362 deselected, 1 warning in 67.42s
+```
+
+Edge suite (158 previous + 31 new = 189):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
+189 passed in 11.07s
+```
+
+3522 = previous 3491 + 31 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
+
+This round is committed and pushed only on `edge/round-5`. `main` is left at `5cceb52`. No PR opened.

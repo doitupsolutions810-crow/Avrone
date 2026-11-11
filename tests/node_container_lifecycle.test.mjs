@@ -35,12 +35,12 @@ test("SIGTERM is propagated to a child and parent reaps it before exiting", asyn
     'const child = spawn(process.execPath, ["-e", ' + JSON.stringify(childCode) + '], { stdio: "ignore" });',
     'child.once("spawn", () => process.stdout.write("CHILD_PID=" + child.pid + "\\n"));',
     'process.once("SIGTERM", () => {',
-    '  child.kill("SIGTERM");',
     '  const deadline = setTimeout(() => process.exit(2), 4000);',
     '  child.once("exit", (code, signal) => {',
     '    clearTimeout(deadline);',
     '    process.stdout.write("CHILD_EXITED=" + code + ":" + signal + "\\n", () => process.exit(code === 0 ? 0 : 3));',
     '  });',
+    '  child.kill("SIGTERM");',
     '});',
     'setInterval(() => {}, 1000);'
   ].join("\n");

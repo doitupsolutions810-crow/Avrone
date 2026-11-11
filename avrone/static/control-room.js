@@ -321,7 +321,7 @@ function evidenceData(p,run) {
   {name:"Docker image verification",state:runtimeGate(docker,"docker-image-evidence"),note:"PASS requires the exact-SHA Docker verification job and image-inspect/digest/health artifacts."},
   {name:"In-container Node lifecycle",state:runtimeGate(node,"node-container-lifecycle-evidence"),note:"PASS requires the exact-SHA isolated Node 22 container lifecycle job and its logs/image evidence."},
   {name:"Local Apple-Silicon Ollama squad",state:state.status?"NOT RUN":"BLOCKED",note:"Must run on the authorized Mac with the actual configured Ollama model and isolated worktree."},
-  {name:"Proposal validation & edge cases",state:jobsBlocked?"BLOCKED":!same?"NOT RUN":jobs.some(j=>/proposal validation|edge-case/i.test(j.name||"")&&j.conclusion==="success")?"PENDING REVIEW":"NOT RUN",note:"Requires an explicit validation job and independently inspectable exact-SHA results."}
+  {name:"Proposal validation & edge cases",state:jobsBlocked?"BLOCKED":!same?"NOT RUN":jobs.some(j=>j&&typeof j==="object"&&/proposal validation|edge-case/i.test(j.name||"")&&j.conclusion==="success")?"PENDING REVIEW":"NOT RUN",note:"Requires an explicit validation job and independently inspectable exact-SHA results."}
  ];
  return {sha,same,gates};
 }

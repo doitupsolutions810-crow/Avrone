@@ -126,6 +126,7 @@ function activeFilters() {
 function matchesCommon(obj, f) {
  obj=obj&&typeof obj==="object"?obj:{};
  f=f&&typeof f==="object"?f:{};
+ const read=(key)=>{try{return obj[key];}catch(_){return undefined;}};
  let text="";
  try{text=JSON.stringify(obj).toLowerCase();}
  catch(_){
@@ -135,9 +136,10 @@ function matchesCommon(obj, f) {
  }
  const norm=v=>String(v==null?"":v).trim().toLowerCase();
  const repo=norm(f.repo),pr=norm(f.pr),commit=norm(f.commit),round=norm(f.round),lane=norm(f.lane),agent=norm(f.agent),verification=norm(f.verification);
+ const number=read("number"),prNumber=read("pr_number"),headSha=read("head_sha"),sha=read("sha"),targetSha=read("target_sha");
  if(repo && !REPO_FULL.toLowerCase().includes(repo)) return false;
- if(pr && (obj.number!=null||obj.pr_number!=null) && String(obj.number!=null?obj.number:obj.pr_number)!==pr.replace(/^#/,"")) return false;
- if(commit && !(String(obj.head_sha||obj.sha||obj.target_sha||"").toLowerCase().includes(commit)||text.includes(commit))) return false;
+ if(pr && (number!=null||prNumber!=null) && String(number!=null?number:prNumber)!==pr.replace(/^#/,"")) return false;
+ if(commit && !(String(headSha||sha||targetSha||"").toLowerCase().includes(commit)||text.includes(commit))) return false;
  if(round && !text.includes(round)) return false;
  if(lane && !text.includes(lane)) return false;
  if(agent && !text.includes(agent)) return false;
@@ -147,7 +149,7 @@ function matchesCommon(obj, f) {
  if(f.runtime==="Docker" && !/docker/.test(text)) return false;
  if(f.runtime==="Apple Silicon" && !/(arm64|aarch64|apple silicon)/.test(text)) return false;
  if(verification) {
-   const raw=String(obj.evidence_status||obj.verification||obj.conclusion||"").toUpperCase();
+   const raw=String(read("evidence_status")||read("verification")||read("conclusion")||"").toUpperCase();
    const ev=raw==="SUCCESS"?"PASS":(["FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"].includes(raw)?"FAIL":raw);
    if(ev!==verification.toUpperCase() && !(verification==="unverified" && !ev)) return false;
  }

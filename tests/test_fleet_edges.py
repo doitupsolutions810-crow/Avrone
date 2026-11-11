@@ -527,3 +527,64 @@ def test_register_fleet_tools():
     fleet_mod.register_fleet_tools(r)
     assert {"fleet_nodes", "remote_spawn", "remote_broadcast", "agent_message",
             "queue_submit", "queue_status", "fleet_agents"} <= set(r.names())
+
+
+@pytest.mark.parametrize("nonce", ["", "has space", "slash/name", "café", "n" * 129])
+def test_verify_rejects_malformed_nonce_values(fm, nonce):
+    headers = sign("tok", "POST", "/p", b"", nonce="well-formed")
+    headers["x-avrone-nonce"] = nonce
+    with pytest.raises(PermissionError, match="bad nonce"):
+        fm.verify("POST", "/p", b"", headers)
+
+
+def test_verify_accepts_maximum_length_nonce(fm):
+    nonce = "A" * 128
+    headers = sign("tok", "POST", "/p", b"", nonce=nonce)
+    fm.verify("POST", "/p", b"", headers)
+    assert nonce in fm._nonces
+
+
+def test_verify_same_nonce_is_atomic_across_concurrent_threads(fm):
+    from concurrent.futures import ThreadPoolExecutor
+
+    headers = sign("tok", "POST", "/p", b"payload", nonce="parallel-replay")
+    def attempt(_):
+        try:
+            fm.verify("POST", "/p", b"payload", dict(headers))
+            return "accepted"
+        except PermissionError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(attempt, range(12)))
+    assert results.count("accepted") == 1
+    assert sum("replayed request" in value for value in results) == 11
+    assert list(fm._nonces) == ["parallel-replay"]
+
+
+def test_verify_refuses_new_requests_when_live_nonce_cache_is_full(fm, monkeypatch):
+    monkeypatch.setattr(fleet_mod, "NONCE_CACHE_MAX", 2)
+    expiry = time.time() + 2 * WINDOW_S
+    fm._nonces = {"live-a": expiry, "live-b": expiry}
+    with pytest.raises(PermissionError, match="replay cache full"):
+        fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", nonce="new-nonce"))
+    fm._nonces["live-b"] = time.time() - 1
+    fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", nonce="new-nonce"))
+    assert "new-nonce" in fm._nonces
+    assert "live-b" not in fm._nonces
+
+
+def test_nonce_cache_loader_discards_nonfinite_expired_and_unrepresentable_values(fm):
+    now = int(time.time())
+    huge = 10 ** 400
+    payload = (
+        '{"valid":' + str(now + 300)
+        + ',"expired":' + str(now - 10)
+        + ',"nan":NaN,"positive-infinity":Infinity,"negative-infinity":-Infinity'
+        + ',"too-large":' + str(huge)
+        + ',"boolean":true,"bad key":' + str(now + 300) + '}'
+    )
+    fm._nonce_path.write_text(payload)
+    loaded = fm._load_nonces()
+    assert list(loaded) == ["valid"]
+    assert loaded["valid"] == now + 300

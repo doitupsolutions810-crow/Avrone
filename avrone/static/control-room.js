@@ -282,7 +282,7 @@ function evidenceData(p,run) {
  const node=job(/node container lifecycle/);
  const statuses=state.commitStatus&&Array.isArray(state.commitStatus.statuses)?state.commitStatus.statuses:[];
  const vercelStatus=state.commitStatusSha===sha?statuses.find(x=>x&&String(x.context||"").toLowerCase()==="vercel"):null;
- const artifactByName=(name)=>names.find(a=>a.name===name.toLowerCase())||null;
+ const artifactByName=(name)=>{const found=names.filter(a=>a.name===name.toLowerCase());return found.length===1?found[0]:null;};
  const matrixState=()=>{
   if(workflowBlocked||jobsBlocked) return "BLOCKED";
   if(!same) return "NOT RUN";

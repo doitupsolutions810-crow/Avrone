@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","safeHref","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError"];
+ const names=["esc","safeHref","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","workflowDetailsNeedRefresh"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -318,4 +318,26 @@ test("Docker and Node gates stay provisional without their artifact or fail on e
  const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"ci-3",head_sha:"same"}).gates.map(g=>[g.name,g.state]));
  assert.equal(gates["Docker image verification"],"EXPIRED");
  assert.equal(gates["In-container Node lifecycle"],"NOT RUN");
+});
+
+
+test("workflow job and artifact cache refreshes while the run is active",()=>{
+ const c=makeContext();
+ const n=c.workflowDetailsNeedRefresh(
+  {status:"in_progress"},[{name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"in_progress"}],[],false,false
+ );
+ assert.equal(n.jobs,true);
+ assert.equal(n.artifacts,true);
+});
+test("workflow cache stops refreshing after terminal jobs and final artifact snapshot",()=>{
+ const c=makeContext();
+ const n=c.workflowDetailsNeedRefresh(
+  {status:"completed"},[{name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}],[],false,false
+ );
+ assert.deepEqual(n,{jobs:false,artifacts:false});
+});
+test("workflow cache retries after previous jobs or artifacts API errors",()=>{
+ const c=makeContext();
+ const n=c.workflowDetailsNeedRefresh({status:"completed"},[],[],true,true);
+ assert.deepEqual(n,{jobs:true,artifacts:true});
 });

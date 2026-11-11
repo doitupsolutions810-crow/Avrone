@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","loadWorkflowDetails","loadRun","renderPRs","renderVerification"];
+ const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","focusPRNumber","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","loadWorkflowDetails","loadRun","renderPRs","renderVerification"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -47,6 +47,30 @@ test("safeHref accepts HTTPS and rejects executable or non-web schemes",()=>{
 test("safeHref resolves relative links only on HTTPS pages",()=>{
  const c=makeContext();assert.equal(c.safeHref("/actions/runs/12"),"https://control-room.example.test/actions/runs/12");
  c.location.href="http://localhost:8000/static/index.html";assert.equal(c.safeHref("/api/status"),"#");
+});
+test("default focus selects the newest open PR while preserving an explicit selection",()=>{
+ const c=makeContext({state:{prs:[
+  {number:27,state:"open",updated_at:"2026-11-11T09:49:11Z"},
+  {number:28,state:"open",updated_at:"2026-11-11T17:53:21Z"},
+  {number:29,state:"closed",updated_at:"2026-11-11T23:59:59Z"}
+ ]}});
+ assert.equal(c.focusPRNumber(c.state.prs),28);
+ assert.equal(c.focusPRNumber(c.state.prs,27),27);
+ assert.equal(c.focusPRNumber(c.state.prs,999),28);
+ c.state.selectedPR=null;
+ assert.equal(c.currentPR().number,28);
+ c.state.selectedPR=27;
+ assert.equal(c.currentPR().number,27);
+});
+test("default focus falls back to most recent PR when none are open",()=>{
+ const c=makeContext({state:{prs:[
+  {number:27,state:"closed",updated_at:"invalid"},
+  {number:28,state:"closed",updated_at:"2026-11-11T17:53:21Z"},
+  null,
+  4
+ ]}});
+ assert.equal(c.focusPRNumber(c.state.prs),28);
+ assert.equal(c.focusPRNumber([]),null);
 });
 test("GitHub lifecycle keeps draft, merged, and unmerged separate",()=>{
  const c=makeContext();

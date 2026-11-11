@@ -229,7 +229,7 @@ function evidenceData(p,run) {
  const artifacts=run&&state.artifacts[run.id]||[];
  const names=artifacts.map(a=>String(a.name||"").toLowerCase());
  const job=(rx)=>same?(jobs.find(j=>rx.test(String(j.name||"").toLowerCase()))||null):null;
- const j311=job(/3\\.11/), j312=job(/3\\.12/);
+ const j311=job(/3\.11/), j312=job(/3\\.12/);
  const docker=job(/docker/), node=job(/node.*(lifecycle|container)|(lifecycle|container).*node/);
  const candidate=(rx)=>names.some(n=>rx.test(n));
  const vercelStatus=state.commitStatusSha===sha&&state.commitStatus?(state.commitStatus.statuses||[]).find(x=>String(x.context||"").toLowerCase()==="vercel"):null;

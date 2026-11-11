@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>AVRONE Control Room</title>
+<link rel="stylesheet" href="/static/control-room.css">
+<script defer src="/static/control-room.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">AVRONE<span>/CONTROL ROOM</span></a>
+  <div class="top-meta"><span id="connection" class="pill pending">CONNECTING</span><span id="updated">Waiting for repository data…</span></div>
+  <button id="refresh" class="primary">Refresh data</button>
+</header>
+<main class="shell">
+  <section class="hero">
+    <div><div class="eyebrow">REPOSITORY OPERATIONS / LIVE EVIDENCE</div><h1>Control Room</h1><p>Repository truth, swarm execution, and release readiness — bound to exact commits.</p></div>
+    <div class="target-card"><div class="eyebrow">FOCUS TARGET</div><b id="target-pr">PR #27 · feat/internal-builder-agent-sdk</b><code id="target-sha">Loading exact head SHA…</code><div id="target-state" class="state-row"></div></div>
+  </section>
+
+  <section class="metric-grid" id="metrics" aria-live="polite">
+    <article class="metric"><span>OPEN PULL REQUESTS</span><strong id="m-open">—</strong><small>live GitHub records</small></article>
+    <article class="metric"><span>UNMERGED DRAFTS</span><strong id="m-draft">—</strong><small>kept separate from evidence</small></article>
+    <article class="metric"><span>WORKFLOW RUNS</span><strong id="m-runs">—</strong><small>latest repository history</small></article>
+    <article class="metric"><span>LOCAL SWARM RUNS</span><strong id="m-local">—</strong><small>Eternal CodeX history</small></article>
+    <article class="metric"><span>CHECKPOINTS</span><strong id="m-checkpoints">—</strong><small>durable resume records</small></article>
+    <article class="metric"><span>ACTIVE AGENTS</span><strong id="m-agents">—</strong><small>reported by AVRONE runtime</small></article>
+  </section>
+
+  <section class="filter-panel">
+    <div class="section-head"><div><div class="eyebrow">QUERY THE EVIDENCE</div><h2>Filters</h2></div><button id="clear-filters" class="quiet">Clear filters</button></div>
+    <div class="filters">
+      <label>Repository<input id="f-repo" value="doitupsolutions810-crow/Avrone" autocomplete="off"></label>
+      <label>Pull request<select id="f-pr"><option value="">All PRs</option></select></label>
+      <label>Commit SHA<input id="f-commit" placeholder="full or prefix SHA" autocomplete="off"></label>
+      <label>Swarm round<input id="f-round" placeholder="e.g. 20"></label>
+      <label>Lane<input id="f-lane" placeholder="lane name"></label>
+      <label>Agent<input id="f-agent" placeholder="agent or role"></label>
+      <label>Runtime<select id="f-runtime"><option value="">All runtimes</option><option>Python 3.11</option><option>Python 3.12</option><option>Node</option><option>Docker</option><option>Apple Silicon</option></select></label>
+      <label>Verification<select id="f-verification"><option value="">All evidence states</option><option>VERIFIED</option><option>UNVERIFIED</option><option>BLOCKED</option><option>NOT RUN</option><option>PASS</option><option>FAIL</option></select></label>
+    </div>
+  </section>
+
+  <nav class="tabs" aria-label="Control room views">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="pulls">Pull requests</button>
+    <button class="tab" data-tab="commits">Commits</button>
+    <button class="tab" data-tab="missions">Missions</button>
+    <button class="tab" data-tab="swarm">Swarm & CI</button>
+    <button class="tab" data-tab="agents">Agents & runners</button>
+    <button class="tab" data-tab="verification">Verification</button>
+    <button class="tab" data-tab="release">Release gates</button>
+  </nav>
+
+  <section id="view-overview" class="view active">
+    <div class="two-col">
+      <article class="panel"><div class="section-head"><div><div class="eyebrow">CURRENT WORK</div><h2>Pull request queue</h2></div><a id="all-prs-link" href="https://github.com/doitupsolutions810-crow/Avrone/pulls" target="_blank" rel="noopener">GitHub ↗</a></div><div id="overview-prs" class="stack"><div class="loading">Loading live pull requests…</div></div></article>
+      <article class="panel"><div class="section-head"><div><div class="eyebrow">EXECUTION FABRIC</div><h2>Runtime snapshot</h2></div><span id="runtime-state" class="pill pending">NOT CONNECTED</span></div><div id="runtime-summary" class="facts"><div class="muted">Checking the AVRONE local API…</div></div></article>
+    </div>
+    <div class="two-col">
+      <article class="panel"><div class="section-head"><div><div class="eyebrow">RECENT ACTIVITY</div><h2>Commits</h2></div></div><div id="overview-commits" class="stack"></div></article>
+      <article class="panel"><div class="section-head"><div><div class="eyebrow">GATE CONTROL</div><h2>Next required release gate</h2></div></div><div id="next-gate" class="gate-focus"></div></article>
+    </div>
+    <article class="panel"><div class="section-head"><div><div class="eyebrow">EVIDENCE DISCIPLINE</div><h2>State semantics</h2></div></div><div class="legend"><span class="pill good">VERIFIED</span><span class="pill pending">UNVERIFIED</span><span class="pill blocked">BLOCKED</span><span class="pill neutral">NOT RUN</span><span class="pill good">PASS</span><span class="pill fail">FAIL</span><span class="pill neutral">OPEN / DRAFT / UNMERGED</span></div><p class="muted">GitHub lifecycle (OPEN, DRAFT, MERGED) is independent from test evidence. Passing checks on another SHA are stale. Missing artifacts and unobserved runtime checks remain NOT RUN.</p></article>
+  </section>
+
+  <section id="view-pulls" class="view"><article class="panel"><div class="section-head"><div><div class="eyebrow">GITHUB / PULL REQUESTS</div><h2>Change queue</h2></div><span id="pr-count" class="pill neutral">0 records</span></div><div id="pull-list" class="table-wrap"></div></article></section>
+  <section id="view-commits" class="view"><article class="panel"><div class="section-head"><div><div class="eyebrow">GITHUB / COMMIT HISTORY</div><h2>Commit ledger</h2></div><span id="commit-count" class="pill neutral">0 records</span></div><div id="commit-list" class="table-wrap"></div><div class="compare panel-inset"><h3>Compare two commits</h3><div class="compare-controls"><select id="compare-base"><option value="">Base commit…</option></select><select id="compare-head"><option value="">Head commit…</option></select><button id="compare" class="primary">Compare</button></div><div id="compare-result" class="muted">Choose two commits to inspect their diff summary.</div></div></article></section>
+  <section id="view-missions" class="view"><div class="two-col"><article class="panel"><div class="section-head"><div><div class="eyebrow">DURABLE STATE</div><h2>Checkpoints & resumable missions</h2></div><span id="checkpoint-state" class="pill pending">NOT CONNECTED</span></div><div id="mission-list" class="stack"><div class="muted">Waiting for local checkpoint API access.</div></div></article><article class="panel"><div class="section-head"><div><div class="eyebrow">PROPOSAL HISTORY</div><h2>Evolution proposals</h2></div></div><div id="proposal-list" class="stack"><div class="muted">Waiting for local proposal API access.</div></div></article></div></section>
+  <section id="view-swarm" class="view"><div class="two-col"><article class="panel"><div class="section-head"><div><div class="eyebrow">ETERNAL CODEX</div><h2>Local swarm runs</h2></div><span id="swarm-state" class="pill pending">NOT CONNECTED</span></div><div id="swarm-list" class="stack"></div></article><article class="panel"><div class="section-head"><div><div class="eyebrow">GITHUB ACTIONS</div><h2>Exact-SHA CI matrix</h2></div><span id="ci-state" class="pill pending">LOADING</span></div><div id="ci-list" class="stack"></div></article></div><article class="panel"><div class="section-head"><div><div class="eyebrow">SELECTED RUN</div><h2>Event timeline</h2></div></div><div id="run-detail" class="stack"><div class="muted">Select a local run to inspect its event log.</div></div></article></section>
+  <section id="view-agents" class="view"><div class="two-col"><article class="panel"><div class="section-head"><div><div class="eyebrow">TRINITY / LIVE STATE</div><h2>Agents & assignments</h2></div></div><div id="agent-list" class="stack"></div></article><article class="panel"><div class="section-head"><div><div class="eyebrow">SOVEREIGN OS / FLEET</div><h2>Runners, containers & leases</h2></div></div><div id="runner-list" class="stack"></div></article></div><article class="panel"><div class="section-head"><div><div class="eyebrow">RESOURCE GOVERNOR</div><h2>Limits & heartbeats</h2></div></div><div id="resource-list" class="facts"></div></article></section>
+  <section id="view-verification" class="view"><div class="two-col"><article class="panel"><div class="section-head"><div><div class="eyebrow">TARGETED EVIDENCE</div><h2>Verification matrix</h2></div><span id="evidence-state" class="pill pending">UNVERIFIED</span></div><div id="verification-list" class="stack"></div></article><article class="panel"><div class="section-head"><div><div class="eyebrow">ARTIFACT REGISTER</div><h2>Coverage & build artifacts</h2></div></div><div id="artifact-list" class="stack"></div></article></div><article class="panel"><div class="section-head"><div><div class="eyebrow">ADVERSARIAL TEST CATALOG</div><h2>Edge-case coverage</h2></div><span class="pill neutral">Evidence required</span></div><div id="edge-list" class="edge-grid"></div></article></section>
+  <section id="view-release" class="view"><article class="panel"><div class="section-head"><div><div class="eyebrow">ACCEPTANCE / RELEASE</div><h2>Ordered release gates</h2></div><span id="release-status" class="pill pending">NOT VERIFIED</span></div><div id="release-list" class="stack"></div><p class="muted">No gate is promoted by a model claim, a stale run, an unavailable runner, or an artifact name without its contents and exact-SHA provenance.</p></article></section>
+
+  <section class="connection-panel panel">
+    <div><div class="eyebrow">LOCAL AVRONE CONNECTION</div><b>Read-only runtime inspection</b><p class="muted">The dashboard uses the same origin's local API. Some fleet, checkpoint, and run endpoints require an administrator token. The token is held only in memory and is never written to browser storage.</p></div>
+    <div class="connection-controls"><label>Admin token<input type="password" id="admin-token" autocomplete="off" placeholder="Optional · never persisted"></label><button id="apply-token" class="quiet">Apply in this session</button></div>
+  </section>
+  <footer><span>AVRONE CONTROL ROOM · READ-ONLY</span><span id="source-note">Sources: GitHub API + AVRONE local API</span><a href="https://github.com/doitupsolutions810-crow/Avrone" target="_blank" rel="noopener">Repository ↗</a></footer>
+</main>
+<dialog id="detail-dialog"><button id="close-dialog" class="quiet close">Close</button><pre id="detail-content"></pre></dialog>
+</body>
+</html>

@@ -48,6 +48,24 @@ async function jsonFetch(url,opts) {
 async function gh(path) {
  return jsonFetch(GH+path,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}});
 }
+async function ghPages(path,maxPages) {
+ const all=[];let next=GH+path,pages=0;const cap=maxPages||5;
+ while(next&&pages<cap){
+  const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),12000);
+  let res;
+  try{res=await fetch(next,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},signal:ctl.signal});}
+  finally{clearTimeout(timer);}
+  const txt=await res.text();let data;
+  try{data=txt?JSON.parse(txt):null;}catch(_){throw new Error("Invalid JSON from GitHub page "+(pages+1));}
+  if(!res.ok)throw new Error(res.status+" "+res.statusText+(data&&data.message?": "+data.message:""));
+  const rows=Array.isArray(data)?data:(data&&Array.isArray(data.workflow_runs)?data.workflow_runs:[]);
+  all.push(...rows);pages++;
+  const header=res.headers.get("Link")||"";
+  const match=header.split(",").map(x=>x.trim()).find(x=>/rel="next"/.test(x));
+  next=match?(match.match(/<([^>]+)>/)||[])[1]||null:null;
+ }
+ return {items:all,pages,truncated:!!next};
+}
 async function local(path) { return jsonFetch(path); }
 function prLifecycle(p) {
  return {state:String(p.state||"unknown").toUpperCase(),draft:!!p.draft,merged:!!p.merged_at||!!p.merged,unmerged:!p.merged_at&&!p.merged};
@@ -69,7 +87,7 @@ function formatSha(sha) { return sha ? short(sha,16) : "No SHA"; }
 function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
 function filterValue(id) { return ($(id).value||"").trim().toLowerCase(); }
 function activeFilters() {
- return {repo:filterValue("f-repo"),pr:filterValue("f-pr"),commit:filterValue("f-commit"),round:filterValue("f-round"),lane:filterValue("f-lane"),agent:filterValue("f-agent"),runtime:filterValue("f-runtime"),verification:filterValue("f-verification")};
+ return {repo:filterValue("f-repo"),pr:filterValue("f-pr"),commit:filterValue("f-commit"),round:filterValue("f-round"),lane:filterValue("f-lane"),agent:filterValue("f-agent"),runtime:($("f-runtime").value||"").trim(),verification:($("f-verification").value||"").trim()};
 }
 function matchesCommon(obj, f) {
  const text=JSON.stringify(obj||{}).toLowerCase();
@@ -85,7 +103,8 @@ function matchesCommon(obj, f) {
  if(f.runtime==="Docker" && !/docker/.test(text)) return false;
  if(f.runtime==="Apple Silicon" && !/(arm64|aarch64|apple silicon)/.test(text)) return false;
  if(f.verification) {
-   const ev=String(obj.evidence_status||obj.verification||obj.conclusion||"").toUpperCase();
+   const raw=String(obj.evidence_status||obj.verification||obj.conclusion||"").toUpperCase();
+   const ev=raw==="SUCCESS"?"PASS":(["FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"].includes(raw)?"FAIL":raw);
    if(ev!==f.verification && !(f.verification==="UNVERIFIED" && !ev)) return false;
  }
  return true;
@@ -110,7 +129,7 @@ function renderMetrics() {
  $("m-agents").textContent=agents;
 }
 function item(title,body,meta,href) {
- return '<article class="item '+(href?"clickable":"")+'" '+(href?'data-href="'+esc(href)+'"':'')+'><div class="item-head"><div><h3>'+esc(title)+'</h3><p>'+esc(body||"")+'</p></div></div><div class="meta">'+(meta||"")+'</div></article>';
+ return '<article class="item '+(href?"clickable":"")+'" '+(href?'data-href="'+esc(safeHref(href))+'"':'')+'><div class="item-head"><div><h3>'+esc(title)+'</h3><p>'+esc(body||"")+'</p></div></div><div class="meta">'+(meta||"")+'</div></article>';
 }
 function renderPRs() {
  const f=activeFilters();
@@ -175,14 +194,20 @@ function renderSwarm() {
 function renderAgents() {
  const active=state.status&&state.status.agents?state.status.agents:{};
  const agentRows=Object.entries(active);
+ const laneCounts={};
+ agentRows.forEach(([,a])=>{const lane=String(a.lane||a.focus_lane||"").trim();if(lane&&String(a.status||"").toLowerCase()==="working")laneCounts[lane]=(laneCounts[lane]||0)+1;});
  $("agent-list").innerHTML=agentRows.length?agentRows.map(([name,a])=>{
-  const lane=a.lane||a.focus_lane||"Lane not reported";
-  return item(name,a.role||a.focus||a.task||"No focus reported",badge(a.status||"UNKNOWN")+' <span class="muted">'+esc(a.agent_id||"No agent ID")+'</span> · <span class="muted">'+esc(lane)+'</span>');
+  const lane=String(a.lane||a.focus_lane||"").trim();
+  const duplicate=lane&&laneCounts[lane]>1;
+  const workspace=a.agent_dir||a.workspace||a.workspace_path||"Workspace not reported";
+  return item(name,a.role||a.focus||a.task||"No focus reported",badge(a.status||"UNKNOWN")+(duplicate?badge("DUPLICATE LANE OBSERVED"):"")+' <span class="muted">'+esc(a.agent_id||"No agent ID")+'</span> · <span class="muted">'+esc(lane||"Lane not reported")+'</span> · <span class="muted">'+esc(workspace)+'</span>');
  }).join(""):'<div class="empty">'+esc(localUnavailableMessage("status"))+' · No live agents are asserted.</div>';
  const rows=Array.isArray(state.fleet)?state.fleet:[];
  $("runner-list").innerHTML=rows.length?rows.map(n=>{
   const env=n.env||{}, dev=env.device||{}, ru=env.runner||{}, container=ru.container||{};
-  return item(n.node_id||"Fleet node", (dev.hostname||"host unknown")+" · "+(dev.os||"OS unknown")+" · "+(dev.arch||"architecture unreported"),badge(n.status||"UNKNOWN")+' <span class="muted">'+esc(ru.kind||"runner unknown")+'</span> <span class="muted">'+esc(container.name||"container unreported")+'</span>');
+  const containerDetails=[container.name,container.id,container.status,container.image].filter(Boolean).join(" · ")||"Container not reported";
+  const leaseDetails=[n.lease_owner,n.lease_until,n.heartbeat_at].filter(Boolean).join(" · ")||"Lease / heartbeat fields not reported";
+  return item(n.node_id||"Fleet node", (dev.hostname||"host unknown")+" · "+(dev.os||"OS unknown")+" · "+(dev.arch||"architecture unreported"),badge(n.status||"UNKNOWN")+' <span class="muted">'+esc(ru.kind||"runner unknown")+'</span> <span class="muted">'+esc(containerDetails)+'</span> <span class="muted">'+esc(leaseDetails)+'</span>');
  }).join(""):'<div class="empty">'+esc(localUnavailableMessage("fleet"))+' · Fleet may be disabled or admin access may be required.</div>';
  const s=state.status||{}, t=state.telemetry||{};
  $("resource-list").innerHTML=[fact("Max parallel",s.max_parallel),fact("Squad size",s.squad_size),fact("Runner",s.runner),fact("Workspace",s.workspace),fact("24h runs",t.runs&&t.runs.total),fact("Spawned agents",t.agents&&t.agents.spawned),fact("Errors",t.errors),fact("Fleet nodes",Array.isArray(t.fleet_nodes)?t.fleet_nodes.length:"not reported"),fact("CPU / memory quota","Not exposed by current API"),fact("Lease owner / expiry","Not exposed by current API"),fact("Heartbeat age","Not exposed unless fleet presence reports it"),fact("Apple Silicon","Not observed for local host")].join("");
@@ -254,9 +279,9 @@ async function refresh() {
  $("connection").textContent="REFRESHING";$("connection").className="pill pending";
  state.errors=[];
  const tasks=[
-  ["prs",()=>gh("/pulls?state=all&per_page=100&sort=updated&direction=desc")],
-  ["commits",()=>gh("/commits?per_page=50")],
-  ["workflows",()=>gh("/actions/runs?per_page=100")],
+  ["prs",()=>ghPages("/pulls?state=all&per_page=100&sort=updated&direction=desc",5)],
+  ["commits",()=>ghPages("/commits?per_page=100",5)],
+  ["workflows",()=>ghPages("/actions/runs?per_page=100",5)],
   ["status",()=>local("/api/status")],
   ["runs",()=>local("/api/runs")],
   ["checkpoints",()=>local("/api/checkpoints")],
@@ -264,7 +289,11 @@ async function refresh() {
   ["fleet",()=>local("/api/fleet/directory")],
   ["evolve",()=>local("/api/evolve")]
  ];
- await Promise.all(tasks.map(async t=>{try{const val=await t[1]();state[t[0]]=t[0]==="workflows"?(val.workflow_runs||[]):val;}catch(e){state[t[0]]=null;state.errors.push({key:t[0],message:e.message});}}));
+ state.pagination={};
+ await Promise.all(tasks.map(async t=>{try{const val=await t[1]();
+  if(["prs","commits","workflows"].includes(t[0])){state[t[0]]=val.items;state.pagination[t[0]]=val;}
+  else state[t[0]]=val;
+ }catch(e){state[t[0]]=null;state.errors.push({key:t[0],message:e.message});}}));
  if(Array.isArray(state.prs)) {
   state.prs.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
   $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+p.number+'">#'+p.number+' · '+esc(p.title).slice(0,65)+'</option>').join("");
@@ -281,7 +310,8 @@ async function refresh() {
  const ok=state.prs.length>0;
  $("connection").textContent=ok?"GITHUB LIVE":"GITHUB LIMITED";
  $("connection").className="pill "+(ok?"good":"blocked");
- $("updated").textContent="Updated "+new Date().toLocaleTimeString()+" · GitHub "+(ok?"connected":"limited")+" · AVRONE "+runtimeStatusText();
+ const trunc=Object.entries(state.pagination||{}).filter(([,v])=>v.truncated).map(([k])=>k);
+ $("updated").textContent="Updated "+new Date().toLocaleTimeString()+" · GitHub "+(ok?"connected":"limited")+(trunc.length?" · page cap reached: "+trunc.join(", "):"")+" · AVRONE "+runtimeStatusText();
  const run=latestForSha(currentSha());
  if(run) loadWorkflowDetails(run);
 }
@@ -310,5 +340,5 @@ document.addEventListener("click",e=>{
 });
 $("close-dialog").addEventListener("click",()=>$("detail-dialog").close());
 refresh();
-setInterval(refresh,60000);
+setInterval(refresh,300000);
 })();

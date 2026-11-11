@@ -109,6 +109,7 @@ function currentPR() { return state.prs.find(p=>p.number===Number(state.selected
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
 function hasError(key) { return Array.isArray(state.errors)&&state.errors.some(x=>x&&x.key===key); }
+function listEnvelope(payload,key) { return payload&&typeof payload==="object"&&Array.isArray(payload[key])?payload[key]:null; }
 function fact(label,value) { return '<div class="fact"><span>'+esc(label)+'</span><b>'+esc(value==null||value===""?"Not reported":value)+'</b></div>'; }
 function formatSha(sha) { return sha ? short(sha,16) : "No SHA"; }
 function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
@@ -370,7 +371,7 @@ async function loadRun(id) {
 }
 function workflowDetailsNeedRefresh(run,cachedJobs,cachedArtifacts,jobsError,artifactsError,artifactFinalized) {
  const active=!!run&&run.status!=="completed";
- const jobsTerminal=Array.isArray(cachedJobs)&&cachedJobs.length>0&&cachedJobs.every(j=>j.status==="completed");
+ const jobsTerminal=Array.isArray(cachedJobs)&&cachedJobs.length>0&&cachedJobs.every(j=>j&&typeof j==="object"&&j.status==="completed");
  return {
   jobs:!!jobsError||!Array.isArray(cachedJobs)||(active&&!jobsTerminal),
   artifacts:!!artifactsError||!Array.isArray(cachedArtifacts)||active||(!active&&!artifactFinalized)
@@ -389,10 +390,16 @@ async function loadWorkflowDetails(run) {
   needsJobs?gh("/actions/runs/"+id+"/jobs?per_page=100"):Promise.resolve({jobs:state.jobs[id]}),
   needsArtifacts?gh("/actions/runs/"+id+"/artifacts?per_page=100"):Promise.resolve({artifacts:state.artifacts[id]})
  ]);
- if(tasks[0].status==="fulfilled") {state.jobs[id]=tasks[0].value.jobs||[];state.errors=state.errors.filter(x=>x.key!=="jobs-"+id);}
- else state.errors.push({key:"jobs-"+id,message:tasks[0].reason&&tasks[0].reason.message||"Job details unavailable"});
- if(tasks[1].status==="fulfilled") {state.artifacts[id]=tasks[1].value.artifacts||[];state.artifactFinalized[id]=run.status==="completed";state.errors=state.errors.filter(x=>x.key!=="artifacts-"+id);}
- else state.errors.push({key:"artifacts-"+id,message:tasks[1].reason&&tasks[1].reason.message||"Artifact metadata unavailable"});
+ if(tasks[0].status==="fulfilled") {
+  const rows=listEnvelope(tasks[0].value,"jobs");
+  if(rows) {state.jobs[id]=rows;state.errors=state.errors.filter(x=>x.key!=="jobs-"+id);}
+  else state.errors.push({key:"jobs-"+id,message:"Malformed job list payload"});
+ } else state.errors.push({key:"jobs-"+id,message:tasks[0].reason&&tasks[0].reason.message||"Job details unavailable"});
+ if(tasks[1].status==="fulfilled") {
+  const rows=listEnvelope(tasks[1].value,"artifacts");
+  if(rows) {state.artifacts[id]=rows;state.artifactFinalized[id]=run.status==="completed";state.errors=state.errors.filter(x=>x.key!=="artifacts-"+id);}
+  else state.errors.push({key:"artifacts-"+id,message:"Malformed artifact list payload"});
+ } else state.errors.push({key:"artifacts-"+id,message:tasks[1].reason&&tasks[1].reason.message||"Artifact metadata unavailable"});
  renderTarget();renderPRs();renderOverview();renderVerification();renderRelease();
 }
 async function compareWorkflowRuns() {

@@ -534,7 +534,7 @@ def test_control_room_release_gates_require_inspection_not_artifact_names():
     root = Path(__file__).resolve().parent.parent
     js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
     assert '"PENDING REVIEW"' in js
-    assert "Artifact metadata is not content validation" in js
+    assert "PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs" in js
     assert "image build, inspect, digest and provenance" in js
     assert "graceful shutdown" in js
 

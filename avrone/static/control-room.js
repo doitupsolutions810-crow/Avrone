@@ -62,14 +62,15 @@ async function ghPages(path,maxPages) {
   if(seen.has(next)) throw new Error("Repeated GitHub pagination URL");
   seen.add(next);
   const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),12000);
-  let res;
-  try{res=await fetch(next,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},signal:ctl.signal});}
+  let res,txt;
+  try{res=await fetch(next,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},signal:ctl.signal});txt=await res.text();}
   finally{clearTimeout(timer);}
-  const txt=await res.text();let data;
+  let data;
   try{data=txt?JSON.parse(txt):null;}catch(_){throw new Error("Invalid JSON from GitHub page "+(pages+1));}
   if(!res.ok)throw new Error(res.status+" "+res.statusText+(data&&data.message?": "+data.message:""));
   const rows=Array.isArray(data)?data:(data&&Array.isArray(data.workflow_runs)?data.workflow_runs:null);
   if(!rows) throw new Error("Unexpected GitHub list response shape on page "+(pages+1));
+  if(rows.some(row=>!row||typeof row!=="object"||Array.isArray(row))) throw new Error("Malformed GitHub list record on page "+(pages+1));
   all.push(...rows);pages++;
   const header=res.headers.get("Link")||"";
   const match=header.split(",").map(x=>x.trim()).find(x=>/rel="next"/.test(x));
@@ -110,6 +111,12 @@ function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTE
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
 function hasError(key) { return Array.isArray(state.errors)&&state.errors.some(x=>x&&x.key===key); }
 function listEnvelope(payload,key) { return payload&&typeof payload==="object"&&Array.isArray(payload[key])?payload[key]:null; }
+function validRecords(value) {
+ if(!Array.isArray(value)) return {items:[],rejected:0};
+ const items=[];let rejected=0;
+ for(const row of value) { if(row&&typeof row==="object"&&!Array.isArray(row)) items.push(row); else rejected++; }
+ return {items,rejected};
+}
 function fact(label,value) { return '<div class="fact"><span>'+esc(label)+'</span><b>'+esc(value==null||value===""?"Not reported":value)+'</b></div>'; }
 function formatSha(sha) { return sha ? short(sha,16) : "No SHA"; }
 function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
@@ -226,48 +233,59 @@ function renderNextGate() {
 }
 function renderMissions() {
  $("checkpoint-state").textContent=Array.isArray(state.checkpoints)?"CONNECTED":"NOT CONNECTED";
- $("mission-list").innerHTML=Array.isArray(state.checkpoints)&&state.checkpoints.length?state.checkpoints.map(c=>item(c.id||c.checkpoint_id||"Checkpoint", "Run: "+(c.run_id||"unreported")+" · mode: "+(c.mode||"unreported")+" · owner: "+(c.owner||"unreported"),badge(c.status||"RESUMABLE")+" "+'<span class="muted">'+esc(date(c.updated||c.started))+'</span>')).join(""):'<div class="empty">'+esc(localUnavailableMessage("checkpoints"))+' · No synthetic mission records are shown.</div>';
- const accepted=state.evolve&&state.evolve.accepted;
- $("proposal-list").innerHTML=Array.isArray(accepted)&&accepted.length?accepted.map(p=>item(p.name||p.id||"Accepted proposal",p.description||p.summary||"Accepted proposal record",badge("ACCEPTED")+" "+badge(p.validated?"PASS":"UNVERIFIED"))).join(""):'<div class="empty">'+esc(localUnavailableMessage("evolve"))+' · Pending proposal validations are not exposed by the current API.</div>';
+ const checkpoints=validRecords(state.checkpoints);
+ const checkpointWarning=checkpoints.rejected?'<div class="empty">Suppressed '+checkpoints.rejected+' malformed checkpoint record(s).</div>':"";
+ $("mission-list").innerHTML=checkpoints.items.length?checkpoints.items.map(c=>item(c.id||c.checkpoint_id||"Checkpoint", "Run: "+(c.run_id||"unreported")+" · mode: "+(c.mode||"unreported")+" · owner: "+(c.owner||"unreported"),badge(c.status||"RESUMABLE")+" "+'<span class="muted">'+esc(date(c.updated||c.started))+'</span>')).join("")+checkpointWarning:checkpointWarning||'<div class="empty">'+esc(localUnavailableMessage("checkpoints"))+' · No synthetic mission records are shown.</div>';
+ const accepted=validRecords(state.evolve&&state.evolve.accepted);
+ const proposalWarning=accepted.rejected?'<div class="empty">Suppressed '+accepted.rejected+' malformed proposal record(s).</div>':"";
+ $("proposal-list").innerHTML=accepted.items.length?accepted.items.map(p=>item(p.name||p.id||"Accepted proposal",p.description||p.summary||"Accepted proposal record",badge("ACCEPTED")+" "+badge(p.validated?"PASS":"UNVERIFIED"))).join("")+proposalWarning:proposalWarning||'<div class="empty">'+esc(localUnavailableMessage("evolve"))+' · Pending proposal validations are not exposed by the current API.</div>';
 }
 function renderSwarm() {
  const runsAvailable=Array.isArray(state.runs)&&!hasError("runs");
  setPill("swarm-state",runsAvailable?"CONNECTED":"NOT CONNECTED",runsAvailable?"good":"blocked");
  const f=activeFilters();
- const runs=(Array.isArray(state.runs)?state.runs:[]).filter(r=>matchesCommon(r,f));
+ const runtimeRuns=validRecords(state.runs);
+ const runs=runtimeRuns.items.filter(r=>matchesCommon(r,f));
+ const runWarning=runtimeRuns.rejected?'<div class="empty">Suppressed '+runtimeRuns.rejected+' malformed run record(s).</div>':"";
  $("swarm-list").innerHTML=runs.length?runs.map(r=>{
   const id=r.run_id||r.id||"unknown", mode=r.mode||"mode unreported";
   return '<article class="item clickable" data-run="'+esc(id)+'"><div class="item-head"><div><h3>'+esc(id)+'</h3><p>'+esc(mode)+' · '+esc(date(r.start||r.started||r.created))+'</p></div>'+badge(r.status||"HISTORY")+'</div><div class="meta">'+badge(r.evidence_status||"UNVERIFIED")+'<span class="muted">Select to inspect event replay</span></div></article>';
- }).join(""):'<div class="empty">'+esc(localUnavailableMessage("runs"))+'</div>';
+ }).join("")+runWarning:runWarning||'<div class="empty">'+esc(localUnavailableMessage("runs"))+'</div>';
  const p=currentPR(), sha=p&&p.head&&p.head.sha;
- const ci=sha?state.workflows.filter(w=>w.head_sha===sha&&isCiRun(w)):state.workflows.filter(isCiRun).slice(0,8);
+ const workflows=validRecords(state.workflows).items;
+ const ci=sha?workflows.filter(w=>w.head_sha===sha&&isCiRun(w)):workflows.filter(isCiRun).slice(0,8);
  setPill("ci-state",ci.length?"EXACT SHA":"NO MATCH",ci.length?"pending":"neutral");
  $("ci-list").innerHTML=ci.length?ci.map(w=>item("Run #"+w.run_number+" · "+w.name, "SHA "+formatSha(w.head_sha)+" · "+date(w.updated_at),badge(w.status==="completed"?(w.conclusion||"COMPLETED"):w.status),w.html_url)).join(""):'<div class="empty">No workflow run for the selected PR head SHA. No result is inferred from another commit.</div>';
- const sorted=state.workflows.filter(isCiRun).slice().sort((a,b)=>new Date(b.created_at||b.updated_at)-new Date(a.created_at||a.updated_at)).slice(0,40);
+ const sorted=workflows.filter(isCiRun).slice().sort((a,b)=>new Date(b.created_at||b.updated_at)-new Date(a.created_at||a.updated_at)).slice(0,40);
  const options=sorted.map(w=>'<option value="'+esc(w.id)+'">#'+esc(w.run_number)+' · '+esc(w.name)+' · '+esc(short(w.head_sha,10))+' · '+esc(w.conclusion||w.status)+'</option>').join("");
  $("compare-run-a").innerHTML='<option value="">Run A…</option>'+options;
  $("compare-run-b").innerHTML='<option value="">Run B…</option>'+options;
 }
 function renderAgents() {
- const active=state.status&&state.status.agents?state.status.agents:{};
- const agentRows=Object.entries(active);
+ const agentSource=state.status&&state.status.agents;
+ const active=agentSource&&typeof agentSource==="object"&&!Array.isArray(agentSource)?agentSource:{};
+ const agentRows=Object.entries(active).filter(([,a])=>a&&typeof a==="object"&&!Array.isArray(a));
+ const rejectedAgents=Object.keys(active).length-agentRows.length;
  const laneCounts={};
  agentRows.forEach(([,a])=>{const lane=String(a.lane||a.focus_lane||"").trim();if(lane&&String(a.status||"").toLowerCase()==="working")laneCounts[lane]=(laneCounts[lane]||0)+1;});
+ const agentWarning=rejectedAgents?'<div class="empty">Suppressed '+rejectedAgents+' malformed agent record(s).</div>':"";
  $("agent-list").innerHTML=agentRows.length?agentRows.map(([name,a])=>{
   const lane=String(a.lane||a.focus_lane||"").trim();
   const duplicate=lane&&laneCounts[lane]>1;
   const workspace=a.agent_dir||a.workspace||a.workspace_path||"Workspace not reported";
   return item(name,a.role||a.focus||a.task||"No focus reported",badge(a.status||"UNKNOWN")+(duplicate?badge("DUPLICATE LANE OBSERVED"):"")+' <span class="muted">'+esc(a.agent_id||"No agent ID")+'</span> · <span class="muted">'+esc(lane||"Lane not reported")+'</span> · <span class="muted">'+esc(workspace)+'</span>');
- }).join(""):'<div class="empty">'+esc(localUnavailableMessage("status"))+' · No live agents are asserted.</div>';
- const rows=Array.isArray(state.fleet)?state.fleet:[];
+ }).join("")+agentWarning:agentWarning||'<div class="empty">'+esc(localUnavailableMessage("status"))+' · No live agents are asserted.</div>';
+ const fleet=validRecords(state.fleet);
+ const rows=fleet.items;
+ const fleetWarning=fleet.rejected?'<div class="empty">Suppressed '+fleet.rejected+' malformed fleet node record(s).</div>':"";
  $("runner-list").innerHTML=rows.length?rows.map(n=>{
   const env=n.env||{}, dev=env.device||{}, ru=env.runner||{}, container=ru.container||{};
   const containerDetails=[container.name,container.id,container.status,container.image].filter(Boolean).join(" · ")||"Container not reported";
   const leaseDetails=[n.lease_owner,n.lease_until,n.heartbeat_at].filter(Boolean).join(" · ")||"Lease / heartbeat fields not reported";
   return item(n.node_id||"Fleet node", (dev.hostname||"host unknown")+" · "+(dev.os||"OS unknown")+" · "+(dev.arch||"architecture unreported"),badge(n.status||"UNKNOWN")+' <span class="muted">'+esc(ru.kind||"runner unknown")+'</span> <span class="muted">'+esc(containerDetails)+'</span> <span class="muted">'+esc(leaseDetails)+'</span>');
- }).join(""):'<div class="empty">'+esc(localUnavailableMessage("fleet"))+' · Fleet may be disabled or admin access may be required.</div>';
+ }).join("")+fleetWarning:fleetWarning||'<div class="empty">'+esc(localUnavailableMessage("fleet"))+' · Fleet may be disabled or admin access may be required.</div>';
  const s=state.status||{}, t=state.telemetry||{};
- $("resource-list").innerHTML=[fact("Max parallel",s.max_parallel),fact("Squad size",s.squad_size),fact("Runner",s.runner),fact("Workspace",s.workspace),fact("24h runs",t.runs&&t.runs.total),fact("Spawned agents",t.agents&&t.agents.spawned),fact("Errors",t.errors),fact("Fleet nodes",Array.isArray(t.fleet_nodes)?t.fleet_nodes.length:"not reported"),fact("CPU / memory quota","Not exposed by current API"),fact("Lease owner / expiry","Not exposed by current API"),fact("Heartbeat age","Not exposed unless fleet presence reports it"),fact("Apple Silicon","Not observed for local host")].join("");
+ $("resource-list").innerHTML=[fact("Max parallel",s.max_parallel),fact("Squad size",s.squad_size),fact("Runner",s.runner),fact("Workspace",s.workspace),fact("24h runs",t.runs&&t.runs.total),fact("Spawned agents",t.agents&&t.agents.spawned),fact("Errors",t.errors),fact("Fleet nodes",Array.isArray(t.fleet_nodes)?validRecords(t.fleet_nodes).items.length:"not reported"),fact("CPU / memory quota","Not exposed by current API"),fact("Lease owner / expiry","Not exposed by current API"),fact("Heartbeat age","Not exposed unless fleet presence reports it"),fact("Apple Silicon","Not observed for local host")].join("");
 }
 function evidenceData(p,run) {
  const sha=p&&p.head&&p.head.sha||"";

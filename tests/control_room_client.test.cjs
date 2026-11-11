@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","date","safeHref","apiHeaders","jsonFetch","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","workflowDetailsNeedRefresh"];
+ const names=["esc","date","safeHref","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -540,4 +540,64 @@ test("matchesCommon catches throwing getters on selector fields",()=>{
  Object.defineProperty(row,"head_sha",{enumerable:true,get(){throw new Error("sha getter");}});
  assert.doesNotThrow(()=>c.matchesCommon(row,{pr:"28",commit:"abc"}));
  assert.equal(c.matchesCommon(row,{pr:"28",commit:"abc"}),false);
+});
+
+
+test("validRecords rejects null, arrays, and primitives while preserving object rows",()=>{
+ const c=makeContext();
+ const result=c.validRecords([null,{},[],0,"bad",false,{id:"kept"}]);
+ assert.equal(result.items.length,2);
+ assert.equal(result.rejected,5);
+ assert.deepEqual(JSON.parse(JSON.stringify(c.validRecords(null))),{items:[],rejected:0});
+});
+
+test("GitHub pagination rejects null, primitive, and nested-array records",async()=>{
+ for(const body of [[null],[1],["bad"],[[]]]){
+  const c=makeContext({fetch:async()=>response(body)});
+  await assert.rejects(()=>c.ghPages("/pulls",1),/Malformed GitHub list record on page 1/);
+ }
+ const empty=makeContext({fetch:async()=>response([])});
+ assert.deepEqual(JSON.parse(JSON.stringify((await empty.ghPages("/pulls",1)).items)),[]);
+});
+
+test("GitHub pagination timeout remains active while the response body is read",async()=>{
+ let timerCallback=null,clearedBeforeBody=false,bodyStarted=false,signal;
+ const c=makeContext({fetch:async(_url,options)=>{
+  signal=options.signal;
+  return {ok:true,status:200,statusText:"OK",headers:{get:()=>null},text:()=> {
+   bodyStarted=true;
+   return signal.aborted?Promise.reject(new Error("body aborted")):new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(new Error("body aborted"))));
+  }};
+ }});
+ c.setTimeout=fn=>{timerCallback=fn;return 88;};
+ c.clearTimeout=()=>{clearedBeforeBody=!bodyStarted;};
+ const pending=c.ghPages("/pulls",1);
+ await Promise.resolve();
+ assert.equal(bodyStarted,true);
+ assert.equal(typeof timerCallback,"function");
+ timerCallback();
+ await assert.rejects(()=>pending,/body aborted/);
+ assert.equal(signal.aborted,true);
+ assert.equal(clearedBeforeBody,false);
+});
+
+test("GitHub requests never receive the local AVRONE admin token",async()=>{
+ let seenHeaders=null;
+ const c=makeContext({state:{adminToken:"local-only-secret"},fetch:async(_url,opts)=>{seenHeaders=opts.headers;return response({ok:true});}});
+ await c.gh("/pulls");
+ assert.equal(seenHeaders.Accept,"application/vnd.github+json");
+ assert.equal(seenHeaders["X-GitHub-Api-Version"],"2022-11-28");
+ assert.equal(seenHeaders["x-admin-token"],undefined);
+ assert.equal(c.apiHeaders()["x-admin-token"],"local-only-secret");
+});
+
+test("Control Room cache helper retries incomplete or malformed active job records",()=>{
+ const c=makeContext();
+ const result=c.workflowDetailsNeedRefresh(
+  {status:"in_progress"},
+  [{status:"completed"},null],
+  [],
+  false,false,false
+ );
+ assert.equal(result.jobs,true);
 });

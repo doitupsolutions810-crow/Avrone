@@ -47,3 +47,7 @@ The browser-client suite now contains 59 executable Node tests. The additional c
 Workflow-detail responses are accepted only when the expected `jobs` or `artifacts` property is an array. A successful HTTP response with a missing or malformed list is recorded as blocked evidence. A valid empty array remains a legitimate empty response. Duplicate named evidence rows are ambiguous and cannot satisfy a gate.
 
 These tests supplement (rather than replace) the Python contract/security suite, exact-SHA CI matrix, Docker verification, and isolated Node 22 lifecycle checks. A green result remains specific to the exact commit SHA that ran it.
+
+### Runtime and list-boundary edge cases
+
+GitHub list pages are rejected when a row is null, primitive, or an array; pagination timeouts remain active through response-body parsing. Local runtime lists are normalized before rendering, and rejected checkpoint, run, agent, proposal, or fleet records are disclosed rather than causing a renderer exception. The dashboard's local admin token is not forwarded to GitHub API requests.

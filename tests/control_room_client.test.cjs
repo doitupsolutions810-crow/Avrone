@@ -99,7 +99,7 @@ test("Python matrix legs use their own same-SHA conclusions",()=>{
 test("coverage names remain PENDING REVIEW even when artifacts are expired",()=>{
  const c=makeContext({state:{jobs:{"run-3":[]},artifacts:{"run-3":[{name:"coverage-xml"},{name:"coverage-json",expired:true}]}}});
  const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-3",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
- assert.equal(g["coverage.xml artifact"],"PENDING REVIEW");assert.equal(g["coverage.json artifact"],"PENDING REVIEW");
+ assert.equal(g["coverage.xml artifact"],"PENDING REVIEW");assert.equal(g["coverage.json artifact"],"EXPIRED");
 });
 test("Docker and Node job success remains provisional",()=>{
  const c=makeContext({state:{jobs:{"run-4":[{name:"docker image build",conclusion:"success"},{name:"node container lifecycle",conclusion:"success"}]}}});
@@ -159,4 +159,42 @@ test("API health helper distinguishes missing endpoint errors from empty success
  assert.equal(c.hasError("checkpoints"),false);
  c.state.errors=[];
  assert.equal(c.hasError("runs"),false);
+});
+
+
+test("workflow API failure is BLOCKED rather than reported as no CI run",()=>{
+ const c=makeContext({state:{errors:[{key:"workflows",message:"403 rate limited"}]}});
+ assert.equal(c.prEvidence({head:{sha:"target"}}),"BLOCKED");
+ const g=c.evidenceData({head:{sha:"target"}},null).gates;
+ assert.equal(g.find(x=>x.name==="Exact-SHA Python 3.11").state,"BLOCKED");
+ assert.equal(g.find(x=>x.name==="Exact-SHA Python 3.12").state,"BLOCKED");
+});
+test("job-detail API failure blocks matrix and runtime gates",()=>{
+ const c=makeContext({state:{
+  jobs:{"run-x":[]},errors:[{key:"jobs-run-x",message:"403 forbidden"}]
+ }});
+ const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-x",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
+ assert.equal(g["Exact-SHA Python 3.11"],"BLOCKED");
+ assert.equal(g["Docker image verification"],"BLOCKED");
+ assert.equal(g["In-container Node lifecycle"],"BLOCKED");
+});
+test("artifact API failure is BLOCKED; expired artifacts are EXPIRED, not passed",()=>{
+ const c=makeContext({state:{
+  artifacts:{"run-y":[{name:"coverage-xml",expired:true}]},
+  errors:[{key:"artifacts-run-y",message:"404 expired"}]
+ }});
+ const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-y",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
+ assert.equal(g["coverage.xml artifact"],"BLOCKED");
+ const c2=makeContext({state:{artifacts:{"run-y":[{name:"coverage-xml",expired:true}]}}});
+ const g2=Object.fromEntries(c2.evidenceData({head:{sha:"same"}},{id:"run-y",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
+ assert.equal(g2["coverage.xml artifact"],"EXPIRED");
+});
+test("commit-status API failure blocks the Vercel gate",()=>{
+ const c=makeContext({state:{
+  commitStatusSha:"same",commitStatus:null,
+  errors:[{key:"commit-status",message:"502 unavailable"}],
+  jobs:{"run-z":[]}
+ }});
+ const g=c.evidenceData({head:{sha:"same"}},{id:"run-z",head_sha:"same"}).gates;
+ assert.equal(g.find(x=>x.name==="Vercel preview deployment").state,"BLOCKED");
 });

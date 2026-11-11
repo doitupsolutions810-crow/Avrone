@@ -118,3 +118,20 @@ async def test_close_is_idempotent():
     await sdk.close()
     await sdk.close()
     assert calls == ["closed"]
+
+
+@pytest.mark.asyncio
+async def test_verify_with_sha_and_passing_checks_is_verified():
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="b" * 40),
+        FakeCommand(exit_code=0),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "PASS"
+    assert evidence.target_sha == "b" * 40
+    assert result.status == "VERIFIED"

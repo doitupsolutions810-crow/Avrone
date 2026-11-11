@@ -5,7 +5,7 @@ const REPO = "Avrone";
 const REPO_FULL = OWNER + "/" + REPO;
 const GH = "https://api.github.com/repos/" + REPO_FULL;
 const $ = (id) => document.getElementById(id);
-const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, selectedPR: 27, runDetails: {}, artifacts: {}, jobs: {}, adminToken: "", errors: [] };
+const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, commitStatus: null, commitStatusSha: "", selectedPR: 27, runDetails: {}, artifacts: {}, jobs: {}, adminToken: "", errors: [] };
 const edgeCases = [
  ["Duplicate lane assignment","Reject a second live owner for the same exclusive lane; preserve the original lease."],
  ["Lease expiry / stale owner","Fence a stale worker from heartbeat renewal, checkpoint writes, and finalization."],
@@ -85,6 +85,12 @@ function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key
 function fact(label,value) { return '<div class="fact"><span>'+esc(label)+'</span><b>'+esc(value==null||value===""?"Not reported":value)+'</b></div>'; }
 function formatSha(sha) { return sha ? short(sha,16) : "No SHA"; }
 function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
+async function loadSelectedCommitStatus() {
+ const sha=currentSha();state.commitStatus=null;state.commitStatusSha=sha;
+ if(!sha)return;
+ try{state.commitStatus=await gh("/commits/"+encodeURIComponent(sha)+"/status");}
+ catch(e){state.errors.push({key:"commit-status",message:e.message});}
+}
 function filterValue(id) { return ($(id).value||"").trim().toLowerCase(); }
 function activeFilters() {
  return {repo:filterValue("f-repo"),pr:filterValue("f-pr"),commit:filterValue("f-commit"),round:filterValue("f-round"),lane:filterValue("f-lane"),agent:filterValue("f-agent"),runtime:($("f-runtime").value||"").trim(),verification:($("f-verification").value||"").trim()};
@@ -223,12 +229,14 @@ function evidenceData(p,run) {
  const artifacts=run&&state.artifacts[run.id]||[];
  const names=artifacts.map(a=>String(a.name||"").toLowerCase());
  const job=(rx)=>same?(jobs.find(j=>rx.test(String(j.name||"").toLowerCase()))||null):null;
- const j311=job(/3\.11/), j312=job(/3\.12/);
+ const j311=job(/3\\.11/), j312=job(/3\\.12/);
  const docker=job(/docker/), node=job(/node.*(lifecycle|container)|(lifecycle|container).*node/);
  const candidate=(rx)=>names.some(n=>rx.test(n));
+ const vercelStatus=state.commitStatusSha===sha&&state.commitStatus?(state.commitStatus.statuses||[]).find(x=>String(x.context||"").toLowerCase()==="vercel"):null;
  const gates=[
   {name:"Exact-SHA Python 3.11",state:!same||!j311?"NOT RUN":j311.conclusion==="success"?"PASS":j311.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
   {name:"Exact-SHA Python 3.12",state:!same||!j312?"NOT RUN":j312.conclusion==="success"?"PASS":j312.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
+  {name:"Vercel preview deployment",state:!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:"A successful deployment status still requires an inspectable preview URL and a browser smoke test."},
   {name:"coverage.xml artifact",state:!same||!candidate(/coverage.*xml|xml.*coverage/)?"NOT RUN":"PENDING REVIEW",note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
   {name:"coverage.json artifact",state:!same||!candidate(/coverage.*json|json.*coverage/)?"NOT RUN":"PENDING REVIEW",note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
   {name:"Docker image verification",state:!same||!docker?"NOT RUN":docker.conclusion==="failure"?"FAIL":docker.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED",note:"Requires image build, inspect, digest and provenance; job name alone is insufficient."},
@@ -246,7 +254,9 @@ function renderVerification() {
  const blocked=data.gates.some(g=>g.state==="BLOCKED");
  const status=failed?"FAIL":complete?"VERIFIED":blocked?"BLOCKED":"UNVERIFIED";
  setPill("evidence-state",status,status==="VERIFIED"?"good":status==="FAIL"?"fail":status==="BLOCKED"?"blocked":"pending");
- $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\\"muted\\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.state)+'</div><p>'+esc(g.note)+'</p></div>').join("");
+ const vercelStatus=state.commitStatusSha===sha&&state.commitStatus?(state.commitStatus.statuses||[]).find(x=>String(x.context||"").toLowerCase()==="vercel"):null;
+ const deployLink=vercelStatus&&vercelStatus.target_url?link(vercelStatus.target_url,"Deployment details ↗"):"";
+ $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\\\"muted\\\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.state)+'</div><p>'+esc(g.note)+'</p>'+(g.name==="Vercel preview deployment"?deployLink:"")+'</div>').join("");
  const artifacts=run&&state.artifacts[run.id]||[];
  $("artifact-list").innerHTML=artifacts.length?artifacts.map(a=>item(a.name,a.expired?"Artifact expired":"Created "+date(a.created_at),badge(a.expired?"EXPIRED":"METADATA AVAILABLE"),run.html_url)).join(""):'<div class="empty">No candidate workflow artifacts are visible for this exact-SHA run. coverage.xml and coverage.json remain NOT RUN.</div>';
  $("edge-list").innerHTML=edgeCases.map(e=>'<div class="edge"><b>'+esc(e[0])+'</b><small>'+esc(e[1])+'</small>'+badge("NOT RUN")+'</div>').join("");
@@ -333,6 +343,7 @@ async function refresh() {
   if(state.prs.some(p=>p.number===27)) $("f-pr").value="27";
   state.selectedPR=Number($("f-pr").value||27);
  }
+ await loadSelectedCommitStatus();
  if(!Array.isArray(state.commits)) state.commits=[];
  if(!Array.isArray(state.workflows)) state.workflows=[];
  if(!Array.isArray(state.runs)) state.runs=[];
@@ -354,7 +365,7 @@ document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>{
  b.classList.add("active");$("view-"+b.dataset.tab).classList.add("active");
 }));
 $("refresh").addEventListener("click",refresh);
-$("f-pr").addEventListener("change",()=>{state.selectedPR=Number($("f-pr").value||27);renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
+$("f-pr").addEventListener("change",async()=>{state.selectedPR=Number($("f-pr").value||27);await loadSelectedCommitStatus();renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
 ["f-repo","f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).addEventListener("input",()=>{renderPRs();renderCommits();renderSwarm();}));
 $("clear-filters").addEventListener("click",()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="27";state.selectedPR=27;renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
 $("apply-token").addEventListener("click",()=>{state.adminToken=$("admin-token").value.trim();$("admin-token").value="";refresh();});

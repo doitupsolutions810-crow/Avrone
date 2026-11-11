@@ -34,6 +34,6 @@ GitHub Actions artifact metadata can identify candidate artifacts, but operators
 
 ## Local browser automation
 
-The Vercel `agent-browser` discovery skill is included at `.agents/skills/agent-browser/SKILL.md`. This is the project skill descriptor; it does not install the native CLI or download Chrome. On the authorized developer machine, install with the upstream instructions and then run `agent-browser skills get core` before any browser automation.
+The Vercel `agent-browser` discovery skill is included at `.agents/skills/agent-browser/SKILL.md`. This is the project skill descriptor; it does not install the native CLI or download Chrome. On the authorized developer machine, install the skill with `npx skills add https://github.com/vercel-labs/agent-browser --skill agent-browser`. Then install the CLI with `npm install -g agent-browser` and `agent-browser install`, and run `agent-browser skills get core` before any browser automation. The published CLI requires Node.js 22 or later. The repository descriptor is the official upstream discovery stub; it does not install the CLI or Chrome.
 
 Upstream source: https://github.com/vercel-labs/agent-browser

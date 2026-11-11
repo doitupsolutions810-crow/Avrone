@@ -5,7 +5,7 @@ const REPO = "Avrone";
 const REPO_FULL = OWNER + "/" + REPO;
 const GH = "https://api.github.com/repos/" + REPO_FULL;
 const $ = (id) => document.getElementById(id);
-const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, commitStatus: null, commitStatusSha: "", selectedPR: 27, runDetails: {}, artifacts: {}, jobs: {}, adminToken: "", errors: [] };
+const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, commitStatus: null, commitStatusSha: "", selectedPR: 27, runDetails: {}, artifacts: {}, artifactFinalized: {}, jobs: {}, adminToken: "", errors: [] };
 const edgeCases = [
  ["Duplicate lane assignment","Reject a second live owner for the same exclusive lane; preserve the original lease."],
  ["Lease expiry / stale owner","Fence a stale worker from heartbeat renewal, checkpoint writes, and finalization."],
@@ -339,19 +339,19 @@ async function loadRun(id) {
   }).join(""):'<div class="empty">No events returned for '+esc(id)+'.</div>';
  } catch(e) { $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(e.message)+'</div>'; }
 }
-function workflowDetailsNeedRefresh(run,cachedJobs,cachedArtifacts,jobsError,artifactsError) {
+function workflowDetailsNeedRefresh(run,cachedJobs,cachedArtifacts,jobsError,artifactsError,artifactFinalized) {
  const active=!!run&&run.status!=="completed";
  const jobsTerminal=Array.isArray(cachedJobs)&&cachedJobs.length>0&&cachedJobs.every(j=>j.status==="completed");
  return {
   jobs:!!jobsError||!Array.isArray(cachedJobs)||(active&&!jobsTerminal),
-  artifacts:!!artifactsError||!Array.isArray(cachedArtifacts)||active
+  artifacts:!!artifactsError||!Array.isArray(cachedArtifacts)||active||(!active&&!artifactFinalized)
  };
 }
 async function loadWorkflowDetails(run) {
  if(!run) return;
  const id=run.id;
  const need=workflowDetailsNeedRefresh(
-  run,state.jobs[id],state.artifacts[id],hasError("jobs-"+id),hasError("artifacts-"+id)
+  run,state.jobs[id],state.artifacts[id],hasError("jobs-"+id),hasError("artifacts-"+id),state.artifactFinalized[id]===true
  );
  const needsJobs=need.jobs;
  const needsArtifacts=need.artifacts;
@@ -362,7 +362,7 @@ async function loadWorkflowDetails(run) {
  ]);
  if(tasks[0].status==="fulfilled") {state.jobs[id]=tasks[0].value.jobs||[];state.errors=state.errors.filter(x=>x.key!=="jobs-"+id);}
  else state.errors.push({key:"jobs-"+id,message:tasks[0].reason&&tasks[0].reason.message||"Job details unavailable"});
- if(tasks[1].status==="fulfilled") {state.artifacts[id]=tasks[1].value.artifacts||[];state.errors=state.errors.filter(x=>x.key!=="artifacts-"+id);}
+ if(tasks[1].status==="fulfilled") {state.artifacts[id]=tasks[1].value.artifacts||[];state.artifactFinalized[id]=run.status==="completed";state.errors=state.errors.filter(x=>x.key!=="artifacts-"+id);}
  else state.errors.push({key:"artifacts-"+id,message:tasks[1].reason&&tasks[1].reason.message||"Artifact metadata unavailable"});
  renderTarget();renderPRs();renderOverview();renderVerification();renderRelease();
 }

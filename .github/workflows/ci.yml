@@ -48,6 +48,20 @@ jobs:
             done
             exit 1
           }
+          python - <<'PY'
+          import json
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          coverage_json = json.loads(Path("coverage.json").read_text(encoding="utf-8"))
+          totals = coverage_json.get("totals")
+          assert isinstance(totals, dict), "coverage.json missing totals"
+          assert isinstance(totals.get("num_statements"), int), "coverage.json invalid statement count"
+          assert isinstance(totals.get("covered_lines"), int), "coverage.json invalid covered line count"
+          xml_root = ET.parse("coverage.xml").getroot()
+          assert xml_root.tag == "coverage", "coverage.xml root element invalid"
+          assert "lines-valid" in xml_root.attrib, "coverage.xml missing line totals"
+          print("Validated coverage.xml and coverage.json content")
+          PY
         env:
           AVRONE_LLM_MODE: mock
           AVRONE_RUNNER: local
@@ -102,6 +116,11 @@ jobs:
             if curl -fsS http://127.0.0.1:8710/api/status -o docker-api-status.json; then
               READY=1
               break
+            fi
+            STATE="$(docker inspect --format '{{.State.Status}}' "$CONTAINER" 2>/dev/null || true)"
+            if [ "$STATE" = "exited" ]; then
+              docker logs "$CONTAINER"
+              exit 1
             fi
             sleep 2
           done

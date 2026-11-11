@@ -96,6 +96,40 @@ def test_control_room_pages_and_public_evidence():
         assert client.get("/api/control-room/runtime", headers={"x-admin-token":"test-token"}).status_code == 200
 
 
+@pytest.mark.parametrize("runs", [None, "not-a-run-list", {}, [None, "bad-entry", 42]])
+def test_malformed_run_containers_fail_closed(runs):
+    assert all(gate["state"] == "unverified" for gate in release_gates(SHA, runs))
+
+
+@pytest.mark.parametrize("jobs", [None, {}, "bad-jobs", [None, "test (3.11)"]])
+def test_malformed_job_containers_never_verify(jobs):
+    assert all(gate["state"] != "verified" for gate in release_gates(SHA, [ci(jobs=jobs)])[:2])
+
+
+def test_malformed_latest_run_still_supersedes_older_success():
+    latest = ci(databaseId=11, createdAt="2026-11-12T00:00:00Z", jobs=[None])
+    assert all(gate["state"] == "unverified" for gate in release_gates(SHA, [ci(), latest])[:2])
+
+
+def test_run_sorting_tolerates_corrupt_ordering_metadata():
+    malformed = ci(databaseId="later", attempt=None, createdAt=None, conclusion="failure")
+    assert release_gates(SHA, [ci(), malformed])[0]["state"] == "verified"
+
+
+@pytest.mark.parametrize("payload", [
+    [], None, {"schemaVersion": True, "repository": {"visibility": "PUBLIC"}, "pullRequests": [], "runs": []},
+    {"schemaVersion": 1, "repository": None, "pullRequests": [], "runs": []},
+    {"schemaVersion": 1, "repository": {"visibility": "PUBLIC"}, "pullRequests": None, "runs": []},
+    {"schemaVersion": 1, "repository": {"visibility": "PUBLIC"}, "pullRequests": [None], "runs": []},
+    {"schemaVersion": 1, "repository": {"visibility": "PUBLIC"}, "pullRequests": [], "runs": {}},
+])
+def test_malformed_snapshot_shapes_are_rejected(tmp_path, payload):
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError):
+        snapshot(path)
+
+
 def test_missing_snapshot_returns_unavailable(monkeypatch):
     from avrone import controlroom
     from avrone.server import app

@@ -18,14 +18,29 @@ GATES = (
 
 def release_gates(sha: str, runs: list[dict]) -> list[dict]:
     valid = isinstance(sha, str) and bool(re.fullmatch(r"[0-9a-f]{40}", sha))
-    candidates = [r for r in runs if valid and r.get("headSha") == sha and r.get("name") == "CI"]
-    latest = max(candidates, key=lambda r: (r.get("createdAt", ""), r.get("databaseId", 0), r.get("attempt", 0)), default=None)
+    candidates = [
+        run for run in runs if valid and isinstance(run, dict)
+        and run.get("headSha") == sha and run.get("name") == "CI"
+    ] if isinstance(runs, list) else []
+
+    def sort_key(run: dict) -> tuple[str, int, int]:
+        created_at = run.get("createdAt")
+        database_id = run.get("databaseId")
+        attempt = run.get("attempt")
+        return (
+            created_at if isinstance(created_at, str) else "",
+            database_id if isinstance(database_id, int) and not isinstance(database_id, bool) else 0,
+            attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 0,
+        )
+
+    latest = max(candidates, key=sort_key, default=None)
     gates = []
     for key, title, requirement in GATES:
         state, reason = "unverified", "No accepted exact-SHA evidence."
         if key in ("python311", "python312") and latest:
             version = "3.11" if key == "python311" else "3.12"
-            jobs = [j for j in latest.get("jobs", []) if j.get("name") == f"test ({version})"]
+            raw_jobs = latest.get("jobs")
+            jobs = [j for j in raw_jobs if isinstance(j, dict) and j.get("name") == f"test ({version})"] if isinstance(raw_jobs, list) else []
             if latest.get("conclusion") in ("failure", "cancelled", "timed_out", "action_required", "startup_failure"):
                 state, reason = "blocked", f"Latest CI run: {latest['conclusion']}."
             elif not latest.get("evidenceComplete"):
@@ -43,9 +58,19 @@ def release_gates(sha: str, runs: list[dict]) -> list[dict]:
 
 def snapshot(path: Path = SNAPSHOT) -> dict:
     raw = json.loads(path.read_text())
-    if raw.get("schemaVersion") != 1 or raw.get("repository", {}).get("visibility") != "PUBLIC":
-        raise ValueError("Only versioned public-repository evidence may be exposed")
-    for pr in raw["pullRequests"]:
+    if not isinstance(raw, dict):
+        raise ValueError("Repository evidence must be a JSON object")
+    repository = raw.get("repository")
+    pull_requests = raw.get("pullRequests")
+    runs = raw.get("runs")
+    if (
+        type(raw.get("schemaVersion")) is not int or raw["schemaVersion"] != 1
+        or not isinstance(repository, dict) or repository.get("visibility") != "PUBLIC"
+        or not isinstance(pull_requests, list) or not isinstance(runs, list)
+        or any(not isinstance(pr, dict) for pr in pull_requests)
+    ):
+        raise ValueError("Only valid, versioned public-repository evidence may be exposed")
+    for pr in pull_requests:
         pr["gates"] = release_gates(pr.get("headRefOid"), raw["runs"])
         states = [gate["state"] for gate in pr["gates"]]
         pr["verification"] = "blocked" if "blocked" in states else "verified" if all(s == "verified" for s in states) else "unverified"

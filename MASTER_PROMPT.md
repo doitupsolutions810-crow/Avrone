@@ -56,6 +56,7 @@ Avrone/
 │   ├── cli.py                   avrone-cli: run AVRONE headless from a terminal or a script.
 │   ├── codex.py                 Eternal CodeX: the event bus and the permanent agent action log.
 │   ├── config.py                AVRONE configuration, read from environment variables (or a .env file).
+│   ├── controlroom.py           Evidence-derived release readiness, separate from GitHub merge history.
 │   ├── ctxspawn.py              Context-rich sub-agent spawning (ctxspawn).
 │   ├── doctor.py                doctor: offline, read-only preflight of a node's hosting readiness.
 │   ├── evolve.py                Self-evolution (v0.9): AVRONE proposes and validates changes to its OWN codebase.
@@ -97,7 +98,7 @@ Avrone/
 │   ├── tools_statehealth.py     state_health + registry_audit: what an agent (or the self-evolve loop) can see about its own
 │   ├── trinity.py               Trinity Core: the daemon kernel that orchestrates agents.
 ├── skills/                 # 33 agent skills, one SKILL.md each
-├── tests/                  # 191 test files, offline by default
+├── tests/                  # 192 test files, offline by default
 ├── tools/
 │   ├── make_master_prompt.py
 │   ├── model_bench.py
@@ -111,6 +112,7 @@ Avrone/
 │   ├── avrone-state
 │   ├── mac-avrone-autopilot.sh
 │   ├── mac-local-squad.sh
+│   ├── sync-control-room.py
 │   ├── verify-grok-bridge.sh
 ├── deploy/
 │   ├── full.env

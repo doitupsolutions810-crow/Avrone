@@ -1441,3 +1441,27 @@ th {
     font-size: 20px;
   }
 }
+
+@media (max-width: 360px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
+  .stat,
+  .stat:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .stat:last-child {
+    border-bottom: 0;
+  }
+  .snapshot-label {
+    display: none;
+  }
+  .heading-actions {
+    gap: 5px;
+  }
+  .heading-actions .button {
+    padding: 9px 10px;
+    font-size: 10px;
+  }
+}

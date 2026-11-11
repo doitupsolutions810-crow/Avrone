@@ -627,3 +627,23 @@ def test_control_room_reports_vercel_status_only_for_selected_exact_sha():
     assert 'name:"Vercel preview deployment"' in js
     assert 'vercelStatus.state==="failure"?"FAIL"' in js
     assert 'vercelStatus.state==="success"?"PENDING REVIEW"' in js
+
+
+def test_supabase_persistence_design_is_explicitly_proposed_and_security_hardened():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    design = (root / "docs" / "AVRONE_SUPABASE_PERSISTENCE_DESIGN.md").read_text(encoding="utf-8")
+    for invariant in (
+        "PROPOSED / NOT APPLIED",
+        "control12-shared-state",
+        "lease_epoch",
+        "mission_events",
+        "FOR UPDATE SKIP LOCKED",
+        "exact 40-character lowercase Git SHA",
+        "non-exposed schema",
+        "Enable and force RLS",
+        "service_role",
+        "Cross-owner SELECT/UPDATE/DELETE",
+        "No hosted operation is authorized",
+    ):
+        assert invariant in design, invariant

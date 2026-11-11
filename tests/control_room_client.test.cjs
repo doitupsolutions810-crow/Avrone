@@ -238,3 +238,12 @@ test("a notification workflow alone is not mistaken for a Python CI run",()=>{
  assert.equal(c.latestForSha("only-notify"),null);
  assert.equal(c.prEvidence({head:{sha:"only-notify"}}),"NOT RUN");
 });
+
+test("evidence helpers degrade safely on null and malformed record arguments",()=>{
+ const c=makeContext();
+ assert.equal(c.prLifecycle(null).state,"UNKNOWN");
+ assert.equal(c.prLifecycle("untrusted").unmerged,true);
+ assert.equal(c.prEvidence(null),"NOT RUN");
+ assert.equal(c.matchesCommon(null,null),true);
+ assert.equal(c.matchesCommon("not-an-object",{verification:"PASS"}),false);
+});

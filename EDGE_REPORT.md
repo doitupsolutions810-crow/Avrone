@@ -485,3 +485,53 @@ AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
 3582 = previous 3522 + 60 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
 
 This round is committed and pushed only on `edge/round-6`. `main` is left at `5cceb52`. No PR opened.
+
+---
+
+# Round 7 — stateful properties, long-run stability, resource cleanup, error paths, Unicode (2026-11-10 19:54 America/Detroit / EST)
+
+Base: `edge/round-6` at `91b626d3155e721b3e80b207d49ba58a50fa08ef` (Avrone main tip `5cceb52` plus Rounds 1–6). Work is on a fresh branch `edge/round-7` off that tip. The previous 249 `tests/edge_extra` cases were left intact; this round adds 42 genuinely new tests (291 total). Production recon guardrails were not changed. Hypothesis remains a dev/test extra (derandomized, `max_examples` 12–35, `stateful_step_count` 10, `database=None`).
+
+## New tests (42)
+
+| File | Count | What they cover |
+|---|---|---|
+| `tests/edge_extra/test_hypothesis_roundtrip_r7.py` | 8 | JSON-RPC and JSON-value encode→decode→encode stability; dotenv serialize→load; Settings int-env round-trip; `_num` never returns non-finite; argv list `quote`/`split` round-trip; blackboard write→read fidelity (including duplicate-id); a Hypothesis `RuleBasedStateMachine` of an MCP stdio session (requests, string ids, notifications, junk, bad version) with "exactly one well-formed response per pending id" |
+| `tests/edge_extra/test_longrun_stability_r7.py` | 7 | Governor over 400 oscillating ticks: `throttle_count` monotonic and ≤ ticks, `readers`/`_cache` sizes stay constant, recovers from hot load; 200 steady-hot ticks do not grow internal state; evolve `loop_limits` / `hard_caps` / `long_loops_allowed` with junk env and cap overflow; `_checkpoint_candidates` drops oversized/non-encodable lists; `_safe_test_cmd` unclosed quote is a quoted fallback; 6 repeated reap-cap kills leave no `sleep` zombies; telemetry over 80 samples plus poison lines and inverted timestamps, percentiles non-negative and monotonic |
+| `tests/edge_extra/test_resource_exhaustion_r7.py` | 5 | 16 concurrent in-process MCP sessions (ping + tools/list) with no leaked tasks; `avrone_tools` with 250 registered tools; ToolRegistry of 300 names stays complete; a 64 KiB JSON-RPC line is answered; 30 StdioTransport connect/close cycles do not leak fds (`/dev/fd` slack ≤ 8) or reader tasks |
+| `tests/edge_extra/test_error_paths_r7.py` | 15 | `_clamp_size` / `_clamp_rounds` / `max_inflight` junk; `resolve_provider` unknown + `_num` junk; `_load_dotenv` missing/dir/unreadable; plugin syntax and `register()` errors are reports and do not block a good plugin; `load_config` directory / disabled / malformed JSON; MCPManager start failure is a status; illegal MCP tool names are skipped; sovereign missing binary is a result; cancelled `run` reaps the child; governor env/sensor/factors fallbacks; Codex emit after log_dir vanishes; telemetry `node_health`/`fleet_health` error fallbacks; `apply_tool_focus` empty/unknown; `run_cleanups` swallows one failure; `compact_messages` non-list / junk limit |
+| `tests/edge_extra/test_unicode_i18n_r7.py` | 7 | RTL (Arabic/Hebrew), zero-width, combining-mark stacks, long grapheme clusters, family ZWJ emoji through `clean_text` / `_json_safe` / `_utf8_text`; ZW/RTL preserved (only NUL/surrogates are dropped); blackboard write/read; Codex emit/replay; dotenv values; argv quote/split lists; LocalRunner stdout capture |
+
+## Bugs found and fixed (root cause, Linux + macOS)
+
+1. **`avrone/telemetry.py:21-68, 118-124`** — `_iter_events` assumed every JSONL line was a `dict` with a numeric `ts`. A JSON array/number/string raised `AttributeError`; a string `ts` raised `TypeError` (`>=` against the window). Deeply nested JSON and unreadable files were also unhandled. `_event_ts` now accepts only dicts with a finite numeric timestamp; parse errors include `RecursionError`/`ValueError`/`TypeError`; missing/unreadable logs are skipped. Separately, a `run.done` whose `ts` precedes `run.start` produced **negative** `p50_s`/`p95_s`. Durations are now `max(0.0, end - start)` and ignore non-finite stamps.
+2. **`avrone/evolve.py:293-302`** — `_env_num` treated `inf` as a valid positive limit (`float("inf") == inf` and `inf > 0` are both true), so `AVRONE_EVOLVE_TIME_BUDGET=inf` could disable a timeout if the value were used raw. Non-finite values (and non-positive) now return `None` and fall back to the documented caps.
+
+No production recon policy was changed.
+
+## Gates (0 failed, 0 errored)
+
+Full non-integration:
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration'
+3624 passed, 362 deselected, 1 warning in 79.87s
+```
+
+Shuffled (pytest-randomly):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -p randomly -m 'not integration'
+3624 passed, 362 deselected, 1 warning in 77.22s
+```
+
+Edge suite (249 previous + 42 new = 291):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
+291 passed in 22.92s
+```
+
+3624 = previous 3582 + 42 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
+
+This round is committed and pushed only on `edge/round-7`. `main` is left at `5cceb52`. No PR opened.

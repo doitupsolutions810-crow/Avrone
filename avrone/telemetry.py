@@ -18,18 +18,44 @@ if TYPE_CHECKING:
     from .trinity import TrinityCore
 
 
+def _event_ts(ev: Any) -> float | None:
+    """A usable event timestamp, or None when the line is not a finite-ts object."""
+    if not isinstance(ev, dict):
+        return None
+    ts = ev.get("ts", 0)
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return None
+    ts = float(ts)
+    return ts if math.isfinite(ts) else None
+
+
 def _iter_events(log_dir: Path, since: float, max_files: int = 200):
-    files = sorted(log_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1.0
+
+    try:
+        files = sorted(log_dir.glob("*.jsonl"), key=_mtime, reverse=True)[:max_files]
+    except OSError:
+        return
     for p in files:
-        if p.stat().st_mtime < since:
+        try:
+            if _mtime(p) < since:
+                continue
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             continue
-        for line in p.read_text().splitlines():
+        for line in text.splitlines():
             try:
                 ev = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError, ValueError, TypeError):
                 continue
-            if ev.get("ts", 0) >= since:
-                yield ev
+            ts = _event_ts(ev)
+            if ts is None or ts < since:
+                continue
+            yield ev
 
 
 def _finite_window(window_s: Any, default: float = 86400.0) -> float:
@@ -89,7 +115,13 @@ def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
             net_fallback += 1
 
     done = [r for r in runs.values() if r["end"]]
-    durations = sorted(r["end"] - r["start"] for r in done)
+    durations = sorted(
+        max(0.0, float(r["end"]) - float(r["start"]))
+        for r in done
+        if isinstance(r.get("end"), (int, float)) and not isinstance(r.get("end"), bool)
+        and isinstance(r.get("start"), (int, float)) and not isinstance(r.get("start"), bool)
+        and math.isfinite(r["end"]) and math.isfinite(r["start"])
+    )
 
     def pct(xs: list[float], p: float) -> float | None:
         return round(xs[min(len(xs) - 1, int(p * len(xs)))], 2) if xs else None

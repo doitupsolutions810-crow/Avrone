@@ -298,7 +298,8 @@ def _env_num(name: str) -> float | None:
         x = float(raw)
     except ValueError:
         return None
-    return x if x == x and x > 0 else None
+    # inf would pass "x == x and x > 0" and could disable a timeout; nan is already excluded.
+    return x if x == x and abs(x) != float("inf") and x > 0 else None
 
 
 def loop_limits(max_iters: Any = None, time_budget_s: Any = None) -> tuple[int, float]:

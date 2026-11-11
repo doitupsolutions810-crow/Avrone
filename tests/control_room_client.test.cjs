@@ -198,3 +198,18 @@ test("commit-status API failure blocks the Vercel gate",()=>{
  const g=c.evidenceData({head:{sha:"same"}},{id:"run-z",head_sha:"same"}).gates;
  assert.equal(g.find(x=>x.name==="Vercel preview deployment").state,"BLOCKED");
 });
+
+test("GitHub pagination rejects same-host links outside the selected repository path",async()=>{
+ let calls=0;
+ const c=makeContext({fetch:async()=>{calls++;return response([{id:1}],{headers:{Link:"<https://api.github.com/user>; rel=\"next\""}});}});
+ await assert.rejects(()=>c.ghPages("/pulls",5),/Rejected unsafe GitHub pagination URL/);
+ assert.equal(calls,1);
+});
+test("GitHub pagination rejects protocol downgrade and repository traversal",async()=>{
+ for(const next of ["http://api.github.com/repos/"+REPO_FULL+"/pulls?page=2","https://api.github.com/repos/"+REPO_FULL+"/../../user"]){
+  let calls=0;
+  const c=makeContext({fetch:async()=>{calls++;return response([{id:1}],{headers:{Link:"<"+next+">; rel=\"next\""}});}});
+  await assert.rejects(()=>c.ghPages("/pulls",5),/Rejected unsafe GitHub pagination URL/);
+  assert.equal(calls,1);
+ }
+});

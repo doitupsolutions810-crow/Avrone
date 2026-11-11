@@ -480,3 +480,33 @@ test("evidenceData refuses to choose between duplicate matrix job identities",()
  assert.equal(gates["Exact-SHA Python 3.11"],"NOT RUN");
  assert.equal(gates["Exact-SHA Python 3.12"],"PASS");
 });
+
+
+test("evidenceData refuses ambiguous duplicate artifact identities",()=>{
+ const c=makeContext({state:{jobs:{"run-10":[
+  {name:"test (3.11)",conclusion:"success"},
+  {name:"test (3.12)",conclusion:"success"}
+ ]},artifacts:{"run-10":[
+  {name:"coverage-xml-py3.11",expired:false},
+  {name:"coverage-xml-py3.11",expired:true},
+  {name:"coverage-xml-py3.12",expired:false}
+ ]}}});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-10",head_sha:"same",status:"completed"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["coverage.xml artifact"],"NOT RUN");
+});
+
+test("jsonFetch aborts a stalled request and clears its timeout handle",async()=>{
+ let timerCallback=null,cleared=false,signal=null;
+ const c=makeContext({fetch:async(_url,options)=>new Promise((resolve,reject)=>{
+  signal=options.signal;
+  signal.addEventListener("abort",()=>reject(new Error("request aborted")));
+ })});
+ c.setTimeout=(fn)=>{timerCallback=fn;return 77;};
+ c.clearTimeout=(id)=>{cleared=id===77;};
+ const pending=c.jsonFetch("/slow");
+ assert.equal(typeof timerCallback,"function");
+ timerCallback();
+ await assert.rejects(()=>pending,/request aborted/);
+ assert.equal(signal.aborted,true);
+ assert.equal(cleared,true);
+});

@@ -339,11 +339,22 @@ async function loadRun(id) {
   }).join(""):'<div class="empty">No events returned for '+esc(id)+'.</div>';
  } catch(e) { $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(e.message)+'</div>'; }
 }
+function workflowDetailsNeedRefresh(run,cachedJobs,cachedArtifacts,jobsError,artifactsError) {
+ const active=!!run&&run.status!=="completed";
+ const jobsTerminal=Array.isArray(cachedJobs)&&cachedJobs.length>0&&cachedJobs.every(j=>j.status==="completed");
+ return {
+  jobs:!!jobsError||!Array.isArray(cachedJobs)||(active&&!jobsTerminal),
+  artifacts:!!artifactsError||!Array.isArray(cachedArtifacts)||active
+ };
+}
 async function loadWorkflowDetails(run) {
  if(!run) return;
  const id=run.id;
- const needsJobs=!Object.prototype.hasOwnProperty.call(state.jobs,id);
- const needsArtifacts=!Object.prototype.hasOwnProperty.call(state.artifacts,id);
+ const need=workflowDetailsNeedRefresh(
+  run,state.jobs[id],state.artifacts[id],hasError("jobs-"+id),hasError("artifacts-"+id)
+ );
+ const needsJobs=need.jobs;
+ const needsArtifacts=need.artifacts;
  if(!needsJobs&&!needsArtifacts) return;
  const tasks=await Promise.allSettled([
   needsJobs?gh("/actions/runs/"+id+"/jobs?per_page=100"):Promise.resolve({jobs:state.jobs[id]}),

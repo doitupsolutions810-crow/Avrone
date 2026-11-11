@@ -237,7 +237,7 @@ test("non-CI workflow failures cannot mask the exact-SHA CI run",()=>{
  assert.equal(c.isCiRun(c.state.workflows[0]),true);
  assert.equal(c.isCiRun(c.state.workflows[1]),false);
  assert.equal(c.isCiRun({name:"CI",path:".github/workflows/other.yml"}),false);
- assert.equal(c.isCiRun({name:"CI"}),true);
+ assert.equal(c.isCiRun({name:"CI"}),false);
  assert.equal(c.latestForSha("same").id,10);
  assert.equal(c.prEvidence({head:{sha:"same"}}),"UNVERIFIED");
 });
@@ -764,4 +764,118 @@ test("loadWorkflowDetails initializes corrupt cache containers before indexing",
  assert.equal(c.state.artifacts[42].length,1);
  assert.equal(c.state.artifacts[42][0].name,"artifact");
  assert.deepEqual(c.state.dataWarnings,undefined);
+});
+
+
+test("CI workflow identity requires the exact workflow path, never its display name alone",()=>{
+ const c=makeContext();
+ assert.equal(c.isCiRun({name:"CI",path:".github/workflows/ci.yml"}),true);
+ for(const run of [
+  {name:"CI"},
+  {name:"ci",path:".github/workflows/squad-round-notify.yml"},
+  {name:"CI",path:".github/workflows/ci.yaml"},
+  {name:"CI",path:".github/workflows/ci.yml.bak"},
+  {name:"CI",path:"../.github/workflows/ci.yml"},
+  {name:"Another workflow",path:".github/workflows/CI.yml"}
+ ]) assert.equal(c.isCiRun(run),false,JSON.stringify(run));
+});
+
+test("evidence job identities reject deceptive names that merely contain lane labels",()=>{
+ const c=makeContext({state:{
+  jobs:{"run-identity":[
+   {name:"untrusted test (3.11) helper",conclusion:"success"},
+   {name:"test (3.12)",conclusion:"success"},
+   {name:"fake Docker image verification",conclusion:"success"},
+   {name:"not Node container lifecycle",conclusion:"success"}
+  ]},
+  artifacts:{"run-identity":[
+   {name:"coverage-xml-py3.11"},{name:"coverage-xml-py3.12"},
+   {name:"coverage-json-py3.11"},{name:"coverage-json-py3.12"},
+   {name:"docker-image-evidence"},{name:"node-container-lifecycle-evidence"}
+  ]}
+ }});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-identity",head_sha:"same",status:"completed"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["Exact-SHA Python 3.11"],"NOT RUN");
+ assert.equal(gates["Exact-SHA Python 3.12"],"PASS");
+ assert.equal(gates["Docker image verification"],"NOT RUN");
+ assert.equal(gates["In-container Node lifecycle"],"NOT RUN");
+});
+
+test("cancelled, timed-out, action-required, and startup-failed jobs cannot masquerade as merely pending",()=>{
+ const c=makeContext({state:{
+  jobs:{"run-terminal":[
+   {name:"test (3.11)",conclusion:"cancelled"},
+   {name:"test (3.12)",conclusion:"timed_out"},
+   {name:"Docker image verification",conclusion:"action_required"},
+   {name:"Node container lifecycle",conclusion:"startup_failure"}
+  ]},
+  artifacts:{"run-terminal":[
+   {name:"coverage-xml-py3.11"},{name:"coverage-xml-py3.12"},
+   {name:"coverage-json-py3.11"},{name:"coverage-json-py3.12"},
+   {name:"docker-image-evidence"},{name:"node-container-lifecycle-evidence"}
+  ]}
+ }});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-terminal",head_sha:"same",status:"completed"}).gates.map(g=>[g.name,g.state]));
+ for(const name of ["Exact-SHA Python 3.11","Exact-SHA Python 3.12","Docker image verification","In-container Node lifecycle"])
+  assert.equal(gates[name],"FAIL",name);
+});
+
+test("multiple same-SHA Vercel statuses block the deployment gate instead of trusting array order",()=>{
+ for(const statuses of [
+  [{context:"Vercel",state:"success"},{context:"Vercel",state:"failure"}],
+  [{context:"Vercel",state:"success"},{context:"vercel",state:"success"}]
+ ]) {
+  const c=makeContext({state:{commitStatusSha:"same",commitStatus:{statuses},jobs:{"run-dup":[]}}});
+  const gate=c.evidenceData({head:{sha:"same"}},{id:"run-dup",head_sha:"same",status:"completed"}).gates.find(g=>g.name==="Vercel preview deployment");
+  assert.equal(gate.state,"BLOCKED");
+  assert.match(gate.note,/Multiple Vercel statuses/);
+ }
+});
+
+test("PR lifecycle rejects truthy strings and invalid merge timestamps as proof of merge",()=>{
+ const c=makeContext();
+ const malformed=c.prLifecycle({state:"closed",draft:"false",merged:"false",merged_at:"not-a-timestamp"});
+ assert.equal(malformed.draft,false);
+ assert.equal(malformed.merged,false);
+ assert.equal(malformed.unmerged,true);
+ assert.equal(c.prLifecycle({state:"closed",merged:true}).merged,true);
+ assert.equal(c.prLifecycle({state:"closed",merged_at:"2026-11-11T12:00:00Z"}).merged,true);
+});
+
+test("GitHub Link parsing requires next as a complete relation token and supports multi-token rel values",async()=>{
+ let calls=0;
+ const ignored=makeContext({fetch:async()=>{calls++;return response([{id:1}],{headers:{Link:"<"+GH+"/pulls?page=2>; rel=\"nextish\""}});}});
+ const one=await ignored.ghPages("/pulls",5);
+ assert.equal(one.pages,1);
+ assert.equal(one.truncated,false);
+ assert.equal(calls,1);
+ let validCalls=0;
+ const accepted=makeContext({fetch:async()=>{validCalls++;return validCalls===1
+  ?response([{id:1}],{headers:{Link:"<"+GH+"/pulls?page=2>; type=\"application/json\"; rel=\"prev next\""}})
+  :response([{id:2}]);}});
+ const two=await accepted.ghPages("/pulls",5);
+ assert.deepEqual(JSON.parse(JSON.stringify(two.items)),[{id:1},{id:2}]);
+ assert.equal(two.pages,2);
+ assert.equal(validCalls,2);
+});
+
+test("jsonFetch clears its deadline when response-body reading rejects",async()=>{
+ let cleared=false;
+ const c=makeContext({fetch:async()=>({ok:true,status:200,statusText:"OK",text:async()=>{throw new Error("body stream failed");}})});
+ c.clearTimeout=()=>{cleared=true;};
+ await assert.rejects(()=>c.jsonFetch("/api/status",{}),/body stream failed/);
+ assert.equal(cleared,true);
+});
+
+test("GitHub pagination clears its deadline when response-body reading rejects",async()=>{
+ let cleared=false;
+ const c=makeContext({fetch:async()=>({ok:true,status:200,statusText:"OK",text:async()=>{throw new Error("GitHub body stream failed");},headers:{get:()=>null}})});
+ c.clearTimeout=()=>{cleared=true;};
+ await assert.rejects(()=>c.ghPages("/pulls",1),/GitHub body stream failed/);
+ assert.equal(cleared,true);
+});
+
+test("safeHref fails closed when coercing attacker-controlled values throws",()=>{
+ const c=makeContext();
+ assert.equal(c.safeHref({toString(){throw new Error("coercion trap");}}),"#");
 });

@@ -73,7 +73,7 @@ async function ghPages(path,maxPages) {
   if(rows.some(row=>!row||typeof row!=="object"||Array.isArray(row))) throw new Error("Malformed GitHub list record on page "+(pages+1));
   all.push(...rows);pages++;
   const header=res.headers.get("Link")||"";
-  const match=header.split(",").map(x=>x.trim()).find(x=>/rel\s*=\s*"?next"?/i.test(x));
+  const match=header.split(",").map(x=>x.trim()).find(x=>{const rel=x.match(/;\s*rel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/i);const value=rel?(rel[1]||rel[2]||""):"";return value.split(/\s+/).some(token=>token.toLowerCase()==="next");});
   const candidate=match?(match.match(/<([^>]+)>/)||[])[1]||null:null;
   if(match&&!candidate) throw new Error("Malformed GitHub next-page Link header");
   if(candidate) {
@@ -89,7 +89,8 @@ async function ghPages(path,maxPages) {
 async function local(path) { return jsonFetch(path); }
 function prLifecycle(p) {
  p=p&&typeof p==="object"?p:{};
- return {state:String(p.state||"unknown").toUpperCase(),draft:!!p.draft,merged:!!p.merged_at||!!p.merged,unmerged:!p.merged_at&&!p.merged};
+ const merged=p.merged===true||(typeof p.merged_at==="string"&&Number.isFinite(Date.parse(p.merged_at)));
+ return {state:String(p.state||"unknown").toUpperCase(),draft:p.draft===true,merged,unmerged:!merged};
 }
 function prEvidence(p) {
  p=p&&typeof p==="object"?p:{};
@@ -105,7 +106,7 @@ function prEvidence(p) {
  if(states.some(x=>x==="BLOCKED")) return "BLOCKED";
  return "UNVERIFIED";
 }
-function isCiRun(run) { if(!run)return false; const workflowPath=String(run.path||""); return workflowPath?workflowPath===".github/workflows/ci.yml":String(run.name||"").toLowerCase()==="ci"; }
+function isCiRun(run) { return !!run&&String(run.path||"")===".github/workflows/ci.yml"; }
 function latestForSha(sha) { const rows=validRecords(state.workflows).items; return rows.filter(w=>w.head_sha===sha&&isCiRun(w)).sort((a,b)=>{const da=Date.parse(a.updated_at||"")||0,db=Date.parse(b.updated_at||"")||0;return db-da;})[0]||null; }
 function currentPR() { const rows=validRecords(state.prs).items; return rows.find(p=>Number(p.number)===Number(state.selectedPR))||rows.find(p=>Number(p.number)===27)||null; }
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
@@ -307,16 +308,19 @@ function evidenceData(p,run) {
  const commitStatusBlocked=hasError("commit-status");
  const names=artifacts.filter(a=>a&&typeof a==="object").map(a=>({name:String(a.name||"").toLowerCase(),expired:!!a.expired}));
  const job=(rx)=>{if(!same)return null;const found=jobs.filter(j=>j&&typeof j==="object"&&rx.test(String(j.name||"").toLowerCase()));return found.length===1?found[0]:null;};
- const j311=job(/3\.11/), j312=job(/3\.12/);
- const docker=job(/docker image verification/);
- const node=job(/node container lifecycle/);
+ const j311=job(/^test \(3\.11\)$/), j312=job(/^test \(3\.12\)$/);
+ const docker=job(/^docker image verification$/);
+ const node=job(/^node container lifecycle$/);
+ const failedJob=(record)=>!!record&&["failure","cancelled","timed_out","action_required","startup_failure"].includes(String(record.conclusion||"").toLowerCase());
  const statuses=state.commitStatus&&Array.isArray(state.commitStatus.statuses)?state.commitStatus.statuses:[];
- const vercelStatus=state.commitStatusSha===sha?statuses.find(x=>x&&String(x.context||"").toLowerCase()==="vercel"):null;
+ const vercelStatuses=state.commitStatusSha===sha?statuses.filter(x=>x&&String(x.context||"").toLowerCase()==="vercel"):[];
+ const vercelStatusAmbiguous=vercelStatuses.length>1;
+ const vercelStatus=vercelStatuses.length===1?vercelStatuses[0]:null;
  const artifactByName=(name)=>{const found=names.filter(a=>a.name===name.toLowerCase());return found.length===1?found[0]:null;};
  const matrixState=()=>{
   if(workflowBlocked||jobsBlocked) return "BLOCKED";
   if(!same) return "NOT RUN";
-  if((j311&&j311.conclusion==="failure")||(j312&&j312.conclusion==="failure")) return "FAIL";
+  if(failedJob(j311)||failedJob(j312)) return "FAIL";
   if(j311&&j312&&j311.conclusion==="success"&&j312.conclusion==="success") return "PASS";
   if(!j311||!j312) return run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN";
   return "UNVERIFIED";
@@ -335,7 +339,7 @@ function evidenceData(p,run) {
  const runtimeGate=(jobRecord,artifactName)=>{
   if(jobsBlocked||artifactsBlocked) return "BLOCKED";
   if(!same||!jobRecord) return "NOT RUN";
-  if(jobRecord.conclusion==="failure") return "FAIL";
+  if(failedJob(jobRecord)) return "FAIL";
   if(jobRecord.conclusion!=="success") return "UNVERIFIED";
   const artifact=artifactByName(artifactName);
   if(!artifact) return "NOT RUN";
@@ -343,9 +347,9 @@ function evidenceData(p,run) {
   return "PASS";
  };
  const gates=[
-  {name:"Exact-SHA Python 3.11",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j311?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):j311.conclusion==="success"?"PASS":j311.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
-  {name:"Exact-SHA Python 3.12",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j312?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):j312.conclusion==="success"?"PASS":j312.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
-  {name:"Vercel preview deployment",state:commitStatusBlocked?"BLOCKED":!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:"A successful deployment status still requires an inspectable preview URL and a real browser smoke test."},
+  {name:"Exact-SHA Python 3.11",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j311?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):String(j311.conclusion||"").toLowerCase()==="success"?"PASS":failedJob(j311)?"FAIL":"UNVERIFIED,note:"Required matrix leg for this exact commit."},
+  {name:"Exact-SHA Python 3.12",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j312?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):String(j312.conclusion||"").toLowerCase()==="success"?"PASS":failedJob(j312)?"FAIL":"UNVERIFIED,note:"Required matrix leg for this exact commit."},
+  {name:"Vercel preview deployment",state:commitStatusBlocked?"BLOCKED":vercelStatusAmbiguous?"BLOCKED":!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:vercelStatusAmbiguous?"Multiple Vercel statuses for one SHA are ambiguous; inspect the deployment directly.":"A successful deployment status still requires an inspectable preview URL and a real browser smoke test."},
   {name:"coverage.xml artifact",state:coverageState("xml"),note:"PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs."},
   {name:"coverage.json artifact",state:coverageState("json"),note:"PASS requires valid coverage JSON artifacts from both exact-SHA Python matrix legs."},
   {name:"Docker image verification",state:runtimeGate(docker,"docker-image-evidence"),note:"PASS requires the exact-SHA Docker verification job and image-inspect/digest/health artifacts."},

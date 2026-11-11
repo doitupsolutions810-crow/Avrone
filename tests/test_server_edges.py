@@ -615,3 +615,15 @@ def test_control_room_run_comparison_never_transfers_evidence_between_shas():
     assert "const same=a.head_sha===b.head_sha" in js
     assert "Different commit SHAs: compare diagnostically only" in js
     assert "artifact contents and exact-SHA provenance still require inspection" in js
+
+
+def test_control_room_reports_vercel_status_only_for_selected_exact_sha():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'async function loadSelectedCommitStatus()' in js
+    assert 'state.commitStatusSha=sha' in js
+    assert 'state.commitStatusSha===sha' in js
+    assert 'name:"Vercel preview deployment"' in js
+    assert 'vercelStatus.state==="failure"?"FAIL"' in js
+    assert 'vercelStatus.state==="success"?"PENDING REVIEW"' in js

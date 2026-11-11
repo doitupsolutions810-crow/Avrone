@@ -55,23 +55,23 @@ test("GitHub lifecycle keeps draft, merged, and unmerged separate",()=>{
  assert.equal(c.prLifecycle({state:"closed",merged:false}).unmerged,true);
 });
 test("green workflow alone remains UNVERIFIED and absent workflow is NOT RUN",()=>{
- const c=makeContext({state:{status:{},workflows:[{name:"CI",head_sha:"abc123",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:00:00Z"}]}});
+ const c=makeContext({state:{status:{},workflows:[{name:"CI",path:".github/workflows/ci.yml",head_sha:"abc123",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:00:00Z"}]}});
  assert.equal(c.prEvidence({head:{sha:"abc123"}}),"UNVERIFIED");
  assert.equal(c.prEvidence({head:{sha:"missing"}}),"NOT RUN");
 });
 test("PR failure is explicit and successful evidence does not transfer across SHAs",()=>{
  const c=makeContext({state:{status:{},workflows:[
-  {name:"CI",head_sha:"sha-a",status:"completed",conclusion:"failure",updated_at:"2026-11-11T12:00:00Z"},
-  {name:"CI",head_sha:"sha-b",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:01:00Z"}]}});
+  {name:"CI",path:".github/workflows/ci.yml",head_sha:"sha-a",status:"completed",conclusion:"failure",updated_at:"2026-11-11T12:00:00Z"},
+  {name:"CI",path:".github/workflows/ci.yml",head_sha:"sha-b",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:01:00Z"}]}});
  assert.equal(c.prEvidence({head:{sha:"sha-a"}}),"FAIL");
  assert.equal(c.prEvidence({head:{sha:"sha-b"}}),"UNVERIFIED");
  assert.equal(c.prEvidence({head:{sha:"sha-c"}}),"NOT RUN");
 });
 test("latestForSha selects exact case-sensitive SHA and newest matching run",()=>{
  const c=makeContext({state:{workflows:[
-  {id:1,name:"CI",head_sha:"abc",updated_at:"2026-11-10T00:00:00Z"},
-  {id:2,name:"CI",head_sha:"def",updated_at:"2026-11-12T00:00:00Z"},
-  {id:3,name:"CI",head_sha:"abc",updated_at:"2026-11-11T00:00:00Z"},
+  {id:1,name:"CI",path:".github/workflows/ci.yml",head_sha:"abc",updated_at:"2026-11-10T00:00:00Z"},
+  {id:2,name:"CI",path:".github/workflows/ci.yml",head_sha:"def",updated_at:"2026-11-12T00:00:00Z"},
+  {id:3,name:"CI",path:".github/workflows/ci.yml",head_sha:"abc",updated_at:"2026-11-11T00:00:00Z"},
   {id:4,name:"squad-round-notify",path:".github/workflows/squad-round-notify.yml",head_sha:"abc",updated_at:"2026-11-13T00:00:00Z"}]}});
  assert.equal(c.latestForSha("abc").id,3);assert.equal(c.latestForSha("def").id,2);
  assert.equal(c.latestForSha("ABC"),null);assert.equal(c.latestForSha("none"),null);

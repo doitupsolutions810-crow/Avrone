@@ -73,7 +73,7 @@ async function ghPages(path,maxPages) {
   if(rows.some(row=>!row||typeof row!=="object"||Array.isArray(row))) throw new Error("Malformed GitHub list record on page "+(pages+1));
   all.push(...rows);pages++;
   const header=res.headers.get("Link")||"";
-  const match=header.split(",").map(x=>x.trim()).find(x=>{const rel=x.match(/;\s*rel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/i);const value=rel?(rel[1]||rel[2]||""):"";return value.split(/\s+/).some(token=>token.toLowerCase()==="next");});
+  const match=header.split(",").map(x=>x.trim()).find(x=>{const rel=x.match(/(?:^|;)\s*rel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/i);const value=rel?(rel[1]||rel[2]||""):"";return value.split(/\s+/).some(token=>token.toLowerCase()==="next");});
   const candidate=match?(match.match(/<([^>]+)>/)||[])[1]||null:null;
   if(match&&!candidate) throw new Error("Malformed GitHub next-page Link header");
   if(candidate) {

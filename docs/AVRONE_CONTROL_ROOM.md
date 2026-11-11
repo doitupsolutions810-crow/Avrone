@@ -2,7 +2,7 @@
 
 ## Entry point
 
-When AVRONE is running, open `/static/control-room.html`. The existing root application links to this page. The page is read-only and uses two evidence sources:
+When AVRONE is running, open `/static/control-room.html`. The default focus is the most recently updated open pull request; an explicit selection is preserved across refreshes, and the All PRs filter remains selectable. The existing root application links to this page. The page is read-only and uses two evidence sources:
 
 - Public GitHub REST endpoints for repository pull requests, commits, workflow runs, job summaries, artifact metadata, exact-SHA commit statuses, and deployment contexts.
 - Same-origin AVRONE endpoints for status, Eternal CodeX runs, run replay, checkpoints, telemetry, fleet directory, and accepted evolution proposals.
@@ -32,7 +32,7 @@ The UI intentionally does not call mutation endpoints. GitHub pagination is boun
 
 The current server API does not expose every desired field. Container CPU/memory quotas, per-agent lease owner/expiry, lane scheduler decisions, duplicate-lane rejection receipts, Node container lifecycle results, and proposal validation artifacts are shown as unavailable until a real API or exact-SHA artifact provides them. No synthetic record is passed off as production evidence.
 
-GitHub Actions artifact metadata can identify candidate artifacts, but operators should inspect the linked artifact contents and provenance before satisfying the gate. A named or expired artifact alone is not proof that its contents are valid. The Node client test suite executes the actual extracted dashboard helpers with mocked HTTP responses, covering state semantics, SHA binding, CI-workflow identity, link safety, same-host and cross-host pagination abuse, malformed responses, rate limits, network failure, expired artifacts, and blocked-versus-missing evidence. The Python suite separately checks that the assets are served and connected to the expected API surfaces. The Python suite separately checks that the assets are served and connected to the expected API surfaces.
+GitHub Actions artifact metadata can identify candidate artifacts, but operators should inspect the linked artifact contents and provenance before satisfying the gate. A named or expired artifact alone is not proof that its contents are valid. The Node client test suite executes the actual extracted dashboard helpers with mocked HTTP responses, covering state semantics, SHA binding, CI-workflow identity, link safety, same-host and cross-host pagination abuse, malformed responses, rate limits, network failure, expired artifacts, and blocked-versus-missing evidence. The Python suite separately checks that the assets are served and connected to the expected API surfaces.
 
 ## Local browser automation
 
@@ -42,7 +42,7 @@ Upstream source: https://github.com/vercel-labs/agent-browser
 
 ## Extended adversarial verification
 
-The browser-client suite now contains 59 executable Node tests. The additional cases exercise credential-bearing navigation and pagination URLs, repeated pagination links, malformed successful API envelopes, request aborts and timer cleanup, cyclic payloads, throwing selector getters, null rows, duplicate CI-job identities, duplicate artifact identities, invalid timestamps, and malformed evidence collections. The release-state model must fail closed: malformed evidence is blocked or remains unverified, never promoted to PASS.
+The browser-client suite now contains 96 executable Node tests, including regression coverage for selecting the newest open pull request, retaining an explicit selection across refreshes, and keeping the All PRs filter choice. The additional cases exercise credential-bearing navigation and pagination URLs, repeated pagination links, malformed successful API envelopes, request aborts and timer cleanup, cyclic payloads, throwing selector getters, null rows, duplicate CI-job identities, duplicate artifact identities, invalid timestamps, and malformed evidence collections. The release-state model must fail closed: malformed evidence is blocked or remains unverified, never promoted to PASS.
 
 Workflow-detail responses are accepted only when the expected `jobs` or `artifacts` property is an array. A successful HTTP response with a missing or malformed list is recorded as blocked evidence. A valid empty array remains a legitimate empty response. Duplicate named evidence rows are ambiguous and cannot satisfy a gate.
 

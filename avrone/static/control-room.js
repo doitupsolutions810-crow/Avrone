@@ -79,8 +79,8 @@ function matchesCommon(obj, f) {
  if(f.round && !text.includes(f.round)) return false;
  if(f.lane && !text.includes(f.lane)) return false;
  if(f.agent && !text.includes(f.agent)) return false;
- if(f.runtime==="Python 3.11" && !/3\\.11/.test(text)) return false;
- if(f.runtime==="Python 3.12" && !/3\\.12/.test(text)) return false;
+ if(f.runtime==="Python 3.11" && !/3\.11/.test(text)) return false;
+ if(f.runtime==="Python 3.12" && !/3\.12/.test(text)) return false;
  if(f.runtime==="Node" && !/node/.test(text)) return false;
  if(f.runtime==="Docker" && !/docker/.test(text)) return false;
  if(f.runtime==="Apple Silicon" && !/(arm64|aarch64|apple silicon)/.test(text)) return false;
@@ -194,7 +194,7 @@ function evidenceData(p,run) {
  const artifacts=run&&state.artifacts[run.id]||[];
  const names=artifacts.map(a=>String(a.name||"").toLowerCase());
  const job=(rx)=>same?(jobs.find(j=>rx.test(String(j.name||"").toLowerCase()))||null):null;
- const j311=job(/3\\.11/), j312=job(/3\\.12/);
+ const j311=job(/3\.11/), j312=job(/3\.12/);
  const docker=job(/docker/), node=job(/node.*(lifecycle|container)|(lifecycle|container).*node/);
  const candidate=(rx)=>names.some(n=>rx.test(n));
  const gates=[

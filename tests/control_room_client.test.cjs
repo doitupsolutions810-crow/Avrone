@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","loadWorkflowDetails","renderPRs","renderVerification"];
+ const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","loadWorkflowDetails","loadRun","renderPRs","renderVerification"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -878,4 +878,38 @@ test("GitHub pagination clears its deadline when response-body reading rejects",
 test("safeHref fails closed when coercing attacker-controlled values throws",()=>{
  const c=makeContext();
  assert.equal(c.safeHref({toString(){throw new Error("coercion trap");}}),"#");
+});
+
+
+test("run event replay filters malformed rows and escapes untrusted event content",async()=>{
+ const elements={"run-detail":{innerHTML:""}};
+ const c=makeContext();
+ c.$=id=>elements[id]||(elements[id]={innerHTML:""});
+ let requested="";
+ c.local=async path=>{
+  requested=path;
+  return [
+   {kind:"message",agent:"<svg onload=alert(1)>",data:{message:"<script>alert(1)</script>"}},
+   null,
+   [],
+   "primitive",
+   {kind:"error",agent:"worker",data:{message:"safe event"}}
+  ];
+ };
+ await c.loadRun("a/b <img>");
+ assert.equal(requested,"/api/runs/a%2Fb%20%3Cimg%3E");
+ assert.match(elements["run-detail"].innerHTML,/Suppressed 3 malformed event record/);
+ assert.match(elements["run-detail"].innerHTML,/&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+ assert.doesNotMatch(elements["run-detail"].innerHTML,/<script|<svg/);
+ assert.match(elements["run-detail"].innerHTML,/safe event/);
+});
+
+test("run event replay treats non-array envelopes as empty instead of crashing",async()=>{
+ const elements={"run-detail":{innerHTML:""}};
+ const c=makeContext();
+ c.$=id=>elements[id]||(elements[id]={innerHTML:""});
+ c.local=async()=>({events:"not-an-array",items:null});
+ await c.loadRun("run-1");
+ assert.match(elements["run-detail"].innerHTML,/No events returned for run-1/);
+ assert.doesNotMatch(elements["run-detail"].innerHTML,/Run detail blocked/);
 });

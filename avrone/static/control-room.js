@@ -181,7 +181,7 @@ function renderTarget() {
 function renderMetrics() {
  const open=validRecords(state.prs).items.filter(p=>p.state==="open");
  $("m-open").textContent=open.length;
- $("m-draft").textContent=open.filter(p=>p.draft&&!p.merged_at).length;
+ $("m-draft").textContent=open.filter(p=>prLifecycle(p).draft&&prLifecycle(p).unmerged).length;
  $("m-runs").textContent=state.workflows.length;
  $("m-local").textContent=Array.isArray(state.runs)&&!hasError("runs")?state.runs.length:"—";
  $("m-checkpoints").textContent=Array.isArray(state.checkpoints)?state.checkpoints.length:"—";
@@ -217,7 +217,7 @@ function renderCommits() {
 function renderOverview() {
  const prs=validRecords(state.prs).items, commits=validRecords(state.commits).items;
  const top=prs.filter(p=>p.state==="open").slice(0,7);
- $("overview-prs").innerHTML=top.length?top.map(p=>item("#"+p.number+" · "+p.title,(p.head&&p.head.ref||"")+" → "+(p.base&&p.base.ref||"main"),badge(p.draft?"DRAFT":"READY")+" "+badge(prEvidence(p)),p.html_url)).join(""):'<div class="empty">No open pull requests observed.</div>';
+ $("overview-prs").innerHTML=top.length?top.map(p=>item("#"+p.number+" · "+p.title,(p.head&&p.head.ref||"")+" → "+(p.base&&p.base.ref||"main"),badge(prLifecycle(p).draft?"DRAFT":"READY")+" "+badge(prEvidence(p)),p.html_url)).join(""):'<div class="empty">No open pull requests observed.</div>';
  const recent=commits.slice(0,6);
  $("overview-commits").innerHTML=recent.length?recent.map(c=>item(formatSha(c.sha),(c.commit&&c.commit.message||"").split("\n")[0],'<span class="muted">'+esc(date(c.commit&&c.commit.author&&c.commit.author.date))+'</span>',c.html_url)).join(""):'<div class="empty">No commits available.</div>';
  const s=state.status||{};
@@ -236,7 +236,8 @@ function renderNextGate() {
   return;
  }
  const statuses=state.commitStatus&&Array.isArray(state.commitStatus.statuses)?state.commitStatus.statuses:[];
- const vercelStatus=state.commitStatusSha===sha?statuses.find(x=>x&&String(x.context||"").toLowerCase()==="vercel"):null;
+ const vercelStatuses=state.commitStatusSha===sha?statuses.filter(x=>x&&String(x.context||"").toLowerCase()==="vercel"):[];
+ const vercelStatus=vercelStatuses.length===1?vercelStatuses[0]:null;
  const href=next.name==="Vercel preview deployment"&&vercelStatus&&vercelStatus.target_url?vercelStatus.target_url:(run&&run.html_url);
  const linkHtml=href?link(href,next.name==="Vercel preview deployment"?"Inspect deployment ↗":"Inspect workflow ↗"):"";
  $("next-gate").innerHTML=badge(next.state)+'<b>'+esc(next.name)+'</b><p>'+esc(next.note)+'</p>'+linkHtml;
@@ -347,8 +348,8 @@ function evidenceData(p,run) {
   return "PASS";
  };
  const gates=[
-  {name:"Exact-SHA Python 3.11",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j311?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):String(j311.conclusion||"").toLowerCase()==="success"?"PASS":failedJob(j311)?"FAIL":"UNVERIFIED,note:"Required matrix leg for this exact commit."},
-  {name:"Exact-SHA Python 3.12",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j312?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):String(j312.conclusion||"").toLowerCase()==="success"?"PASS":failedJob(j312)?"FAIL":"UNVERIFIED,note:"Required matrix leg for this exact commit."},
+  {name:"Exact-SHA Python 3.11",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j311?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):String(j311.conclusion||"").toLowerCase()==="success"?"PASS":failedJob(j311)?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
+  {name:"Exact-SHA Python 3.12",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j312?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):String(j312.conclusion||"").toLowerCase()==="success"?"PASS":failedJob(j312)?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
   {name:"Vercel preview deployment",state:commitStatusBlocked?"BLOCKED":vercelStatusAmbiguous?"BLOCKED":!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:vercelStatusAmbiguous?"Multiple Vercel statuses for one SHA are ambiguous; inspect the deployment directly.":"A successful deployment status still requires an inspectable preview URL and a real browser smoke test."},
   {name:"coverage.xml artifact",state:coverageState("xml"),note:"PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs."},
   {name:"coverage.json artifact",state:coverageState("json"),note:"PASS requires valid coverage JSON artifacts from both exact-SHA Python matrix legs."},
@@ -368,7 +369,8 @@ function renderVerification() {
  const status=failed?"FAIL":complete?"VERIFIED":blocked?"BLOCKED":"UNVERIFIED";
  setPill("evidence-state",status,status==="VERIFIED"?"good":status==="FAIL"?"fail":status==="BLOCKED"?"blocked":"pending");
  const statuses=state.commitStatus&&Array.isArray(state.commitStatus.statuses)?state.commitStatus.statuses:[];
- const vercelStatus=state.commitStatusSha===sha?statuses.find(x=>x&&String(x.context||"").toLowerCase()==="vercel"):null;
+ const vercelStatuses=state.commitStatusSha===sha?statuses.filter(x=>x&&String(x.context||"").toLowerCase()==="vercel"):[];
+ const vercelStatus=vercelStatuses.length===1?vercelStatuses[0]:null;
  const deployLink=vercelStatus&&vercelStatus.target_url?link(vercelStatus.target_url,"Deployment details ↗"):"";
  $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\\\"muted\\\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.state)+'</div><p>'+esc(g.note)+'</p>'+(g.name==="Vercel preview deployment"?deployLink:"")+'</div>').join("");
  const artifactMap=state.artifacts&&typeof state.artifacts==="object"?state.artifacts:{};
@@ -395,13 +397,19 @@ async function loadRun(id) {
  $("run-detail").innerHTML='<div class="loading">Loading event replay…</div>';
  try {
   const data=await local("/api/runs/"+encodeURIComponent(id));
-  const events=Array.isArray(data)?data:(data.events||data.items||[]);
-  $("run-detail").innerHTML=events.length?events.slice(-180).map(e=>{
-   const d=e.data||{};
+  const candidate=Array.isArray(data)?data:(data&&typeof data==="object"?(Array.isArray(data.events)?data.events:(Array.isArray(data.items)?data.items:[])):[]);
+  const normalized=validRecords(candidate),events=normalized.items;
+  const warning=normalized.rejected?'<div class="empty">Suppressed '+normalized.rejected+' malformed event record(s).</div>':"";
+  const body=events.length?events.slice(-180).map(e=>{
+   const d=e.data&&typeof e.data==="object"?e.data:{};
    const lane=d.lane||d.focus_lane||"";
    return '<div class="item"><div class="item-head"><h3>'+esc(e.kind||"event")+' · '+esc(e.agent||"system")+'</h3>'+badge(e.kind==="error"?"FAIL":"OBSERVED")+'</div><p>'+esc(d.message||d.tool||d.focus||d.text||JSON.stringify(d).slice(0,400))+'</p><div class="meta"><span class="muted">'+esc(date(e.ts))+'</span>'+(lane?'<span class="muted">lane '+esc(lane)+'</span>':"")+'</div></div>';
-  }).join(""):'<div class="empty">No events returned for '+esc(id)+'.</div>';
- } catch(e) { $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(e.message)+'</div>'; }
+  }).join(""):"";
+  $("run-detail").innerHTML=body+warning||'<div class="empty">No events returned for '+esc(id)+'.</div>';
+ } catch(e) {
+  const message=e&&typeof e==="object"&&typeof e.message==="string"?e.message:"Run detail unavailable";
+  $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(message)+'</div>';
+ }
 }
 function workflowDetailsNeedRefresh(run,cachedJobs,cachedArtifacts,jobsError,artifactsError,artifactFinalized) {
  const active=!!run&&run.status!=="completed";

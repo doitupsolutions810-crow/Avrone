@@ -332,12 +332,30 @@ test("workflow job and artifact cache refreshes while the run is active",()=>{
 test("workflow cache stops refreshing after terminal jobs and final artifact snapshot",()=>{
  const c=makeContext();
  const n=c.workflowDetailsNeedRefresh(
-  {status:"completed"},[{name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}],[],false,false
+  {status:"completed"},[{name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}],[],false,false,true
  );
  assert.deepEqual(n,{jobs:false,artifacts:false});
 });
 test("workflow cache retries after previous jobs or artifacts API errors",()=>{
  const c=makeContext();
- const n=c.workflowDetailsNeedRefresh({status:"completed"},[],[],true,true);
+ const n=c.workflowDetailsNeedRefresh({status:"completed"},[],[],true,true,false);
  assert.deepEqual(n,{jobs:true,artifacts:true});
+});
+
+test("artifact cache receives one final refresh after a workflow completes",()=>{
+ const c=makeContext();
+ const active=c.workflowDetailsNeedRefresh({status:"in_progress"},[
+  {name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}
+ ],[],false,false,false);
+ assert.equal(active.jobs,false);
+ assert.equal(active.artifacts,true);
+ const completedNotFinal=c.workflowDetailsNeedRefresh({status:"completed"},[
+  {name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}
+ ],[],false,false,false);
+ assert.equal(completedNotFinal.jobs,false);
+ assert.equal(completedNotFinal.artifacts,true);
+ const completedFinal=c.workflowDetailsNeedRefresh({status:"completed"},[
+  {name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}
+ ],[],false,false,true);
+ assert.deepEqual(completedFinal,{jobs:false,artifacts:false});
 });

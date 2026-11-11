@@ -108,7 +108,7 @@ def test_no_agent_dir_is_an_error(env):
 
 # ------------------------------------------------------------------ confinement
 EVIL = ["/etc/passwd", "../escape.txt", "a/../../escape.txt", "..", "~/x", "C:\\x",
-        "..\\..\\x", "sub/../../../etc", "\\\\server\\share"]
+        "..\\..\\x", "sub/../../../etc", "\\\\server\\share", "nul\x00byte", "nested/\x00leaf"]
 
 
 @pytest.mark.parametrize("tool", ["fs_write", "fs_read", "fs_list", "fs_delete"])
@@ -225,3 +225,35 @@ def test_write_to_directory_rejected(env):
     (env.dir / "sub").mkdir()
     assert call(env, "fs_write", path="sub", content="x").startswith("ERROR")
     assert call(env, "fs_write", path=".", content="x").startswith("ERROR")
+
+
+def test_optional_boolean_flags_require_actual_json_booleans(env):
+    call(env, "fs_write", path="flags.txt", content="original")
+    out = call(env, "fs_write", path="flags.txt", content="replacement", append="false")
+    assert out.startswith("ERROR: ValueError: 'append' must be a JSON boolean")
+    assert (env.dir / "flags.txt").read_text() == "original"
+
+    call(env, "fs_write", path="nested/keep.txt", content="keep")
+    out = call(env, "fs_delete", path="nested", recursive="false")
+    assert out.startswith("ERROR: ValueError: 'recursive' must be a JSON boolean")
+    assert (env.dir / "nested" / "keep.txt").read_text() == "keep"
+
+    out = call(env, "fs_list", path=".", recursive="false")
+    assert out.startswith("ERROR: ValueError: 'recursive' must be a JSON boolean")
+
+
+def test_read_limit_handles_infinity_and_boolean_without_raising(env):
+    call(env, "fs_write", path="large.txt", content="x" * (aft.READ_DEFAULT_CHARS + 25))
+    for value in (float("inf"), float("-inf"), True, False):
+        out = call(env, "fs_read", path="large.txt", max_chars=value)
+        assert out.startswith("x" * aft.READ_DEFAULT_CHARS)
+        assert "[truncated;" in out
+
+
+def test_listing_is_capped_and_discloses_omitted_entry_count(env):
+    for index in range(aft.LIST_MAX_ENTRIES + 7):
+        (env.dir / f"entry-{index:04d}.txt").write_text("x")
+    out = call(env, "fs_list", recursive=True)
+    rows = out.splitlines()[1:]
+    assert len(rows) == aft.LIST_MAX_ENTRIES + 1
+    assert rows[-1] == "...[7 more]"

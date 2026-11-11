@@ -740,8 +740,15 @@ async def events(ws: WebSocket):
 def main() -> None:
     import os
     import uvicorn
-    uvicorn.run("avrone.server:app", host=os.getenv("AVRONE_HOST", "127.0.0.1"),
-                port=int(os.getenv("AVRONE_PORT", "8710")))
+    raw = (os.getenv("AVRONE_PORT") or "8710").strip()
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        port = 8710
+    if not 1 <= port <= 65535:
+        port = 8710
+    host = os.getenv("AVRONE_HOST", "127.0.0.1") or "127.0.0.1"
+    uvicorn.run("avrone.server:app", host=host, port=port)
 
 
 if __name__ == "__main__":

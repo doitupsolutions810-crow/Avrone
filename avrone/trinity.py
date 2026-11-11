@@ -480,14 +480,35 @@ def compact_messages(messages: list[dict[str, Any]], limit: int) -> int:
     The system prompt, the first user turn, and the newest CONTEXT_KEEP_TAIL messages are
     never touched, and assistant turns are kept, so the agent still sees what it did.
     Returns how many messages were elided."""
+    if not isinstance(messages, list):
+        return 0
+    try:
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+            return 0
+        if isinstance(limit, float) and not (limit == limit and abs(limit) != float("inf")):
+            return 0
+        cap = int(limit)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if cap < 0:
+        return 0
     def size() -> int:
-        return sum(len(m.get("content") or "") for m in messages if isinstance(m, dict))
-    if size() <= limit:
+        total = 0
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            c = m.get("content")
+            if isinstance(c, str):
+                total += len(c)
+        return total
+    if size() <= cap:
         return 0
     n = 0
     for i in range(2, max(2, len(messages) - CONTEXT_KEEP_TAIL)):
         m = messages[i]
-        c = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
         if m.get("role") != "user" or not isinstance(c, str) or not c.startswith("TOOL RESULT"):
             continue
         head = c.split("\n", 1)[0]
@@ -496,7 +517,7 @@ def compact_messages(messages: list[dict[str, Any]], limit: int) -> int:
             continue
         m["content"] = new
         n += 1
-        if size() <= limit:
+        if size() <= cap:
             break
     return n
 

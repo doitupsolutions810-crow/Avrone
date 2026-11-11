@@ -157,7 +157,7 @@ def _float(name: str, default: float):
 
 
 def _bool(name: str, default: bool):
-    return lambda: os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
+    return lambda: os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _path(name: str, default: str):

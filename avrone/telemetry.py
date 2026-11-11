@@ -8,6 +8,7 @@ Eternal CodeX event logs. Nothing here probes external networks.
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -31,8 +32,17 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
                 yield ev
 
 
+def _finite_window(window_s: Any, default: float = 86400) -> float:
+    """A usable look-back window; junk / non-finite / negative fall back to default."""
+    if isinstance(window_s, bool) or not isinstance(window_s, (int, float)):
+        return default
+    w = float(window_s)
+    return w if math.isfinite(w) and w >= 0 else default
+
+
 def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     """Aggregate metrics over the last window_s seconds."""
+    window_s = _finite_window(window_s)
     since = time.time() - window_s
     runs: dict[str, dict[str, Any]] = {}
     tool_calls: Counter[str] = Counter()
@@ -131,6 +141,7 @@ def fleet_health(core: "TrinityCore") -> list[dict[str, Any]]:
 
 def system_map(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:
     """Graph of AVRONE's own nodes and the traffic between them."""
+    window_s = _finite_window(window_s)
     s = core.settings
     nodes: dict[str, dict[str, Any]] = {}
     edges: Counter[tuple[str, str]] = Counter()

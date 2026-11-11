@@ -102,7 +102,9 @@ class StdioTransport(_Transport):
                     continue
                 try:
                     msg = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError, ValueError, TypeError):
+                    # A single poison line (deeply nested JSON, trailing junk) must not
+                    # tear down the reader and fail every in-flight request.
                     log.debug("mcp non-JSON stdout line ignored: %s", line[:200])
                     continue
                 for m in (msg if isinstance(msg, list) else [msg]):
@@ -427,9 +429,13 @@ def args_doc_from_schema(schema: dict[str, Any] | None, limit: int = 300) -> str
 def load_config(path: str | os.PathLike | None = None) -> dict[str, dict[str, Any]]:
     """Read the mcpServers map. Missing file -> {}."""
     p = Path(path or os.getenv("AVRONE_MCP_CONFIG", "./mcp.json"))
-    if not p.exists():
+    try:
+        if not p.is_file():
+            return {}
+        data = json.loads(p.read_text() or "{}")
+    except (OSError, UnicodeDecodeError):
+        # A directory, broken symlink or unreadable path is treated like a missing file.
         return {}
-    data = json.loads(p.read_text() or "{}")
     servers = data.get("mcpServers", data.get("servers", {})) if isinstance(data, dict) else {}
     return {str(k): v for k, v in servers.items()
             if isinstance(v, dict) and not v.get("disabled")}

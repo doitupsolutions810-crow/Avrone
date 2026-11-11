@@ -314,3 +314,61 @@ AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
 3454 = previous 3394 + 60 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
 
 Round 2 was already pushed as `fix/macos-and-edge` @ `3fd5a74`. This round is committed and pushed only on `edge/round-3`. `main` is left at `5cceb52`. No PR opened.
+
+---
+
+# Round 4 — HUD, mcp_client, config, plugins, trinity, evolve (2026-11-10 19:06 America/Detroit / EST)
+
+Base: `edge/round-3` at `c37aba76175c717ba0c26aa8e44994ddf2988539` (Avrone main tip `5cceb52` plus Rounds 1–3). Work is on a fresh branch `edge/round-4` off that tip. The previous 121 `tests/edge_extra` cases were left intact; this round adds 37 genuinely new tests (158 total in the suite) in areas those rounds touched less: the FastAPI HUD, `mcp_client`, config/bootstrap, plugins, trinity history compaction, and evolve gate-command resolution. Production recon guardrails were not changed.
+
+## New tests (37)
+
+| File | Count | What they cover |
+|---|---|---|
+| `tests/edge_extra/test_server_hud_edges.py` | 14 | `/api/blackboard` with the wrong Content-Type, empty/non-UTF-8 bodies, emoji + unknown fields, surrogate keys, HEAD/OPTIONS/PUT/PATCH/DELETE, a 20k-char `since` query, traversal/NUL/emoji cursors, concurrent GET+POST; `/api/status`/`/api/tools` HEAD; `/api/telemetry` and `/api/map` with nan/inf/junk query values; checkpoint path traversal; `server.main()` junk/out-of-range `AVRONE_PORT`; telemetry/system_map non-finite windows |
+| `tests/edge_extra/test_mcp_client_more_edges.py` | 7 | A 2000-deep JSON stdout line must not fail in-flight requests; partial then completed frames (slow drip); duplicate + unknown response ids; stdout EOF mid-request cleans `_pending`; `load_config` on a directory, a broken symlink, a symlink to a valid file, unknown keys / disabled servers |
+| `tests/edge_extra/test_bootstrap_config_edges.py` | 5 | `_bool` strips whitespace (`" true "`, `"\tOFF\n"`); `Settings.workspace` follows a symlink; whitespace path does not crash; dotenv blank/export/spaced-key lines; `apply_tool_focus` with whitespace-only and duplicate names |
+| `tests/edge_extra/test_plugins_more_edges.py` | 3 | `load_plugins` follows a `.py` symlink, skips a broken symlink, reports a binary `.py` without crashing, and loads when the plugins directory itself is a symlink |
+| `tests/edge_extra/test_trinity_more_edges.py` | 4 | `compact_messages` with int/list content and non-dict items (used to TypeError); junk/NaN/inf/negative limits and a non-list history; `out_of_turns_result` on None/bytes/tool-call leftovers |
+| `tests/edge_extra/test_evolve_cmd_edges.py` | 4 | `_default_test_cmd()` uses `shlex.quote(sys.executable)` (PATH regression guard); `AVRONE_EVOLVE_TEST_CMD` override; timeout `<= 0` clamped to 1; junk timeout falls back to 900; malformed edits return an error result |
+
+Autopilot bash lanes (`deepcov`/`newmods`/`tools`/`robust`) already have integration coverage in `tests/test_autopilot_edges.py` (deselected by `-m 'not integration'`). This round guards the Python-side gate command and propose failure modes those lanes rely on.
+
+## Bugs found and fixed (root cause, Linux + macOS)
+
+1. **`avrone/trinity.py:483-509`** — `compact_messages` used `len(m.get("content") or "")` and `m.get("role")` without checking types. A history item that was not a dict, or whose `content` was an int/list, raised `TypeError` and could crash the agent loop. Non-list histories, non-finite/negative limits, and non-string content are now skipped; only string bodies count toward the size.
+2. **`avrone/mcp_client.py:105-109`** — `StdioTransport._read_loop` only ignored `JSONDecodeError`. A deeply nested stdout line raised `RecursionError` (a `RuntimeError`/`Exception`), which jumped to the `finally` and failed *every* in-flight request with "MCP server process exited" even though the child was still running. `RecursionError`/`ValueError`/`TypeError` are now ignored like other poison lines.
+3. **`avrone/mcp_client.py:431-438`** — `load_config` used `exists()` then `read_text()`, so a path that was a directory or a broken symlink raised `IsADirectoryError`/`OSError` to any caller that did not catch. Missing, non-file, unreadable, or undecodable paths now return `{}` (malformed JSON still raises, as the existing unit test requires).
+4. **`avrone/config.py:159-160`** — `_bool` did not strip whitespace, so `AVRONE_GOVERNOR= true ` was silently `False` and disabled the governor. Values are now `.strip().lower()` before the truthy set is checked.
+5. **`avrone/server.py:740-751`** — `main()` did `int(os.getenv("AVRONE_PORT", "8710"))`, so `AVRONE_PORT=8710abc` / `0` / `65536` crashed process startup. Junk or out-of-range values now fall back to 8710.
+6. **`avrone/telemetry.py:35-40, 45, 144`** — `/api/telemetry?hours=inf` (and `system_map`) computed `time.time() - inf` and could emit non-finite `window_s` into a JSON response. `_finite_window` rejects non-finite, negative, and non-numeric windows and falls back to 86400s.
+7. **`avrone/evolve.py:203-206`** — `_propose_once` did `int(timeout)` with no guard, so a junk timeout raised `ValueError` out of the propose path. Non-numeric values now fall back to 900s (and `<= 0` was already clamped to 1).
+
+No production recon policy was changed.
+
+## Gates (0 failed, 0 errored)
+
+Full non-integration:
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration'
+3491 passed, 362 deselected, 1 warning in 61.43s
+```
+
+Shuffled (pytest-randomly):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -p randomly -m 'not integration'
+3491 passed, 362 deselected, 1 warning in 55.23s
+```
+
+Edge suite (121 previous + 37 new = 158):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
+158 passed in 8.28s
+```
+
+3491 = previous 3454 + 37 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
+
+This round is committed and pushed only on `edge/round-4`. `main` is left at `5cceb52`. No PR opened.

@@ -200,7 +200,10 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
     # under the parallel-clone load of a squad and would reject good unit-level proposals.
     test_cmd = str(test_cmd or os.getenv("AVRONE_EVOLVE_TEST_CMD")
                    or _default_test_cmd())
-    timeout = max(1, int(timeout))
+    try:
+        timeout = max(1, int(timeout))
+    except (TypeError, ValueError):
+        timeout = 900
     # Test the clone's code via PYTHONPATH (beats the installed package) without re-pointing the
     # node's own install, so parallel proposals can't hijack each other or the live system.
     res = await _sh(ctx, f"PYTHONPATH={wt}${{PYTHONPATH:+:$PYTHONPATH}} {test_cmd} 2>&1", wt, timeout=timeout)

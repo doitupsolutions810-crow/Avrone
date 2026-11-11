@@ -4,7 +4,7 @@
 
 When AVRONE is running, open `/static/control-room.html`. The existing root application links to this page. The page is read-only and uses two evidence sources:
 
-- Public GitHub REST endpoints for repository pull requests, commits, workflow runs, job summaries, and artifact metadata.
+- Public GitHub REST endpoints for repository pull requests, commits, workflow runs, job summaries, artifact metadata, exact-SHA commit statuses, and deployment contexts.
 - Same-origin AVRONE endpoints for status, Eternal CodeX runs, run replay, checkpoints, telemetry, fleet directory, and accepted evolution proposals.
 
 The page does not require a GitHub token for the public repository. Some local AVRONE endpoints require the administrator token. The token is held in page memory only; it is not stored in localStorage, sessionStorage, cookies, or URLs.
@@ -13,7 +13,7 @@ The page does not require a GitHub token for the public repository. Some local A
 
 GitHub lifecycle (OPEN/CLOSED, DRAFT/READY, MERGED/UNMERGED) is separate from evidence state (VERIFIED, UNVERIFIED, BLOCKED, NOT RUN). Check state (PASS/FAIL/SKIPPED) is separate again. All evidence must match the selected commit SHA.
 
-A successful Python CI matrix is necessary but not sufficient for the Control Room's full release gate. Coverage artifacts, Docker image verification, in-container Node lifecycle evidence, local Apple-Silicon/Ollama execution, and proposal/edge-case validation remain NOT RUN unless their exact-SHA evidence is actually observed. A missing runtime endpoint is BLOCKED/NOT CONNECTED, never PASS.
+A successful Python CI matrix is necessary but not sufficient for the Control Room's full release gate. The Vercel commit-status context is shown separately; an error is FAIL, pending is UNVERIFIED, and success is still PENDING REVIEW until a preview URL is available and a real browser smoke test runs. Coverage artifacts, Docker image verification, in-container Node lifecycle evidence, local Apple-Silicon/Ollama execution, and proposal/edge-case validation remain NOT RUN unless their exact-SHA evidence is actually observed. A missing runtime endpoint is BLOCKED/NOT CONNECTED, never PASS.
 
 ## Current observed AVRONE API surfaces
 

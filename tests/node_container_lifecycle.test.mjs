@@ -31,14 +31,14 @@ function waitForMatch(proc, regex, timeoutMs = 10000) {
 }
 
 test("supervisor observes child SIGTERM exit and reaps the child", async t => {
-  const workerSource = "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)";
+  const workerSource = "process.on('SIGTERM', () => process.exit(0)); process.stdout.write('READY\\n'); setInterval(() => {}, 1000)";
   const supervisorSource = [
     'const { spawn } = require("node:child_process");',
-    'const child = spawn(process.execPath, ["-e", ' + JSON.stringify(workerSource) + '], { stdio: "ignore" });',
+    'const child = spawn(process.execPath, ["-e", ' + JSON.stringify(workerSource) + '], { stdio: ["ignore", "pipe", "ignore"] });',
     'child.once("exit", (code, signal) => {',
     '  process.stdout.write("CHILD_EXITED=" + code + ":" + signal + "\\n", () => process.exit(code === 0 ? 0 : 3));',
     '});',
-    'child.once("spawn", () => process.stdout.write("CHILD_PID=" + child.pid + "\\n"));',
+    'child.stdout.once("data", chunk => { if (chunk.toString().includes("READY")) process.stdout.write("CHILD_PID=" + child.pid + "\\n"); });',
     'setInterval(() => {}, 1000);'
   ].join("\n");
   const supervisor = spawn(process.execPath, ["-e", supervisorSource], { stdio: ["ignore", "pipe", "pipe"] });

@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","focusPRNumber","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","loadWorkflowDetails","loadRun","renderPRs","renderVerification"];
+ const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","focusPRNumber","resolvePRSelection","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","loadWorkflowDetails","loadRun","renderPRs","renderVerification"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -61,6 +61,19 @@ test("default focus selects the newest open PR while preserving an explicit sele
  assert.equal(c.currentPR().number,28);
  c.state.selectedPR=27;
  assert.equal(c.currentPR().number,27);
+});
+test("refresh selection resolves once, preserves explicit PR and preserves All PRs",()=>{
+ const c=makeContext({state:{prs:[
+  {number:27,state:"open",updated_at:"2026-11-11T09:49:11Z"},
+  {number:28,state:"open",updated_at:"2026-11-11T17:53:21Z"}
+ ]}});
+ assert.equal(c.resolvePRSelection(c.state.prs),28);
+ c.state.selectedPR=27;
+ assert.equal(c.resolvePRSelection(c.state.prs),27);
+ c.state.selectedPR=null;
+ assert.equal(c.resolvePRSelection(c.state.prs),null);
+ c.state.selectedPR=999;
+ assert.equal(c.resolvePRSelection(c.state.prs),28);
 });
 test("default focus falls back to most recent PR when none are open",()=>{
  const c=makeContext({state:{prs:[

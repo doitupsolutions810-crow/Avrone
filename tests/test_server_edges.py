@@ -448,3 +448,117 @@ def test_establish_health_check_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(sovereign.LocalRunner, "run", failing)
     with pytest.raises(RuntimeError, match="health check failed"):
         run(sovereign.establish(rsettings(tmp_path)))
+
+
+# ---------------------------------------------------------------- Control Room contract tests
+def test_control_room_assets_are_linked_and_accessible():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    home = (root / "avrone" / "static" / "index.html").read_text(encoding="utf-8")
+    assert '/static/control-room.css' in page
+    assert '/static/control-room.js' in page
+    assert '/static/control-room.html' in home
+    assert 'aria-label="Control room views"' in page
+
+
+def test_control_room_reads_real_repository_and_runtime_sources():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for endpoint in ("/pulls?state=all", "/commits?per_page=", "/actions/runs?per_page=",
+                     "/api/status", "/api/runs", "/api/checkpoints", "/api/telemetry",
+                     "/api/fleet/directory", "/api/evolve"):
+        assert endpoint in js, endpoint
+
+
+def test_control_room_exact_sha_binding_never_trusts_another_commit():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'run.head_sha===sha' in js
+    assert 'same=!!run&&run.head_sha===sha' in js
+    assert '"NOT RUN"' in js and '"UNVERIFIED"' in js
+
+
+def test_control_room_keeps_github_lifecycle_separate_from_evidence():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for state in ('"DRAFT"', '"READY"', '"MERGED"', '"UNMERGED"', '"VERIFIED"',
+                  '"UNVERIFIED"', '"BLOCKED"', '"NOT RUN"', '"PASS"', '"FAIL"'):
+        assert state in js, state
+
+
+def test_control_room_never_persists_admin_credentials():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    assert "localStorage" not in js and "sessionStorage" not in js
+    assert 'type="password"' in page
+    assert 'state.adminToken=$("admin-token").value.trim()' in js
+
+
+def test_control_room_is_read_only_and_does_not_call_mutation_routes():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for mutation in ("/api/chat", "/api/fleet/tell", "DELETE", "POST", "PATCH", "PUT"):
+        assert mutation not in js
+
+
+def test_control_room_escapes_untrusted_remote_content_and_restricts_links():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'function esc(v)' in js
+    assert 'u.protocol==="https:"' in js
+    assert 'rel="noopener noreferrer"' in js
+
+
+def test_control_room_filters_cover_requested_dimensions():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for field in ("f-repo", "f-pr", "f-commit", "f-round", "f-lane", "f-agent",
+                  "f-runtime", "f-verification"):
+        assert 'id="' + field + '"' in page
+    assert "function activeFilters()" in js
+    assert "function matchesCommon(obj, f)" in js
+
+
+def test_control_room_release_gates_require_inspection_not_artifact_names():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert '"PENDING REVIEW"' in js
+    assert "Artifact metadata is not content validation" in js
+    assert "image build, inspect, digest and provenance" in js
+    assert "graceful shutdown" in js
+
+
+def test_control_room_exposes_explicit_edge_case_catalog_without_faking_passes():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for phrase in ("Duplicate lane assignment", "Lease expiry / stale owner",
+                   "Checkpoint collision", "Worker exception", "Failure propagation",
+                   "Malformed and torn JSONL", "Path traversal and symlinks",
+                   "Resource exhaustion", "Exact-SHA binding", "Missing / expired artifacts",
+                   "Docker unavailable", "Node lifecycle", "Secret redaction",
+                   "API partial failure", "Untrusted pull-request data"):
+        assert phrase in js, phrase
+    assert 'badge("NOT RUN")' in js
+
+
+def test_control_room_responsive_styles_and_coverage_views_exist():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    css = (root / "avrone" / "static" / "control-room.css").read_text(encoding="utf-8")
+    html = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    assert "@media(max-width:720px)" in css
+    assert 'id="artifact-list"' in html
+    assert 'id="compare-result"' in html
+    assert 'id="release-list"' in html

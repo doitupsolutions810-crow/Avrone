@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","safeHref","prLifecycle","prEvidence","latestForSha","matchesCommon","ghPages","evidenceData"];
+ const names=["esc","safeHref","prLifecycle","prEvidence","latestForSha","matchesCommon","ghPages","evidenceData","hasError"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -144,4 +144,19 @@ test("GitHub pagination surfaces authorization and rate-limit errors",async()=>{
 test("GitHub pagination propagates network failure and clears timer",async()=>{
  let cleared=false;const c=makeContext({fetch:async()=>{throw new Error("network disconnected");}});
  c.clearTimeout=()=>{cleared=true;};await assert.rejects(()=>c.ghPages("/pulls",1),/network disconnected/);assert.equal(cleared,true);
+});
+
+
+test("GitHub pagination rejects off-domain next links without following them",async()=>{
+ let calls=0;
+ const c=makeContext({fetch:async()=>{calls++;return response([{id:1}],{headers:{Link:"<https://evil.example/steal>; rel=\"next\""}});}});
+ await assert.rejects(()=>c.ghPages("/pulls",5),/Rejected unsafe GitHub pagination URL/);
+ assert.equal(calls,1);
+});
+test("API health helper distinguishes missing endpoint errors from empty successful results",()=>{
+ const c=makeContext({state:{errors:[{key:"runs",message:"503 unavailable"}]}});
+ assert.equal(c.hasError("runs"),true);
+ assert.equal(c.hasError("checkpoints"),false);
+ c.state.errors=[];
+ assert.equal(c.hasError("runs"),false);
 });

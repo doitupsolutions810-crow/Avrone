@@ -257,3 +257,42 @@ def test_listing_is_capped_and_discloses_omitted_entry_count(env):
     rows = out.splitlines()[1:]
     assert len(rows) == aft.LIST_MAX_ENTRIES + 1
     assert rows[-1] == "...[7 more]"
+
+
+def test_concurrent_agent_writes_never_exceed_the_directory_quota(env, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("AVRONE_AGENT_FS_QUOTA_MB", "0.001")
+    monkeypatch.setenv("AVRONE_AGENT_FS_MAX_FILE_MB", "0.001")
+    payload = "x" * 200
+
+    def write(index):
+        return call(env, "fs_write", path=f"parallel-{index}.bin", content=payload)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(write, range(12)))
+
+    successful = [result for result in results if result.startswith("wrote ")]
+    rejected = [result for result in results if result.startswith("ERROR")]
+    assert len(successful) == 5
+    assert len(rejected) == 7
+    assert aft.dir_usage(env.dir) == 1000
+    assert len(list(env.dir.glob("parallel-*.bin"))) == 5
+
+
+def test_concurrent_appends_are_serialized_without_lost_bytes(env):
+    from concurrent.futures import ThreadPoolExecutor
+
+    payload = "z" * 50
+
+    def append(_):
+        return call(env, "fs_write", path="append.log", content=payload, append=True)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(append, range(20)))
+
+    assert all(result.startswith("wrote append.log (") for result in results)
+    content = (env.dir / "append.log").read_text()
+    assert len(content) == 1000
+    assert content == payload * 20
+    assert aft.dir_usage(env.dir) == 1000

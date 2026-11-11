@@ -610,3 +610,32 @@ def test_unreadable_nonce_cache_boot_guard_rejects_pre_restart_signatures(fm):
     after = str(int(guard) + 1)
     fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", ts=after, nonce="postboot"))
     assert "postboot" in fm._nonces
+
+
+def test_nonce_persistence_write_failure_does_not_reject_authenticated_request(fm, monkeypatch):
+    def fail_replace(source, destination):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(fleet_mod.os, "replace", fail_replace)
+    headers = sign("tok", "POST", "/p", b"", nonce="persist-write-failure")
+    fm.verify("POST", "/p", b"", headers)
+    assert "persist-write-failure" in fm._nonces
+    leftovers = list(fm._nonce_path.parent.glob(f"{fm._nonce_path.name}.*.tmp"))
+    assert leftovers == []
+
+
+def test_nonce_cache_loader_treats_deeply_nested_json_as_unreadable(fm):
+    fm._nonce_path.write_text("[" * 1200 + "0" + "]" * 1200)
+    fm._boot_guard = None
+    loaded = fm._load_nonces()
+    assert loaded == {}
+    assert fm._boot_guard is not None
+
+
+def test_nonce_cache_loader_caps_persisted_entries_without_evicting_runtime_entries(fm, monkeypatch):
+    monkeypatch.setattr(fleet_mod, "NONCE_CACHE_MAX", 2)
+    expiry = int(time.time()) + 300
+    fm._nonce_path.write_text(json.dumps({"first": expiry, "second": expiry, "third": expiry}))
+    loaded = fm._load_nonces()
+    assert list(loaded) == ["first", "second"]
+    assert len(loaded) == 2

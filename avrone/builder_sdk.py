@@ -11,7 +11,7 @@ from .bootstrap import build_core, run_cleanups
 from .config import Settings
 
 BuildMode = Literal["squad", "chat", "deep"]
-BuildStatus = Literal["UNVERIFIED", "PASS", "FAIL", "NOT_RUN"]
+BuildStatus = Literal["UNVERIFIED", "VERIFIED", "PASS", "FAIL", "NOT_RUN"]
 
 CONTROL_ROOM_SPEC = """
 Build the AVRONE Control Room in the existing repository and harness. Reuse
@@ -205,7 +205,7 @@ class BuilderAgentSDK:
         result.status = (
             "FAIL" if evidence.status == "FAIL"
             else "UNVERIFIED" if self.policy.require_git_sha_for_verified and not evidence.target_sha
-            else "PASS"
+            else "VERIFIED"
         )
         return evidence
 

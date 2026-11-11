@@ -38,7 +38,7 @@ test("supervisor observes child SIGTERM exit and reaps the child", async t => {
     '});',
     'child.once("spawn", () => process.stdout.write("CHILD_PID=" + child.pid + "\\n"));',
     'setInterval(() => {}, 1000);'
-  ].join("\\n");
+  ].join("\n");
   const supervisor = spawn(process.execPath, ["-e", supervisorSource], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { if (supervisor.exitCode === null && supervisor.signalCode === null) supervisor.kill("SIGKILL"); });
   const ready = await waitForMatch(supervisor, /CHILD_PID=(\\d+)/);

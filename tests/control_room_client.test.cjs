@@ -37,7 +37,7 @@ test("HTML escaping neutralizes tags, ampersands, and quote types",()=>{
 test("safeHref accepts HTTPS and rejects executable or non-web schemes",()=>{
  const c=makeContext();
  assert.equal(c.safeHref("https://github.com/example/repo"),"https://github.com/example/repo");
- assert.equal(c.safeHref("https://preview.vercel.app"),"https://preview.vercel.app");
+ assert.equal(c.safeHref("https://preview.vercel.app"),"https://preview.vercel.app/");
  assert.equal(c.safeHref("https://deploy.vercel.com"),"https://deploy.vercel.com");
  assert.equal(c.safeHref("https://evil.github.com/phish"),"#");
  assert.equal(c.safeHref("https://github.com.evil.example"),"#");
@@ -55,12 +55,12 @@ test("GitHub lifecycle keeps draft, merged, and unmerged separate",()=>{
  assert.equal(c.prLifecycle({state:"closed",merged:false}).unmerged,true);
 });
 test("green workflow alone remains UNVERIFIED and absent workflow is NOT RUN",()=>{
- const c=makeContext({state:{workflows:[{name:"CI",head_sha:"abc123",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:00:00Z"}]}});
+ const c=makeContext({state:{status:{},workflows:[{name:"CI",head_sha:"abc123",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:00:00Z"}]}});
  assert.equal(c.prEvidence({head:{sha:"abc123"}}),"UNVERIFIED");
  assert.equal(c.prEvidence({head:{sha:"missing"}}),"NOT RUN");
 });
 test("PR failure is explicit and successful evidence does not transfer across SHAs",()=>{
- const c=makeContext({state:{workflows:[
+ const c=makeContext({state:{status:{},workflows:[
   {name:"CI",head_sha:"sha-a",status:"completed",conclusion:"failure",updated_at:"2026-11-11T12:00:00Z"},
   {name:"CI",head_sha:"sha-b",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:01:00Z"}]}});
  assert.equal(c.prEvidence({head:{sha:"sha-a"}}),"FAIL");
@@ -101,15 +101,25 @@ test("Python matrix legs use their own same-SHA conclusions",()=>{
  const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-2",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
  assert.equal(g["Exact-SHA Python 3.11"],"PASS");assert.equal(g["Exact-SHA Python 3.12"],"FAIL");
 });
-test("coverage names remain PENDING REVIEW even when artifacts are expired",()=>{
- const c=makeContext({state:{jobs:{"run-3":[]},artifacts:{"run-3":[{name:"coverage-xml"},{name:"coverage-json",expired:true}]}}});
+test("coverage artifacts need both exact-SHA Python matrix legs before passing",()=>{
+ const c=makeContext({state:{jobs:{"run-3":[
+  {name:"test (3.11)",conclusion:"success"},{name:"test (3.12)",conclusion:"success"}
+ ]},artifacts:{"run-3":[
+  {name:"coverage-xml-py3.11"},{name:"coverage-xml-py3.12"},
+  {name:"coverage-json-py3.11"},{name:"coverage-json-py3.12",expired:true}
+ ]}}});
  const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-3",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
- assert.equal(g["coverage.xml artifact"],"PENDING REVIEW");assert.equal(g["coverage.json artifact"],"EXPIRED");
+ assert.equal(g["coverage.xml artifact"],"PASS");
+ assert.equal(g["coverage.json artifact"],"EXPIRED");
 });
-test("Docker and Node job success remains provisional",()=>{
- const c=makeContext({state:{jobs:{"run-4":[{name:"docker image build",conclusion:"success"},{name:"node container lifecycle",conclusion:"success"}]}}});
+test("Docker and Node job success remains NOT RUN without its evidence artifacts",()=>{
+ const c=makeContext({state:{jobs:{"run-4":[
+  {name:"Docker image verification",conclusion:"success"},
+  {name:"Node container lifecycle",conclusion:"success"}
+ ],artifacts:{"run-4":[]}}});
  const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-4",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
- assert.equal(g["Docker image verification"],"PENDING REVIEW");assert.equal(g["In-container Node lifecycle"],"PENDING REVIEW");
+ assert.equal(g["Docker image verification"],"NOT RUN");
+ assert.equal(g["In-container Node lifecycle"],"NOT RUN");
 });
 test("Vercel statuses preserve failure, pending, review, and stale SHA",()=>{
  for(const [state,expected,statusSha] of [["failure","FAIL","same"],["pending","UNVERIFIED","same"],["success","PENDING REVIEW","same"],["success","NOT RUN","old"]]){
@@ -185,12 +195,12 @@ test("job-detail API failure blocks matrix and runtime gates",()=>{
 });
 test("artifact API failure is BLOCKED; expired artifacts are EXPIRED, not passed",()=>{
  const c=makeContext({state:{
-  artifacts:{"run-y":[{name:"coverage-xml",expired:true}]},
+  artifacts:{"run-y":[{name:"coverage-xml-py3.11",expired:true}]},
   errors:[{key:"artifacts-run-y",message:"404 expired"}]
  }});
  const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-y",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
  assert.equal(g["coverage.xml artifact"],"BLOCKED");
- const c2=makeContext({state:{artifacts:{"run-y":[{name:"coverage-xml",expired:true}]}}});
+ const c2=makeContext({state:{jobs:{"run-y":[{name:"test (3.11)",conclusion:"success"},{name:"test (3.12)",conclusion:"success"}]},artifacts:{"run-y":[{name:"coverage-xml-py3.11",expired:true}]}}});
  const g2=Object.fromEntries(c2.evidenceData({head:{sha:"same"}},{id:"run-y",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
  assert.equal(g2["coverage.xml artifact"],"EXPIRED");
 });
@@ -220,7 +230,7 @@ test("GitHub pagination rejects protocol downgrade and repository traversal",asy
 });
 
 test("non-CI workflow failures cannot mask the exact-SHA CI run",()=>{
- const c=makeContext({state:{workflows:[
+ const c=makeContext({state:{status:{},workflows:[
   {id:10,name:"CI",path:".github/workflows/ci.yml",head_sha:"same",status:"completed",conclusion:"success",updated_at:"2026-11-11T10:00:00Z"},
   {id:11,name:"squad-round-notify",path:".github/workflows/squad-round-notify.yml",head_sha:"same",status:"completed",conclusion:"failure",updated_at:"2026-11-11T10:01:00Z"}
  ]}});

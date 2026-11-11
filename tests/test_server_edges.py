@@ -663,6 +663,15 @@ def test_ci_publishes_exact_sha_coverage_docker_and_node_lifecycle_evidence():
     assert 'name: Node container lifecycle' in workflow
     assert 'node:22-slim' in workflow and '--network none' in workflow
     assert 'node --test node_container_lifecycle.test.mjs' in workflow
+    assert 'name: Docker image verification' in workflow
+    assert 'name: Node container lifecycle' in workflow
+    assert 'actions/checkout@v7' in workflow
+    assert 'actions/setup-python@v7' in workflow
+    assert 'actions/upload-artifact@v7' in workflow
+    assert 'name: coverage-xml-py${{ matrix.python }}' in workflow
+    assert 'name: coverage-json-py${{ matrix.python }}' in workflow
+    assert 'docker-image-evidence' in workflow
+    assert 'node-container-lifecycle-evidence' in workflow
     assert 'CHILD_EXITED' in node_test
     assert 'SIGTERM' in node_test
     assert 'process.kill(childPid, 0)' in node_test

@@ -51,3 +51,7 @@ These tests supplement (rather than replace) the Python contract/security suite,
 ### Runtime and list-boundary edge cases
 
 GitHub list pages are rejected when a row is null, primitive, or an array; pagination timeouts remain active through response-body parsing. Local runtime lists are normalized before rendering, and rejected checkpoint, run, agent, proposal, or fleet records are disclosed rather than causing a renderer exception. The dashboard's local admin token is not forwarded to GitHub API requests.
+
+### Additional concurrency, pagination, and HTML-injection cases
+
+The client caps pagination at ten pages even when a larger limit is requested, rejects malformed `rel=next` headers instead of silently truncating, and accepts quoted or unquoted valid next relations. Pull-request identifiers are HTML-escaped at render time. Asynchronous commit-status responses are bound to the currently selected PR SHA so an older response cannot overwrite a newer selection. Refresh requests use generation IDs so an earlier overlapping refresh cannot replace the latest snapshot. Malformed list rows are filtered and disclosed, and JSON request deadlines remain active through response-body reads.

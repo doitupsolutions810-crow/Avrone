@@ -57,7 +57,7 @@ async function gh(path) {
  return jsonFetch(GH+path,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}});
 }
 async function ghPages(path,maxPages) {
- const all=[];let next=GH+path,pages=0;const cap=maxPages||5;const seen=new Set();
+ const all=[];let next=GH+path,pages=0;const cap=Number.isSafeInteger(maxPages)?Math.max(1,Math.min(10,maxPages)):5;const seen=new Set();
  while(next&&pages<cap){
   if(seen.has(next)) throw new Error("Repeated GitHub pagination URL");
   seen.add(next);
@@ -73,8 +73,9 @@ async function ghPages(path,maxPages) {
   if(rows.some(row=>!row||typeof row!=="object"||Array.isArray(row))) throw new Error("Malformed GitHub list record on page "+(pages+1));
   all.push(...rows);pages++;
   const header=res.headers.get("Link")||"";
-  const match=header.split(",").map(x=>x.trim()).find(x=>/rel="next"/.test(x));
+  const match=header.split(",").map(x=>x.trim()).find(x=>/rel\s*=\s*"?next"?/i.test(x));
   const candidate=match?(match.match(/<([^>]+)>/)||[])[1]||null:null;
+  if(match&&!candidate) throw new Error("Malformed GitHub next-page Link header");
   if(candidate) {
    let parsed;
    try{parsed=new URL(candidate,GH);}catch(_){throw new Error("Invalid GitHub pagination URL");}
@@ -105,8 +106,8 @@ function prEvidence(p) {
  return "UNVERIFIED";
 }
 function isCiRun(run) { if(!run)return false; const workflowPath=String(run.path||""); return workflowPath?workflowPath===".github/workflows/ci.yml":String(run.name||"").toLowerCase()==="ci"; }
-function latestForSha(sha) { const rows=Array.isArray(state.workflows)?state.workflows:[]; return rows.filter(w=>w&&typeof w==="object"&&w.head_sha===sha&&isCiRun(w)).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))[0]||null; }
-function currentPR() { return state.prs.find(p=>p.number===Number(state.selectedPR))||state.prs.find(p=>p.number===27)||null; }
+function latestForSha(sha) { const rows=validRecords(state.workflows).items; return rows.filter(w=>w.head_sha===sha&&isCiRun(w)).sort((a,b)=>{const da=Date.parse(a.updated_at||"")||0,db=Date.parse(b.updated_at||"")||0;return db-da;})[0]||null; }
+function currentPR() { const rows=validRecords(state.prs).items; return rows.find(p=>Number(p.number)===Number(state.selectedPR))||rows.find(p=>Number(p.number)===27)||null; }
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
 function hasError(key) { return Array.isArray(state.errors)&&state.errors.some(x=>x&&x.key===key); }
@@ -123,8 +124,8 @@ function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
 async function loadSelectedCommitStatus() {
  const sha=currentSha();state.commitStatus=null;state.commitStatusSha=sha;
  if(!sha)return;
- try{state.commitStatus=await gh("/commits/"+encodeURIComponent(sha)+"/status");}
- catch(e){state.errors.push({key:"commit-status",message:e.message});}
+ try{const result=await gh("/commits/"+encodeURIComponent(sha)+"/status");if(currentSha()===sha&&state.commitStatusSha===sha)state.commitStatus=result;}
+ catch(e){if(currentSha()===sha&&state.commitStatusSha===sha)state.errors.push({key:"commit-status",message:e.message});}
 }
 function filterValue(id) { return ($(id).value||"").trim().toLowerCase(); }
 function activeFilters() {
@@ -172,7 +173,7 @@ function renderTarget() {
  $("target-state").innerHTML=badge(life.state)+badge(life.draft?"DRAFT":"READY")+badge(life.merged?"MERGED":"UNMERGED")+badge(prEvidence(p));
 }
 function renderMetrics() {
- const open=state.prs.filter(p=>p.state==="open");
+ const open=validRecords(state.prs).items.filter(p=>p.state==="open");
  $("m-open").textContent=open.length;
  $("m-draft").textContent=open.filter(p=>p.draft&&!p.merged_at).length;
  $("m-runs").textContent=state.workflows.length;
@@ -186,18 +187,20 @@ function item(title,body,meta,href) {
 }
 function renderPRs() {
  const f=activeFilters();
- const rows=state.prs.filter(p=>matchesCommon(p,f));
+ const records=validRecords(state.prs);
+ const rows=records.items.filter(p=>matchesCommon(p,f));
  $("pr-count").textContent=rows.length+" records";
  if(!rows.length) return showEmpty("pull-list","No pull requests match these filters.");
  const body=rows.map(p=>{
   const life=prLifecycle(p), ev=prEvidence(p), sha=p.head&&p.head.sha||"";
-  return '<tr><td><b>#'+p.number+'</b> '+esc(p.title)+'</td><td>'+badge(life.state)+" "+badge(life.draft?"DRAFT":"READY")+'</td><td>'+badge(life.merged?"MERGED":"UNMERGED")+'</td><td>'+badge(ev)+'</td><td><code>'+esc(formatSha(sha))+'</code></td><td>'+esc(p.head&&p.head.ref||"")+'</td><td>'+link(p.html_url,"Open ↗")+'</td></tr>';
+  return '<tr><td><b>#'+esc(p.number)+'</b> '+esc(p.title)+'</td><td>'+badge(life.state)+" "+badge(life.draft?"DRAFT":"READY")+'</td><td>'+badge(life.merged?"MERGED":"UNMERGED")+'</td><td>'+badge(ev)+'</td><td><code>'+esc(formatSha(sha))+'</code></td><td>'+esc(p.head&&p.head.ref||"")+'</td><td>'+link(p.html_url,"Open ↗")+'</td></tr>';
  }).join("");
  $("pull-list").innerHTML='<table class="data-table"><thead><tr><th>Pull request</th><th>GitHub state</th><th>Merge state</th><th>Evidence</th><th>Head SHA</th><th>Branch</th><th>Link</th></tr></thead><tbody>'+body+'</tbody></table>';
 }
 function renderCommits() {
  const f=activeFilters();
- const rows=state.commits.filter(c=>matchesCommon({sha:c.sha,message:c.commit&&c.commit.message},f));
+ const records=validRecords(state.commits);
+ const rows=records.items.filter(c=>matchesCommon({sha:c.sha,message:c.commit&&c.commit.message},f));
  $("commit-count").textContent=rows.length+" records";
  if(!rows.length) return showEmpty("commit-list","No commits match these filters.");
  $("commit-list").innerHTML='<table class="data-table"><thead><tr><th>Commit</th><th>Message</th><th>Author</th><th>Date</th><th>Link</th></tr></thead><tbody>'+rows.map(c=>'<tr><td><code>'+esc(formatSha(c.sha))+'</code></td><td>'+esc((c.commit&&c.commit.message||"").split("\n")[0])+'</td><td>'+esc(c.commit&&c.commit.author&&c.commit.author.name||"")+'</td><td>'+esc(date(c.commit&&c.commit.author&&c.commit.author.date))+'</td><td>'+link(c.html_url||c.url,"Open ↗")+'</td></tr>').join("")+'</tbody></table>';
@@ -206,9 +209,10 @@ function renderCommits() {
  $("compare-head").innerHTML='<option value="">Head commit…</option>'+options;
 }
 function renderOverview() {
- const top=state.prs.filter(p=>p.state==="open").slice(0,7);
+ const prs=validRecords(state.prs).items, commits=validRecords(state.commits).items;
+ const top=prs.filter(p=>p.state==="open").slice(0,7);
  $("overview-prs").innerHTML=top.length?top.map(p=>item("#"+p.number+" · "+p.title,(p.head&&p.head.ref||"")+" → "+(p.base&&p.base.ref||"main"),badge(p.draft?"DRAFT":"READY")+" "+badge(prEvidence(p)),p.html_url)).join(""):'<div class="empty">No open pull requests observed.</div>';
- const recent=state.commits.slice(0,6);
+ const recent=commits.slice(0,6);
  $("overview-commits").innerHTML=recent.length?recent.map(c=>item(formatSha(c.sha),(c.commit&&c.commit.message||"").split("\n")[0],'<span class="muted">'+esc(date(c.commit&&c.commit.author&&c.commit.author.date))+'</span>',c.html_url)).join(""):'<div class="empty">No commits available.</div>';
  const s=state.status||{};
  $("runtime-summary").innerHTML=state.status?[
@@ -412,12 +416,12 @@ async function loadWorkflowDetails(run) {
  ]);
  if(tasks[0].status==="fulfilled") {
   const rows=listEnvelope(tasks[0].value,"jobs");
-  if(rows) {state.jobs[id]=rows;state.errors=state.errors.filter(x=>x.key!=="jobs-"+id);}
+  if(rows) {state.jobs[id]=rows;state.errors=state.errors.filter(x=>x&&x.key!=="jobs-"+id);}
   else state.errors.push({key:"jobs-"+id,message:"Malformed job list payload"});
  } else state.errors.push({key:"jobs-"+id,message:tasks[0].reason&&tasks[0].reason.message||"Job details unavailable"});
  if(tasks[1].status==="fulfilled") {
   const rows=listEnvelope(tasks[1].value,"artifacts");
-  if(rows) {state.artifacts[id]=rows;state.artifactFinalized[id]=run.status==="completed";state.errors=state.errors.filter(x=>x.key!=="artifacts-"+id);}
+  if(rows) {state.artifacts[id]=rows;state.artifactFinalized[id]=run.status==="completed";state.errors=state.errors.filter(x=>x&&x.key!=="artifacts-"+id);}
   else state.errors.push({key:"artifacts-"+id,message:"Malformed artifact list payload"});
  } else state.errors.push({key:"artifacts-"+id,message:tasks[1].reason&&tasks[1].reason.message||"Artifact metadata unavailable"});
  renderTarget();renderPRs();renderOverview();renderVerification();renderRelease();
@@ -444,8 +448,9 @@ async function compareWorkflowRuns() {
   link(a.html_url,"Open Run A ↗")+' · '+link(b.html_url,"Open Run B ↗");
 }
 async function refresh() {
+ const generation=(state.refreshGeneration||0)+1;state.refreshGeneration=generation;
  $("connection").textContent="REFRESHING";$("connection").className="pill pending";
- state.errors=[];
+ state.errors=[];state.dataWarnings=[];
  const tasks=[
   ["prs",()=>ghPages("/pulls?state=all&per_page=100&sort=updated&direction=desc",5)],
   ["commits",()=>ghPages("/commits?per_page=100",5)],
@@ -458,17 +463,26 @@ async function refresh() {
   ["evolve",()=>local("/api/evolve")]
  ];
  state.pagination={};
- await Promise.all(tasks.map(async t=>{try{const val=await t[1]();
-  if(["prs","commits","workflows"].includes(t[0])){state[t[0]]=val.items;state.pagination[t[0]]=val;}
-  else state[t[0]]=val;
- }catch(e){state[t[0]]=null;state.errors.push({key:t[0],message:e.message});}}));
- if(!Array.isArray(state.prs)) state.prs=[];
- state.prs.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
- $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+p.number+'">#'+p.number+' · '+esc(p.title).slice(0,65)+'</option>').join("");
+ const outcomes=await Promise.all(tasks.map(async t=>{try{return {key:t[0],value:await t[1](),error:null};}catch(e){return {key:t[0],value:null,error:e};}}));
+ if(state.refreshGeneration!==generation)return;
+ for(const outcome of outcomes){
+  const key=outcome.key;
+  if(outcome.error){state[key]=null;state.errors.push({key,message:outcome.error.message});continue;}
+  if(["prs","commits","workflows"].includes(key)){
+   const envelope=outcome.value;
+   if(!envelope||!Array.isArray(envelope.items)){state[key]=[];state.errors.push({key,message:"Malformed GitHub list envelope"});continue;}
+   const cleaned=validRecords(envelope.items);state[key]=cleaned.items;state.pagination[key]=envelope;
+   if(cleaned.rejected)state.dataWarnings.push(key+": suppressed "+cleaned.rejected+" malformed record(s)");
+  } else state[key]=outcome.value;
+ }
+ state.prs=validRecords(state.prs).items;
+ state.prs.sort((a,b)=>(Date.parse(b.updated_at||"")||0)-(Date.parse(a.updated_at||"")||0));
+ $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+esc(p.number)+'">#'+esc(p.number)+' · '+esc(p.title).slice(0,65)+'</option>').join("");
  if(state.prs.some(p=>p.number===27)) $("f-pr").value="27";
  else $("f-pr").value="";
  state.selectedPR=Number($("f-pr").value||27);
  await loadSelectedCommitStatus();
+ if(state.refreshGeneration!==generation)return;
  if(!Array.isArray(state.commits)) state.commits=[];
  if(!Array.isArray(state.workflows)) state.workflows=[];
  if(!Array.isArray(state.runs)) state.runs=[];
@@ -476,11 +490,12 @@ async function refresh() {
  if(!Array.isArray(state.fleet)) state.fleet=null;
  if(state.telemetry===null) state.telemetry=null;
  renderTarget();renderMetrics();renderOverview();renderPRs();renderCommits();renderMissions();renderSwarm();renderAgents();renderVerification();renderRelease();
- const ok=!["prs","commits","workflows","commit-status"].some(hasError);
+ const ok=!["prs","commits","workflows","commit-status"].some(hasError)&&!state.dataWarnings.length;
  $("connection").textContent=ok?"GITHUB LIVE":"GITHUB LIMITED";
  $("connection").className="pill "+(ok?"good":"blocked");
  const trunc=Object.entries(state.pagination||{}).filter(([,v])=>v.truncated).map(([k])=>k);
- $("updated").textContent="Updated "+new Date().toLocaleTimeString()+" · GitHub "+(ok?"connected":"limited")+(trunc.length?" · page cap reached: "+trunc.join(", "):"")+" · AVRONE "+runtimeStatusText();
+ const warnings=state.dataWarnings.length?" · rejected records: "+state.dataWarnings.join("; "):"";
+ $("updated").textContent="Updated "+new Date().toLocaleTimeString()+" · GitHub "+(ok?"connected":"limited")+(trunc.length?" · page cap reached: "+trunc.join(", "):"")+warnings+" · AVRONE "+runtimeStatusText();
  const run=latestForSha(currentSha());
  if(run) loadWorkflowDetails(run);
 }

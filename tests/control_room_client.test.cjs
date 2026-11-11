@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","date","safeHref","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh"];
+ const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","renderPRs"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -602,4 +602,117 @@ test("Control Room cache helper retries incomplete or malformed active job recor
   false,false,false
  );
  assert.equal(result.jobs,true);
+});
+
+
+test("GitHub pagination enforces a hard maximum even when callers request excessive pages",async()=>{
+ let calls=0;
+ const c=makeContext({fetch:async(url)=>{calls++;const page=Number(new URL(url).searchParams.get("page")||1);const next=GH+"/pulls?page="+(page+1);return response([{id:page}],{headers:{Link:page<12?"<"+next+">; rel=\"next\"":""}});}});
+ const result=await c.ghPages("/pulls?page=1",10000);
+ assert.equal(calls,10);
+ assert.equal(result.pages,10);
+ assert.equal(result.items.length,10);
+ assert.equal(result.truncated,true);
+});
+
+test("GitHub pagination rejects a malformed next relation instead of silently truncating",async()=>{
+ const c=makeContext({fetch:async()=>response([{id:1}],{headers:{Link:'rel="next", broken'}})});
+ await assert.rejects(()=>c.ghPages("/pulls",5),/Malformed GitHub next-page Link header/);
+});
+
+test("GitHub pagination accepts valid unquoted next relations",async()=>{
+ let calls=0;
+ const c=makeContext({fetch:async()=>{calls++;return calls===1?response([{id:1}],{headers:{Link:"<"+GH+"/pulls?page=2>; rel=next"}}):response([{id:2}]);}});
+ const result=await c.ghPages("/pulls?page=1",5);
+ assert.deepEqual(JSON.parse(JSON.stringify(result.items.map(x=>x.id))),[1,2]);
+});
+
+test("currentPR ignores malformed rows and resolves numeric identifier representations",()=>{
+ const c=makeContext({state:{prs:[null,[],{number:"28",title:"valid"},{number:27,title:"fallback"}],selectedPR:28}});
+ assert.equal(c.currentPR().title,"valid");
+ c.state.selectedPR=999;
+ assert.equal(c.currentPR().number,27);
+ c.state.prs=null;
+ assert.equal(c.currentPR(),null);
+});
+
+test("latestForSha ignores malformed list rows and tolerates invalid update timestamps",()=>{
+ const c=makeContext({state:{workflows:[
+  null,[],{name:"CI",head_sha:"abc",updated_at:"invalid",id:1},
+  {path:".github/workflows/ci.yml",head_sha:"abc",updated_at:"2026-11-11T00:00:00Z",id:2}
+ ]}});
+ assert.equal(c.latestForSha("abc").id,2);
+});
+
+test("commit status response from an old PR cannot overwrite the newly selected SHA",async()=>{
+ const resolvers={};
+ const c=makeContext({state:{prs:[
+  {number:1,head:{sha:"sha-one"}},
+  {number:2,head:{sha:"sha-two"}}
+ ],selectedPR:1,commitStatus:null,commitStatusSha:"",errors:[]}});
+ c.gh=path=>new Promise(resolve=>{resolvers[path]=resolve;});
+ const first=c.loadSelectedCommitStatus();
+ c.state.selectedPR=2;
+ const second=c.loadSelectedCommitStatus();
+ resolvers["/commits/sha-two/status"]({sha:"sha-two"});
+ await second;
+ resolvers["/commits/sha-one/status"]({sha:"sha-one"});
+ await first;
+ assert.equal(c.state.commitStatusSha,"sha-two");
+ assert.equal(c.state.commitStatus.sha,"sha-two");
+});
+
+test("PR number is escaped in table cells so malformed remote identifiers cannot inject markup",()=>{
+ const c=makeContext({state:{prs:[{
+  number:'"><img src=x onerror=alert(1)>',
+  title:"untrusted title",
+  state:"open",draft:false,merged:false,head:{sha:"abc",ref:"branch"},
+  html_url:"https://github.com/doitupsolutions810-crow/Avrone/pull/1"
+ }]}});
+ const nodes={"pr-count":{textContent:""},"pull-list":{innerHTML:""}};
+ c.$=id=>nodes[id]||(nodes[id]={textContent:"",innerHTML:"",value:""});
+ c.activeFilters=()=>({});
+ c.matchesCommon=()=>true;
+ c.badge=value=>"<b>"+c.esc(value)+"</b>";
+ c.formatSha=value=>String(value||"").slice(0,8);
+ c.renderPRs=vm.runInContext("("+extractFunction("renderPRs")+")",c);
+ c.renderPRs();
+ assert.equal(nodes["pull-list"].innerHTML.includes("<img"),false);
+ assert.equal(nodes["pull-list"].innerHTML.includes("&lt;img"),true);
+});
+
+test("validRecords removes malformed entries without mutating the source array",()=>{
+ const c=makeContext();
+ const input=[{id:1},null,[],0,{id:2}];
+ const before=input.slice();
+ const out=c.validRecords(input);
+ assert.deepEqual(JSON.parse(JSON.stringify(out.items)),[{id:1},{id:2}]);
+ assert.equal(out.rejected,3);
+ assert.deepEqual(input,before);
+});
+
+test("jsonFetch timeout remains active while JSON response body parsing is blocked",async()=>{
+ let timerCallback=null,bodyStartedResolve,signal;
+ const bodyStarted=new Promise(resolve=>{bodyStartedResolve=resolve;});
+ const c=makeContext({fetch:async(_url,options)=>{
+  signal=options.signal;
+  return {ok:true,status:200,statusText:"OK",text:()=>{bodyStartedResolve();return new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(new Error("json body aborted"))));}};
+ }});
+ c.setTimeout=fn=>{timerCallback=fn;return 91;};
+ c.clearTimeout=()=>{};
+ const pending=c.jsonFetch("/stalled-body");
+ await bodyStarted;
+ timerCallback();
+ await assert.rejects(()=>pending,/json body aborted/);
+ assert.equal(signal.aborted,true);
+});
+
+test("HTTP JSON error responses preserve status and structured detail",async()=>{
+ const c=makeContext({fetch:async()=>response({detail:"rate limited"},{status:429,statusText:"Too Many Requests"})});
+ await assert.rejects(()=>c.jsonFetch("/limited"),/429 Too Many Requests: rate limited/);
+});
+
+test("workflow detail cache error filtering tolerates null error entries",()=>{
+ const c=makeContext({state:{errors:[null,{key:"jobs-r1",message:"temporary"}]}});
+ assert.equal(c.hasError("jobs-r1"),true);
 });

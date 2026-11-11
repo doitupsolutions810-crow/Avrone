@@ -78,6 +78,7 @@ function prLifecycle(p) {
 }
 function prEvidence(p) {
  const sha=(p.head&&p.head.sha)||"";
+ if(hasError("workflows")) return "BLOCKED";
  const run=sha&&latestForSha(sha);
  if(!sha||!run) return "NOT RUN";
  if(run.conclusion==="failure"||run.conclusion==="cancelled"||run.conclusion==="timed_out") return "FAIL";
@@ -240,22 +241,30 @@ function evidenceData(p,run) {
  const same=!!run&&run.head_sha===sha;
  const jobs=run&&state.jobs[run.id]||[];
  const artifacts=run&&state.artifacts[run.id]||[];
- const names=artifacts.map(a=>String(a.name||"").toLowerCase());
+ const jobsBlocked=!!run&&hasError("jobs-"+run.id);
+ const artifactsBlocked=!!run&&hasError("artifacts-"+run.id);
+ const names=artifacts.map(a=>({name:String(a.name||"").toLowerCase(),expired:!!a.expired}));
  const job=(rx)=>same?(jobs.find(j=>rx.test(String(j.name||"").toLowerCase()))||null):null;
  const j311=job(/3\.11/), j312=job(/3\.12/);
  const docker=job(/docker/), node=job(/node.*(lifecycle|container)|(lifecycle|container).*node/);
- const candidate=(rx)=>names.some(n=>rx.test(n));
+ const candidate=(rx)=>names.some(a=>rx.test(a.name)&&!a.expired);
+ const expired=(rx)=>names.some(a=>rx.test(a.name)&&a.expired);
  const vercelStatus=state.commitStatusSha===sha&&state.commitStatus?(state.commitStatus.statuses||[]).find(x=>String(x.context||"").toLowerCase()==="vercel"):null;
+ const workflowBlocked=hasError("workflows");
+ const commitStatusBlocked=hasError("commit-status");
+ const pythonState=(job)=>workflowBlocked||jobsBlocked?"BLOCKED":!same||!job?"NOT RUN":job.conclusion==="success"?"PASS":job.conclusion==="failure"?"FAIL":"UNVERIFIED";
+ const artifactState=(rx)=>artifactsBlocked?"BLOCKED":!same?"NOT RUN":candidate(rx)?"PENDING REVIEW":expired(rx)?"EXPIRED":"NOT RUN";
+ const runtimeJobState=(job)=>jobsBlocked?"BLOCKED":!same||!job?"NOT RUN":job.conclusion==="failure"?"FAIL":job.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED";
  const gates=[
-  {name:"Exact-SHA Python 3.11",state:!same||!j311?"NOT RUN":j311.conclusion==="success"?"PASS":j311.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
-  {name:"Exact-SHA Python 3.12",state:!same||!j312?"NOT RUN":j312.conclusion==="success"?"PASS":j312.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
-  {name:"Vercel preview deployment",state:!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:"A successful deployment status still requires an inspectable preview URL and a browser smoke test."},
-  {name:"coverage.xml artifact",state:!same||!candidate(/coverage.*xml|xml.*coverage/)?"NOT RUN":"PENDING REVIEW",note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
-  {name:"coverage.json artifact",state:!same||!candidate(/coverage.*json|json.*coverage/)?"NOT RUN":"PENDING REVIEW",note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
-  {name:"Docker image verification",state:!same||!docker?"NOT RUN":docker.conclusion==="failure"?"FAIL":docker.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED",note:"Requires image build, inspect, digest and provenance; job name alone is insufficient."},
-  {name:"In-container Node lifecycle",state:!same||!node?"NOT RUN":node.conclusion==="failure"?"FAIL":node.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED",note:"Requires install, start, health, graceful shutdown and process-leak evidence from inside the container."},
+  {name:"Exact-SHA Python 3.11",state:pythonState(j311),note:"Required matrix leg for this exact commit."},
+  {name:"Exact-SHA Python 3.12",state:pythonState(j312),note:"Required matrix leg for this exact commit."},
+  {name:"Vercel preview deployment",state:commitStatusBlocked?"BLOCKED":!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:"A successful deployment status still requires an inspectable preview URL and a browser smoke test."},
+  {name:"coverage.xml artifact",state:artifactState(/coverage.*xml|xml.*coverage/),note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
+  {name:"coverage.json artifact",state:artifactState(/coverage.*json|json.*coverage/),note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
+  {name:"Docker image verification",state:runtimeJobState(docker),note:"Requires image build, inspect, digest and provenance; job name alone is insufficient."},
+  {name:"In-container Node lifecycle",state:runtimeJobState(node),note:"Requires install, start, health, graceful shutdown and process-leak evidence from inside the container."},
   {name:"Local Apple-Silicon Ollama squad",state:state.status?"NOT RUN":"BLOCKED",note:"Must run on the authorized Mac with the actual configured Ollama model and isolated worktree."},
-  {name:"Proposal validation & edge cases",state:!same?"NOT RUN":jobs.some(j=>/proposal validation|edge-case/i.test(j.name||"")&&j.conclusion==="success")?"PENDING REVIEW":"NOT RUN",note:"Requires an explicit validation job and independently inspectable exact-SHA results."}
+  {name:"Proposal validation & edge cases",state:jobsBlocked?"BLOCKED":!same?"NOT RUN":jobs.some(j=>/proposal validation|edge-case/i.test(j.name||"")&&j.conclusion==="success")?"PENDING REVIEW":"NOT RUN",note:"Requires an explicit validation job and independently inspectable exact-SHA results."}
  ];
  return {sha,same,gates};
 }

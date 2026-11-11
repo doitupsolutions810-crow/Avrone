@@ -190,6 +190,10 @@ function renderSwarm() {
  const ci=sha?state.workflows.filter(w=>w.head_sha===sha):state.workflows.slice(0,8);
  setPill("ci-state",ci.length?"EXACT SHA":"NO MATCH",ci.length?"pending":"neutral");
  $("ci-list").innerHTML=ci.length?ci.map(w=>item("Run #"+w.run_number+" · "+w.name, "SHA "+formatSha(w.head_sha)+" · "+date(w.updated_at),badge(w.status==="completed"?(w.conclusion||"COMPLETED"):w.status),w.html_url)).join(""):'<div class="empty">No workflow run for the selected PR head SHA. No result is inferred from another commit.</div>';
+ const sorted=state.workflows.slice().sort((a,b)=>new Date(b.created_at||b.updated_at)-new Date(a.created_at||a.updated_at)).slice(0,40);
+ const options=sorted.map(w=>'<option value="'+esc(w.id)+'">#'+esc(w.run_number)+' · '+esc(w.name)+' · '+esc(short(w.head_sha,10))+' · '+esc(w.conclusion||w.status)+'</option>').join("");
+ $("compare-run-a").innerHTML='<option value="">Run A…</option>'+options;
+ $("compare-run-b").innerHTML='<option value="">Run B…</option>'+options;
 }
 function renderAgents() {
  const active=state.status&&state.status.agents?state.status.agents:{};
@@ -268,12 +272,41 @@ async function loadRun(id) {
  } catch(e) { $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(e.message)+'</div>'; }
 }
 async function loadWorkflowDetails(run) {
- if(!run||state.jobs[run.id]) return;
+ if(!run) return;
  const id=run.id;
- const tasks=await Promise.allSettled([gh("/actions/runs/"+id+"/jobs?per_page=100"),gh("/actions/runs/"+id+"/artifacts?per_page=100")]);
+ const needsJobs=!Object.prototype.hasOwnProperty.call(state.jobs,id);
+ const needsArtifacts=!Object.prototype.hasOwnProperty.call(state.artifacts,id);
+ if(!needsJobs&&!needsArtifacts) return;
+ const tasks=await Promise.allSettled([
+  needsJobs?gh("/actions/runs/"+id+"/jobs?per_page=100"):Promise.resolve({jobs:state.jobs[id]}),
+  needsArtifacts?gh("/actions/runs/"+id+"/artifacts?per_page=100"):Promise.resolve({artifacts:state.artifacts[id]})
+ ]);
  if(tasks[0].status==="fulfilled") state.jobs[id]=tasks[0].value.jobs||[];
+ else state.errors.push({key:"jobs-"+id,message:tasks[0].reason&&tasks[0].reason.message||"Job details unavailable"});
  if(tasks[1].status==="fulfilled") state.artifacts[id]=tasks[1].value.artifacts||[];
+ else state.errors.push({key:"artifacts-"+id,message:tasks[1].reason&&tasks[1].reason.message||"Artifact metadata unavailable"});
  renderVerification();renderRelease();
+}
+async function compareWorkflowRuns() {
+ const a=state.workflows.find(w=>String(w.id)===$("compare-run-a").value);
+ const b=state.workflows.find(w=>String(w.id)===$("compare-run-b").value);
+ if(!a||!b) { $("run-compare").innerHTML='<div class="empty">Select two workflow runs first.</div>'; return; }
+ if(a.id===b.id) { $("run-compare").innerHTML='<div class="empty">Choose two different workflow runs.</div>'; return; }
+ $("run-compare").innerHTML='<div class="loading">Loading job and artifact evidence for both runs…</div>';
+ await Promise.all([loadWorkflowDetails(a),loadWorkflowDetails(b)]);
+ const aj=state.jobs[a.id]||[],bj=state.jobs[b.id]||[];
+ const aa=state.artifacts[a.id]||[],ba=state.artifacts[b.id]||[];
+ const names=[...new Set([...aj.map(x=>x.name),...bj.map(x=>x.name)])].sort();
+ const rows=names.map(name=>{
+  const x=aj.find(j=>j.name===name),y=bj.find(j=>j.name===name);
+  return '<tr><td>'+esc(name)+'</td><td>'+badge(x?(x.conclusion||x.status):"NOT PRESENT")+'</td><td>'+badge(y?(y.conclusion||y.status):"NOT PRESENT")+'</td></tr>';
+ }).join("");
+ const same=a.head_sha===b.head_sha;
+ $("run-compare").innerHTML='<div class="facts">'+fact("Run A","#"+a.run_number+" · "+a.event)+fact("Run B","#"+b.run_number+" · "+b.event)+fact("Run A SHA",formatSha(a.head_sha))+fact("Run B SHA",formatSha(b.head_sha))+fact("Same exact SHA",same?"yes":"no — results are not interchangeable")+fact("Conclusions",(a.conclusion||a.status)+" / "+(b.conclusion||b.status))+fact("Artifact counts",aa.length+" / "+ba.length)+'</div>'+
+  '<p class="muted">'+(same?"Both runs target the same exact commit.":"Different commit SHAs: compare diagnostically only; evidence cannot transfer between targets.")+'</p>'+
+  (names.length?'<div class="table-wrap"><table class="data-table"><thead><tr><th>Job</th><th>Run A</th><th>Run B</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="empty">No job detail returned for one or both runs.</div>')+
+  '<p class="muted">Artifact names are metadata only; artifact contents and exact-SHA provenance still require inspection.</p>'+
+  link(a.html_url,"Open Run A ↗")+' · '+link(b.html_url,"Open Run B ↗");
 }
 async function refresh() {
  $("connection").textContent="REFRESHING";$("connection").className="pill pending";
@@ -325,6 +358,7 @@ $("f-pr").addEventListener("change",()=>{state.selectedPR=Number($("f-pr").value
 ["f-repo","f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).addEventListener("input",()=>{renderPRs();renderCommits();renderSwarm();}));
 $("clear-filters").addEventListener("click",()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="27";state.selectedPR=27;renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
 $("apply-token").addEventListener("click",()=>{state.adminToken=$("admin-token").value.trim();$("admin-token").value="";refresh();});
+$("compare-runs").addEventListener("click",compareWorkflowRuns);
 $("compare").addEventListener("click",async()=>{
  const base=$("compare-base").value,head=$("compare-head").value;
  if(!base||!head) return $("compare-result").textContent="Select both base and head commits.";

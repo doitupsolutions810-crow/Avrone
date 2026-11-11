@@ -82,6 +82,7 @@ function latestForSha(sha) { return state.workflows.filter(w=>w.head_sha===sha).
 function currentPR() { return state.prs.find(p=>p.number===Number(state.selectedPR))||state.prs.find(p=>p.number===27)||null; }
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
+function hasError(key) { return state.errors.some(x=>x.key===key); }
 function fact(label,value) { return '<div class="fact"><span>'+esc(label)+'</span><b>'+esc(value==null||value===""?"Not reported":value)+'</b></div>'; }
 function formatSha(sha) { return sha ? short(sha,16) : "No SHA"; }
 function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
@@ -129,7 +130,7 @@ function renderMetrics() {
  $("m-open").textContent=open.length;
  $("m-draft").textContent=open.filter(p=>p.draft&&!p.merged_at).length;
  $("m-runs").textContent=state.workflows.length;
- $("m-local").textContent=Array.isArray(state.runs)?state.runs.length:"—";
+ $("m-local").textContent=Array.isArray(state.runs)&&!hasError("runs")?state.runs.length:"—";
  $("m-checkpoints").textContent=Array.isArray(state.checkpoints)?state.checkpoints.length:"—";
  const agents=state.status&&state.status.agents?Object.keys(state.status.agents).length:0;
  $("m-agents").textContent=agents;
@@ -190,7 +191,8 @@ function renderMissions() {
  $("proposal-list").innerHTML=Array.isArray(accepted)&&accepted.length?accepted.map(p=>item(p.name||p.id||"Accepted proposal",p.description||p.summary||"Accepted proposal record",badge("ACCEPTED")+" "+badge(p.validated?"PASS":"UNVERIFIED"))).join(""):'<div class="empty">'+esc(localUnavailableMessage("evolve"))+' · Pending proposal validations are not exposed by the current API.</div>';
 }
 function renderSwarm() {
- setPill("swarm-state",Array.isArray(state.runs)?"CONNECTED":"NOT CONNECTED",Array.isArray(state.runs)?"good":"blocked");
+ const runsAvailable=Array.isArray(state.runs)&&!hasError("runs");
+ setPill("swarm-state",runsAvailable?"CONNECTED":"NOT CONNECTED",runsAvailable?"good":"blocked");
  const f=activeFilters();
  const runs=(Array.isArray(state.runs)?state.runs:[]).filter(r=>matchesCommon(r,f));
  $("swarm-list").innerHTML=runs.length?runs.map(r=>{
@@ -342,12 +344,12 @@ async function refresh() {
   if(["prs","commits","workflows"].includes(t[0])){state[t[0]]=val.items;state.pagination[t[0]]=val;}
   else state[t[0]]=val;
  }catch(e){state[t[0]]=null;state.errors.push({key:t[0],message:e.message});}}));
- if(Array.isArray(state.prs)) {
-  state.prs.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
-  $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+p.number+'">#'+p.number+' · '+esc(p.title).slice(0,65)+'</option>').join("");
-  if(state.prs.some(p=>p.number===27)) $("f-pr").value="27";
-  state.selectedPR=Number($("f-pr").value||27);
- }
+ if(!Array.isArray(state.prs)) state.prs=[];
+ state.prs.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
+ $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+p.number+'">#'+p.number+' · '+esc(p.title).slice(0,65)+'</option>').join("");
+ if(state.prs.some(p=>p.number===27)) $("f-pr").value="27";
+ else $("f-pr").value="";
+ state.selectedPR=Number($("f-pr").value||27);
  await loadSelectedCommitStatus();
  if(!Array.isArray(state.commits)) state.commits=[];
  if(!Array.isArray(state.workflows)) state.workflows=[];
@@ -356,7 +358,7 @@ async function refresh() {
  if(!Array.isArray(state.fleet)) state.fleet=null;
  if(state.telemetry===null) state.telemetry=null;
  renderTarget();renderMetrics();renderOverview();renderPRs();renderCommits();renderMissions();renderSwarm();renderAgents();renderVerification();renderRelease();
- const ok=state.prs.length>0;
+ const ok=!["prs","commits","workflows","commit-status"].some(hasError);
  $("connection").textContent=ok?"GITHUB LIVE":"GITHUB LIMITED";
  $("connection").className="pill "+(ok?"good":"blocked");
  const trunc=Object.entries(state.pagination||{}).filter(([,v])=>v.truncated).map(([k])=>k);

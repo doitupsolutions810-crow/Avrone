@@ -647,3 +647,22 @@ def test_supabase_persistence_design_is_explicitly_proposed_and_security_hardene
         "No hosted operation is authorized",
     ):
         assert invariant in design, invariant
+
+
+def test_ci_publishes_exact_sha_coverage_docker_and_node_lifecycle_evidence():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    node_test = (root / "tests" / "node_container_lifecycle.test.mjs").read_text(encoding="utf-8")
+    assert '--cov-report=xml:coverage.xml' in workflow
+    assert '--cov-report=json:coverage.json' in workflow
+    assert 'name: coverage-xml-py\${{ matrix.python }}' in workflow
+    assert 'name: coverage-json-py\${{ matrix.python }}' in workflow
+    assert 'name: Docker image verification' in workflow
+    assert 'docker build --pull' in workflow
+    assert 'name: Node container lifecycle' in workflow
+    assert 'node:22-slim' in workflow and '--network none' in workflow
+    assert 'node --test node_container_lifecycle.test.mjs' in workflow
+    assert 'CHILD_EXITED' in node_test
+    assert 'SIGTERM' in node_test
+    assert 'process.kill(childPid, 0)' in node_test

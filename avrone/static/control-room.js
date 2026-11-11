@@ -86,7 +86,8 @@ function prEvidence(p) {
  if(run.status!=="completed") return "UNVERIFIED";
  return "UNVERIFIED";
 }
-function latestForSha(sha) { return state.workflows.filter(w=>w.head_sha===sha).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))[0]||null; }
+function isCiRun(run) { return !!run&&(String(run.name||"").toLowerCase()==="ci"||String(run.path||"").endsWith("/ci.yml")); }
+function latestForSha(sha) { return state.workflows.filter(w=>w.head_sha===sha&&isCiRun(w)).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))[0]||null; }
 function currentPR() { return state.prs.find(p=>p.number===Number(state.selectedPR))||state.prs.find(p=>p.number===27)||null; }
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
@@ -208,10 +209,10 @@ function renderSwarm() {
   return '<article class="item clickable" data-run="'+esc(id)+'"><div class="item-head"><div><h3>'+esc(id)+'</h3><p>'+esc(mode)+' · '+esc(date(r.start||r.started||r.created))+'</p></div>'+badge(r.status||"HISTORY")+'</div><div class="meta">'+badge(r.evidence_status||"UNVERIFIED")+'<span class="muted">Select to inspect event replay</span></div></article>';
  }).join(""):'<div class="empty">'+esc(localUnavailableMessage("runs"))+'</div>';
  const p=currentPR(), sha=p&&p.head&&p.head.sha;
- const ci=sha?state.workflows.filter(w=>w.head_sha===sha):state.workflows.slice(0,8);
+ const ci=sha?state.workflows.filter(w=>w.head_sha===sha&&isCiRun(w)):state.workflows.filter(isCiRun).slice(0,8);
  setPill("ci-state",ci.length?"EXACT SHA":"NO MATCH",ci.length?"pending":"neutral");
  $("ci-list").innerHTML=ci.length?ci.map(w=>item("Run #"+w.run_number+" · "+w.name, "SHA "+formatSha(w.head_sha)+" · "+date(w.updated_at),badge(w.status==="completed"?(w.conclusion||"COMPLETED"):w.status),w.html_url)).join(""):'<div class="empty">No workflow run for the selected PR head SHA. No result is inferred from another commit.</div>';
- const sorted=state.workflows.slice().sort((a,b)=>new Date(b.created_at||b.updated_at)-new Date(a.created_at||a.updated_at)).slice(0,40);
+ const sorted=state.workflows.filter(isCiRun).slice().sort((a,b)=>new Date(b.created_at||b.updated_at)-new Date(a.created_at||a.updated_at)).slice(0,40);
  const options=sorted.map(w=>'<option value="'+esc(w.id)+'">#'+esc(w.run_number)+' · '+esc(w.name)+' · '+esc(short(w.head_sha,10))+' · '+esc(w.conclusion||w.status)+'</option>').join("");
  $("compare-run-a").innerHTML='<option value="">Run A…</option>'+options;
  $("compare-run-b").innerHTML='<option value="">Run B…</option>'+options;

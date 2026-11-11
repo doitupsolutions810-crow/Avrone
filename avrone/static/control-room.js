@@ -427,7 +427,7 @@ async function loadWorkflowDetails(run) {
  if(!state.detailRequestGeneration||typeof state.detailRequestGeneration!=="object"||Array.isArray(state.detailRequestGeneration))state.detailRequestGeneration=Object.create(null);
  if(!Array.isArray(state.errors))state.errors=[];
  const id=String(run.id==null?"":run.id);
- if(!/^\\d+$/.test(id)) { state.errors.push({key:"workflow-details",message:"Invalid workflow run identifier"}); return; }
+ if(!/^\d+$/.test(id)) { state.errors.push({key:"workflow-details",message:"Invalid workflow run identifier"}); return; }
  const previousGeneration=Number.isSafeInteger(state.detailRequestGeneration[id])?state.detailRequestGeneration[id]:0;
  const requestGeneration=previousGeneration+1;
  state.detailRequestGeneration[id]=requestGeneration;

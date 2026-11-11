@@ -448,3 +448,303 @@ def test_establish_health_check_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(sovereign.LocalRunner, "run", failing)
     with pytest.raises(RuntimeError, match="health check failed"):
         run(sovereign.establish(rsettings(tmp_path)))
+
+
+# ---------------------------------------------------------------- Control Room contract tests
+def test_control_room_assets_are_linked_and_accessible():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    home = (root / "avrone" / "static" / "index.html").read_text(encoding="utf-8")
+    assert '/static/control-room.css' in page
+    assert '/static/control-room.js' in page
+    assert '/static/control-room.html' in home
+    assert 'aria-label="Control room views"' in page
+
+
+def test_control_room_reads_real_repository_and_runtime_sources():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for endpoint in ("/pulls?state=all", "/commits?per_page=", "/actions/runs?per_page=",
+                     "/api/status", "/api/runs", "/api/checkpoints", "/api/telemetry",
+                     "/api/fleet/directory", "/api/evolve"):
+        assert endpoint in js, endpoint
+
+
+def test_control_room_exact_sha_binding_never_trusts_another_commit():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'run.head_sha===sha' in js
+    assert 'same=!!run&&run.head_sha===sha' in js
+    assert '"NOT RUN"' in js and '"UNVERIFIED"' in js
+
+
+def test_control_room_keeps_github_lifecycle_separate_from_evidence():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for state in ('"DRAFT"', '"READY"', '"MERGED"', '"UNMERGED"', '"VERIFIED"',
+                  '"UNVERIFIED"', '"BLOCKED"', '"NOT RUN"', '"PASS"', '"FAIL"'):
+        assert state in js, state
+
+
+def test_control_room_never_persists_admin_credentials():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    assert "localStorage" not in js and "sessionStorage" not in js
+    assert 'type="password"' in page
+    assert 'state.adminToken=$("admin-token").value.trim()' in js
+
+
+def test_control_room_is_read_only_and_does_not_call_mutation_routes():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for mutation in ("/api/chat", "/api/fleet/tell", "DELETE", "POST", "PATCH", "PUT"):
+        assert mutation not in js
+
+
+def test_control_room_escapes_untrusted_remote_content_and_restricts_links():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'function esc(v)' in js
+    assert 'u.protocol==="https:"' in js
+    assert 'rel="noopener noreferrer"' in js
+
+
+def test_control_room_filters_cover_requested_dimensions():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for field in ("f-repo", "f-pr", "f-commit", "f-round", "f-lane", "f-agent",
+                  "f-runtime", "f-verification"):
+        assert 'id="' + field + '"' in page
+    assert "function activeFilters()" in js
+    assert "function matchesCommon(obj, f)" in js
+
+
+def test_control_room_release_gates_require_inspection_not_artifact_names():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert '"PENDING REVIEW"' in js
+    assert "PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs" in js
+    assert "PASS requires the exact-SHA Docker verification job and image-inspect/digest/health artifacts." in js
+    assert "graceful shutdown" in js
+
+
+def test_control_room_exposes_explicit_edge_case_catalog_without_faking_passes():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    for phrase in ("Duplicate lane assignment", "Lease expiry / stale owner",
+                   "Checkpoint collision", "Worker exception", "Failure propagation",
+                   "Malformed and torn JSONL", "Path traversal and symlinks",
+                   "Resource exhaustion", "Exact-SHA binding", "Missing / expired artifacts",
+                   "Docker unavailable", "Node lifecycle", "Secret redaction",
+                   "API partial failure", "Untrusted pull-request data"):
+        assert phrase in js, phrase
+    assert 'badge("NOT RUN")' in js
+
+
+def test_control_room_responsive_styles_and_coverage_views_exist():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    css = (root / "avrone" / "static" / "control-room.css").read_text(encoding="utf-8")
+    html = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    assert "@media(max-width:720px)" in css
+    assert 'id="artifact-list"' in html
+    assert 'id="compare-result"' in html
+    assert 'id="release-list"' in html
+
+
+def test_control_room_static_assets_are_served_by_fastapi(client):
+    page = client.get("/static/control-room.html")
+    css = client.get("/static/control-room.css")
+    js = client.get("/static/control-room.js")
+    assert page.status_code == css.status_code == js.status_code == 200
+    assert "AVRONE Control Room" in page.text
+    assert "function refresh()" in js.text
+
+
+def test_control_room_select_filters_preserve_state_labels_and_workflow_mapping():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'runtime:($("f-runtime").value||"").trim()' in js
+    assert 'verification:($("f-verification").value||"").trim()' in js
+    assert 'raw==="SUCCESS"?"PASS"' in js
+    assert '"FAILURE","CANCELLED","TIMED_OUT"' in js
+
+
+def test_control_room_paginates_github_and_discloses_page_cap():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert "async function ghPages(path,maxPages)" in js
+    assert 'res.headers.get("Link")' in js
+    assert "truncated:!!next" in js
+    assert "page cap reached:" in js
+    assert "setInterval(refresh,300000)" in js
+
+
+def test_control_room_only_warns_on_duplicate_live_lanes_that_are_reported():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'String(a.lane||a.focus_lane||"").trim()' in js
+    assert 'String(a.status||"").toLowerCase()==="working"' in js
+    assert 'badge("DUPLICATE LANE OBSERVED")' in js
+    assert "Lease / heartbeat fields not reported" in js
+
+
+def test_control_room_run_comparison_never_transfers_evidence_between_shas():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'id="compare-run-a"' in page and 'id="compare-run-b"' in page
+    assert 'id="run-compare"' in page
+    assert "async function compareWorkflowRuns()" in js
+    assert "const same=a.head_sha===b.head_sha" in js
+    assert "Different commit SHAs: compare diagnostically only" in js
+    assert "artifact contents and exact-SHA provenance still require inspection" in js
+
+
+def test_control_room_reports_vercel_status_only_for_selected_exact_sha():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'async function loadSelectedCommitStatus()' in js
+    assert 'state.commitStatusSha=sha' in js
+    assert 'state.commitStatusSha===sha' in js
+    assert 'name:"Vercel preview deployment"' in js
+    assert 'vercelStatus.state==="failure"?"FAIL"' in js
+    assert 'vercelStatus.state==="success"?"PENDING REVIEW"' in js
+
+
+def test_supabase_persistence_design_is_explicitly_proposed_and_security_hardened():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    design = (root / "docs" / "AVRONE_SUPABASE_PERSISTENCE_DESIGN.md").read_text(encoding="utf-8")
+    for invariant in (
+        "PROPOSED / NOT APPLIED",
+        "control12-shared-state",
+        "lease_epoch",
+        "mission_events",
+        "FOR UPDATE SKIP LOCKED",
+        "exact 40-character lowercase Git SHA",
+        "non-exposed schema",
+        "Enable and force RLS",
+        "service_role",
+        "Cross-owner SELECT/UPDATE/DELETE",
+        "No hosted operation is authorized",
+    ):
+        assert invariant in design, invariant
+
+
+def test_ci_publishes_exact_sha_coverage_docker_and_node_lifecycle_evidence():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    node_test = (root / "tests" / "node_container_lifecycle.test.mjs").read_text(encoding="utf-8")
+    assert '--cov-report=xml:coverage.xml' in workflow
+    assert '--cov-report=json:coverage.json' in workflow
+    assert 'name: Docker image verification' in workflow
+    assert 'docker build --pull' in workflow
+    assert 'name: Node container lifecycle' in workflow
+    assert 'node:22-slim' in workflow and '--network none' in workflow
+    assert 'node --test node_container_lifecycle.test.mjs' in workflow
+    assert 'name: Docker image verification' in workflow
+    assert 'name: Node container lifecycle' in workflow
+    assert 'actions/checkout@v7' in workflow
+    assert 'actions/setup-python@v7' in workflow
+    assert 'actions/upload-artifact@v7' in workflow
+    assert 'name: coverage-xml-py${{ matrix.python }}' in workflow
+    assert 'name: coverage-json-py${{ matrix.python }}' in workflow
+    assert 'docker-image-evidence' in workflow
+    assert 'node-container-lifecycle-evidence' in workflow
+    assert 'CHILD_EXITED' in node_test
+    assert 'SIGTERM' in node_test
+    assert 'process.kill(childPid, 0)' in node_test
+
+
+def test_control_room_pr_filter_switch_refreshes_exact_sha_workflow_evidence():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert '$("f-pr").addEventListener("change",async()=>{' in js
+    assert 'await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run)' in js
+    assert '$("clear-filters").addEventListener("click",async()=>{' in js
+
+
+def _body_limit_drive(monkeypatch, headers, chunks):
+    from avrone import server
+
+    monkeypatch.setattr(server, "max_body_bytes", lambda path="": 4)
+    called = []
+    sent = []
+
+    async def app(scope, receive, send):
+        called.append(scope["path"])
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    messages = iter(
+        {"type": "http.request", "body": chunk, "more_body": index < len(chunks) - 1}
+        for index, chunk in enumerate(chunks)
+    )
+
+    async def receive():
+        return next(messages, {"type": "http.request", "body": b"", "more_body": False})
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "path": "/api/fleet/register", "headers": headers}
+    asyncio.run(server.BodyLimit(app)(scope, receive, send))
+    return called, sent
+
+
+@pytest.mark.parametrize("headers", [
+    [(b"content-length", b"invalid")],
+    [(b"content-length", b"-1")],
+    [(b"content-length", b"100"), (b"content-length", b"2")],
+])
+def test_body_limit_counts_actual_chunks_when_content_length_is_untrusted(monkeypatch, headers):
+    called, sent = _body_limit_drive(monkeypatch, headers, [b"123", b"45"])
+    assert called == ["/api/fleet/register"]
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"]) == {
+        "detail": "request body too large (max 4 bytes; AVRONE_MAX_BODY_BYTES)"
+    }
+
+
+def test_body_limit_rejects_oversized_declared_length_before_reading_body(monkeypatch):
+    called, sent = _body_limit_drive(
+        monkeypatch, [(b"content-length", b"+5")], [b""]
+    )
+    assert called == []
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"]) == {
+        "detail": "request body too large (max 4 bytes; AVRONE_MAX_BODY_BYTES)"
+    }
+
+
+def test_body_limit_accepts_exact_actual_byte_boundary_with_bad_length_header(monkeypatch):
+    called, sent = _body_limit_drive(
+        monkeypatch, [(b"content-length", b"not-a-number")], [b"12", b"34"]
+    )
+    assert called == ["/api/fleet/register"]
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b"ok"

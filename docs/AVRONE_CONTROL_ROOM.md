@@ -39,3 +39,11 @@ GitHub Actions artifact metadata can identify candidate artifacts, but operators
 The Vercel `agent-browser` discovery skill is included at `.agents/skills/agent-browser/SKILL.md`. This is the project skill descriptor; it does not install the native CLI or download Chrome. On the authorized developer machine, install the skill with `npx skills add https://github.com/vercel-labs/agent-browser --skill agent-browser`. Then install the CLI with `npm install -g agent-browser` and `agent-browser install`, and run `agent-browser skills get core` before any browser automation. The published CLI requires Node.js 22 or later. The repository descriptor is the official upstream discovery stub; it does not install the CLI or Chrome.
 
 Upstream source: https://github.com/vercel-labs/agent-browser
+
+## Extended adversarial verification
+
+The browser-client suite now contains 59 executable Node tests. The additional cases exercise credential-bearing navigation and pagination URLs, repeated pagination links, malformed successful API envelopes, request aborts and timer cleanup, cyclic payloads, throwing selector getters, null rows, duplicate CI-job identities, duplicate artifact identities, invalid timestamps, and malformed evidence collections. The release-state model must fail closed: malformed evidence is blocked or remains unverified, never promoted to PASS.
+
+Workflow-detail responses are accepted only when the expected `jobs` or `artifacts` property is an array. A successful HTTP response with a missing or malformed list is recorded as blocked evidence. A valid empty array remains a legitimate empty response. Duplicate named evidence rows are ambiguous and cannot satisfy a gate.
+
+These tests supplement (rather than replace) the Python contract/security suite, exact-SHA CI matrix, Docker verification, and isolated Node 22 lifecycle checks. A green result remains specific to the exact commit SHA that ran it.

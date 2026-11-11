@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","renderPRs"];
+ const names=["esc","short","date","badge","safeHref","link","showEmpty","apiHeaders","jsonFetch","gh","prLifecycle","prEvidence","isCiRun","latestForSha","currentPR","currentSha","loadSelectedCommitStatus","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","validRecords","workflowDetailsNeedRefresh","renderPRs","renderVerification"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -715,4 +715,52 @@ test("HTTP JSON error responses preserve status and structured detail",async()=>
 test("workflow detail cache error filtering tolerates null error entries",()=>{
  const c=makeContext({state:{errors:[null,{key:"jobs-r1",message:"temporary"}]}});
  assert.equal(c.hasError("jobs-r1"),true);
+});
+
+
+test("listEnvelope suppresses null, array, and primitive workflow evidence rows",()=>{
+ const c=makeContext({state:{dataWarnings:[]}});
+ const rows=c.listEnvelope({artifacts:[null,[],1,{id:7}]}, "artifacts");
+ assert.deepEqual(JSON.parse(JSON.stringify(rows)),[{id:7}]);
+ assert.deepEqual(JSON.parse(JSON.stringify(c.state.dataWarnings)),["artifacts: suppressed 3 malformed record(s)"]);
+ for(const value of [null,{},[],{artifacts:null},{artifacts:{}}]){
+  assert.equal(c.listEnvelope(value,"artifacts"),null);
+ }
+});
+
+test("verification artifact renderer tolerates null and malformed artifact rows",()=>{
+ const c=makeContext({state:{
+  prs:[{number:28,head:{sha:"sha-28"}}],selectedPR:28,
+  workflows:[{id:5,head_sha:"sha-28",path:".github/workflows/ci.yml",html_url:"https://github.com/run/5"}],
+  artifacts:{"5":[null,[],false,{name:"coverage-xml-py3.11",id:8,expired:false}]}
+ }});
+ const nodes={"evidence-state":{},"verification-list":{innerHTML:""},"artifact-list":{innerHTML:""},"edge-list":{innerHTML:""}};
+ c.$=id=>nodes[id]||(nodes[id]={innerHTML:"",textContent:"",value:""});
+ c.setPill=()=>{};
+ c.currentPR=()=>c.state.prs[0];
+ c.latestForSha=()=>c.state.workflows[0];
+ c.evidenceData=()=>({same:true,gates:[]});
+ c.badge=x=>"<b>"+c.esc(x)+"</b>";
+ c.link=()=>"<a>safe</a>";
+ c.item=(title,description)=>"<div>"+c.esc(title)+" "+c.esc(description)+"</div>";
+ const renderer=vm.runInContext("("+extractFunction("renderVerification")+")",c);
+ assert.doesNotThrow(()=>renderer());
+ assert.match(nodes["artifact-list"].innerHTML,/coverage-xml-py3\.11/);
+ assert.equal(nodes["artifact-list"].innerHTML.includes("undefined"),false);
+});
+
+test("loadWorkflowDetails initializes corrupt cache containers before indexing",async()=>{
+ const c=makeContext({state:{jobs:null,artifacts:[],artifactFinalized:null,errors:null}});
+ c.gh=async path=>path.includes("/jobs")?{jobs:[null,{name:"job",conclusion:"success"}]}:{artifacts:[null,{name:"artifact",id:2}]};
+ c.renderTarget=()=>{};
+ c.renderPRs=()=>{};
+ c.renderOverview=()=>{};
+ c.renderVerification=()=>{};
+ c.renderRelease=()=>{};
+ await c.loadWorkflowDetails({id:42,status:"completed",head_sha:"abc"});
+ assert.equal(c.state.jobs[42].length,1);
+ assert.equal(c.state.jobs[42][0].name,"job");
+ assert.equal(c.state.artifacts[42].length,1);
+ assert.equal(c.state.artifacts[42][0].name,"artifact");
+ assert.deepEqual(c.state.dataWarnings,undefined);
 });

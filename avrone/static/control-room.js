@@ -111,7 +111,12 @@ function currentPR() { const rows=validRecords(state.prs).items; return rows.fin
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
 function hasError(key) { return Array.isArray(state.errors)&&state.errors.some(x=>x&&x.key===key); }
-function listEnvelope(payload,key) { return payload&&typeof payload==="object"&&Array.isArray(payload[key])?payload[key]:null; }
+function listEnvelope(payload,key) {
+ if(!payload||typeof payload!=="object"||!Array.isArray(payload[key]))return null;
+ const cleaned=validRecords(payload[key]);
+ if(cleaned.rejected&&Array.isArray(state.dataWarnings))state.dataWarnings.push(key+": suppressed "+cleaned.rejected+" malformed record(s)");
+ return cleaned.items;
+}
 function validRecords(value) {
  if(!Array.isArray(value)) return {items:[],rejected:0};
  const items=[];let rejected=0;
@@ -362,7 +367,8 @@ function renderVerification() {
  const vercelStatus=state.commitStatusSha===sha?statuses.find(x=>x&&String(x.context||"").toLowerCase()==="vercel"):null;
  const deployLink=vercelStatus&&vercelStatus.target_url?link(vercelStatus.target_url,"Deployment details ↗"):"";
  $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\\\"muted\\\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.state)+'</div><p>'+esc(g.note)+'</p>'+(g.name==="Vercel preview deployment"?deployLink:"")+'</div>').join("");
- const artifacts=run&&state.artifacts[run.id]||[];
+ const artifactMap=state.artifacts&&typeof state.artifacts==="object"?state.artifacts:{};
+ const artifacts=validRecords(run&&artifactMap[run.id]).items;
  $("artifact-list").innerHTML=artifacts.length?artifacts.map(a=>{
   const metadata=badge(a.expired?"EXPIRED":"METADATA AVAILABLE")+
    '<span class="muted">Artifact #'+esc(a.id)+'</span>'+
@@ -403,6 +409,10 @@ function workflowDetailsNeedRefresh(run,cachedJobs,cachedArtifacts,jobsError,art
 }
 async function loadWorkflowDetails(run) {
  if(!run) return;
+ if(!state.jobs||typeof state.jobs!=="object"||Array.isArray(state.jobs))state.jobs={};
+ if(!state.artifacts||typeof state.artifacts!=="object"||Array.isArray(state.artifacts))state.artifacts={};
+ if(!state.artifactFinalized||typeof state.artifactFinalized!=="object"||Array.isArray(state.artifactFinalized))state.artifactFinalized={};
+ if(!Array.isArray(state.errors))state.errors=[];
  const id=run.id;
  const need=workflowDetailsNeedRefresh(
   run,state.jobs[id],state.artifacts[id],hasError("jobs-"+id),hasError("artifacts-"+id),state.artifactFinalized[id]===true
@@ -427,14 +437,15 @@ async function loadWorkflowDetails(run) {
  renderTarget();renderPRs();renderOverview();renderVerification();renderRelease();
 }
 async function compareWorkflowRuns() {
- const a=state.workflows.find(w=>String(w.id)===$("compare-run-a").value);
- const b=state.workflows.find(w=>String(w.id)===$("compare-run-b").value);
+ const workflows=validRecords(state.workflows).items;
+ const a=workflows.find(w=>String(w.id)===$("compare-run-a").value);
+ const b=workflows.find(w=>String(w.id)===$("compare-run-b").value);
  if(!a||!b) { $("run-compare").innerHTML='<div class="empty">Select two workflow runs first.</div>'; return; }
  if(a.id===b.id) { $("run-compare").innerHTML='<div class="empty">Choose two different workflow runs.</div>'; return; }
  $("run-compare").innerHTML='<div class="loading">Loading job and artifact evidence for both runs…</div>';
  await Promise.all([loadWorkflowDetails(a),loadWorkflowDetails(b)]);
- const aj=state.jobs[a.id]||[],bj=state.jobs[b.id]||[];
- const aa=state.artifacts[a.id]||[],ba=state.artifacts[b.id]||[];
+ const aj=validRecords(state.jobs&&state.jobs[a.id]).items,bj=validRecords(state.jobs&&state.jobs[b.id]).items;
+ const aa=validRecords(state.artifacts&&state.artifacts[a.id]).items,ba=validRecords(state.artifacts&&state.artifacts[b.id]).items;
  const names=[...new Set([...aj.map(x=>x.name),...bj.map(x=>x.name)])].sort();
  const rows=names.map(name=>{
   const x=aj.find(j=>j.name===name),y=bj.find(j=>j.name===name);

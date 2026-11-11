@@ -29,6 +29,8 @@ jobs:
           }
       - name: Validate Control Room JavaScript syntax
         run: node --check avrone/static/control-room.js
+      - name: Test Control Room client
+        run: node --test tests/control_room_client.test.cjs
       - name: Test avrone
         run: |
           set -o pipefail

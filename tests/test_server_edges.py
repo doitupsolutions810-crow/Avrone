@@ -562,3 +562,43 @@ def test_control_room_responsive_styles_and_coverage_views_exist():
     assert 'id="artifact-list"' in html
     assert 'id="compare-result"' in html
     assert 'id="release-list"' in html
+
+
+def test_control_room_static_assets_are_served_by_fastapi(client):
+    page = client.get("/static/control-room.html")
+    css = client.get("/static/control-room.css")
+    js = client.get("/static/control-room.js")
+    assert page.status_code == css.status_code == js.status_code == 200
+    assert "AVRONE Control Room" in page.text
+    assert "function refresh()" in js.text
+
+
+def test_control_room_select_filters_preserve_state_labels_and_workflow_mapping():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'runtime:($("f-runtime").value||"").trim()' in js
+    assert 'verification:($("f-verification").value||"").trim()' in js
+    assert 'raw==="SUCCESS"?"PASS"' in js
+    assert '"FAILURE","CANCELLED","TIMED_OUT"' in js
+
+
+def test_control_room_paginates_github_and_discloses_page_cap():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert "async function ghPages(path,maxPages)" in js
+    assert 'res.headers.get("Link")' in js
+    assert "truncated:!!next" in js
+    assert "page cap reached:" in js
+    assert "setInterval(refresh,300000)" in js
+
+
+def test_control_room_only_warns_on_duplicate_live_lanes_that_are_reported():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'String(a.lane||a.focus_lane||"").trim()' in js
+    assert 'String(a.status||"").toLowerCase()==="working"' in js
+    assert 'badge("DUPLICATE LANE OBSERVED")' in js
+    assert "Lease / heartbeat fields not reported" in js

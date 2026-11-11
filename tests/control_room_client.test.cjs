@@ -9,7 +9,7 @@ const source=fs.readFileSync(path.join(root,"avrone/static/control-room.js"),"ut
 const REPO_FULL="doitupsolutions810-crow/Avrone";
 const GH="https://api.github.com/repos/"+REPO_FULL;
 function extractFunction(name){
- const re=new RegExp("^(?:async\\\\s+)?function\\\\s+"+name+"\\\\s*\\\\(","m");
+ const re=new RegExp("^(?:async\\s+)?function\\s+"+name+"\\s*\\(","m");
  const m=re.exec(source);assert.ok(m,"missing production function "+name);
  const tail=source.slice(m.index+m[0].length);
  const next=/^(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/m.exec(tail);

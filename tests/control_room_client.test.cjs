@@ -561,18 +561,20 @@ test("GitHub pagination rejects null, primitive, and nested-array records",async
 });
 
 test("GitHub pagination timeout remains active while the response body is read",async()=>{
- let timerCallback=null,clearedBeforeBody=false,bodyStarted=false,signal;
+ let timerCallback=null,clearedBeforeBody=false,bodyStarted=false,signal,resolveBodyStarted;
+ const bodyStartedSignal=new Promise(resolve=>{resolveBodyStarted=resolve;});
  const c=makeContext({fetch:async(_url,options)=>{
   signal=options.signal;
   return {ok:true,status:200,statusText:"OK",headers:{get:()=>null},text:()=> {
    bodyStarted=true;
+   resolveBodyStarted();
    return signal.aborted?Promise.reject(new Error("body aborted")):new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(new Error("body aborted"))));
   }};
  }});
  c.setTimeout=fn=>{timerCallback=fn;return 88;};
  c.clearTimeout=()=>{clearedBeforeBody=!bodyStarted;};
  const pending=c.ghPages("/pulls",1);
- await Promise.resolve();
+ await bodyStartedSignal;
  assert.equal(bodyStarted,true);
  assert.equal(typeof timerCallback,"function");
  timerCallback();

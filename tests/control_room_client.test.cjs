@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","safeHref","prLifecycle","prEvidence","latestForSha","matchesCommon","ghPages","evidenceData","hasError"];
+ const names=["esc","safeHref","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -55,23 +55,24 @@ test("GitHub lifecycle keeps draft, merged, and unmerged separate",()=>{
  assert.equal(c.prLifecycle({state:"closed",merged:false}).unmerged,true);
 });
 test("green workflow alone remains UNVERIFIED and absent workflow is NOT RUN",()=>{
- const c=makeContext({state:{workflows:[{head_sha:"abc123",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:00:00Z"}]}});
+ const c=makeContext({state:{workflows:[{name:"CI",head_sha:"abc123",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:00:00Z"}]}});
  assert.equal(c.prEvidence({head:{sha:"abc123"}}),"UNVERIFIED");
  assert.equal(c.prEvidence({head:{sha:"missing"}}),"NOT RUN");
 });
 test("PR failure is explicit and successful evidence does not transfer across SHAs",()=>{
  const c=makeContext({state:{workflows:[
-  {head_sha:"sha-a",status:"completed",conclusion:"failure",updated_at:"2026-11-11T12:00:00Z"},
-  {head_sha:"sha-b",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:01:00Z"}]}});
+  {name:"CI",head_sha:"sha-a",status:"completed",conclusion:"failure",updated_at:"2026-11-11T12:00:00Z"},
+  {name:"CI",head_sha:"sha-b",status:"completed",conclusion:"success",updated_at:"2026-11-11T12:01:00Z"}]}});
  assert.equal(c.prEvidence({head:{sha:"sha-a"}}),"FAIL");
  assert.equal(c.prEvidence({head:{sha:"sha-b"}}),"UNVERIFIED");
  assert.equal(c.prEvidence({head:{sha:"sha-c"}}),"NOT RUN");
 });
 test("latestForSha selects exact case-sensitive SHA and newest matching run",()=>{
  const c=makeContext({state:{workflows:[
-  {id:1,head_sha:"abc",updated_at:"2026-11-10T00:00:00Z"},
-  {id:2,head_sha:"def",updated_at:"2026-11-12T00:00:00Z"},
-  {id:3,head_sha:"abc",updated_at:"2026-11-11T00:00:00Z"}]}});
+  {id:1,name:"CI",head_sha:"abc",updated_at:"2026-11-10T00:00:00Z"},
+  {id:2,name:"CI",head_sha:"def",updated_at:"2026-11-12T00:00:00Z"},
+  {id:3,name:"CI",head_sha:"abc",updated_at:"2026-11-11T00:00:00Z"},
+  {id:4,name:"squad-round-notify",path:".github/workflows/squad-round-notify.yml",head_sha:"abc",updated_at:"2026-11-13T00:00:00Z"}]}});
  assert.equal(c.latestForSha("abc").id,3);assert.equal(c.latestForSha("def").id,2);
  assert.equal(c.latestForSha("ABC"),null);assert.equal(c.latestForSha("none"),null);
 });
@@ -216,4 +217,22 @@ test("GitHub pagination rejects protocol downgrade and repository traversal",asy
   await assert.rejects(()=>c.ghPages("/pulls",5),/Rejected unsafe GitHub pagination URL/);
   assert.equal(calls,1);
  }
+});
+
+test("non-CI workflow failures cannot mask the exact-SHA CI run",()=>{
+ const c=makeContext({state:{workflows:[
+  {id:10,name:"CI",path:".github/workflows/ci.yml",head_sha:"same",status:"completed",conclusion:"success",updated_at:"2026-11-11T10:00:00Z"},
+  {id:11,name:"squad-round-notify",path:".github/workflows/squad-round-notify.yml",head_sha:"same",status:"completed",conclusion:"failure",updated_at:"2026-11-11T10:01:00Z"}
+ ]}});
+ assert.equal(c.isCiRun(c.state.workflows[0]),true);
+ assert.equal(c.isCiRun(c.state.workflows[1]),false);
+ assert.equal(c.latestForSha("same").id,10);
+ assert.equal(c.prEvidence({head:{sha:"same"}}),"UNVERIFIED");
+});
+test("a notification workflow alone is not mistaken for a Python CI run",()=>{
+ const c=makeContext({state:{workflows:[
+  {id:12,name:"squad-round-notify",path:".github/workflows/squad-round-notify.yml",head_sha:"only-notify",status:"completed",conclusion:"failure"}
+ ]}});
+ assert.equal(c.latestForSha("only-notify"),null);
+ assert.equal(c.prEvidence({head:{sha:"only-notify"}}),"NOT RUN");
 });

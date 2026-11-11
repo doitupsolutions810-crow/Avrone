@@ -226,6 +226,8 @@ test("non-CI workflow failures cannot mask the exact-SHA CI run",()=>{
  ]}});
  assert.equal(c.isCiRun(c.state.workflows[0]),true);
  assert.equal(c.isCiRun(c.state.workflows[1]),false);
+ assert.equal(c.isCiRun({name:"CI",path:".github/workflows/other.yml"}),false);
+ assert.equal(c.isCiRun({name:"CI"}),true);
  assert.equal(c.latestForSha("same").id,10);
  assert.equal(c.prEvidence({head:{sha:"same"}}),"UNVERIFIED");
 });

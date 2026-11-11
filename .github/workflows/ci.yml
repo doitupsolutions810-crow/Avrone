@@ -106,7 +106,7 @@ jobs:
       - name: Start AVRONE container and verify API health
         run: |
           set -euo pipefail
-          docker run -d --rm --name "$CONTAINER" \
+          docker run -d --name "$CONTAINER" \
             -p 127.0.0.1:8710:8710 \
             -e AVRONE_RUNNER=local \
             -e AVRONE_LLM_MODE=mock \

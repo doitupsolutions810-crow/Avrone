@@ -6,9 +6,11 @@ import { once } from "node:events";
 function waitForMatch(proc, regex, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     let output = "";
+    let stderr = "";
+    proc.stderr?.on("data", chunk => { stderr += chunk.toString(); });
     const timer = setTimeout(() => {
       proc.kill("SIGKILL");
-      reject(new Error("Timed out waiting for readiness; output=" + output));
+      reject(new Error("Timed out waiting for readiness; stdout=" + output + " stderr=" + stderr));
     }, timeoutMs);
     const onData = chunk => {
       output += chunk.toString();
@@ -23,7 +25,7 @@ function waitForMatch(proc, regex, timeoutMs = 10000) {
     proc.once("error", error => { clearTimeout(timer); reject(error); });
     proc.once("exit", (code, signal) => {
       clearTimeout(timer);
-      reject(new Error("Supervisor exited before readiness: " + code + "/" + signal + " " + output));
+      reject(new Error("Supervisor exited before readiness: " + code + "/" + signal + " stdout=" + output + " stderr=" + stderr));
     });
   });
 }

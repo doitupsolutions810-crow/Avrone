@@ -31,7 +31,7 @@ function badge(value) {
  const kind=["VERIFIED","PASS","SUCCESS","MERGED","DONE","COMPLETED"].includes(s)?"good":(["FAIL","FAILURE","BLOCKED","ERROR","TIMED_OUT"].includes(s)?"fail":(["UNVERIFIED","PENDING","IN_PROGRESS","QUEUED","RUNNING"].includes(s)?"pending":"neutral"));
  return '<span class="pill '+kind+'">'+esc(s)+'</span>';
 }
-function safeHref(value) { try { const u=new URL(String(value||""),location.href); const current=new URL(location.href); const trustedHost=u.hostname==="github.com"||u.hostname.endsWith(".github.com")||u.hostname==="vercel.com"||u.hostname.endsWith(".vercel.com")||u.hostname.endsWith(".vercel.app"); return u.protocol==="https:"&&(u.origin===current.origin||trustedHost)?u.href:"#"; } catch (_) { return "#"; } }
+function safeHref(value) { try { const u=new URL(String(value||""),location.href); const current=new URL(location.href); const trustedHost=["github.com","api.github.com","vercel.com","www.vercel.com"].includes(u.hostname)||u.hostname.endsWith(".vercel.com")||u.hostname.endsWith(".vercel.app"); return u.protocol==="https:"&&(u.origin===current.origin||trustedHost)?u.href:"#"; } catch (_) { return "#"; } }
 function link(url,label) { return '<a href="'+esc(safeHref(url))+'" target="_blank" rel="noopener noreferrer">'+esc(label||"Open ↗")+'</a>'; }
 function showEmpty(id,msg) { $(id).innerHTML='<div class="empty">'+esc(msg)+'</div>'; }
 function apiHeaders() { const h={Accept:"application/json"}; if(state.adminToken) h["x-admin-token"]=state.adminToken; return h; }

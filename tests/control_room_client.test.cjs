@@ -913,3 +913,62 @@ test("run event replay treats non-array envelopes as empty instead of crashing",
  assert.match(elements["run-detail"].innerHTML,/No events returned for run-1/);
  assert.doesNotMatch(elements["run-detail"].innerHTML,/Run detail blocked/);
 });
+
+
+test("overlapping workflow detail requests cannot let an older response overwrite a newer completed snapshot",async()=>{
+ const c=makeContext({state:{detailRequestGeneration:[],jobs:{},artifacts:{},artifactFinalized:{},errors:[]}});
+ for(const name of ["renderTarget","renderPRs","renderOverview","renderVerification","renderRelease"]) c[name]=()=>{};
+ let resolveOldJobs,resolveOldArtifacts,oldCalls=0;
+ const oldJobs=new Promise(resolve=>{resolveOldJobs=resolve;});
+ const oldArtifacts=new Promise(resolve=>{resolveOldArtifacts=resolve;});
+ c.gh=path=>{
+  if(oldCalls<2){
+   oldCalls++;
+   return path.includes("/jobs?")?oldJobs:oldArtifacts;
+  }
+  return Promise.resolve(path.includes("/jobs?")
+   ?{jobs:[{name:"new-terminal-job"}]}
+   :{artifacts:[{name:"new-terminal-artifact"}]});
+ };
+ const older=c.loadWorkflowDetails({id:123,status:"in_progress"});
+ const newer=c.loadWorkflowDetails({id:123,status:"completed"});
+ await newer;
+ assert.deepEqual(JSON.parse(JSON.stringify(c.state.jobs["123"])),[{name:"new-terminal-job"}]);
+ assert.deepEqual(JSON.parse(JSON.stringify(c.state.artifacts["123"])),[{name:"new-terminal-artifact"}]);
+ assert.equal(c.state.artifactFinalized["123"],true);
+ resolveOldJobs({jobs:[{name:"stale-active-job"}]});
+ resolveOldArtifacts({artifacts:[{name:"stale-active-artifact"}]});
+ await older;
+ assert.deepEqual(JSON.parse(JSON.stringify(c.state.jobs["123"])),[{name:"new-terminal-job"}]);
+ assert.deepEqual(JSON.parse(JSON.stringify(c.state.artifacts["123"])),[{name:"new-terminal-artifact"}]);
+ assert.equal(c.state.artifactFinalized["123"],true);
+ assert.equal(Object.getPrototypeOf(c.state.detailRequestGeneration),null);
+});
+
+test("workflow detail loader refuses path-like or nonnumeric run identifiers",async()=>{
+ const c=makeContext({state:{errors:[]}});
+ let calls=0;
+ c.gh=async()=>{calls++;return {jobs:[],artifacts:[]};};
+ for(const id of ["../secret","12?x=1","12/jobs","constructor","",null,123.5]){
+  await c.loadWorkflowDetails({id,status:"completed"});
+ }
+ assert.equal(calls,0);
+ assert.equal(c.state.errors.length,7);
+ assert.ok(c.state.errors.every(x=>x.key==="workflow-details"));
+});
+
+test("run event replay caps each untrusted message and retains only the latest 180 events",async()=>{
+ const c=makeContext();
+ const elements={"run-detail":{innerHTML:""}};
+ c.$=id=>elements[id]||(elements[id]={innerHTML:""});
+ c.local=async()=>Array.from({length:250},(_,i)=>({
+  kind:"event-"+i,agent:"worker",ts:"2026-11-11T00:00:00Z",data:{message:"x".repeat(800)}
+ }));
+ await c.loadRun("bounded-run");
+ const html=elements["run-detail"].innerHTML;
+ assert.equal((html.match(/class="item"/g)||[]).length,180);
+ assert.match(html,/event-249/);
+ assert.doesNotMatch(html,/event-069/);
+ assert.match(html,/x{400}/);
+ assert.doesNotMatch(html,/x{401}/);
+});

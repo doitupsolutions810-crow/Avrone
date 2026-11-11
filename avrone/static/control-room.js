@@ -403,7 +403,7 @@ async function loadRun(id) {
   const body=events.length?events.slice(-180).map(e=>{
    const d=e.data&&typeof e.data==="object"?e.data:{};
    const lane=d.lane||d.focus_lane||"";
-   return '<div class="item"><div class="item-head"><h3>'+esc(e.kind||"event")+' · '+esc(e.agent||"system")+'</h3>'+badge(e.kind==="error"?"FAIL":"OBSERVED")+'</div><p>'+esc(d.message||d.tool||d.focus||d.text||JSON.stringify(d).slice(0,400))+'</p><div class="meta"><span class="muted">'+esc(date(e.ts))+'</span>'+(lane?'<span class="muted">lane '+esc(lane)+'</span>':"")+'</div></div>';
+   return '<div class="item"><div class="item-head"><h3>'+esc(e.kind||"event")+' · '+esc(e.agent||"system")+'</h3>'+badge(e.kind==="error"?"FAIL":"OBSERVED")+'</div><p>'+esc(short(d.message||d.tool||d.focus||d.text||JSON.stringify(d).slice(0,400),400))+'</p><div class="meta"><span class="muted">'+esc(date(e.ts))+'</span>'+(lane?'<span class="muted">lane '+esc(lane)+'</span>':"")+'</div></div>';
   }).join(""):"";
   $("run-detail").innerHTML=body+warning||'<div class="empty">No events returned for '+esc(id)+'.</div>';
  } catch(e) {
@@ -424,8 +424,13 @@ async function loadWorkflowDetails(run) {
  if(!state.jobs||typeof state.jobs!=="object"||Array.isArray(state.jobs))state.jobs={};
  if(!state.artifacts||typeof state.artifacts!=="object"||Array.isArray(state.artifacts))state.artifacts={};
  if(!state.artifactFinalized||typeof state.artifactFinalized!=="object"||Array.isArray(state.artifactFinalized))state.artifactFinalized={};
+ if(!state.detailRequestGeneration||typeof state.detailRequestGeneration!=="object"||Array.isArray(state.detailRequestGeneration))state.detailRequestGeneration=Object.create(null);
  if(!Array.isArray(state.errors))state.errors=[];
- const id=run.id;
+ const id=String(run.id==null?"":run.id);
+ if(!/^\\d+$/.test(id)) { state.errors.push({key:"workflow-details",message:"Invalid workflow run identifier"}); return; }
+ const previousGeneration=Number.isSafeInteger(state.detailRequestGeneration[id])?state.detailRequestGeneration[id]:0;
+ const requestGeneration=previousGeneration+1;
+ state.detailRequestGeneration[id]=requestGeneration;
  const need=workflowDetailsNeedRefresh(
   run,state.jobs[id],state.artifacts[id],hasError("jobs-"+id),hasError("artifacts-"+id),state.artifactFinalized[id]===true
  );
@@ -436,6 +441,7 @@ async function loadWorkflowDetails(run) {
   needsJobs?gh("/actions/runs/"+id+"/jobs?per_page=100"):Promise.resolve({jobs:state.jobs[id]}),
   needsArtifacts?gh("/actions/runs/"+id+"/artifacts?per_page=100"):Promise.resolve({artifacts:state.artifacts[id]})
  ]);
+ if(state.detailRequestGeneration[id]!==requestGeneration) return;
  if(tasks[0].status==="fulfilled") {
   const rows=listEnvelope(tasks[0].value,"jobs");
   if(rows) {state.jobs[id]=rows;state.errors=state.errors.filter(x=>x&&x.key!=="jobs-"+id);}

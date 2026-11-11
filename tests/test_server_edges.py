@@ -535,7 +535,7 @@ def test_control_room_release_gates_require_inspection_not_artifact_names():
     js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
     assert '"PENDING REVIEW"' in js
     assert "PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs" in js
-    assert "image build, inspect, digest and provenance" in js
+    assert "PASS requires exact-SHA Docker verification job and image-inspect/digest/health artifacts." in js
     assert "graceful shutdown" in js
 
 

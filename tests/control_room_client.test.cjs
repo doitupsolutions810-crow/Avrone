@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","safeHref","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","workflowDetailsNeedRefresh"];
+ const names=["esc","date","safeHref","apiHeaders","jsonFetch","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","workflowDetailsNeedRefresh"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -358,4 +358,125 @@ test("artifact cache receives one final refresh after a workflow completes",()=>
   {name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}
  ],[],false,false,true);
  assert.deepEqual(JSON.parse(JSON.stringify(completedFinal)),{jobs:false,artifacts:false});
+});
+
+
+test("safeHref rejects credential-bearing URLs and authenticated host confusion",()=>{
+ const c=makeContext();
+ for(const url of [
+  "https://user:pass@github.com/example/repo",
+  "https://user@api.github.com/repos/"+REPO_FULL,
+  "https://github.com@evil.example/phish",
+  "//evil.example/path"
+ ]) assert.equal(c.safeHref(url),"#",url);
+ assert.equal(c.safeHref("https://preview.vercel.app/deploy"),"https://preview.vercel.app/deploy");
+});
+
+test("date formatting degrades on malformed, non-finite, and throwing values",()=>{
+ const c=makeContext();
+ assert.equal(c.date(null),"—");
+ assert.equal(c.date("not-a-date"),"—");
+ assert.equal(c.date(Symbol("invalid")),"—");
+});
+
+test("GitHub pagination detects repeated next URLs instead of looping",async()=>{
+ let calls=0;
+ const repeated=GH+"/pulls?page=2";
+ const c=makeContext({fetch:async()=>{calls++;return response([{id:calls}],{headers:{Link:"<"+repeated+">; rel=\"next\""}});}});
+ await assert.rejects(()=>c.ghPages("/pulls?page=1",5),/Repeated GitHub pagination URL/);
+ assert.equal(calls,2);
+});
+
+test("GitHub pagination treats malformed successful envelopes as blocked errors",async()=>{
+ for(const body of [{message:"unexpected object"},{items:[{id:1}]},null,"null"]){
+  const c=makeContext({fetch:async()=>response(body)});
+  await assert.rejects(()=>c.ghPages("/pulls",1),/Unexpected GitHub list response shape/);
+ }
+});
+
+test("GitHub pagination accepts the documented workflow_runs object envelope",async()=>{
+ const c=makeContext({fetch:async()=>response({total_count:1,workflow_runs:[{id:9}]})});
+ const result=await c.ghPages("/actions/runs",1);
+ assert.equal(result.items[0].id,9);
+ assert.equal(result.truncated,false);
+});
+
+test("GitHub pagination rejects credential-bearing next links on the trusted API host",async()=>{
+ let calls=0;
+ const next="https://attacker@api.github.com/repos/"+REPO_FULL+"/pulls?page=2";
+ const c=makeContext({fetch:async()=>{calls++;return response([{id:1}],{headers:{Link:"<"+next+">; rel=\"next\""}});}});
+ await assert.rejects(()=>c.ghPages("/pulls",5),/Rejected unsafe GitHub pagination URL/);
+ assert.equal(calls,1);
+});
+
+test("jsonFetch returns null for an empty successful response but rejects malformed JSON",async()=>{
+ const c=makeContext({fetch:async()=>response("",{status:204})});
+ assert.equal(await c.jsonFetch("/empty"),null);
+ const bad=makeContext({fetch:async()=>response("<html>not json</html>")});
+ await assert.rejects(()=>bad.jsonFetch("/bad"),e=>e.message.includes("Invalid JSON from /bad"));
+});
+
+test("jsonFetch preserves structured HTTP failure details and clears its timeout",async()=>{
+ let cleared=false;
+ const c=makeContext({fetch:async()=>response({detail:"permission denied"},{status:403,statusText:"Forbidden"})});
+ c.clearTimeout=()=>{cleared=true;};
+ await assert.rejects(()=>c.jsonFetch("/private"),/403 Forbidden: permission denied/);
+ assert.equal(cleared,true);
+});
+
+test("matchesCommon survives cyclic and partially unreadable objects",()=>{
+ const c=makeContext();
+ const cyclic={lane:"planner",agent:"worker-a"};
+ cyclic.self=cyclic;
+ assert.equal(c.matchesCommon(cyclic,{lane:"planner",agent:"worker-a"}),true);
+ const hostile={lane:"worker-b"};
+ Object.defineProperty(hostile,"secret",{enumerable:true,get(){throw new Error("getter trap");}});
+ assert.equal(c.matchesCommon(hostile,{lane:"worker-b"}),true);
+});
+
+test("matchesCommon safely normalizes null and numeric filter values",()=>{
+ const c=makeContext();
+ assert.equal(c.matchesCommon({number:28,head_sha:"abcdef",runtime:"Python 3.12"},{repo:null,pr:28,commit:"abcdef",round:null,lane:null,agent:null,verification:null}),true);
+ assert.equal(c.matchesCommon({number:28},{pr:0}),false);
+});
+
+test("latestForSha safely handles null collections and malformed workflow rows",()=>{
+ const c=makeContext({state:{workflows:[null,{},42,{head_sha:"target",path:".github/workflows/ci.yml",id:8}]}});
+ assert.equal(c.latestForSha("target").id,8);
+ c.state.workflows=null;
+ assert.equal(c.latestForSha("target"),null);
+});
+
+test("hasError treats malformed error collections as no parsed error instead of throwing",()=>{
+ const c=makeContext({state:{errors:null}});
+ assert.equal(c.hasError("workflows"),false);
+ c.state.errors=[null,{key:"jobs-1"}];
+ assert.equal(c.hasError("jobs-1"),true);
+});
+
+test("evidenceData ignores null records and malformed maps without a false PASS",()=>{
+ const c=makeContext({state:{
+  jobs:{"run-8":[null,{name:"test (3.11)",conclusion:"success"},{name:"test (3.12)",conclusion:"success"}]},
+  artifacts:{"run-8":[null,{}, {name:"coverage-xml-py3.11"},{name:"coverage-xml-py3.12"},{name:"coverage-json-py3.11"},{name:"coverage-json-py3.12"}]},
+  commitStatus:{statuses:"not-an-array"},commitStatusSha:"same"
+ }});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-8",head_sha:"same",status:"completed"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["Exact-SHA Python 3.11"],"PASS");
+ assert.equal(gates["Exact-SHA Python 3.12"],"PASS");
+ assert.equal(gates["coverage.xml artifact"],"PASS");
+ assert.equal(gates["coverage.json artifact"],"PASS");
+ assert.equal(gates["Vercel preview deployment"],"NOT RUN");
+ const malformed=makeContext({state:{jobs:null,artifacts:null,commitStatus:{statuses:{}},commitStatusSha:"same"}});
+ assert.doesNotThrow(()=>malformed.evidenceData({head:{sha:"same"}},{id:"empty",head_sha:"same"}));
+});
+
+test("evidenceData refuses to choose between duplicate matrix job identities",()=>{
+ const c=makeContext({state:{jobs:{"run-9":[
+  {name:"test (3.11)",conclusion:"success"},
+  {name:"test (3.11)",conclusion:"failure"},
+  {name:"test (3.12)",conclusion:"success"}
+ ]}}});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-9",head_sha:"same",status:"completed"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["Exact-SHA Python 3.11"],"NOT RUN");
+ assert.equal(gates["Exact-SHA Python 3.12"],"PASS");
 });

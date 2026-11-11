@@ -602,3 +602,16 @@ def test_control_room_only_warns_on_duplicate_live_lanes_that_are_reported():
     assert 'String(a.status||"").toLowerCase()==="working"' in js
     assert 'badge("DUPLICATE LANE OBSERVED")' in js
     assert "Lease / heartbeat fields not reported" in js
+
+
+def test_control_room_run_comparison_never_transfers_evidence_between_shas():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "avrone" / "static" / "control-room.html").read_text(encoding="utf-8")
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert 'id="compare-run-a"' in page and 'id="compare-run-b"' in page
+    assert 'id="run-compare"' in page
+    assert "async function compareWorkflowRuns()" in js
+    assert "const same=a.head_sha===b.head_sha" in js
+    assert "Different commit SHAs: compare diagnostically only" in js
+    assert "artifact contents and exact-SHA provenance still require inspection" in js

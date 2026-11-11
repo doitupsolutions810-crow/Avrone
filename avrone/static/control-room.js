@@ -31,7 +31,8 @@ function badge(value) {
  const kind=["VERIFIED","PASS","SUCCESS","MERGED","DONE","COMPLETED"].includes(s)?"good":(["FAIL","FAILURE","BLOCKED","ERROR","TIMED_OUT"].includes(s)?"fail":(["UNVERIFIED","PENDING","IN_PROGRESS","QUEUED","RUNNING"].includes(s)?"pending":"neutral"));
  return '<span class="pill '+kind+'">'+esc(s)+'</span>';
 }
-function link(url,label) { return '<a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(label||"Open ↗")+'</a>'; }
+function safeHref(value) { try { const u=new URL(String(value||""),location.href); return u.protocol==="https:"?u.href:"#"; } catch (_) { return "#"; } }
+function link(url,label) { return '<a href="'+esc(safeHref(url))+'" target="_blank" rel="noopener noreferrer">'+esc(label||"Open ↗")+'</a>'; }
 function showEmpty(id,msg) { $(id).innerHTML='<div class="empty">'+esc(msg)+'</div>'; }
 function apiHeaders() { const h={Accept:"application/json"}; if(state.adminToken) h["x-admin-token"]=state.adminToken; return h; }
 async function jsonFetch(url,opts) {
@@ -53,11 +54,10 @@ function prLifecycle(p) {
 }
 function prEvidence(p) {
  const sha=(p.head&&p.head.sha)||"";
- const items=state.workflows.filter(w=>w.head_sha===sha);
- if(!sha) return "UNVERIFIED";
- if(!items.length) return "NOT RUN";
- if(items.some(w=>w.conclusion==="failure"||w.conclusion==="cancelled"||w.conclusion==="timed_out")) return "FAIL";
- if(items.some(w=>w.status!=="completed")) return "UNVERIFIED";
+ const run=sha&&latestForSha(sha);
+ if(!sha||!run) return "NOT RUN";
+ if(run.conclusion==="failure"||run.conclusion==="cancelled"||run.conclusion==="timed_out") return "FAIL";
+ if(run.status!=="completed") return "UNVERIFIED";
  return "UNVERIFIED";
 }
 function latestForSha(sha) { return state.workflows.filter(w=>w.head_sha===sha).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))[0]||null; }
@@ -73,12 +73,17 @@ function activeFilters() {
 }
 function matchesCommon(obj, f) {
  const text=JSON.stringify(obj||{}).toLowerCase();
- if(f.pr && String(obj.number||obj.pr_number||"")!==f.pr.replace(/^#/,"")) return false;
- if(f.commit && !(String(obj.head_sha||obj.sha||obj.target_sha||"").toLowerCase().includes(f.commit))) return false;
- if(f.round && !text.includes("round") || f.round && !text.includes(f.round)) return false;
+ if(f.repo && !REPO_FULL.toLowerCase().includes(f.repo)) return false;
+ if(f.pr && (obj.number!=null||obj.pr_number!=null) && String(obj.number||obj.pr_number)!==f.pr.replace(/^#/,"")) return false;
+ if(f.commit && !(String(obj.head_sha||obj.sha||obj.target_sha||"").toLowerCase().includes(f.commit)||text.includes(f.commit))) return false;
+ if(f.round && !text.includes(f.round)) return false;
  if(f.lane && !text.includes(f.lane)) return false;
  if(f.agent && !text.includes(f.agent)) return false;
- if(f.runtime && !text.includes(f.runtime.toLowerCase().replace("python ","python"))) return false;
+ if(f.runtime==="Python 3.11" && !/3\\.11/.test(text)) return false;
+ if(f.runtime==="Python 3.12" && !/3\\.12/.test(text)) return false;
+ if(f.runtime==="Node" && !/node/.test(text)) return false;
+ if(f.runtime==="Docker" && !/docker/.test(text)) return false;
+ if(f.runtime==="Apple Silicon" && !/(arm64|aarch64|apple silicon)/.test(text)) return false;
  if(f.verification) {
    const ev=String(obj.evidence_status||obj.verification||obj.conclusion||"").toUpperCase();
    if(ev!==f.verification && !(f.verification==="UNVERIFIED" && !ev)) return false;
@@ -156,7 +161,8 @@ function renderMissions() {
 }
 function renderSwarm() {
  setPill("swarm-state",Array.isArray(state.runs)?"CONNECTED":"NOT CONNECTED",Array.isArray(state.runs)?"good":"blocked");
- const runs=Array.isArray(state.runs)?state.runs:[];
+ const f=activeFilters();
+ const runs=(Array.isArray(state.runs)?state.runs:[]).filter(r=>matchesCommon(r,f));
  $("swarm-list").innerHTML=runs.length?runs.map(r=>{
   const id=r.run_id||r.id||"unknown", mode=r.mode||"mode unreported";
   return '<article class="item clickable" data-run="'+esc(id)+'"><div class="item-head"><div><h3>'+esc(id)+'</h3><p>'+esc(mode)+' · '+esc(date(r.start||r.started||r.created))+'</p></div>'+badge(r.status||"HISTORY")+'</div><div class="meta">'+badge(r.evidence_status||"UNVERIFIED")+'<span class="muted">Select to inspect event replay</span></div></article>';
@@ -184,42 +190,43 @@ function renderAgents() {
 function evidenceData(p,run) {
  const sha=p&&p.head&&p.head.sha||"";
  const same=!!run&&run.head_sha===sha;
- const failed=!!run&&run.conclusion==="failure";
- const running=!!run&&run.status!=="completed";
  const jobs=run&&state.jobs[run.id]||[];
  const artifacts=run&&state.artifacts[run.id]||[];
- const jobNames=jobs.map(j=>String(j.name||"").toLowerCase());
- const pass=(terms)=>jobNames.some(n=>terms.some(t=>n.includes(t))&&jobs.some(j=>String(j.name||"").toLowerCase().includes(terms.find(t=>n.includes(t)))&&j.conclusion==="success"));
  const names=artifacts.map(a=>String(a.name||"").toLowerCase());
+ const job=(rx)=>same?(jobs.find(j=>rx.test(String(j.name||"").toLowerCase()))||null):null;
+ const j311=job(/3\\.11/), j312=job(/3\\.12/);
+ const docker=job(/docker/), node=job(/node.*(lifecycle|container)|(lifecycle|container).*node/);
+ const candidate=(rx)=>names.some(n=>rx.test(n));
  const gates=[
-  {name:"Exact-SHA Python 3.11",done:same&&jobs.some(j=>/3\.11/.test(j.name||"")&&j.conclusion==="success"),fail:same&&jobs.some(j=>/3\.11/.test(j.name||"")&&j.conclusion==="failure"),note:"Must pass for this exact commit."},
-  {name:"Exact-SHA Python 3.12",done:same&&jobs.some(j=>/3\.12/.test(j.name||"")&&j.conclusion==="success"),fail:same&&jobs.some(j=>/3\.12/.test(j.name||"")&&j.conclusion==="failure"),note:"Must pass for this exact commit."},
-  {name:"coverage.xml artifact",done:same&&names.some(n=>n.includes("coverage")&&n.includes("xml")),note:"Artifact metadata only; inspect XML contents and SHA provenance."},
-  {name:"coverage.json artifact",done:same&&names.some(n=>n.includes("coverage")&&n.includes("json")),note:"Artifact metadata only; inspect JSON contents and SHA provenance."},
-  {name:"Docker image verification",done:same&&pass(["docker"]),note:"Requires image build plus inspect/digest evidence."},
-  {name:"In-container Node lifecycle",done:same&&pass(["node lifecycle","node-container"]),note:"Requires start, health, graceful shutdown, and no process leak."},
-  {name:"Local Apple-Silicon Ollama squad",done:false,note:"Must be executed on the authorized Mac with actual Ollama model identity."},
-  {name:"Proposal validation & edge cases",done:same&&pass(["proposal validation","edge-case"]),note:"Requires independent validation results bound to the same SHA."}
+  {name:"Exact-SHA Python 3.11",state:!same||!j311?"NOT RUN":j311.conclusion==="success"?"PASS":j311.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
+  {name:"Exact-SHA Python 3.12",state:!same||!j312?"NOT RUN":j312.conclusion==="success"?"PASS":j312.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
+  {name:"coverage.xml artifact",state:!same||!candidate(/coverage.*xml|xml.*coverage/)?"NOT RUN":"PENDING REVIEW",note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
+  {name:"coverage.json artifact",state:!same||!candidate(/coverage.*json|json.*coverage/)?"NOT RUN":"PENDING REVIEW",note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
+  {name:"Docker image verification",state:!same||!docker?"NOT RUN":docker.conclusion==="failure"?"FAIL":docker.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED",note:"Requires image build, inspect, digest and provenance; job name alone is insufficient."},
+  {name:"In-container Node lifecycle",state:!same||!node?"NOT RUN":node.conclusion==="failure"?"FAIL":node.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED",note:"Requires install, start, health, graceful shutdown and process-leak evidence from inside the container."},
+  {name:"Local Apple-Silicon Ollama squad",state:state.status?"NOT RUN":"BLOCKED",note:"Must run on the authorized Mac with the actual configured Ollama model and isolated worktree."},
+  {name:"Proposal validation & edge cases",state:!same?"NOT RUN":jobs.some(j=>/proposal validation|edge-case/i.test(j.name||"")&&j.conclusion==="success")?"PENDING REVIEW":"NOT RUN",note:"Requires an explicit validation job and independently inspectable exact-SHA results."}
  ];
- return {sha,same,failed,running,gates};
+ return {sha,same,gates};
 }
 function renderVerification() {
  const p=currentPR(), sha=p&&p.head&&p.head.sha, run=sha&&latestForSha(sha);
  const data=evidenceData(p,run);
- const done=data.gates.filter(g=>g.done).length, failed=data.gates.some(g=>g.fail);
- const status=failed?"FAIL":done===data.gates.length?"VERIFIED":!state.status?"BLOCKED":"UNVERIFIED";
+ const failed=data.gates.some(g=>g.state==="FAIL");
+ const complete=data.gates.every(g=>g.state==="PASS");
+ const blocked=data.gates.some(g=>g.state==="BLOCKED");
+ const status=failed?"FAIL":complete?"VERIFIED":blocked?"BLOCKED":"UNVERIFIED";
  setPill("evidence-state",status,status==="VERIFIED"?"good":status==="FAIL"?"fail":status==="BLOCKED"?"blocked":"pending");
- $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\"muted\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.fail?"FAIL":g.done?"PASS":"NOT RUN")+'</div><p>'+esc(g.note)+'</p></div>').join("");
+ $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\\"muted\\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.state)+'</div><p>'+esc(g.note)+'</p></div>').join("");
  const artifacts=run&&state.artifacts[run.id]||[];
  $("artifact-list").innerHTML=artifacts.length?artifacts.map(a=>item(a.name,a.expired?"Artifact expired":"Created "+date(a.created_at),badge(a.expired?"EXPIRED":"METADATA AVAILABLE"),run.html_url)).join(""):'<div class="empty">No candidate workflow artifacts are visible for this exact-SHA run. coverage.xml and coverage.json remain NOT RUN.</div>';
  $("edge-list").innerHTML=edgeCases.map(e=>'<div class="edge"><b>'+esc(e[0])+'</b><small>'+esc(e[1])+'</small>'+badge("NOT RUN")+'</div>').join("");
 }
 function renderRelease() {
- renderVerification();
  const p=currentPR(), sha=p&&p.head&&p.head.sha, run=sha&&latestForSha(sha), data=evidenceData(p,run);
  const gates=data.gates;
- $("release-list").innerHTML=gates.map((g,i)=>'<div class="gate"><span class="num">'+(i+1)+'</span><div><b>'+esc(g.name)+'</b><p>'+esc(g.note)+'</p></div>'+badge(g.fail?"FAIL":g.done?"PASS":"NOT RUN")+'</div>').join("");
- const next=gates.find(g=>!g.done);
+ $("release-list").innerHTML=gates.map((g,i)=>'<div class="gate"><span class="num">'+(i+1)+'</span><div><b>'+esc(g.name)+'</b><p>'+esc(g.note)+'</p></div>'+badge(g.state)+'</div>').join("");
+ const next=gates.find(g=>g.state!=="PASS");
  $("release-status").textContent=next?"GATES REMAIN":"ALL LISTED GATES PASS";
  $("release-status").className="pill "+(next?"pending":"good");
 }

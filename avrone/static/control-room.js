@@ -86,7 +86,7 @@ function prEvidence(p) {
  if(run.status!=="completed") return "UNVERIFIED";
  return "UNVERIFIED";
 }
-function isCiRun(run) { return !!run&&(String(run.name||"").toLowerCase()==="ci"||String(run.path||"").endsWith("/ci.yml")); }
+function isCiRun(run) { if(!run)return false; const workflowPath=String(run.path||""); return workflowPath?workflowPath===".github/workflows/ci.yml":String(run.name||"").toLowerCase()==="ci"; }
 function latestForSha(sha) { return state.workflows.filter(w=>w.head_sha===sha&&isCiRun(w)).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))[0]||null; }
 function currentPR() { return state.prs.find(p=>p.number===Number(state.selectedPR))||state.prs.find(p=>p.number===27)||null; }
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }

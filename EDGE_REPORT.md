@@ -425,3 +425,63 @@ AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
 3522 = previous 3491 + 31 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
 
 This round is committed and pushed only on `edge/round-5`. `main` is left at `5cceb52`. No PR opened.
+
+---
+
+# Round 6 — property tests, MCP fuzz, remaining modules, mock autopilot tick (2026-11-10 19:43 America/Detroit / EST)
+
+Base: `edge/round-5` at `cf5aee79eb0bce6edba3d9429081cff160d90c6e` (Avrone main tip `5cceb52` plus Rounds 1–5). Work is on a fresh branch `edge/round-6` off that tip. The previous 189 `tests/edge_extra` cases were left intact; this round adds 60 genuinely new tests (249 total). Production recon guardrails were not changed.
+
+## Test dependency: hypothesis
+
+Hypothesis was **not** already in the project. It is now a *dev/test* extra, not a runtime dependency:
+
+- `pyproject.toml` `[project.optional-dependencies] dev` now includes `hypothesis>=6.100` (alongside pytest, pytest-asyncio, pillow).
+- Installed into the local venv as **hypothesis 6.170.15**.
+- Property tests use `@settings(max_examples=25–40, deadline=None, derandomize=True, database=None)` so the suite stays fast and deterministic under a shuffled pytest run.
+- `.hypothesis/` (the local example database) was added to `.gitignore`.
+
+Install for development with `pip install -e '.[dev]'`.
+
+## New tests (60)
+
+| File | Count | What they cover |
+|---|---|---|
+| `tests/edge_extra/test_hypothesis_parsers.py` | 19 | Property tests for `_json_safe` (always `allow_nan=False` encodable; non-finite floats → `None`; strings UTF-8 / NUL-free), `clean_text`, `parse_dotenv_line` (never raises; `KEY=VAL` keeps the key), `/proc/meminfo` and `make_disk_reader` (no crash, pct is `None` or 0..100), `_bool` / `replay_limit` / `_finite_window` clamps, `shlex.quote`/`split` round-trip, `_safe_test_cmd` always splitable (empty falls back to the default), `_ok_rpc_id` vs JSON-RPC scalar rules, `compact_messages` never raises and preserves length, `context_chars` / `tool_output_max` / `clamp_deep_rounds`, `iter_lines` drops overlong lines and keeps the rest |
+| `tests/edge_extra/test_mcp_stdio_fuzz.py` | 11 | 8 seeded random byte-stream cases (garbage / NUL / truncated UTF-8 / whitespace / valid / batch / partial); a well-formed ping in a noisy stream is still answered; hypothesis-fuzzed chunk lists never hang or emit invalid JSON-RPC; a real `python -m avrone.mcp_server` subprocess fed a seeded fuzz stream exits under an 8s reap cap |
+| `tests/edge_extra/test_module_gaps_r6.py` | 24 | Governor: sensor exceptions / NaN become errors, typo keys and non-callables don't crash, all-`None` sensors return cap, `inf` load throttles to floor. Sovereign: parent-env inheritance without an agent cwd; `agent_env` sets `AVRONE_AGENT_DIR` and still inherits `PATH` and other parent vars. `StdioTransport`: close is idempotent; `connect()` twice replaces the child (no leak); close fails an in-flight request. Plugins: discovery is sorted by filename; same tool name → last sorted file wins; a file without `register` is skipped. Bootstrap: `apply_tool_focus` after registration; `build_core` cleanup is idempotent. Trinity: compact at the exact limit is a no-op; just-under elides a `TOOL RESULT` body but not the tail; 0 / empty / negative limits are no-ops. Codex: `iter_lines` at the exact cap; `replay` honors `HARD_REPLAY_EVENTS`. Telemetry windows stay JSON-safe and honor the horizon. 16-thread checkpoint `claim` race: exactly one winner, release clears busy |
+| `tests/edge_extra/test_autopilot_tick_r6.py` | 6 | A full mock autopilot tick (governor → evolve gate command via LocalRunner → MCP ping) is healthy by default; injected faults at each stage (hot governor, sanitized evolve command with metacharacters, sovereign timeout/reap, truncated MCP frame) still shut down cleanly with no leaked asyncio tasks or leftover children |
+
+## Bugs found and fixed (root cause, Linux + macOS)
+
+1. **`avrone/mcp_client.py:79-86`** — `StdioTransport.connect()` always started a new child and reader tasks, even when `self.proc` was already set. A second `connect()` (reconnect, or a caller that connected twice) leaked the previous subprocess and its `_read_loop` / stderr-drain tasks. `connect()` now `close()`s an existing transport first and clears `proc`, reader tasks, and `_pending`.
+2. **`avrone/telemetry.py:35-40`** — `_finite_window` is annotated `-> float` and used as a JSON field, but the fallback default was the bare int `86400`. Junk / `None` / non-finite inputs therefore returned an `int`. The default is now `86400.0` and both return paths use `float(default)` so the result is always a finite non-negative float.
+
+No production recon policy was changed.
+
+## Gates (0 failed, 0 errored)
+
+Full non-integration:
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration'
+3582 passed, 362 deselected, 1 warning in 67.47s
+```
+
+Shuffled (pytest-randomly):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -p randomly -m 'not integration'
+3582 passed, 362 deselected, 1 warning in 70.87s
+```
+
+Edge suite (189 previous + 60 new = 249):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
+249 passed in 24.56s
+```
+
+3582 = previous 3522 + 60 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
+
+This round is committed and pushed only on `edge/round-6`. `main` is left at `5cceb52`. No PR opened.

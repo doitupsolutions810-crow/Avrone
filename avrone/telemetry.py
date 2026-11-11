@@ -32,12 +32,12 @@ def _iter_events(log_dir: Path, since: float, max_files: int = 200):
                 yield ev
 
 
-def _finite_window(window_s: Any, default: float = 86400) -> float:
+def _finite_window(window_s: Any, default: float = 86400.0) -> float:
     """A usable look-back window; junk / non-finite / negative fall back to default."""
     if isinstance(window_s, bool) or not isinstance(window_s, (int, float)):
-        return default
+        return float(default)
     w = float(window_s)
-    return w if math.isfinite(w) and w >= 0 else default
+    return w if math.isfinite(w) and w >= 0 else float(default)
 
 
 def telemetry(core: "TrinityCore", window_s: float = 86400) -> dict[str, Any]:

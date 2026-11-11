@@ -77,6 +77,13 @@ class StdioTransport(_Transport):
         self.stderr_tail: list[str] = []
 
     async def connect(self) -> None:
+        if self.proc is not None:
+            # A second connect() used to leak the previous child and its reader tasks.
+            await self.close()
+            self.proc = None
+            self._reader = None
+            self._stderr_task = None
+            self._pending.clear()
         env = {**os.environ, **self.env}
         self.proc = await asyncio.create_subprocess_exec(
             self.command, *self.args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,

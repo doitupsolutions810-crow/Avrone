@@ -972,3 +972,25 @@ test("run event replay caps each untrusted message and retains only the latest 1
  assert.match(html,/x{400}/);
  assert.doesNotMatch(html,/x{401}/);
 });
+
+
+test("out-of-order run detail responses cannot replace the most recently selected run",async()=>{
+ const c=makeContext();
+ const elements={"run-detail":{innerHTML:""}};
+ c.$=id=>elements[id]||(elements[id]={innerHTML:""});
+ let resolveOld;
+ const oldResponse=new Promise(resolve=>{resolveOld=resolve;});
+ c.local=path=>path.endsWith("/runs/1")
+  ?oldResponse
+  :Promise.resolve([{kind:"selected-run-2",agent:"worker",data:{message:"new selection"}}]);
+ const older=c.loadRun("1");
+ const newer=c.loadRun("2");
+ await newer;
+ assert.match(elements["run-detail"].innerHTML,/selected-run-2/);
+ assert.match(elements["run-detail"].innerHTML,/new selection/);
+ resolveOld([{kind:"stale-run-1",agent:"worker",data:{message:"stale selection"}}]);
+ await older;
+ assert.match(elements["run-detail"].innerHTML,/selected-run-2/);
+ assert.doesNotMatch(elements["run-detail"].innerHTML,/stale-run-1|stale selection/);
+ assert.equal(c.state.runDetailGeneration,2);
+});

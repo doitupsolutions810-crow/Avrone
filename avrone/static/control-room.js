@@ -394,9 +394,12 @@ function renderRelease() {
  $("release-status").className="pill "+(next?"pending":"good");
 }
 async function loadRun(id) {
+ const generation=(Number.isSafeInteger(state.runDetailGeneration)?state.runDetailGeneration:0)+1;
+ state.runDetailGeneration=generation;
  $("run-detail").innerHTML='<div class="loading">Loading event replay…</div>';
  try {
   const data=await local("/api/runs/"+encodeURIComponent(id));
+  if(state.runDetailGeneration!==generation) return;
   const candidate=Array.isArray(data)?data:(data&&typeof data==="object"?(Array.isArray(data.events)?data.events:(Array.isArray(data.items)?data.items:[])):[]);
   const normalized=validRecords(candidate),events=normalized.items;
   const warning=normalized.rejected?'<div class="empty">Suppressed '+normalized.rejected+' malformed event record(s).</div>':"";
@@ -407,6 +410,7 @@ async function loadRun(id) {
   }).join(""):"";
   $("run-detail").innerHTML=body+warning||'<div class="empty">No events returned for '+esc(id)+'.</div>';
  } catch(e) {
+  if(state.runDetailGeneration!==generation) return;
   const message=e&&typeof e==="object"&&typeof e.message==="string"?e.message:"Run detail unavailable";
   $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(message)+'</div>';
  }

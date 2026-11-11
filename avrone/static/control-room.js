@@ -75,9 +75,11 @@ async function ghPages(path,maxPages) {
 }
 async function local(path) { return jsonFetch(path); }
 function prLifecycle(p) {
+ p=p&&typeof p==="object"?p:{};
  return {state:String(p.state||"unknown").toUpperCase(),draft:!!p.draft,merged:!!p.merged_at||!!p.merged,unmerged:!p.merged_at&&!p.merged};
 }
 function prEvidence(p) {
+ p=p&&typeof p==="object"?p:{};
  const sha=(p.head&&p.head.sha)||"";
  if(hasError("workflows")) return "BLOCKED";
  const run=sha&&latestForSha(sha);
@@ -106,7 +108,9 @@ function activeFilters() {
  return {repo:filterValue("f-repo"),pr:filterValue("f-pr"),commit:filterValue("f-commit"),round:filterValue("f-round"),lane:filterValue("f-lane"),agent:filterValue("f-agent"),runtime:($("f-runtime").value||"").trim(),verification:($("f-verification").value||"").trim()};
 }
 function matchesCommon(obj, f) {
- const text=JSON.stringify(obj||{}).toLowerCase();
+ obj=obj&&typeof obj==="object"?obj:{};
+ f=f&&typeof f==="object"?f:{};
+ const text=JSON.stringify(obj).toLowerCase();
  if(f.repo && !REPO_FULL.toLowerCase().includes(f.repo)) return false;
  if(f.pr && (obj.number!=null||obj.pr_number!=null) && String(obj.number||obj.pr_number)!==f.pr.replace(/^#/,"")) return false;
  if(f.commit && !(String(obj.head_sha||obj.sha||obj.target_sha||"").toLowerCase().includes(f.commit)||text.includes(f.commit))) return false;

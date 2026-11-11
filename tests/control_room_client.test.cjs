@@ -19,7 +19,7 @@ function makeContext(overrides={}){
  const state={workflows:[],jobs:{},artifacts:{},status:null,commitStatus:null,commitStatusSha:"",errors:[],...overrides.state};
  const ctx={state,REPO_FULL,GH,URL,location:{href:"https://control-room.example.test/static/control-room.html"},AbortController,setTimeout,clearTimeout,fetch:overrides.fetch||(async()=>{throw new Error("unexpected fetch");})};
  vm.createContext(ctx);
- const names=["esc","date","safeHref","apiHeaders","jsonFetch","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","workflowDetailsNeedRefresh"];
+ const names=["esc","date","safeHref","apiHeaders","jsonFetch","prLifecycle","prEvidence","isCiRun","latestForSha","matchesCommon","ghPages","evidenceData","hasError","listEnvelope","workflowDetailsNeedRefresh"];
  vm.runInContext(names.map(extractFunction).join("\n"),ctx);
  return ctx;
 }
@@ -509,4 +509,35 @@ test("jsonFetch aborts a stalled request and clears its timeout handle",async()=
  await assert.rejects(()=>pending,/request aborted/);
  assert.equal(signal.aborted,true);
  assert.equal(cleared,true);
+});
+
+
+test("workflow detail envelopes distinguish valid empty lists from malformed API success",()=>{
+ const c=makeContext();
+ assert.deepEqual(JSON.parse(JSON.stringify(c.listEnvelope({jobs:[]},"jobs"))),[]);
+ assert.deepEqual(JSON.parse(JSON.stringify(c.listEnvelope({artifacts:[{id:1}]},"artifacts"))),[{id:1}]);
+ for(const payload of [null,{},[],{jobs:{}},{jobs:null},{jobs:"empty"},{data:[1]}]){
+  assert.equal(c.listEnvelope(payload,"jobs"),null);
+ }
+});
+
+test("workflow cache remains refreshable when a job list contains null or malformed entries",()=>{
+ const c=makeContext();
+ const result=c.workflowDetailsNeedRefresh(
+  {status:"in_progress"},
+  [null,{status:"completed"}],
+  [],
+  false,false,false
+ );
+ assert.equal(result.jobs,true);
+ assert.equal(result.artifacts,true);
+});
+
+test("matchesCommon catches throwing getters on selector fields",()=>{
+ const c=makeContext();
+ const row={};
+ Object.defineProperty(row,"number",{enumerable:true,get(){throw new Error("number getter");}});
+ Object.defineProperty(row,"head_sha",{enumerable:true,get(){throw new Error("sha getter");}});
+ assert.doesNotThrow(()=>c.matchesCommon(row,{pr:"28",commit:"abc"}));
+ assert.equal(c.matchesCommon(row,{pr:"28",commit:"abc"}),false);
 });

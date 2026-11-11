@@ -2,7 +2,7 @@
 
 ## Entry point
 
-When AVRONE is running, open \`/static/control-room.html\`. The existing root application links to this page. The page is read-only and uses two evidence sources:
+When AVRONE is running, open `/static/control-room.html`. The existing root application links to this page. The page is read-only and uses two evidence sources:
 
 - Public GitHub REST endpoints for repository pull requests, commits, workflow runs, job summaries, and artifact metadata.
 - Same-origin AVRONE endpoints for status, Eternal CodeX runs, run replay, checkpoints, telemetry, fleet directory, and accepted evolution proposals.
@@ -17,12 +17,12 @@ A successful Python CI matrix is necessary but not sufficient for the Control Ro
 
 ## Current observed AVRONE API surfaces
 
-- \`GET /api/status\`: runner, workspace, provider/model, squad limits, active agents, boot identifier.
-- \`GET /api/runs\` and \`GET /api/runs/{run_id}\`: durable run summaries and event replay.
-- \`GET /api/checkpoints\` and \`GET /api/checkpoints/{id}\`: resumable checkpoint state (admin).
-- \`GET /api/telemetry\`: run/agent/error/fleet telemetry (local/admin).
-- \`GET /api/fleet/directory\`: remote node, device, runner and agent presence (admin).
-- \`GET /api/evolve\`: accepted evolution proposals (local/admin).
+- `GET /api/status`: runner, workspace, provider/model, squad limits, active agents, boot identifier.
+- `GET /api/runs` and `GET /api/runs/{run_id}`: durable run summaries and event replay.
+- `GET /api/checkpoints` and `GET /api/checkpoints/{id}`: resumable checkpoint state (admin).
+- `GET /api/telemetry`: run/agent/error/fleet telemetry (local/admin).
+- `GET /api/fleet/directory`: remote node, device, runner and agent presence (admin).
+- `GET /api/evolve`: accepted evolution proposals (local/admin).
 
 The UI intentionally does not call mutation endpoints.
 
@@ -34,6 +34,6 @@ GitHub Actions artifact metadata can identify candidate artifacts, but operators
 
 ## Local browser automation
 
-The Vercel \`agent-browser\` discovery skill is included at \`.agents/skills/agent-browser/SKILL.md\`. This is the project skill descriptor; it does not install the native CLI or download Chrome. On the authorized developer machine, install with the upstream instructions and then run \`agent-browser skills get core\` before any browser automation.
+The Vercel `agent-browser` discovery skill is included at `.agents/skills/agent-browser/SKILL.md`. This is the project skill descriptor; it does not install the native CLI or download Chrome. On the authorized developer machine, install with the upstream instructions and then run `agent-browser skills get core` before any browser automation.
 
 Upstream source: https://github.com/vercel-labs/agent-browser

@@ -5,7 +5,7 @@ const REPO = "Avrone";
 const REPO_FULL = OWNER + "/" + REPO;
 const GH = "https://api.github.com/repos/" + REPO_FULL;
 const $ = (id) => document.getElementById(id);
-const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, commitStatus: null, commitStatusSha: "", selectedPR: 27, runDetails: {}, artifacts: {}, artifactFinalized: {}, jobs: {}, adminToken: "", errors: [] };
+const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, commitStatus: null, commitStatusSha: "", selectedPR: null, selectionInitialized: false, runDetails: {}, artifacts: {}, artifactFinalized: {}, jobs: {}, adminToken: "", errors: [] };
 const edgeCases = [
  ["Duplicate lane assignment","Reject a second live owner for the same exclusive lane; preserve the original lease."],
  ["Lease expiry / stale owner","Fence a stale worker from heartbeat renewal, checkpoint writes, and finalization."],
@@ -108,7 +108,23 @@ function prEvidence(p) {
 }
 function isCiRun(run) { return !!run&&String(run.path||"")===".github/workflows/ci.yml"; }
 function latestForSha(sha) { const rows=validRecords(state.workflows).items; return rows.filter(w=>w.head_sha===sha&&isCiRun(w)).sort((a,b)=>{const da=Date.parse(a.updated_at||"")||0,db=Date.parse(b.updated_at||"")||0;return db-da;})[0]||null; }
-function currentPR() { const rows=validRecords(state.prs).items; return rows.find(p=>Number(p.number)===Number(state.selectedPR))||rows.find(p=>Number(p.number)===27)||null; }
+function focusPRNumber(rows,preferred) {
+ const items=validRecords(rows).items.filter(p=>Number.isSafeInteger(Number(p.number))&&Number(p.number)>0);
+ if(preferred!==null&&preferred!==undefined) {
+  const selected=items.find(p=>Number(p.number)===Number(preferred));
+  if(selected)return Number(selected.number);
+ }
+ const open=items.filter(p=>String(p.state||"").toLowerCase()==="open");
+ const candidates=open.length?open:items;
+ const timestamp=value=>{try{const parsed=Date.parse(value||"");return Number.isFinite(parsed)?parsed:0;}catch(_){return 0;}};
+ candidates.sort((a,b)=>timestamp(b.updated_at)-timestamp(a.updated_at));
+ return candidates.length?Number(candidates[0].number):null;
+}
+function currentPR() {
+ const rows=validRecords(state.prs).items;
+ const number=focusPRNumber(rows,state.selectedPR);
+ return number===null?null:rows.find(p=>Number(p.number)===number)||null;
+}
 function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
 function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
 function hasError(key) { return Array.isArray(state.errors)&&state.errors.some(x=>x&&x.key===key); }
@@ -511,9 +527,13 @@ async function refresh() {
  state.prs=validRecords(state.prs).items;
  state.prs.sort((a,b)=>(Date.parse(b.updated_at||"")||0)-(Date.parse(a.updated_at||"")||0));
  $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+esc(p.number)+'">#'+esc(p.number)+' · '+esc(p.title).slice(0,65)+'</option>').join("");
- if(state.prs.some(p=>p.number===27)) $("f-pr").value="27";
- else $("f-pr").value="";
- state.selectedPR=Number($("f-pr").value||27);
+ if(!state.selectionInitialized) {
+  state.selectedPR=focusPRNumber(state.prs);
+  state.selectionInitialized=true;
+ } else if(state.selectedPR!==null&&state.selectedPR!==undefined) {
+  state.selectedPR=focusPRNumber(state.prs,state.selectedPR);
+ }
+ $("f-pr").value=state.selectedPR===null||state.selectedPR===undefined?"":String(state.selectedPR);
  await loadSelectedCommitStatus();
  if(state.refreshGeneration!==generation)return;
  if(!Array.isArray(state.commits)) state.commits=[];
@@ -538,9 +558,9 @@ document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>{
  b.classList.add("active");$("view-"+b.dataset.tab).classList.add("active");
 }));
 $("refresh").addEventListener("click",refresh);
-$("f-pr").addEventListener("change",async()=>{state.selectedPR=Number($("f-pr").value||27);await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run);renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
+$("f-pr").addEventListener("change",async()=>{state.selectionInitialized=true;state.selectedPR=Number($("f-pr").value)||null;await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run);renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
 ["f-repo","f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).addEventListener("input",()=>{renderPRs();renderCommits();renderSwarm();}));
-$("clear-filters").addEventListener("click",async()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="27";state.selectedPR=27;await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run);renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
+$("clear-filters").addEventListener("click",async()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="";state.selectedPR=null;state.selectionInitialized=true;await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run);renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
 $("apply-token").addEventListener("click",()=>{state.adminToken=$("admin-token").value.trim();$("admin-token").value="";refresh();});
 $("compare-runs").addEventListener("click",compareWorkflowRuns);
 $("compare").addEventListener("click",async()=>{

@@ -1,0 +1,307 @@
+(function () {
+"use strict";
+const OWNER = "doitupsolutions810-crow";
+const REPO = "Avrone";
+const REPO_FULL = OWNER + "/" + REPO;
+const GH = "https://api.github.com/repos/" + REPO_FULL;
+const $ = (id) => document.getElementById(id);
+const state = { prs: [], commits: [], workflows: [], status: null, runs: [], checkpoints: [], telemetry: null, fleet: [], evolve: null, selectedPR: 27, runDetails: {}, artifacts: {}, jobs: {}, adminToken: "", errors: [] };
+const edgeCases = [
+ ["Duplicate lane assignment","Reject a second live owner for the same exclusive lane; preserve the original lease."],
+ ["Lease expiry / stale owner","Fence a stale worker from heartbeat renewal, checkpoint writes, and finalization."],
+ ["Checkpoint collision","Concurrent claims yield one owner; incompatible task/mode/owner returns conflict."],
+ ["Worker exception","One agent crash is isolated; sibling results and the final failure summary survive."],
+ ["Failure propagation","Planner, worker, lead, runner, and cancellation failures remain visible with causal chain."],
+ ["Malformed and torn JSONL","Replay survives invalid UTF-8, truncated last line, NaN, lone surrogates, and cycles."],
+ ["Path traversal and symlinks","File/workspace/artifact paths cannot escape their authorized root."],
+ ["Resource exhaustion","Worker caps, request bounds, memory limits, timeouts, and log replay limits fail closed."],
+ ["Exact-SHA binding","Results from a parent, sibling, or newer commit cannot verify the selected SHA."],
+ ["Missing / expired artifacts","Absent, expired, corrupt, or mismatched coverage artifacts remain NOT RUN."],
+ ["Docker unavailable","No Docker image gate is passed if engine, build, inspect, or digest evidence is missing."],
+ ["Node lifecycle","Verify install, in-container start, health, graceful shutdown, and no leaked processes."],
+ ["Secret redaction","Admin tokens, provider keys, URL credentials, and log-shaped secrets never render."],
+ ["API partial failure","Rate limits, 401/403, 404, 5xx, malformed JSON, and pagination gaps remain visible."],
+ ["Untrusted pull-request data","PR text and event payloads are rendered as text, never as executable HTML."]
+];
+function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+function short(v, n) { const s=String(v||""); return s.length>(n||12) ? s.slice(0,n||12)+"…" : s; }
+function date(v) { if(!v) return "—"; const d=new Date(v); return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString(); }
+function badge(value) {
+ const s=String(value||"UNKNOWN").toUpperCase();
+ const kind=["VERIFIED","PASS","SUCCESS","MERGED","DONE","COMPLETED"].includes(s)?"good":(["FAIL","FAILURE","BLOCKED","ERROR","TIMED_OUT"].includes(s)?"fail":(["UNVERIFIED","PENDING","IN_PROGRESS","QUEUED","RUNNING"].includes(s)?"pending":"neutral"));
+ return '<span class="pill '+kind+'">'+esc(s)+'</span>';
+}
+function link(url,label) { return '<a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(label||"Open ↗")+'</a>'; }
+function showEmpty(id,msg) { $(id).innerHTML='<div class="empty">'+esc(msg)+'</div>'; }
+function apiHeaders() { const h={Accept:"application/json"}; if(state.adminToken) h["x-admin-token"]=state.adminToken; return h; }
+async function jsonFetch(url,opts) {
+ const ctl=new AbortController(); const timer=setTimeout(()=>ctl.abort(),12000);
+ try {
+  const res=await fetch(url,Object.assign({headers:apiHeaders(),signal:ctl.signal},opts||{}));
+  const txt=await res.text(); let body;
+  try { body=txt?JSON.parse(txt):null; } catch (_) { throw new Error("Invalid JSON from "+url); }
+  if(!res.ok) throw new Error(res.status+" "+res.statusText+(body&&body.detail?": "+body.detail:""));
+  return body;
+ } finally { clearTimeout(timer); }
+}
+async function gh(path) {
+ return jsonFetch(GH+path,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}});
+}
+async function local(path) { return jsonFetch(path); }
+function prLifecycle(p) {
+ return {state:String(p.state||"unknown").toUpperCase(),draft:!!p.draft,merged:!!p.merged_at||!!p.merged,unmerged:!p.merged_at&&!p.merged};
+}
+function prEvidence(p) {
+ const sha=(p.head&&p.head.sha)||"";
+ const items=state.workflows.filter(w=>w.head_sha===sha);
+ if(!sha) return "UNVERIFIED";
+ if(!items.length) return "NOT RUN";
+ if(items.some(w=>w.conclusion==="failure"||w.conclusion==="cancelled"||w.conclusion==="timed_out")) return "FAIL";
+ if(items.some(w=>w.status!=="completed")) return "UNVERIFIED";
+ return "UNVERIFIED";
+}
+function latestForSha(sha) { return state.workflows.filter(w=>w.head_sha===sha).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at))[0]||null; }
+function currentPR() { return state.prs.find(p=>p.number===Number(state.selectedPR))||state.prs.find(p=>p.number===27)||null; }
+function runtimeStatusText() { return state.status ? "CONNECTED" : "NOT CONNECTED"; }
+function localUnavailableMessage(key) { const e=state.errors.find(x=>x.key===key); return e ? e.message : "No data returned by the local API."; }
+function fact(label,value) { return '<div class="fact"><span>'+esc(label)+'</span><b>'+esc(value==null||value===""?"Not reported":value)+'</b></div>'; }
+function formatSha(sha) { return sha ? short(sha,16) : "No SHA"; }
+function currentSha() { const p=currentPR(); return p&&p.head&&p.head.sha||""; }
+function filterValue(id) { return ($(id).value||"").trim().toLowerCase(); }
+function activeFilters() {
+ return {repo:filterValue("f-repo"),pr:filterValue("f-pr"),commit:filterValue("f-commit"),round:filterValue("f-round"),lane:filterValue("f-lane"),agent:filterValue("f-agent"),runtime:filterValue("f-runtime"),verification:filterValue("f-verification")};
+}
+function matchesCommon(obj, f) {
+ const text=JSON.stringify(obj||{}).toLowerCase();
+ if(f.pr && String(obj.number||obj.pr_number||"")!==f.pr.replace(/^#/,"")) return false;
+ if(f.commit && !(String(obj.head_sha||obj.sha||obj.target_sha||"").toLowerCase().includes(f.commit))) return false;
+ if(f.round && !text.includes("round") || f.round && !text.includes(f.round)) return false;
+ if(f.lane && !text.includes(f.lane)) return false;
+ if(f.agent && !text.includes(f.agent)) return false;
+ if(f.runtime && !text.includes(f.runtime.toLowerCase().replace("python ","python"))) return false;
+ if(f.verification) {
+   const ev=String(obj.evidence_status||obj.verification||obj.conclusion||"").toUpperCase();
+   if(ev!==f.verification && !(f.verification==="UNVERIFIED" && !ev)) return false;
+ }
+ return true;
+}
+function setPill(id,text,kind) { $(id).textContent=text; $(id).className="pill "+(kind||"neutral"); }
+function renderTarget() {
+ const p=currentPR();
+ if(!p){$("target-pr").textContent="PR target unavailable";$("target-sha").textContent="No observed PR SHA";return;}
+ $("target-pr").textContent="PR #"+p.number+" · "+(p.head&&p.head.ref||"unknown branch");
+ $("target-sha").textContent=(p.head&&p.head.sha)||"No head SHA";
+ const life=prLifecycle(p);
+ $("target-state").innerHTML=badge(life.state)+badge(life.draft?"DRAFT":"READY")+badge(life.merged?"MERGED":"UNMERGED")+badge(prEvidence(p));
+}
+function renderMetrics() {
+ const open=state.prs.filter(p=>p.state==="open");
+ $("m-open").textContent=open.length;
+ $("m-draft").textContent=open.filter(p=>p.draft&&!p.merged_at).length;
+ $("m-runs").textContent=state.workflows.length;
+ $("m-local").textContent=Array.isArray(state.runs)?state.runs.length:"—";
+ $("m-checkpoints").textContent=Array.isArray(state.checkpoints)?state.checkpoints.length:"—";
+ const agents=state.status&&state.status.agents?Object.keys(state.status.agents).length:0;
+ $("m-agents").textContent=agents;
+}
+function item(title,body,meta,href) {
+ return '<article class="item '+(href?"clickable":"")+'" '+(href?'data-href="'+esc(href)+'"':'')+'><div class="item-head"><div><h3>'+esc(title)+'</h3><p>'+esc(body||"")+'</p></div></div><div class="meta">'+(meta||"")+'</div></article>';
+}
+function renderPRs() {
+ const f=activeFilters();
+ const rows=state.prs.filter(p=>matchesCommon(p,f));
+ $("pr-count").textContent=rows.length+" records";
+ if(!rows.length) return showEmpty("pull-list","No pull requests match these filters.");
+ const body=rows.map(p=>{
+  const life=prLifecycle(p), ev=prEvidence(p), sha=p.head&&p.head.sha||"";
+  return '<tr><td><b>#'+p.number+'</b> '+esc(p.title)+'</td><td>'+badge(life.state)+" "+badge(life.draft?"DRAFT":"READY")+'</td><td>'+badge(life.merged?"MERGED":"UNMERGED")+'</td><td>'+badge(ev)+'</td><td><code>'+esc(formatSha(sha))+'</code></td><td>'+esc(p.head&&p.head.ref||"")+'</td><td>'+link(p.html_url,"Open ↗")+'</td></tr>';
+ }).join("");
+ $("pull-list").innerHTML='<table class="data-table"><thead><tr><th>Pull request</th><th>GitHub state</th><th>Merge state</th><th>Evidence</th><th>Head SHA</th><th>Branch</th><th>Link</th></tr></thead><tbody>'+body+'</tbody></table>';
+}
+function renderCommits() {
+ const f=activeFilters();
+ const rows=state.commits.filter(c=>matchesCommon({sha:c.sha,message:c.commit&&c.commit.message},f));
+ $("commit-count").textContent=rows.length+" records";
+ if(!rows.length) return showEmpty("commit-list","No commits match these filters.");
+ $("commit-list").innerHTML='<table class="data-table"><thead><tr><th>Commit</th><th>Message</th><th>Author</th><th>Date</th><th>Link</th></tr></thead><tbody>'+rows.map(c=>'<tr><td><code>'+esc(formatSha(c.sha))+'</code></td><td>'+esc((c.commit&&c.commit.message||"").split("\n")[0])+'</td><td>'+esc(c.commit&&c.commit.author&&c.commit.author.name||"")+'</td><td>'+esc(date(c.commit&&c.commit.author&&c.commit.author.date))+'</td><td>'+link(c.html_url||c.url,"Open ↗")+'</td></tr>').join("")+'</tbody></table>';
+ const options=state.commits.map(c=>'<option value="'+esc(c.sha)+'">'+esc(formatSha(c.sha)+" · "+(c.commit&&c.commit.message||"").split("\n")[0].slice(0,48))+'</option>').join("");
+ $("compare-base").innerHTML='<option value="">Base commit…</option>'+options;
+ $("compare-head").innerHTML='<option value="">Head commit…</option>'+options;
+}
+function renderOverview() {
+ const top=state.prs.filter(p=>p.state==="open").slice(0,7);
+ $("overview-prs").innerHTML=top.length?top.map(p=>item("#"+p.number+" · "+p.title,(p.head&&p.head.ref||"")+" → "+(p.base&&p.base.ref||"main"),badge(p.draft?"DRAFT":"READY")+" "+badge(prEvidence(p)),p.html_url)).join(""):'<div class="empty">No open pull requests observed.</div>';
+ const recent=state.commits.slice(0,6);
+ $("overview-commits").innerHTML=recent.length?recent.map(c=>item(formatSha(c.sha),(c.commit&&c.commit.message||"").split("\n")[0],'<span class="muted">'+esc(date(c.commit&&c.commit.author&&c.commit.author.date))+'</span>',c.html_url)).join(""):'<div class="empty">No commits available.</div>';
+ const s=state.status||{};
+ $("runtime-summary").innerHTML=state.status?[
+ fact("Runner",s.runner),fact("Provider",s.provider),fact("Model",s.model),fact("Workspace",s.workspace),fact("Squad size",s.squad_size),fact("Max parallel",s.max_parallel),fact("Admin enabled",s.admin_enabled?"yes":"no"),fact("Boot ID",s.boot)
+ ].join(""):'<div class="empty">'+esc(localUnavailableMessage("status"))+'</div>';
+ setPill("runtime-state",state.status?"CONNECTED":"NOT CONNECTED",state.status?"good":"blocked");
+ renderNextGate();
+}
+function renderNextGate() {
+ const p=currentPR(), sha=p&&p.head&&p.head.sha, run=sha&&latestForSha(sha);
+ let label="Obtain exact-SHA CI evidence for Python 3.11 and 3.12";
+ let why="No completed matrix has been confirmed for the selected pull request head.";
+ if(run&&run.conclusion==="failure"){label="Resolve failing exact-SHA CI";why="Latest workflow run "+run.run_number+" failed for "+formatSha(sha)+". Inspect failing job logs before changing source.";}
+ else if(run&&run.conclusion==="success"){label="Prove coverage, Docker, Node, and local-runtime gates";why="The workflow is green, but the release gate also requires coverage artifacts, Docker image evidence, in-container Node lifecycle checks, and a real local Ollama run.";}
+ $("next-gate").innerHTML='<span class="pill pending">NEXT UNMET GATE</span><b>'+esc(label)+'</b><p>'+esc(why)+'</p>'+(run?link(run.html_url,"Inspect workflow ↗"):"");
+}
+function renderMissions() {
+ $("checkpoint-state").textContent=Array.isArray(state.checkpoints)?"CONNECTED":"NOT CONNECTED";
+ $("mission-list").innerHTML=Array.isArray(state.checkpoints)&&state.checkpoints.length?state.checkpoints.map(c=>item(c.id||c.checkpoint_id||"Checkpoint", "Run: "+(c.run_id||"unreported")+" · mode: "+(c.mode||"unreported")+" · owner: "+(c.owner||"unreported"),badge(c.status||"RESUMABLE")+" "+'<span class="muted">'+esc(date(c.updated||c.started))+'</span>')).join(""):'<div class="empty">'+esc(localUnavailableMessage("checkpoints"))+' · No synthetic mission records are shown.</div>';
+ const accepted=state.evolve&&state.evolve.accepted;
+ $("proposal-list").innerHTML=Array.isArray(accepted)&&accepted.length?accepted.map(p=>item(p.name||p.id||"Accepted proposal",p.description||p.summary||"Accepted proposal record",badge("ACCEPTED")+" "+badge(p.validated?"PASS":"UNVERIFIED"))).join(""):'<div class="empty">'+esc(localUnavailableMessage("evolve"))+' · Pending proposal validations are not exposed by the current API.</div>';
+}
+function renderSwarm() {
+ setPill("swarm-state",Array.isArray(state.runs)?"CONNECTED":"NOT CONNECTED",Array.isArray(state.runs)?"good":"blocked");
+ const runs=Array.isArray(state.runs)?state.runs:[];
+ $("swarm-list").innerHTML=runs.length?runs.map(r=>{
+  const id=r.run_id||r.id||"unknown", mode=r.mode||"mode unreported";
+  return '<article class="item clickable" data-run="'+esc(id)+'"><div class="item-head"><div><h3>'+esc(id)+'</h3><p>'+esc(mode)+' · '+esc(date(r.start||r.started||r.created))+'</p></div>'+badge(r.status||"HISTORY")+'</div><div class="meta">'+badge(r.evidence_status||"UNVERIFIED")+'<span class="muted">Select to inspect event replay</span></div></article>';
+ }).join(""):'<div class="empty">'+esc(localUnavailableMessage("runs"))+'</div>';
+ const p=currentPR(), sha=p&&p.head&&p.head.sha;
+ const ci=sha?state.workflows.filter(w=>w.head_sha===sha):state.workflows.slice(0,8);
+ setPill("ci-state",ci.length?"EXACT SHA":"NO MATCH",ci.length?"pending":"neutral");
+ $("ci-list").innerHTML=ci.length?ci.map(w=>item("Run #"+w.run_number+" · "+w.name, "SHA "+formatSha(w.head_sha)+" · "+date(w.updated_at),badge(w.status==="completed"?(w.conclusion||"COMPLETED"):w.status),w.html_url)).join(""):'<div class="empty">No workflow run for the selected PR head SHA. No result is inferred from another commit.</div>';
+}
+function renderAgents() {
+ const active=state.status&&state.status.agents?state.status.agents:{};
+ const agentRows=Object.entries(active);
+ $("agent-list").innerHTML=agentRows.length?agentRows.map(([name,a])=>{
+  const lane=a.lane||a.focus_lane||"Lane not reported";
+  return item(name,a.role||a.focus||a.task||"No focus reported",badge(a.status||"UNKNOWN")+' <span class="muted">'+esc(a.agent_id||"No agent ID")+'</span> · <span class="muted">'+esc(lane)+'</span>');
+ }).join(""):'<div class="empty">'+esc(localUnavailableMessage("status"))+' · No live agents are asserted.</div>';
+ const rows=Array.isArray(state.fleet)?state.fleet:[];
+ $("runner-list").innerHTML=rows.length?rows.map(n=>{
+  const env=n.env||{}, dev=env.device||{}, ru=env.runner||{}, container=ru.container||{};
+  return item(n.node_id||"Fleet node", (dev.hostname||"host unknown")+" · "+(dev.os||"OS unknown")+" · "+(dev.arch||"architecture unreported"),badge(n.status||"UNKNOWN")+' <span class="muted">'+esc(ru.kind||"runner unknown")+'</span> <span class="muted">'+esc(container.name||"container unreported")+'</span>');
+ }).join(""):'<div class="empty">'+esc(localUnavailableMessage("fleet"))+' · Fleet may be disabled or admin access may be required.</div>';
+ const s=state.status||{}, t=state.telemetry||{};
+ $("resource-list").innerHTML=[fact("Max parallel",s.max_parallel),fact("Squad size",s.squad_size),fact("Runner",s.runner),fact("Workspace",s.workspace),fact("24h runs",t.runs&&t.runs.total),fact("Spawned agents",t.agents&&t.agents.spawned),fact("Errors",t.errors),fact("Fleet nodes",Array.isArray(t.fleet_nodes)?t.fleet_nodes.length:"not reported"),fact("CPU / memory quota","Not exposed by current API"),fact("Lease owner / expiry","Not exposed by current API"),fact("Heartbeat age","Not exposed unless fleet presence reports it"),fact("Apple Silicon","Not observed for local host")].join("");
+}
+function evidenceData(p,run) {
+ const sha=p&&p.head&&p.head.sha||"";
+ const same=!!run&&run.head_sha===sha;
+ const failed=!!run&&run.conclusion==="failure";
+ const running=!!run&&run.status!=="completed";
+ const jobs=run&&state.jobs[run.id]||[];
+ const artifacts=run&&state.artifacts[run.id]||[];
+ const jobNames=jobs.map(j=>String(j.name||"").toLowerCase());
+ const pass=(terms)=>jobNames.some(n=>terms.some(t=>n.includes(t))&&jobs.some(j=>String(j.name||"").toLowerCase().includes(terms.find(t=>n.includes(t)))&&j.conclusion==="success"));
+ const names=artifacts.map(a=>String(a.name||"").toLowerCase());
+ const gates=[
+  {name:"Exact-SHA Python 3.11",done:same&&jobs.some(j=>/3\.11/.test(j.name||"")&&j.conclusion==="success"),fail:same&&jobs.some(j=>/3\.11/.test(j.name||"")&&j.conclusion==="failure"),note:"Must pass for this exact commit."},
+  {name:"Exact-SHA Python 3.12",done:same&&jobs.some(j=>/3\.12/.test(j.name||"")&&j.conclusion==="success"),fail:same&&jobs.some(j=>/3\.12/.test(j.name||"")&&j.conclusion==="failure"),note:"Must pass for this exact commit."},
+  {name:"coverage.xml artifact",done:same&&names.some(n=>n.includes("coverage")&&n.includes("xml")),note:"Artifact metadata only; inspect XML contents and SHA provenance."},
+  {name:"coverage.json artifact",done:same&&names.some(n=>n.includes("coverage")&&n.includes("json")),note:"Artifact metadata only; inspect JSON contents and SHA provenance."},
+  {name:"Docker image verification",done:same&&pass(["docker"]),note:"Requires image build plus inspect/digest evidence."},
+  {name:"In-container Node lifecycle",done:same&&pass(["node lifecycle","node-container"]),note:"Requires start, health, graceful shutdown, and no process leak."},
+  {name:"Local Apple-Silicon Ollama squad",done:false,note:"Must be executed on the authorized Mac with actual Ollama model identity."},
+  {name:"Proposal validation & edge cases",done:same&&pass(["proposal validation","edge-case"]),note:"Requires independent validation results bound to the same SHA."}
+ ];
+ return {sha,same,failed,running,gates};
+}
+function renderVerification() {
+ const p=currentPR(), sha=p&&p.head&&p.head.sha, run=sha&&latestForSha(sha);
+ const data=evidenceData(p,run);
+ const done=data.gates.filter(g=>g.done).length, failed=data.gates.some(g=>g.fail);
+ const status=failed?"FAIL":done===data.gates.length?"VERIFIED":!state.status?"BLOCKED":"UNVERIFIED";
+ setPill("evidence-state",status,status==="VERIFIED"?"good":status==="FAIL"?"fail":status==="BLOCKED"?"blocked":"pending");
+ $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\"muted\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.fail?"FAIL":g.done?"PASS":"NOT RUN")+'</div><p>'+esc(g.note)+'</p></div>').join("");
+ const artifacts=run&&state.artifacts[run.id]||[];
+ $("artifact-list").innerHTML=artifacts.length?artifacts.map(a=>item(a.name,a.expired?"Artifact expired":"Created "+date(a.created_at),badge(a.expired?"EXPIRED":"METADATA AVAILABLE"),run.html_url)).join(""):'<div class="empty">No candidate workflow artifacts are visible for this exact-SHA run. coverage.xml and coverage.json remain NOT RUN.</div>';
+ $("edge-list").innerHTML=edgeCases.map(e=>'<div class="edge"><b>'+esc(e[0])+'</b><small>'+esc(e[1])+'</small>'+badge("NOT RUN")+'</div>').join("");
+}
+function renderRelease() {
+ renderVerification();
+ const p=currentPR(), sha=p&&p.head&&p.head.sha, run=sha&&latestForSha(sha), data=evidenceData(p,run);
+ const gates=data.gates;
+ $("release-list").innerHTML=gates.map((g,i)=>'<div class="gate"><span class="num">'+(i+1)+'</span><div><b>'+esc(g.name)+'</b><p>'+esc(g.note)+'</p></div>'+badge(g.fail?"FAIL":g.done?"PASS":"NOT RUN")+'</div>').join("");
+ const next=gates.find(g=>!g.done);
+ $("release-status").textContent=next?"GATES REMAIN":"ALL LISTED GATES PASS";
+ $("release-status").className="pill "+(next?"pending":"good");
+}
+async function loadRun(id) {
+ $("run-detail").innerHTML='<div class="loading">Loading event replay…</div>';
+ try {
+  const data=await local("/api/runs/"+encodeURIComponent(id));
+  const events=Array.isArray(data)?data:(data.events||data.items||[]);
+  $("run-detail").innerHTML=events.length?events.slice(-180).map(e=>{
+   const d=e.data||{};
+   const lane=d.lane||d.focus_lane||"";
+   return '<div class="item"><div class="item-head"><h3>'+esc(e.kind||"event")+' · '+esc(e.agent||"system")+'</h3>'+badge(e.kind==="error"?"FAIL":"OBSERVED")+'</div><p>'+esc(d.message||d.tool||d.focus||d.text||JSON.stringify(d).slice(0,400))+'</p><div class="meta"><span class="muted">'+esc(date(e.ts))+'</span>'+(lane?'<span class="muted">lane '+esc(lane)+'</span>':"")+'</div></div>';
+  }).join(""):'<div class="empty">No events returned for '+esc(id)+'.</div>';
+ } catch(e) { $("run-detail").innerHTML='<div class="empty">Run detail blocked: '+esc(e.message)+'</div>'; }
+}
+async function loadWorkflowDetails(run) {
+ if(!run||state.jobs[run.id]) return;
+ const id=run.id;
+ const tasks=await Promise.allSettled([gh("/actions/runs/"+id+"/jobs?per_page=100"),gh("/actions/runs/"+id+"/artifacts?per_page=100")]);
+ if(tasks[0].status==="fulfilled") state.jobs[id]=tasks[0].value.jobs||[];
+ if(tasks[1].status==="fulfilled") state.artifacts[id]=tasks[1].value.artifacts||[];
+ renderVerification();renderRelease();
+}
+async function refresh() {
+ $("connection").textContent="REFRESHING";$("connection").className="pill pending";
+ state.errors=[];
+ const tasks=[
+  ["prs",()=>gh("/pulls?state=all&per_page=100&sort=updated&direction=desc")],
+  ["commits",()=>gh("/commits?per_page=50")],
+  ["workflows",()=>gh("/actions/runs?per_page=100")],
+  ["status",()=>local("/api/status")],
+  ["runs",()=>local("/api/runs")],
+  ["checkpoints",()=>local("/api/checkpoints")],
+  ["telemetry",()=>local("/api/telemetry?hours=24")],
+  ["fleet",()=>local("/api/fleet/directory")],
+  ["evolve",()=>local("/api/evolve")]
+ ];
+ await Promise.all(tasks.map(async t=>{try{const val=await t[1]();state[t[0]]=t[0]==="workflows"?(val.workflow_runs||[]):val;}catch(e){state[t[0]]=null;state.errors.push({key:t[0],message:e.message});}}));
+ if(Array.isArray(state.prs)) {
+  state.prs.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
+  $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+p.number+'">#'+p.number+' · '+esc(p.title).slice(0,65)+'</option>').join("");
+  if(state.prs.some(p=>p.number===27)) $("f-pr").value="27";
+  state.selectedPR=Number($("f-pr").value||27);
+ }
+ if(!Array.isArray(state.commits)) state.commits=[];
+ if(!Array.isArray(state.workflows)) state.workflows=[];
+ if(!Array.isArray(state.runs)) state.runs=[];
+ if(!Array.isArray(state.checkpoints)) state.checkpoints=null;
+ if(!Array.isArray(state.fleet)) state.fleet=null;
+ if(state.telemetry===null) state.telemetry=null;
+ renderTarget();renderMetrics();renderOverview();renderPRs();renderCommits();renderMissions();renderSwarm();renderAgents();renderVerification();renderRelease();
+ const ok=state.prs.length>0;
+ $("connection").textContent=ok?"GITHUB LIVE":"GITHUB LIMITED";
+ $("connection").className="pill "+(ok?"good":"blocked");
+ $("updated").textContent="Updated "+new Date().toLocaleTimeString()+" · GitHub "+(ok?"connected":"limited")+" · AVRONE "+runtimeStatusText();
+ const run=latestForSha(currentSha());
+ if(run) loadWorkflowDetails(run);
+}
+document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>{
+ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+ document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
+ b.classList.add("active");$("view-"+b.dataset.tab).classList.add("active");
+}));
+$("refresh").addEventListener("click",refresh);
+$("f-pr").addEventListener("change",()=>{state.selectedPR=Number($("f-pr").value||27);renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
+["f-repo","f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).addEventListener("input",()=>{renderPRs();renderCommits();renderSwarm();}));
+$("clear-filters").addEventListener("click",()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="27";state.selectedPR=27;renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
+$("apply-token").addEventListener("click",()=>{state.adminToken=$("admin-token").value.trim();$("admin-token").value="";refresh();});
+$("compare").addEventListener("click",async()=>{
+ const base=$("compare-base").value,head=$("compare-head").value;
+ if(!base||!head) return $("compare-result").textContent="Select both base and head commits.";
+ if(base===head) return $("compare-result").textContent="Choose two different commits.";
+ $("compare-result").textContent="Comparing…";
+ try{const d=await gh("/compare/"+encodeURIComponent(base)+"..."+encodeURIComponent(head));$("compare-result").innerHTML='<p><b>'+esc(d.status||"comparison")+'</b> · '+(d.ahead_by||0)+' ahead · '+(d.behind_by||0)+' behind · '+(d.total_commits||0)+' commits</p><p>'+esc((d.files||[]).length)+' changed files</p>'+(d.html_url?link(d.html_url,"Open comparison ↗"):"");}catch(e){$("compare-result").textContent="Compare unavailable: "+e.message;}
+});
+document.addEventListener("click",e=>{
+ const a=e.target.closest("[data-run]");
+ if(a) loadRun(a.dataset.run);
+ const b=e.target.closest("[data-href]");
+ if(b&&b.dataset.href) window.open(b.dataset.href,"_blank","noopener");
+});
+$("close-dialog").addEventListener("click",()=>$("detail-dialog").close());
+refresh();
+setInterval(refresh,60000);
+})();

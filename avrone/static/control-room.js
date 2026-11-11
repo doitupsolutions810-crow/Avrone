@@ -31,7 +31,7 @@ function badge(value) {
  const kind=["VERIFIED","PASS","SUCCESS","MERGED","DONE","COMPLETED"].includes(s)?"good":(["FAIL","FAILURE","BLOCKED","ERROR","TIMED_OUT"].includes(s)?"fail":(["UNVERIFIED","PENDING","IN_PROGRESS","QUEUED","RUNNING"].includes(s)?"pending":"neutral"));
  return '<span class="pill '+kind+'">'+esc(s)+'</span>';
 }
-function safeHref(value) { try { const u=new URL(String(value||""),location.href); return u.protocol==="https:"?u.href:"#"; } catch (_) { return "#"; } }
+function safeHref(value) { try { const u=new URL(String(value||""),location.href); const current=new URL(location.href); const trustedHost=u.hostname==="github.com"||u.hostname.endsWith(".github.com")||u.hostname==="vercel.com"||u.hostname.endsWith(".vercel.com")||u.hostname.endsWith(".vercel.app"); return u.protocol==="https:"&&(u.origin===current.origin||trustedHost)?u.href:"#"; } catch (_) { return "#"; } }
 function link(url,label) { return '<a href="'+esc(safeHref(url))+'" target="_blank" rel="noopener noreferrer">'+esc(label||"Open ↗")+'</a>'; }
 function showEmpty(id,msg) { $(id).innerHTML='<div class="empty">'+esc(msg)+'</div>'; }
 function apiHeaders() { const h={Accept:"application/json"}; if(state.adminToken) h["x-admin-token"]=state.adminToken; return h; }
@@ -172,11 +172,16 @@ function renderOverview() {
 }
 function renderNextGate() {
  const p=currentPR(), sha=p&&p.head&&p.head.sha, run=sha&&latestForSha(sha);
- let label="Obtain exact-SHA CI evidence for Python 3.11 and 3.12";
- let why="No completed matrix has been confirmed for the selected pull request head.";
- if(run&&run.conclusion==="failure"){label="Resolve failing exact-SHA CI";why="Latest workflow run "+run.run_number+" failed for "+formatSha(sha)+". Inspect failing job logs before changing source.";}
- else if(run&&run.conclusion==="success"){label="Prove coverage, Docker, Node, and local-runtime gates";why="The workflow is green, but the release gate also requires coverage artifacts, Docker image evidence, in-container Node lifecycle checks, and a real local Ollama run.";}
- $("next-gate").innerHTML='<span class="pill pending">NEXT UNMET GATE</span><b>'+esc(label)+'</b><p>'+esc(why)+'</p>'+(run?link(run.html_url,"Inspect workflow ↗"):"");
+ const data=evidenceData(p,run);
+ const next=data.gates.find(g=>g.state!=="PASS");
+ if(!next) {
+  $("next-gate").innerHTML='<span class="pill good">ALL LISTED GATES PASS</span><b>Manual release review remains</b><p>Verify artifacts, provenance, approvals, and browser evidence before changing PR lifecycle.</p>';
+  return;
+ }
+ const vercelStatus=state.commitStatusSha===sha&&state.commitStatus?(state.commitStatus.statuses||[]).find(x=>String(x.context||"").toLowerCase()==="vercel"):null;
+ const href=next.name==="Vercel preview deployment"&&vercelStatus&&vercelStatus.target_url?vercelStatus.target_url:(run&&run.html_url);
+ const linkHtml=href?link(href,next.name==="Vercel preview deployment"?"Inspect deployment ↗":"Inspect workflow ↗"):"";
+ $("next-gate").innerHTML=badge(next.state)+'<b>'+esc(next.name)+'</b><p>'+esc(next.note)+'</p>'+linkHtml;
 }
 function renderMissions() {
  $("checkpoint-state").textContent=Array.isArray(state.checkpoints)?"CONNECTED":"NOT CONNECTED";

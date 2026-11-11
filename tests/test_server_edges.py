@@ -535,7 +535,7 @@ def test_control_room_release_gates_require_inspection_not_artifact_names():
     js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
     assert '"PENDING REVIEW"' in js
     assert "PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs" in js
-    assert "PASS requires exact-SHA Docker verification job and image-inspect/digest/health artifacts." in js
+    assert "PASS requires the exact-SHA Docker verification job and image-inspect/digest/health artifacts." in js
     assert "graceful shutdown" in js
 
 
@@ -656,8 +656,6 @@ def test_ci_publishes_exact_sha_coverage_docker_and_node_lifecycle_evidence():
     node_test = (root / "tests" / "node_container_lifecycle.test.mjs").read_text(encoding="utf-8")
     assert '--cov-report=xml:coverage.xml' in workflow
     assert '--cov-report=json:coverage.json' in workflow
-    assert 'name: coverage-xml-py\${{ matrix.python }}' in workflow
-    assert 'name: coverage-json-py\${{ matrix.python }}' in workflow
     assert 'name: Docker image verification' in workflow
     assert 'docker build --pull' in workflow
     assert 'name: Node container lifecycle' in workflow

@@ -665,10 +665,14 @@ test("GitHub pagination accepts valid unquoted next relations",async()=>{
 });
 
 test("currentPR ignores malformed rows and resolves numeric identifier representations",()=>{
- const c=makeContext({state:{prs:[null,[],{number:"28",title:"valid"},{number:27,title:"fallback"}],selectedPR:28}});
+ const c=makeContext({state:{prs:[
+  null,[],
+  {number:"28",title:"valid",state:"open",updated_at:"2026-11-11T17:53:21Z"},
+  {number:27,title:"older open PR",state:"open",updated_at:"2026-11-11T09:49:11Z"}
+ ],selectedPR:28}});
  assert.equal(c.currentPR().title,"valid");
  c.state.selectedPR=999;
- assert.equal(c.currentPR().number,27);
+ assert.equal(c.currentPR().number,"28");
  c.state.prs=null;
  assert.equal(c.currentPR(),null);
 });

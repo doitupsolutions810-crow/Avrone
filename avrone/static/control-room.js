@@ -120,6 +120,15 @@ function focusPRNumber(rows,preferred) {
  candidates.sort((a,b)=>timestamp(b.updated_at)-timestamp(a.updated_at));
  return candidates.length?Number(candidates[0].number):null;
 }
+function resolvePRSelection(rows) {
+ if(!state.selectionInitialized) {
+  state.selectionInitialized=true;
+  state.selectedPR=focusPRNumber(rows);
+ } else if(state.selectedPR!==null&&state.selectedPR!==undefined) {
+  state.selectedPR=focusPRNumber(rows,state.selectedPR);
+ }
+ return state.selectedPR===undefined?null:state.selectedPR;
+}
 function currentPR() {
  const rows=validRecords(state.prs).items;
  const number=focusPRNumber(rows,state.selectedPR);
@@ -527,13 +536,8 @@ async function refresh() {
  state.prs=validRecords(state.prs).items;
  state.prs.sort((a,b)=>(Date.parse(b.updated_at||"")||0)-(Date.parse(a.updated_at||"")||0));
  $("f-pr").innerHTML='<option value="">All PRs</option>'+state.prs.map(p=>'<option value="'+esc(p.number)+'">#'+esc(p.number)+' · '+esc(p.title).slice(0,65)+'</option>').join("");
- if(!state.selectionInitialized) {
-  state.selectedPR=focusPRNumber(state.prs);
-  state.selectionInitialized=true;
- } else if(state.selectedPR!==null&&state.selectedPR!==undefined) {
-  state.selectedPR=focusPRNumber(state.prs,state.selectedPR);
- }
- $("f-pr").value=state.selectedPR===null||state.selectedPR===undefined?"":String(state.selectedPR);
+ state.selectedPR=resolvePRSelection(state.prs);
+ $("f-pr").value=state.selectedPR===null?"":String(state.selectedPR);
  await loadSelectedCommitStatus();
  if(state.refreshGeneration!==generation)return;
  if(!Array.isArray(state.commits)) state.commits=[];

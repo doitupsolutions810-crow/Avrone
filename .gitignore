@@ -7,3 +7,8 @@ data/
 *.egg-info/
 avrone.egg-info/
 .coverage
+.venv/
+.venv312/
+.env.development.local
+coverage.xml
+coverage.json

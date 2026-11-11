@@ -253,8 +253,47 @@ class TerminalIn(BaseModel):
 
 
 @app.get("/")
+@app.get("/control-room")
+async def control_room():
+    return FileResponse(STATIC / "control-room.html", headers={
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "X-Frame-Options": "SAMEORIGIN",
+    })
+
+
+@app.get("/chat")
 async def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/api/control-room/repository")
+async def control_room_repository():
+    from .controlroom import snapshot
+    try:
+        return await asyncio.to_thread(snapshot)
+    except (OSError, ValueError, KeyError):
+        raise HTTPException(503, "Repository evidence unavailable; no verification can be inferred.") from None
+
+
+@app.get("/api/control-room/runtime")
+async def control_room_runtime(x_admin_token: str | None = Header(default=None)):
+    require_admin(x_admin_token)
+    import platform
+    from .checkpoint import list_managed
+    from .agentcontainer import mem_mb, cpus, container_mode
+    c = core()
+    return {
+        "checkpoints": await asyncio.to_thread(list_managed, settings.data_dir),
+        "agents": c.active,
+        "runs": await asyncio.to_thread(c.codex.runs),
+        "runner": c.runner.kind,
+        "workspace": str(c.runner.workspace),
+        "platform": platform.system(), "architecture": platform.machine(),
+        "limits": {"maxParallel": settings.max_parallel, "containerMemoryMb": mem_mb(),
+                   "containerCpus": cpus(), "containerMode": container_mode()},
+        "notice": "Configured limits are not measured usage. Leases, heartbeats and local Apple-Silicon runs require evidence from their originating host.",
+    }
 
 
 # One id for this process. The fusion relay treats a change as a restart

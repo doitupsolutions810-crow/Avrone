@@ -1,0 +1,1745 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-11-11T10:01:36.021066+00:00",
+  "repository": {
+    "defaultBranchRef": {
+      "name": "main"
+    },
+    "nameWithOwner": "doitupsolutions810-crow/Avrone",
+    "url": "https://github.com/doitupsolutions810-crow/Avrone",
+    "visibility": "PUBLIC"
+  },
+  "pullRequests": [
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "feat/internal-builder-agent-sdk",
+      "headRefOid": "8fab9ce8d1f2a7fd751b56698c50c42952e794c4",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 27,
+      "state": "OPEN",
+      "title": "Add internal Builder Agent SDK over Trinity and Ollama",
+      "updatedAt": "2026-11-11T09:49:11Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/27"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "integration/swarm-edge-2026-11-10",
+      "headRefOid": "aaa406c0360745447b96db30280b52d16bbe9324",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 26,
+      "state": "OPEN",
+      "title": "Harden Swarm boundaries and require complete historical CI tests",
+      "updatedAt": "2026-11-10T23:01:57Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/26"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "cursor/run-log-json-safe-6999",
+      "headRefOid": "993719df639f0fd39d9765abf4abba85922d8c67",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 25,
+      "state": "OPEN",
+      "title": "Keep poisoned run logs from crashing the JSON response",
+      "updatedAt": "2026-11-10T14:27:04Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/25"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "cursor/blackboard-nested-safe-59b2",
+      "headRefOid": "12888778a6660946f42b0ad955f200f953ffcf99",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 24,
+      "state": "OPEN",
+      "title": "Keep nested blackboard values and non-finite timestamps encodable",
+      "updatedAt": "2026-11-10T14:26:00Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/24"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "cursor/non-ascii-admin-token-6999",
+      "headRefOid": "18418adad24723136164c665335af572a6d76d3d",
+      "isDraft": false,
+      "mergedAt": "2026-11-10T14:21:15Z",
+      "number": 23,
+      "state": "MERGED",
+      "title": "Refuse a non-ASCII admin token instead of returning 500",
+      "updatedAt": "2026-11-10T14:21:15Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/23"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "integration/platform-bridge-mainline-2026-11-09",
+      "headRefOid": "b3cb4d3bd1a56fc83768a0d3cd6e5ebcd4695777",
+      "isDraft": false,
+      "mergedAt": "2026-11-09T06:32:31Z",
+      "number": 22,
+      "state": "MERGED",
+      "title": "Integrate AVRONE runtime and sibling service bridges on current main",
+      "updatedAt": "2026-11-09T06:32:36Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/22"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "fix/parse-action-depth-2026-11-09",
+      "headRefOid": "d55663dd650bba3e1b3da2d8fc86e1afe04400ea",
+      "isDraft": false,
+      "mergedAt": "2026-11-09T06:25:10Z",
+      "number": 21,
+      "state": "MERGED",
+      "title": "Handle deeply nested malformed model JSON without crashing",
+      "updatedAt": "2026-11-09T06:25:10Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/21"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "cursor/avrone-fusion-blackboard-59b2",
+      "headRefOid": "bf3c62ff4f24710404e71bcba874a63978b633c2",
+      "isDraft": false,
+      "mergedAt": "2026-11-10T14:22:01Z",
+      "number": 20,
+      "state": "MERGED",
+      "title": "Add Avrone GET/POST /api/blackboard for the fusion relay",
+      "updatedAt": "2026-11-10T14:22:02Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/20"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "integration/trinity-sqlite-swarm-dispatch-20261103",
+      "headRefOid": "1215437b63e4d716f4fe461692e0311b2a5cd87d",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 19,
+      "state": "OPEN",
+      "title": "Wire Trinity to durable signed Swarm dispatch",
+      "updatedAt": "2026-11-03T17:58:49Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/19"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "integration/grokbot-unified-launch-20261102",
+      "headRefOid": "7ed83cc4dd7c238377a24b95cb20e29000e72efe",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 17,
+      "state": "OPEN",
+      "title": "Integrate Grok Bot and harden durable Swarm dispatch",
+      "updatedAt": "2026-11-03T20:11:07Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/17"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "avrone-a12lr-daemon",
+      "headRefOid": "078b78fa8a9122a1c090c79815556e9872a5c6bd",
+      "isDraft": false,
+      "mergedAt": "2026-11-03T03:52:12Z",
+      "number": 16,
+      "state": "MERGED",
+      "title": "Avrone a12lr daemon",
+      "updatedAt": "2026-11-03T03:52:36Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/16"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "feat/great-scale-live-research-bridge-20261101",
+      "headRefOid": "a8a7b09eacbac3e88a6148c6ce5d63294d7d6a46",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 15,
+      "state": "OPEN",
+      "title": "feat: connect Great Scale Atlas to authenticated AVRONE research council",
+      "updatedAt": "2026-11-02T03:42:22Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/15"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "integration/contract-gates-v1",
+      "headRefOid": "7462c9f0cf517ec065bfe172f182c7bd03729f89",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 14,
+      "state": "OPEN",
+      "title": "Integration: versioned contracts and fail-closed promotion gates",
+      "updatedAt": "2026-11-03T09:32:19Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/14"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "deploy/render-free-preview",
+      "headRefOid": "d7281556574f051b3dc3507e9ad606bcc664b4dd",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 13,
+      "state": "OPEN",
+      "title": "Add locked-down free Render preview deployment",
+      "updatedAt": "2026-10-31T02:59:43Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/13"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/connection-verification-20261030",
+      "headRefOid": "375e0176f117f182af9ae0567f718badb121a2a0",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 11,
+      "state": "OPEN",
+      "title": "Add secret-safe provider connection verification",
+      "updatedAt": "2026-10-31T01:15:56Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/11"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "vm-isolation-cycle8",
+      "headRefOid": "72622cb43ade88cca89cec30ee6d136c92f82c33",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 10,
+      "state": "OPEN",
+      "title": "Vm isolation cycle8",
+      "updatedAt": "2026-10-30T12:12:21Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/10"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/round4-hardening-coverage-20261029",
+      "headRefOid": "0f7c7530482b8494af3d62291e0036b0ad54e0c5",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 9,
+      "state": "OPEN",
+      "title": "Squad S-mode rounds 4\u201322: runtime, state integrity and fleet resilience",
+      "updatedAt": "2026-10-30T13:09:50Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/9"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/round3-edge-expansion-2026-10-29",
+      "headRefOid": "c28668e6fb8e410c538ecb2860d199596d72bf1e",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 8,
+      "state": "OPEN",
+      "title": "v0.20 squad round 3: runtime preflight, resilient metrics, and edge tests",
+      "updatedAt": "2026-10-29T21:36:26Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/8"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "codex/inspect-integration-hardening",
+      "headRefOid": "339dd7bf6e1b4ecc362f680195993d650bfd7926",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 7,
+      "state": "OPEN",
+      "title": "Security: constrain AVRONE \u2192 Grok Bot bridge",
+      "updatedAt": "2026-10-29T21:22:52Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/7"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "integration/platform-bridge-2026-10",
+      "headRefOid": "b503a1e38da0b522c817fa3a2da9a68b58f64b0b",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 6,
+      "state": "CLOSED",
+      "title": "Superseded: AVRONE platform bridge (see merged PR #22)",
+      "updatedAt": "2026-11-09T06:32:51Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/6"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "fix/remove-text-delivery-artifacts",
+      "headRefOid": "fdf42650bdb4c26e89d7f11b2935b9e37f0e45a1",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 5,
+      "state": "OPEN",
+      "title": "fix: keep AVRONE source clean and detect delivery artifacts in CI",
+      "updatedAt": "2026-10-29T03:02:47Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/5"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/secure-node-dispatch-gateway",
+      "headRefOid": "c3fd932ba7f0caa454649a5228f54a5076ae4f17",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 4,
+      "state": "OPEN",
+      "title": "v0.14 secure node dispatch, host gateway, and global evolve budgets",
+      "updatedAt": "2026-10-28T14:56:59Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/4"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/evolve-loop-guards",
+      "headRefOid": "5f235a91c24c6adc6a671a3e2ce6d8d285c1d7fb",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 3,
+      "state": "OPEN",
+      "title": "v0.13.1: secure self-evolution proposals and bound duration",
+      "updatedAt": "2026-10-28T13:55:03Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/3"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/full-squad-round2",
+      "headRefOid": "fa1481329784fd47ed10731ebc007cc0d6b0686f",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 2,
+      "state": "OPEN",
+      "title": "v0.13 full squad round: coverage, deterministic tools, skills, robustness",
+      "updatedAt": "2026-10-28T13:33:07Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/2"
+    },
+    {
+      "author": {
+        "id": "U_kgDODnA_bQ",
+        "is_bot": false,
+        "login": "doitupsolutions810-crow",
+        "name": ""
+      },
+      "headRefName": "squad/v0.12-osint-metrics",
+      "headRefOid": "fce39c2490b69447e7c58e07722bcd3f73f96489",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 1,
+      "state": "OPEN",
+      "title": "v0.12 follow-on: OSINT metrics resilience and agentic edge coverage",
+      "updatedAt": "2026-10-28T13:17:03Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/pull/1"
+    }
+  ],
+  "runs": [
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:49:05Z",
+      "databaseId": 42998350326,
+      "event": "pull_request",
+      "headSha": "8fab9ce8d1f2a7fd751b56698c50c42952e794c4",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:51:18Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998350326",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998350326/job/130447971664",
+          "started_at": "2026-11-11T09:49:08Z",
+          "completed_at": "2026-11-11T09:51:03Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998350326/job/130447972069",
+          "started_at": "2026-11-11T09:49:08Z",
+          "completed_at": "2026-11-11T09:51:18Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:43Z",
+      "databaseId": 42998300299,
+      "event": "push",
+      "headSha": "8fab9ce8d1f2a7fd751b56698c50c42952e794c4",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:50:56Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998300299",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998300299/job/130447805350",
+          "started_at": "2026-11-11T09:48:47Z",
+          "completed_at": "2026-11-11T09:50:55Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998300299/job/130447805723",
+          "started_at": "2026-11-11T09:48:46Z",
+          "completed_at": "2026-11-11T09:50:32Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:42Z",
+      "databaseId": 42998298246,
+      "event": "push",
+      "headSha": "8fab9ce8d1f2a7fd751b56698c50c42952e794c4",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:48:42Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998298246"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:40Z",
+      "databaseId": 42998293736,
+      "event": "push",
+      "headSha": "f406ec580a22de76ea51fbb32ac28ebd46f0b7a6",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:51:14Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998293736",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998293736/job/130447783294",
+          "started_at": "2026-11-11T09:48:44Z",
+          "completed_at": "2026-11-11T09:51:13Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998293736/job/130447783872",
+          "started_at": "2026-11-11T09:48:44Z",
+          "completed_at": "2026-11-11T09:50:42Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:40Z",
+      "databaseId": 42998291669,
+      "event": "push",
+      "headSha": "f406ec580a22de76ea51fbb32ac28ebd46f0b7a6",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:48:40Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998291669"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:19Z",
+      "databaseId": 42998243754,
+      "event": "push",
+      "headSha": "ca12c679be4ecafc6dc85f9516dc519871f5ba59",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:50:43Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998243754",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998243754/job/130447619798",
+          "started_at": "2026-11-11T09:48:23Z",
+          "completed_at": "2026-11-11T09:50:42Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998243754/job/130447620176",
+          "started_at": "2026-11-11T09:48:22Z",
+          "completed_at": "2026-11-11T09:50:32Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:17Z",
+      "databaseId": 42998240247,
+      "event": "push",
+      "headSha": "ca12c679be4ecafc6dc85f9516dc519871f5ba59",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:48:17Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998240247"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:12Z",
+      "databaseId": 42998228148,
+      "event": "push",
+      "headSha": "4ddda705e098ed97c86ac8d159fb570bf8494c65",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:50:04Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998228148",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998228148/job/130447564278",
+          "started_at": "2026-11-11T09:48:15Z",
+          "completed_at": "2026-11-11T09:50:03Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998228148/job/130447564484",
+          "started_at": "2026-11-11T09:48:15Z",
+          "completed_at": "2026-11-11T09:49:59Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:11Z",
+      "databaseId": 42998225931,
+      "event": "push",
+      "headSha": "4ddda705e098ed97c86ac8d159fb570bf8494c65",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:48:11Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998225931"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:03Z",
+      "databaseId": 42998206978,
+      "event": "push",
+      "headSha": "9afbb400c9f7bc9e366e2fe16b63bd476d5fc298",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:50:30Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998206978",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998206978/job/130447492127",
+          "started_at": "2026-11-11T09:48:06Z",
+          "completed_at": "2026-11-11T09:50:29Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998206978/job/130447492312",
+          "started_at": "2026-11-11T09:48:06Z",
+          "completed_at": "2026-11-11T09:49:45Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:48:02Z",
+      "databaseId": 42998204599,
+      "event": "push",
+      "headSha": "9afbb400c9f7bc9e366e2fe16b63bd476d5fc298",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:48:02Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998204599"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-11T09:46:36Z",
+      "databaseId": 42998006045,
+      "event": "push",
+      "headSha": "5cceb5257d2e03499070d727b56c4847de1578e0",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:49:11Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998006045",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998006045/job/130446816247",
+          "started_at": "2026-11-11T09:46:40Z",
+          "completed_at": "2026-11-11T09:49:10Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998006045/job/130446816414",
+          "started_at": "2026-11-11T09:46:39Z",
+          "completed_at": "2026-11-11T09:48:30Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T09:46:35Z",
+      "databaseId": 42998003612,
+      "event": "push",
+      "headSha": "5cceb5257d2e03499070d727b56c4847de1578e0",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T09:46:35Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42998003612"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-11T01:11:10Z",
+      "databaseId": 42937061024,
+      "event": "push",
+      "headSha": "57cd829ee05d0459909e34a4f95a0976777deff5",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T01:14:15Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42937061024",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42937061024/job/130249625570",
+          "started_at": "2026-11-11T01:11:14Z",
+          "completed_at": "2026-11-11T01:14:04Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42937061024/job/130249625900",
+          "started_at": "2026-11-11T01:11:14Z",
+          "completed_at": "2026-11-11T01:14:14Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T01:11:08Z",
+      "databaseId": 42937056814,
+      "event": "push",
+      "headSha": "57cd829ee05d0459909e34a4f95a0976777deff5",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T01:11:08Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42937056814"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-11T00:54:43Z",
+      "databaseId": 42935022194,
+      "event": "push",
+      "headSha": "03a9d44e50f92ec3ee6b3118a503a20784087a25",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:57:30Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42935022194",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42935022194/job/130242830145",
+          "started_at": "2026-11-11T00:54:46Z",
+          "completed_at": "2026-11-11T00:57:27Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42935022194/job/130242830183",
+          "started_at": "2026-11-11T00:54:46Z",
+          "completed_at": "2026-11-11T00:57:30Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:54:42Z",
+      "databaseId": 42935019932,
+      "event": "push",
+      "headSha": "03a9d44e50f92ec3ee6b3118a503a20784087a25",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:54:42Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42935019932"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:46:42Z",
+      "databaseId": 42934001981,
+      "event": "push",
+      "headSha": "3cfa0cb19c4ac8468b6a86f739be572d4cfe5178",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:46:53Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42934001981",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42934001981/job/130239413306",
+          "started_at": "2026-11-11T00:46:45Z",
+          "completed_at": "2026-11-11T00:46:51Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42934001981/job/130239413550",
+          "started_at": "2026-11-11T00:46:45Z",
+          "completed_at": "2026-11-11T00:46:52Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:46:41Z",
+      "databaseId": 42934000398,
+      "event": "push",
+      "headSha": "3cfa0cb19c4ac8468b6a86f739be572d4cfe5178",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:46:41Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42934000398"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-11T00:43:57Z",
+      "databaseId": 42933645600,
+      "event": "push",
+      "headSha": "91b626d3155e721b3e80b207d49ba58a50fa08ef",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:46:37Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933645600",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933645600/job/130238238769",
+          "started_at": "2026-11-11T00:44:01Z",
+          "completed_at": "2026-11-11T00:46:10Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933645600/job/130238239141",
+          "started_at": "2026-11-11T00:44:00Z",
+          "completed_at": "2026-11-11T00:46:37Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:43:56Z",
+      "databaseId": 42933643798,
+      "event": "push",
+      "headSha": "91b626d3155e721b3e80b207d49ba58a50fa08ef",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:43:56Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933643798"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:41:19Z",
+      "databaseId": 42933308809,
+      "event": "push",
+      "headSha": "2715f3f8f6fc2117abf1b1a8db4d3c1163486d71",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:41:29Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933308809",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933308809/job/130237116142",
+          "started_at": "2026-11-11T00:41:23Z",
+          "completed_at": "2026-11-11T00:41:28Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933308809/job/130237116614",
+          "started_at": "2026-11-11T00:41:22Z",
+          "completed_at": "2026-11-11T00:41:27Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:41:18Z",
+      "databaseId": 42933307230,
+      "event": "push",
+      "headSha": "2715f3f8f6fc2117abf1b1a8db4d3c1163486d71",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:41:18Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933307230"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:40:10Z",
+      "databaseId": 42933155638,
+      "event": "push",
+      "headSha": "02bfe418e860a5fc879cdfe1e3e698b8626d3879",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:40:19Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933155638",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933155638/job/130236614255",
+          "started_at": "2026-11-11T00:40:13Z",
+          "completed_at": "2026-11-11T00:40:17Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933155638/job/130236614681",
+          "started_at": "2026-11-11T00:40:13Z",
+          "completed_at": "2026-11-11T00:40:18Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:40:09Z",
+      "databaseId": 42933153559,
+      "event": "push",
+      "headSha": "02bfe418e860a5fc879cdfe1e3e698b8626d3879",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:40:09Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42933153559"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:34:05Z",
+      "databaseId": 42932361810,
+      "event": "push",
+      "headSha": "c4cd19d251765acf718ecd12dc02591bb2974600",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:34:17Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42932361810",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42932361810/job/130233992370",
+          "started_at": "2026-11-11T00:34:09Z",
+          "completed_at": "2026-11-11T00:34:14Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42932361810/job/130233992600",
+          "started_at": "2026-11-11T00:34:08Z",
+          "completed_at": "2026-11-11T00:34:13Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:34:05Z",
+      "databaseId": 42932360232,
+      "event": "push",
+      "headSha": "c4cd19d251765acf718ecd12dc02591bb2974600",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:34:05Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42932360232"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-11T00:28:54Z",
+      "databaseId": 42931677669,
+      "event": "push",
+      "headSha": "cf5aee79eb0bce6edba3d9429081cff160d90c6e",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:31:37Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931677669",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931677669/job/130231707914",
+          "started_at": "2026-11-11T00:28:57Z",
+          "completed_at": "2026-11-11T00:31:31Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931677669/job/130231708304",
+          "started_at": "2026-11-11T00:28:57Z",
+          "completed_at": "2026-11-11T00:31:36Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:28:53Z",
+      "databaseId": 42931676027,
+      "event": "push",
+      "headSha": "cf5aee79eb0bce6edba3d9429081cff160d90c6e",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:28:53Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931676027"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:28:40Z",
+      "databaseId": 42931648509,
+      "event": "push",
+      "headSha": "e1bdebce26b47a3298d120e6c49e53155527d4f5",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:28:50Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931648509",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931648509/job/130231606467",
+          "started_at": "2026-11-11T00:28:43Z",
+          "completed_at": "2026-11-11T00:28:49Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931648509/job/130231606785",
+          "started_at": "2026-11-11T00:28:43Z",
+          "completed_at": "2026-11-11T00:28:49Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:28:39Z",
+      "databaseId": 42931646433,
+      "event": "push",
+      "headSha": "e1bdebce26b47a3298d120e6c49e53155527d4f5",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:28:39Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42931646433"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-11T00:06:40Z",
+      "databaseId": 42928733932,
+      "event": "push",
+      "headSha": "b205efb1f4ebe5ea5141596c1902534082424d6c",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:09:25Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928733932",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928733932/job/130221781533",
+          "started_at": "2026-11-11T00:06:43Z",
+          "completed_at": "2026-11-11T00:08:41Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928733932/job/130221781784",
+          "started_at": "2026-11-11T00:06:44Z",
+          "completed_at": "2026-11-11T00:09:24Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:06:39Z",
+      "databaseId": 42928732396,
+      "event": "push",
+      "headSha": "b205efb1f4ebe5ea5141596c1902534082424d6c",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:06:39Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928732396"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:04:54Z",
+      "databaseId": 42928490752,
+      "event": "push",
+      "headSha": "b3c6592c05cce416088798ac76fb2e202fa0dc8e",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:05:04Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928490752",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928490752/job/130220964728",
+          "started_at": "2026-11-11T00:04:57Z",
+          "completed_at": "2026-11-11T00:05:03Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928490752/job/130220965219",
+          "started_at": "2026-11-11T00:04:57Z",
+          "completed_at": "2026-11-11T00:05:02Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:04:53Z",
+      "databaseId": 42928489149,
+      "event": "push",
+      "headSha": "b3c6592c05cce416088798ac76fb2e202fa0dc8e",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:04:53Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928489149"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:03:57Z",
+      "databaseId": 42928368737,
+      "event": "push",
+      "headSha": "22d099e12a99f1c96cf018d7fded38e3e03b1d06",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:04:05Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928368737",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928368737/job/130220540425",
+          "started_at": "2026-11-11T00:04:00Z",
+          "completed_at": "2026-11-11T00:04:05Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928368737/job/130220540769",
+          "started_at": "2026-11-11T00:04:01Z",
+          "completed_at": "2026-11-11T00:04:05Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:03:56Z",
+      "databaseId": 42928366746,
+      "event": "push",
+      "headSha": "22d099e12a99f1c96cf018d7fded38e3e03b1d06",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:03:56Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42928366746"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:00:10Z",
+      "databaseId": 42927859368,
+      "event": "push",
+      "headSha": "f613cbbe9548d5c1cce2400de5b76fe0b8850024",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:00:20Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927859368",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927859368/job/130218824990",
+          "started_at": "2026-11-11T00:00:13Z",
+          "completed_at": "2026-11-11T00:00:18Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927859368/job/130218825240",
+          "started_at": "2026-11-11T00:00:14Z",
+          "completed_at": "2026-11-11T00:00:19Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-11T00:00:10Z",
+      "databaseId": 42927857242,
+      "event": "push",
+      "headSha": "f613cbbe9548d5c1cce2400de5b76fe0b8850024",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:00:10Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927857242"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "success",
+      "createdAt": "2026-11-10T23:59:32Z",
+      "databaseId": 42927777220,
+      "event": "push",
+      "headSha": "c37aba76175c717ba0c26aa8e44994ddf2988539",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-11T00:01:49Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927777220",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927777220/job/130218555364",
+          "started_at": "2026-11-10T23:59:35Z",
+          "completed_at": "2026-11-11T00:01:49Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927777220/job/130218555781",
+          "started_at": "2026-11-10T23:59:36Z",
+          "completed_at": "2026-11-11T00:01:45Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:59:31Z",
+      "databaseId": 42927775118,
+      "event": "push",
+      "headSha": "c37aba76175c717ba0c26aa8e44994ddf2988539",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:59:31Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927775118"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:58:40Z",
+      "databaseId": 42927672650,
+      "event": "push",
+      "headSha": "5deb1c41167ba1cb37e782350f9974044cb2f38d",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:58:48Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927672650",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927672650/job/130218195378",
+          "started_at": "2026-11-10T23:58:43Z",
+          "completed_at": "2026-11-10T23:58:47Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927672650/job/130218195629",
+          "started_at": "2026-11-10T23:58:43Z",
+          "completed_at": "2026-11-10T23:58:48Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:58:40Z",
+      "databaseId": 42927671069,
+      "event": "push",
+      "headSha": "5deb1c41167ba1cb37e782350f9974044cb2f38d",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:58:40Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927671069"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:57:58Z",
+      "databaseId": 42927585143,
+      "event": "push",
+      "headSha": "ea146389fb7d867642c12769d91ab254e7828241",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:58:09Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927585143",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927585143/job/130217893620",
+          "started_at": "2026-11-10T23:58:01Z",
+          "completed_at": "2026-11-10T23:58:07Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927585143/job/130217894131",
+          "started_at": "2026-11-10T23:58:01Z",
+          "completed_at": "2026-11-10T23:58:09Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:57:57Z",
+      "databaseId": 42927583552,
+      "event": "push",
+      "headSha": "ea146389fb7d867642c12769d91ab254e7828241",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:57:57Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927583552"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:57:13Z",
+      "databaseId": 42927495937,
+      "event": "push",
+      "headSha": "b1a45da54d2ba9e73323da9c1ed80ba4abfc0f6d",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:57:23Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927495937",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927495937/job/130217585532",
+          "started_at": "2026-11-10T23:57:16Z",
+          "completed_at": "2026-11-10T23:57:23Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927495937/job/130217586109",
+          "started_at": "2026-11-10T23:57:16Z",
+          "completed_at": "2026-11-10T23:57:22Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:57:12Z",
+      "databaseId": 42927493963,
+      "event": "push",
+      "headSha": "b1a45da54d2ba9e73323da9c1ed80ba4abfc0f6d",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:57:12Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927493963"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:56:02Z",
+      "databaseId": 42927349914,
+      "event": "push",
+      "headSha": "4f3ff0c60c47bd8f6912a3238faf3f19ca74008c",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:56:11Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927349914",
+      "jobs": [
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927349914/job/130217072847",
+          "started_at": "2026-11-10T23:56:05Z",
+          "completed_at": "2026-11-10T23:56:10Z"
+        },
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927349914/job/130217073142",
+          "started_at": "2026-11-10T23:56:05Z",
+          "completed_at": "2026-11-10T23:56:11Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:56:01Z",
+      "databaseId": 42927348095,
+      "event": "push",
+      "headSha": "4f3ff0c60c47bd8f6912a3238faf3f19ca74008c",
+      "name": ".github/workflows/squad-round-notify.yml",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:56:01Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42927348095"
+    },
+    {
+      "attempt": 1,
+      "conclusion": "failure",
+      "createdAt": "2026-11-10T23:51:43Z",
+      "databaseId": 42926782476,
+      "event": "push",
+      "headSha": "bb76faab219b5941640cf881177313b47920344e",
+      "name": "CI",
+      "status": "completed",
+      "updatedAt": "2026-11-10T23:51:52Z",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42926782476",
+      "jobs": [
+        {
+          "name": "test (3.11)",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42926782476/job/130215153119",
+          "started_at": "2026-11-10T23:51:46Z",
+          "completed_at": "2026-11-10T23:51:51Z"
+        },
+        {
+          "name": "test (3.12)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/doitupsolutions810-crow/Avrone/actions/runs/42926782476/job/130215153548",
+          "started_at": "2026-11-10T23:51:46Z",
+          "completed_at": "2026-11-10T23:51:50Z"
+        }
+      ],
+      "artifacts": [],
+      "evidenceComplete": true
+    }
+  ],
+  "commits": [
+    {
+      "sha": "5cceb5257d2e03499070d727b56c4847de1578e0",
+      "title": "Add Avrone GET/POST /api/blackboard for the fusion relay (#20)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/5cceb5257d2e03499070d727b56c4847de1578e0",
+      "date": "2026-11-10T14:22:01Z"
+    },
+    {
+      "sha": "a2af82037e73c503cc7475ab9504bd5389cbdf78",
+      "title": "Integrate AVRONE platform bridge with verified safety tests",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/a2af82037e73c503cc7475ab9504bd5389cbdf78",
+      "date": "2026-11-09T06:32:31Z"
+    },
+    {
+      "sha": "a1913e0e690ba7fa1745775d6cb856e4fdfaee27",
+      "title": "Fix malformed model JSON recursion and CI checkout handling",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/a1913e0e690ba7fa1745775d6cb856e4fdfaee27",
+      "date": "2026-11-09T06:25:09Z"
+    },
+    {
+      "sha": "6529068feee8c8e56188e86d010241ce2ba957a5",
+      "title": "docs: Descent XIII \u2014 the Empty Ledger; ledger measured empty, verify.py's empty-log exit 0 named a forged floor; first receipt written (75f8188) \u2014 ignorance is the hottest state (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/6529068feee8c8e56188e86d010241ce2ba957a5",
+      "date": "2026-11-07T00:44:05Z"
+    },
+    {
+      "sha": "f5798e796ec5332b6e2d4b3cae05086b575e0def",
+      "title": "docs: Descent XII \u2014 the Amputation Theorem; echo census of the CI history (6/7 real runs were echo pairs); same-commit pass/fail measured \u2014 environment co-authors; rho unidentifiable under fail-fast (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/f5798e796ec5332b6e2d4b3cae05086b575e0def",
+      "date": "2026-11-06T14:19:03Z"
+    },
+    {
+      "sha": "8bde3e57fc2763bffb48e5fb444006693b97acb5",
+      "title": "docs: Descent XI \u2014 the Silenced Leg; first measured cause minted from GitHub's Actions records; fail-fast coupling found and mitigated (3f79c91); register descends 0.458355 -> 0.448293 by measurement alone (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/8bde3e57fc2763bffb48e5fb444006693b97acb5",
+      "date": "2026-11-06T13:26:19Z"
+    },
+    {
+      "sha": "3f79c9138f2fe176991caa02f96c88eb4a038a5c",
+      "title": "ci: fail-fast: false \u2014 decouple the matrix legs (Descent XI: measured run 335 showed 3.12 cancelled by 3.11's failure; a silenced leg is an echo, not a trial; additive one-line mitigation, nothing else touched)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/3f79c9138f2fe176991caa02f96c88eb4a038a5c",
+      "date": "2026-11-06T13:25:53Z"
+    },
+    {
+      "sha": "723656affacbf7d70336a3b9c71635782d644356",
+      "title": "docs: Descent X \u2014 the Measured Cause; the IX bridge built as code (capgate_head_attest.py); zero-heat edges, the minting rule, criterion 8, the measurement-bandwidth theorem (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/723656affacbf7d70336a3b9c71635782d644356",
+      "date": "2026-11-06T05:49:06Z"
+    },
+    {
+      "sha": "c6358430778d5a115eaa2e3104911b6389324abb",
+      "title": "docs: Descent IX \u2014 the Anchor Floor; depth transmits, diversity compounds; cause-discounted self-correction of the law's own chain; capgate head-attestation bridge proposed (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/c6358430778d5a115eaa2e3104911b6389324abb",
+      "date": "2026-11-06T05:44:36Z"
+    },
+    {
+      "sha": "97f472e4ccb01a92dde274a8979bed65237ce1d8",
+      "title": "docs: Descent VIII \u2014 the Correlation Floor; falsification pass on evidence_pool.py, the register descends only along independent axes, self-correction of Descent I's table (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/97f472e4ccb01a92dde274a8979bed65237ce1d8",
+      "date": "2026-11-06T05:38:48Z"
+    },
+    {
+      "sha": "2a9805f38296939df97ec90ce4555c319829e8cf",
+      "title": "docs: Descent VII \u2014 the Axiomatic Anchor; the laws are floor-invariant, the coordinate is the last unanchored row, axioms are human roots (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/2a9805f38296939df97ec90ce4555c319829e8cf",
+      "date": "2026-11-06T05:36:21Z"
+    },
+    {
+      "sha": "78f09bc950983ba353ab1b26c121a9ca51ea1620",
+      "title": "docs: Descent VI \u2014 the Zero-Cost Direction; heat is the price of uncertainty, the floor is where the payment stops, route growth through the floor (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/78f09bc950983ba353ab1b26c121a9ca51ea1620",
+      "date": "2026-11-06T05:19:36Z"
+    },
+    {
+      "sha": "759e3f9ae2a5169671f9506e8295396abc21741f",
+      "title": "docs: Descent V \u2014 the Anchored Floor; the regress terminates where the model cannot reach, trust = provenance/(1+heat), attack converges with measurement (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/759e3f9ae2a5169671f9506e8295396abc21741f",
+      "date": "2026-11-06T04:53:46Z"
+    },
+    {
+      "sha": "03c23169a377b1c020ba4ec612bfe6995f4eee3e",
+      "title": "docs: Descent IV \u2014 the Forged Floor; saturation manufactures false cone-floor certainty in trait actuators, floors must show their work (parallel-derivation convergence, append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/03c23169a377b1c020ba4ec612bfe6995f4eee3e",
+      "date": "2026-11-06T04:51:01Z"
+    },
+    {
+      "sha": "156834c6bdfeb1e1887c6c5d85a88b0e83607ddb",
+      "title": "docs: Descent III \u2014 the Namespaced Fragmentation; merge points pool artifacts never trials; pooling is the accumulator of heat and the only contradiction detector (append, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/156834c6bdfeb1e1887c6c5d85a88b0e83607ddb",
+      "date": "2026-11-06T04:36:30Z"
+    },
+    {
+      "sha": "da6d89b767ca868a040a2d9ae21075d419cfa2a7",
+      "title": "docs: Descent II \u2014 the Multiplicative Chain; heat composes across memory gates, evidence must travel with the artifact (append to GREAT_SCALE_DESCENTS.md, nothing overwritten)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/da6d89b767ca868a040a2d9ae21075d419cfa2a7",
+      "date": "2026-11-06T04:24:33Z"
+    },
+    {
+      "sha": "88b17a2216fa3d66a985858ec113705990cf8aeb",
+      "title": "docs: Descent I \u2014 the Billing-Lock Cone; map the 2026-10-28 boot-blocker evidence onto the Great Scale (all session defects on the cone floor; lock budget N=1 makes only deterministic defects detectable; instrumentation + local verify.sh are the two optimal escapes)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/88b17a2216fa3d66a985858ec113705990cf8aeb",
+      "date": "2026-11-06T04:19:35Z"
+    },
+    {
+      "sha": "9bb0e750aa40947f7f78b6ef41dcfa9afe6ae202",
+      "title": "test: cover killed lock holder and journal replacement recovery",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/9bb0e750aa40947f7f78b6ef41dcfa9afe6ae202",
+      "date": "2026-11-03T07:20:35Z"
+    },
+    {
+      "sha": "1b9a90497235e50fae335325867d907e4840d9d9",
+      "title": "test: cover multiprocess bridge writes and compaction",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/1b9a90497235e50fae335325867d907e4840d9d9",
+      "date": "2026-11-03T06:24:17Z"
+    },
+    {
+      "sha": "8dc191bd02b334e0a459b97eb6e1e3143400be20",
+      "title": "fix: serialize bridge journal compaction across processes",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/8dc191bd02b334e0a459b97eb6e1e3143400be20",
+      "date": "2026-11-03T06:24:07Z"
+    },
+    {
+      "sha": "6a20a9075e05f6e3ffdf78bd2cedf84c3a0fa808",
+      "title": "test: make corrupt replay fixture use invalid UTF-8 bytes",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/6a20a9075e05f6e3ffdf78bd2cedf84c3a0fa808",
+      "date": "2026-11-03T05:59:45Z"
+    },
+    {
+      "sha": "a17e5fd134fa8d09529496c8a53328240bd7dd73",
+      "title": "test: correct hostile byte fixture escaping",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/a17e5fd134fa8d09529496c8a53328240bd7dd73",
+      "date": "2026-11-03T05:59:37Z"
+    },
+    {
+      "sha": "bd5099690a4e65337dc4ff3585511bc0c2e318eb",
+      "title": "test: add adversarial bridge chaos coverage",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/bd5099690a4e65337dc4ff3585511bc0c2e318eb",
+      "date": "2026-11-03T05:59:26Z"
+    },
+    {
+      "sha": "d64bd9e91305286aaacf75a6268588609253f8cc",
+      "title": "test: add bounded AVRONE Grok Bot bridge health probe",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/d64bd9e91305286aaacf75a6268588609253f8cc",
+      "date": "2026-11-03T05:37:32Z"
+    },
+    {
+      "sha": "5fe55e1152509bad935e5e56e82f96afb537dc3a",
+      "title": "docs: define Grok Bot bridge integration contract",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/5fe55e1152509bad935e5e56e82f96afb537dc3a",
+      "date": "2026-11-03T05:37:26Z"
+    },
+    {
+      "sha": "9036ff6adc67655211357ab5bed38051c11cc999",
+      "title": "Merge pull request #16 from doitupsolutions810-crow/avrone-a12lr-daemon",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/9036ff6adc67655211357ab5bed38051c11cc999",
+      "date": "2026-11-03T03:52:12Z"
+    },
+    {
+      "sha": "078b78fa8a9122a1c090c79815556e9872a5c6bd",
+      "title": "autopilot round 23: endpoint and config values (base URL normalization, API key cleanup, junk numeric env, .env export/quotes, InvalidURL failover)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/078b78fa8a9122a1c090c79815556e9872a5c6bd",
+      "date": "2026-11-03T03:31:32Z"
+    },
+    {
+      "sha": "c5581862aec377d5c159a1eefe9a2562f4f0749a",
+      "title": "Integrate grok-bot- enhancements: plugins (calculator, datetime, json_tool), 5 SKILL.md playbooks, docker-compose stack with Ollama/Playwright/socket-proxy, launch.sh/install.sh boot sequence, browser-service, public dashboard, config/agents.json, examples (fleet-compose, mcp.json), scripts (wait-boot, evolve), CI workflows, pyproject.toml, package.json. Coherent A12LR integration.",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/c5581862aec377d5c159a1eefe9a2562f4f0749a",
+      "date": "2026-11-03T03:16:08Z"
+    },
+    {
+      "sha": "85147c8bab4aa1b406a6de4dd808d3593441cfb6",
+      "title": "autopilot round 22: outbound request body (lone surrogates, NUL, non-string content, role aliases, tool role without id, NaN temperature)",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/85147c8bab4aa1b406a6de4dd808d3593441cfb6",
+      "date": "2026-11-03T03:09:08Z"
+    },
+    {
+      "sha": "ae0c2ee27e426f5762aa1d1331ef8cbaad918fc5",
+      "title": "autopilot round 21: response body shapes (200 error bodies, legacy/delta/native/SSE bodies) and Retry-After HTTP-date",
+      "url": "https://github.com/doitupsolutions810-crow/Avrone/commit/ae0c2ee27e426f5762aa1d1331ef8cbaad918fc5",
+      "date": "2026-11-03T02:59:41Z"
+    }
+  ],
+  "errors": [],
+  "scope": "Latest 100 PRs, 50 workflow runs, 30 default-branch commits. Snapshot, not live GitHub synchronization."
+}

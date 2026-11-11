@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 include = ["avrone*"]
 
 [tool.setuptools.package-data]
-avrone = ["static/*"]
+avrone = ["static/*", "evidence/*.json"]
 
 [tool.pytest.ini_options]
 markers = ["integration: real-network/uvicorn tests, excluded from the self-evolve gate"]

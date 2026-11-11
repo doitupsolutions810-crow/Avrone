@@ -249,26 +249,52 @@ function evidenceData(p,run) {
  const artifacts=run&&state.artifacts[run.id]||[];
  const jobsBlocked=!!run&&hasError("jobs-"+run.id);
  const artifactsBlocked=!!run&&hasError("artifacts-"+run.id);
+ const workflowBlocked=hasError("workflows");
+ const commitStatusBlocked=hasError("commit-status");
  const names=artifacts.map(a=>({name:String(a.name||"").toLowerCase(),expired:!!a.expired}));
  const job=(rx)=>same?(jobs.find(j=>rx.test(String(j.name||"").toLowerCase()))||null):null;
  const j311=job(/3\.11/), j312=job(/3\.12/);
- const docker=job(/docker/), node=job(/node.*(lifecycle|container)|(lifecycle|container).*node/);
- const candidate=(rx)=>names.some(a=>rx.test(a.name)&&!a.expired);
- const expired=(rx)=>names.some(a=>rx.test(a.name)&&a.expired);
+ const docker=job(/docker image verification/);
+ const node=job(/node container lifecycle/);
  const vercelStatus=state.commitStatusSha===sha&&state.commitStatus?(state.commitStatus.statuses||[]).find(x=>String(x.context||"").toLowerCase()==="vercel"):null;
- const workflowBlocked=hasError("workflows");
- const commitStatusBlocked=hasError("commit-status");
- const pythonState=(job)=>workflowBlocked||jobsBlocked?"BLOCKED":!same||!job?"NOT RUN":job.conclusion==="success"?"PASS":job.conclusion==="failure"?"FAIL":"UNVERIFIED";
- const artifactState=(rx)=>artifactsBlocked?"BLOCKED":!same?"NOT RUN":candidate(rx)?"PENDING REVIEW":expired(rx)?"EXPIRED":"NOT RUN";
- const runtimeJobState=(job)=>jobsBlocked?"BLOCKED":!same||!job?"NOT RUN":job.conclusion==="failure"?"FAIL":job.conclusion==="success"?"PENDING REVIEW":"UNVERIFIED";
+ const artifactByName=(name)=>names.find(a=>a.name===name.toLowerCase())||null;
+ const matrixState=()=>{
+  if(workflowBlocked||jobsBlocked) return "BLOCKED";
+  if(!same) return "NOT RUN";
+  if((j311&&j311.conclusion==="failure")||(j312&&j312.conclusion==="failure")) return "FAIL";
+  if(j311&&j312&&j311.conclusion==="success"&&j312.conclusion==="success") return "PASS";
+  if(!j311||!j312) return run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN";
+  return "UNVERIFIED";
+ };
+ const coverageState=(kind)=>{
+  if(artifactsBlocked) return "BLOCKED";
+  const matrix=matrixState();
+  if(matrix==="BLOCKED"||matrix==="FAIL"||matrix==="NOT RUN") return matrix;
+  if(matrix!=="PASS") return "UNVERIFIED";
+  const a=artifactByName("coverage-"+kind+"-py3.11");
+  const b=artifactByName("coverage-"+kind+"-py3.12");
+  if((a&&a.expired)||(b&&b.expired)) return "EXPIRED";
+  if(a&&b) return "PASS";
+  return "NOT RUN";
+ };
+ const runtimeGate=(jobRecord,artifactName)=>{
+  if(jobsBlocked||artifactsBlocked) return "BLOCKED";
+  if(!same||!jobRecord) return "NOT RUN";
+  if(jobRecord.conclusion==="failure") return "FAIL";
+  if(jobRecord.conclusion!=="success") return "UNVERIFIED";
+  const artifact=artifactByName(artifactName);
+  if(!artifact) return "NOT RUN";
+  if(artifact.expired) return "EXPIRED";
+  return "PASS";
+ };
  const gates=[
-  {name:"Exact-SHA Python 3.11",state:pythonState(j311),note:"Required matrix leg for this exact commit."},
-  {name:"Exact-SHA Python 3.12",state:pythonState(j312),note:"Required matrix leg for this exact commit."},
-  {name:"Vercel preview deployment",state:commitStatusBlocked?"BLOCKED":!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:"A successful deployment status still requires an inspectable preview URL and a browser smoke test."},
-  {name:"coverage.xml artifact",state:artifactState(/coverage.*xml|xml.*coverage/),note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
-  {name:"coverage.json artifact",state:artifactState(/coverage.*json|json.*coverage/),note:"Artifact metadata is not content validation; inspect file and exact-SHA provenance."},
-  {name:"Docker image verification",state:runtimeJobState(docker),note:"Requires image build, inspect, digest and provenance; job name alone is insufficient."},
-  {name:"In-container Node lifecycle",state:runtimeJobState(node),note:"Requires install, start, health, graceful shutdown and process-leak evidence from inside the container."},
+  {name:"Exact-SHA Python 3.11",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j311?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):j311.conclusion==="success"?"PASS":j311.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
+  {name:"Exact-SHA Python 3.12",state:workflowBlocked||jobsBlocked?"BLOCKED":!same?"NOT RUN":!j312?(run&&run.status!=="completed"?"UNVERIFIED":"NOT RUN"):j312.conclusion==="success"?"PASS":j312.conclusion==="failure"?"FAIL":"UNVERIFIED",note:"Required matrix leg for this exact commit."},
+  {name:"Vercel preview deployment",state:commitStatusBlocked?"BLOCKED":!vercelStatus?"NOT RUN":vercelStatus.state==="failure"?"FAIL":vercelStatus.state==="success"?"PENDING REVIEW":vercelStatus.state==="pending"?"UNVERIFIED":"NOT RUN",note:"A successful deployment status still requires an inspectable preview URL and a real browser smoke test."},
+  {name:"coverage.xml artifact",state:coverageState("xml"),note:"PASS requires valid coverage XML artifacts from both exact-SHA Python matrix legs."},
+  {name:"coverage.json artifact",state:coverageState("json"),note:"PASS requires valid coverage JSON artifacts from both exact-SHA Python matrix legs."},
+  {name:"Docker image verification",state:runtimeGate(docker,"docker-image-evidence"),note:"PASS requires the exact-SHA Docker verification job and image-inspect/digest/health artifacts."},
+  {name:"In-container Node lifecycle",state:runtimeGate(node,"node-container-lifecycle-evidence"),note:"PASS requires the exact-SHA isolated Node 22 container lifecycle job and its logs/image evidence."},
   {name:"Local Apple-Silicon Ollama squad",state:state.status?"NOT RUN":"BLOCKED",note:"Must run on the authorized Mac with the actual configured Ollama model and isolated worktree."},
   {name:"Proposal validation & edge cases",state:jobsBlocked?"BLOCKED":!same?"NOT RUN":jobs.some(j=>/proposal validation|edge-case/i.test(j.name||"")&&j.conclusion==="success")?"PENDING REVIEW":"NOT RUN",note:"Requires an explicit validation job and independently inspectable exact-SHA results."}
  ];
@@ -319,11 +345,11 @@ async function loadWorkflowDetails(run) {
   needsJobs?gh("/actions/runs/"+id+"/jobs?per_page=100"):Promise.resolve({jobs:state.jobs[id]}),
   needsArtifacts?gh("/actions/runs/"+id+"/artifacts?per_page=100"):Promise.resolve({artifacts:state.artifacts[id]})
  ]);
- if(tasks[0].status==="fulfilled") state.jobs[id]=tasks[0].value.jobs||[];
+ if(tasks[0].status==="fulfilled") {state.jobs[id]=tasks[0].value.jobs||[];state.errors=state.errors.filter(x=>x.key!=="jobs-"+id);}
  else state.errors.push({key:"jobs-"+id,message:tasks[0].reason&&tasks[0].reason.message||"Job details unavailable"});
- if(tasks[1].status==="fulfilled") state.artifacts[id]=tasks[1].value.artifacts||[];
+ if(tasks[1].status==="fulfilled") {state.artifacts[id]=tasks[1].value.artifacts||[];state.errors=state.errors.filter(x=>x.key!=="artifacts-"+id);}
  else state.errors.push({key:"artifacts-"+id,message:tasks[1].reason&&tasks[1].reason.message||"Artifact metadata unavailable"});
- renderVerification();renderRelease();
+ renderTarget();renderPRs();renderOverview();renderVerification();renderRelease();
 }
 async function compareWorkflowRuns() {
  const a=state.workflows.find(w=>String(w.id)===$("compare-run-a").value);

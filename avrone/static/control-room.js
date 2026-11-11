@@ -62,7 +62,13 @@ async function ghPages(path,maxPages) {
   all.push(...rows);pages++;
   const header=res.headers.get("Link")||"";
   const match=header.split(",").map(x=>x.trim()).find(x=>/rel="next"/.test(x));
-  next=match?(match.match(/<([^>]+)>/)||[])[1]||null:null;
+  const candidate=match?(match.match(/<([^>]+)>/)||[])[1]||null:null;
+  if(candidate) {
+   let parsed;
+   try{parsed=new URL(candidate,GH);}catch(_){throw new Error("Invalid GitHub pagination URL");}
+   if(parsed.protocol!=="https:"||parsed.hostname!=="api.github.com") throw new Error("Rejected unsafe GitHub pagination URL");
+   next=parsed.href;
+  } else next=null;
  }
  return {items:all,pages,truncated:!!next};
 }

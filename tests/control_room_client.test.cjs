@@ -334,12 +334,12 @@ test("workflow cache stops refreshing after terminal jobs and final artifact sna
  const n=c.workflowDetailsNeedRefresh(
   {status:"completed"},[{name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}],[],false,false,true
  );
- assert.deepEqual(n,{jobs:false,artifacts:false});
+ assert.deepEqual(JSON.parse(JSON.stringify(n)),{jobs:false,artifacts:false});
 });
 test("workflow cache retries after previous jobs or artifacts API errors",()=>{
  const c=makeContext();
  const n=c.workflowDetailsNeedRefresh({status:"completed"},[],[],true,true,false);
- assert.deepEqual(n,{jobs:true,artifacts:true});
+ assert.deepEqual(JSON.parse(JSON.stringify(n)),{jobs:true,artifacts:true});
 });
 
 test("artifact cache receives one final refresh after a workflow completes",()=>{
@@ -357,5 +357,5 @@ test("artifact cache receives one final refresh after a workflow completes",()=>
  const completedFinal=c.workflowDetailsNeedRefresh({status:"completed"},[
   {name:"test (3.11)",status:"completed"},{name:"test (3.12)",status:"completed"}
  ],[],false,false,true);
- assert.deepEqual(completedFinal,{jobs:false,artifacts:false});
+ assert.deepEqual(JSON.parse(JSON.stringify(completedFinal)),{jobs:false,artifacts:false});
 });

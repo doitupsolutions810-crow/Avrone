@@ -588,3 +588,25 @@ def test_nonce_cache_loader_discards_nonfinite_expired_and_unrepresentable_value
     loaded = fm._load_nonces()
     assert list(loaded) == ["valid"]
     assert loaded["valid"] == now + 300
+
+
+def test_captured_nonce_is_rejected_after_fleet_manager_restart(fm):
+    headers = sign("tok", "POST", "/api/fleet/run", b'{"prompt":"hello"}', nonce="restart-replay")
+    fm.verify("POST", "/api/fleet/run", b'{"prompt":"hello"}', headers)
+    restarted = FleetManager(fm.core, fm._nonce_path.parent)
+    with pytest.raises(PermissionError, match="replayed request"):
+        restarted.verify("POST", "/api/fleet/run", b'{"prompt":"hello"}', headers)
+
+
+def test_unreadable_nonce_cache_boot_guard_rejects_pre_restart_signatures(fm):
+    fm._nonce_path.write_text("{not valid JSON")
+    fm._boot_guard = None
+    fm._nonces = fm._load_nonces()
+    guard = fm._boot_guard
+    assert guard is not None
+    before = str(int(guard) - 1)
+    with pytest.raises(PermissionError, match="signed before this node restarted"):
+        fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", ts=before, nonce="preboot"))
+    after = str(int(guard) + 1)
+    fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", ts=after, nonce="postboot"))
+    assert "postboot" in fm._nonces

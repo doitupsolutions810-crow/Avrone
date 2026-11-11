@@ -316,7 +316,14 @@ function renderVerification() {
  const deployLink=vercelStatus&&vercelStatus.target_url?link(vercelStatus.target_url,"Deployment details ↗"):"";
  $("verification-list").innerHTML='<div class="item"><b>Target SHA</b><p>'+esc(sha||"No target SHA")+'</p><div class="meta">'+badge(data.same?"EXACT SHA":"NO MATCH")+' '+(run?link(run.html_url,"Workflow ↗"):"<span class=\\\"muted\\\">No workflow</span>")+'</div></div>'+data.gates.map(g=>'<div class="item"><div class="item-head"><h3>'+esc(g.name)+'</h3>'+badge(g.state)+'</div><p>'+esc(g.note)+'</p>'+(g.name==="Vercel preview deployment"?deployLink:"")+'</div>').join("");
  const artifacts=run&&state.artifacts[run.id]||[];
- $("artifact-list").innerHTML=artifacts.length?artifacts.map(a=>item(a.name,a.expired?"Artifact expired":"Created "+date(a.created_at),badge(a.expired?"EXPIRED":"METADATA AVAILABLE"),run.html_url)).join(""):'<div class="empty">No candidate workflow artifacts are visible for this exact-SHA run. coverage.xml and coverage.json remain NOT RUN.</div>';
+ $("artifact-list").innerHTML=artifacts.length?artifacts.map(a=>{
+  const metadata=badge(a.expired?"EXPIRED":"METADATA AVAILABLE")+
+   '<span class="muted">Artifact #'+esc(a.id)+'</span>'+
+   '<span class="muted">'+esc(a.size_in_bytes||0)+' bytes</span>'+
+   (a.digest?'<code>'+esc(a.digest)+'</code>':"")+
+   (a.archive_download_url?link(a.archive_download_url,"Download ZIP ↗"):"");
+  return item(a.name,a.expired?"Artifact expired":"Created "+date(a.created_at)+" · expires "+date(a.expires_at),metadata,run.html_url);
+ }).join(""):'<div class="empty">No candidate workflow artifacts are visible for this exact-SHA run. coverage.xml and coverage.json remain NOT RUN.</div>';
  $("edge-list").innerHTML=edgeCases.map(e=>'<div class="edge"><b>'+esc(e[0])+'</b><small>'+esc(e[1])+'</small>'+badge("NOT RUN")+'</div>').join("");
 }
 function renderRelease() {

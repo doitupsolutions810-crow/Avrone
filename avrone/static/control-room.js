@@ -66,7 +66,8 @@ async function ghPages(path,maxPages) {
   if(candidate) {
    let parsed;
    try{parsed=new URL(candidate,GH);}catch(_){throw new Error("Invalid GitHub pagination URL");}
-   if(parsed.protocol!=="https:"||parsed.hostname!=="api.github.com") throw new Error("Rejected unsafe GitHub pagination URL");
+   const repoPath=new URL(GH).pathname+"/";
+   if(parsed.protocol!=="https:"||parsed.hostname!=="api.github.com"||!parsed.pathname.startsWith(repoPath)) throw new Error("Rejected unsafe GitHub pagination URL");
    next=parsed.href;
   } else next=null;
  }

@@ -434,9 +434,9 @@ document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>{
  b.classList.add("active");$("view-"+b.dataset.tab).classList.add("active");
 }));
 $("refresh").addEventListener("click",refresh);
-$("f-pr").addEventListener("change",async()=>{state.selectedPR=Number($("f-pr").value||27);await loadSelectedCommitStatus();renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
+$("f-pr").addEventListener("change",async()=>{state.selectedPR=Number($("f-pr").value||27);await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run);renderTarget();renderNextGate();renderSwarm();renderVerification();renderRelease();});
 ["f-repo","f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).addEventListener("input",()=>{renderPRs();renderCommits();renderSwarm();}));
-$("clear-filters").addEventListener("click",()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="27";state.selectedPR=27;renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
+$("clear-filters").addEventListener("click",async()=>{["f-commit","f-round","f-lane","f-agent","f-runtime","f-verification"].forEach(id=>$(id).value="");$("f-pr").value="27";state.selectedPR=27;await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run);renderTarget();renderPRs();renderCommits();renderSwarm();renderVerification();renderRelease();});
 $("apply-token").addEventListener("click",()=>{state.adminToken=$("admin-token").value.trim();$("admin-token").value="";refresh();});
 $("compare-runs").addEventListener("click",compareWorkflowRuns);
 $("compare").addEventListener("click",async()=>{

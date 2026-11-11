@@ -1,26 +1,31 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
 jobs:
   test:
-    runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
-      fail-fast: false    # Descent XI: a leg cancelled by its sibling's failure is an echo, not a trial (measured: run 335 — 3.11 fail -> 3.12 cancelled); let both legs complete so the pair can be measured
-      matrix: { python: ["3.11", "3.12"] }
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python }}" }
-      - name: Install avrone (dev)
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: Install avrone and coverage tools
         run: |
           set -o pipefail
-          # Defensive checkout hygiene: some file-delivery layers prepend a
-          # status line ("successfully downloaded text file (SHA: ...)") to
-          # delivered text files. Line 1 must parse as TOML/JSON/py source, so
-          # strip such a wrapper line when present (no-op on clean checkouts).
           { grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null || true; } \
             | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]" 2>&1 | tee /tmp/pip.log || {
+          python -m pip install -e ".[dev]" pytest-cov 2>&1 | tee /tmp/pip.log || {
             tail -n 8 /tmp/pip.log | while IFS= read -r l; do
               l="${l//%/%25}"
               echo "::error::${l:0:220}"
@@ -31,16 +36,134 @@ jobs:
         run: node --check avrone/static/control-room.js
       - name: Test Control Room client
         run: node --test tests/control_room_client.test.cjs
-      - name: Test avrone
+      - name: Test avrone and generate coverage
         run: |
           set -o pipefail
           { grep -rlI --exclude-dir=.git '^successfully downloaded text file' . 2>/dev/null || true; } \
             | while IFS= read -r f; do sed -i '1{/^successfully downloaded text file/d}' "$f"; done
-          pytest -q 2>&1 | tee /tmp/pytest.log || {
+          pytest -q --cov=avrone --cov-report=xml:coverage.xml --cov-report=json:coverage.json 2>&1 | tee /tmp/pytest.log || {
             tail -n 10 /tmp/pytest.log | while IFS= read -r l; do
               l="${l//%/%25}"
               echo "::error::${l:0:220}"
             done
             exit 1
           }
-        env: { AVRONE_LLM_MODE: mock, AVRONE_RUNNER: local }
+        env:
+          AVRONE_LLM_MODE: mock
+          AVRONE_RUNNER: local
+      - name: Upload coverage XML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml-py${{ matrix.python }}
+          path: coverage.xml
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload coverage JSON artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-json-py${{ matrix.python }}
+          path: coverage.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  docker:
+    name: Docker image verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGE: avrone-ci:${{ github.sha }}
+      CONTAINER: avrone-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AVRONE image
+        run: docker build --pull -t "$IMAGE" .
+      - name: Verify image user and healthcheck
+        run: |
+          set -euo pipefail
+          IMAGE_USER="$(docker image inspect --format '{{.Config.User}}' "$IMAGE")"
+          test "$IMAGE_USER" = "avrone"
+          HEALTHCHECK="$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$IMAGE")"
+          test -n "$HEALTHCHECK"
+          test "$HEALTHCHECK" != "null"
+          docker image inspect "$IMAGE" > docker-image-inspect.json
+          docker image inspect --format 'image_id={{.Id}}' "$IMAGE" > docker-image-digest.txt
+      - name: Start AVRONE container and verify API health
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name "$CONTAINER" \
+            -p 127.0.0.1:8710:8710 \
+            -e AVRONE_RUNNER=local \
+            -e AVRONE_LLM_MODE=mock \
+            "$IMAGE"
+          READY=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8710/api/status -o docker-api-status.json; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          test "$READY" = "1"
+          HEALTH=starting
+          for i in $(seq 1 60); do
+            HEALTH="$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")"
+            if [ "$HEALTH" = "healthy" ]; then break; fi
+            if [ "$HEALTH" = "unhealthy" ]; then
+              docker logs "$CONTAINER"
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$HEALTH" = "healthy"
+          python -c 'import json; d=json.load(open("docker-api-status.json")); assert isinstance(d, dict)'
+      - name: Capture container diagnostics
+        if: always()
+        run: |
+          docker logs "$CONTAINER" > docker-container.log 2>&1 || true
+          docker inspect "$CONTAINER" > docker-container-inspect.json 2>&1 || true
+      - name: Stop AVRONE container
+        if: always()
+        run: docker rm -f "$CONTAINER" || true
+      - name: Upload Docker verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-evidence
+          path: |
+            docker-image-inspect.json
+            docker-image-digest.txt
+            docker-api-status.json
+            docker-container.log
+            docker-container-inspect.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  node-container:
+    name: Node container lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute Node lifecycle tests inside isolated Node container
+        run: |
+          set -o pipefail
+          docker run --rm --network none \
+            -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
+            -w /tests \
+            node:22-slim \
+            node --test node_container_lifecycle.test.mjs 2>&1 | tee node-container-lifecycle.log
+      - name: Record Node container image
+        if: always()
+        run: docker image inspect node:22-slim > node-container-image-inspect.json 2>&1 || true
+      - name: Upload Node lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-container-lifecycle-evidence
+          path: |
+            node-container-lifecycle.log
+            node-container-image-inspect.json
+          if-no-files-found: warn
+          retention-days: 14

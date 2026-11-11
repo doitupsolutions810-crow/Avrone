@@ -675,3 +675,12 @@ def test_ci_publishes_exact_sha_coverage_docker_and_node_lifecycle_evidence():
     assert 'CHILD_EXITED' in node_test
     assert 'SIGTERM' in node_test
     assert 'process.kill(childPid, 0)' in node_test
+
+
+def test_control_room_pr_filter_switch_refreshes_exact_sha_workflow_evidence():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "avrone" / "static" / "control-room.js").read_text(encoding="utf-8")
+    assert '$("f-pr").addEventListener("change",async()=>{' in js
+    assert 'await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run)' in js
+    assert '$("clear-filters").addEventListener("click",async()=>{' in js

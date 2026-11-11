@@ -682,3 +682,69 @@ def test_control_room_pr_filter_switch_refreshes_exact_sha_workflow_evidence():
     assert '$("f-pr").addEventListener("change",async()=>{' in js
     assert 'await loadSelectedCommitStatus();const run=latestForSha(currentSha());if(run) await loadWorkflowDetails(run)' in js
     assert '$("clear-filters").addEventListener("click",async()=>{' in js
+
+
+def _body_limit_drive(monkeypatch, headers, chunks):
+    from avrone import server
+
+    monkeypatch.setattr(server, "max_body_bytes", lambda path="": 4)
+    called = []
+    sent = []
+
+    async def app(scope, receive, send):
+        called.append(scope["path"])
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    messages = iter(
+        {"type": "http.request", "body": chunk, "more_body": index < len(chunks) - 1}
+        for index, chunk in enumerate(chunks)
+    )
+
+    async def receive():
+        return next(messages, {"type": "http.request", "body": b"", "more_body": False})
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "path": "/api/fleet/register", "headers": headers}
+    asyncio.run(server.BodyLimit(app)(scope, receive, send))
+    return called, sent
+
+
+@pytest.mark.parametrize("headers", [
+    [(b"content-length", b"invalid")],
+    [(b"content-length", b"-1")],
+    [(b"content-length", b"100"), (b"content-length", b"2")],
+])
+def test_body_limit_counts_actual_chunks_when_content_length_is_untrusted(monkeypatch, headers):
+    called, sent = _body_limit_drive(monkeypatch, headers, [b"123", b"45"])
+    assert called == ["/api/fleet/register"]
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"]) == {
+        "detail": "request body too large (max 4 bytes; AVRONE_MAX_BODY_BYTES)"
+    }
+
+
+def test_body_limit_rejects_oversized_declared_length_before_reading_body(monkeypatch):
+    called, sent = _body_limit_drive(
+        monkeypatch, [(b"content-length", b"+5")], [b""]
+    )
+    assert called == []
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"]) == {
+        "detail": "request body too large (max 4 bytes; AVRONE_MAX_BODY_BYTES)"
+    }
+
+
+def test_body_limit_accepts_exact_actual_byte_boundary_with_bad_length_header(monkeypatch):
+    called, sent = _body_limit_drive(
+        monkeypatch, [(b"content-length", b"not-a-number")], [b"12", b"34"]
+    )
+    assert called == ["/api/fleet/register"]
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b"ok"

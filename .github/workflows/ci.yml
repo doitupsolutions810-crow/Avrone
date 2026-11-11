@@ -27,6 +27,8 @@ jobs:
             done
             exit 1
           }
+      - name: Validate Control Room JavaScript syntax
+        run: node --check avrone/static/control-room.js
       - name: Test avrone
         run: |
           set -o pipefail

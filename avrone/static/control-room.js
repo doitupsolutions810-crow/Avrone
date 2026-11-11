@@ -84,8 +84,12 @@ function prEvidence(p) {
  if(hasError("workflows")) return "BLOCKED";
  const run=sha&&latestForSha(sha);
  if(!sha||!run) return "NOT RUN";
- if(run.conclusion==="failure"||run.conclusion==="cancelled"||run.conclusion==="timed_out") return "FAIL";
+ if(["failure","cancelled","timed_out"].includes(run.conclusion)) return "FAIL";
  if(run.status!=="completed") return "UNVERIFIED";
+ const states=evidenceData(p,run).gates.map(g=>g.state);
+ if(states.some(x=>x==="FAIL")) return "FAIL";
+ if(states.every(x=>x==="PASS")) return "VERIFIED";
+ if(states.some(x=>x==="BLOCKED")) return "BLOCKED";
  return "UNVERIFIED";
 }
 function isCiRun(run) { if(!run)return false; const workflowPath=String(run.path||""); return workflowPath?workflowPath===".github/workflows/ci.yml":String(run.name||"").toLowerCase()==="ci"; }

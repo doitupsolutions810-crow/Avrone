@@ -37,6 +37,10 @@ test("HTML escaping neutralizes tags, ampersands, and quote types",()=>{
 test("safeHref accepts HTTPS and rejects executable or non-web schemes",()=>{
  const c=makeContext();
  assert.equal(c.safeHref("https://github.com/example/repo"),"https://github.com/example/repo");
+ assert.equal(c.safeHref("https://preview.vercel.app"),"https://preview.vercel.app");
+ assert.equal(c.safeHref("https://deploy.vercel.com"),"https://deploy.vercel.com");
+ assert.equal(c.safeHref("https://evil.github.com/phish"),"#");
+ assert.equal(c.safeHref("https://github.com.evil.example"),"#");
  assert.equal(c.safeHref("https://evil.example/phish"),"#");
  for(const url of ["javascript:alert(1)","data:text/html,hello","ftp://example.com/file","mailto:test@example.com","file:///etc/passwd"]) assert.equal(c.safeHref(url),"#",url);
 });

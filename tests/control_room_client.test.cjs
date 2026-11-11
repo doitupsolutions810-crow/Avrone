@@ -116,7 +116,7 @@ test("Docker and Node job success remains NOT RUN without its evidence artifacts
  const c=makeContext({state:{jobs:{"run-4":[
   {name:"Docker image verification",conclusion:"success"},
   {name:"Node container lifecycle",conclusion:"success"}
- ],artifacts:{"run-4":[]}}});
+ ]},artifacts:{"run-4":[]}}});
  const g=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"run-4",head_sha:"same"}).gates.map(x=>[x.name,x.state]));
  assert.equal(g["Docker image verification"],"NOT RUN");
  assert.equal(g["In-container Node lifecycle"],"NOT RUN");

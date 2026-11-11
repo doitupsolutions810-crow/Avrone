@@ -535,3 +535,78 @@ AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
 3624 = previous 3582 + 42 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
 
 This round is committed and pushed only on `edge/round-7`. `main` is left at `5cceb52`. No PR opened.
+
+---
+
+# Round 8 — coverage-driven gaps, async faults, signals, log integrity (2026-11-10 20:10 America/Detroit / EST)
+
+Base: `edge/round-7` at `03a9d44e50f92ec3ee6b3118a503a20784087a25` (Avrone main tip `5cceb52` plus Rounds 1–7). Work is on a fresh branch `edge/round-8` off that tip. The previous 291 `tests/edge_extra` cases were left intact; this round adds 35 genuinely new tests (326 total). Production recon guardrails were not changed.
+
+`pytest-cov>=5` was added to `[project.optional-dependencies] dev` (venv: coverage 7.17.2) so the remaining-branch hunt is reproducible via `pip install -e '.[dev]'`.
+
+## Coverage (core modules, non-integration suite)
+
+Measured with `AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration' --cov=avrone`.
+
+| Module | Before | After |
+|---|---|---|
+| `avrone/mcp_server.py` | 93.1% (22 miss) | **98.2% (6 miss)** |
+| `avrone/mcp_client.py` | 99.7% (1 miss) | **100%** |
+| `avrone/sovereign.py` | 98.5% (2 miss) | **100%** |
+| `avrone/governor.py` | 88.8% (27 miss) | **100%** |
+| `avrone/evolve.py` | 99.7% (2 miss) | **100%** |
+| `avrone/codex.py` | 98.0% (4 miss) | **100%** |
+| `avrone/server.py` | 99.8% (1 miss) | **100%** |
+| `avrone/telemetry.py` | 97.1% (6 miss) | **100%** |
+| `avrone/trinity.py` | 99.3% (6 miss) | **100%** |
+| `avrone/bootstrap.py` | 100% | 100% |
+| `avrone/config.py` | 100% | 100% |
+| `avrone/plugins.py` | 100% | 100% |
+| **avrone package total** | 99.14% (107 miss / 12507 stmts) | **99.66% (42 miss / 12522 stmts)** |
+
+Remaining `mcp_server` misses are: the rare `extras["mcp"].stop()` path during a failed boot *after* the MCP manager has already started (120-121), `_emit_bytes` when `out is None` (147), a shutdown-timeout cancel of already-empty/pending tasks (243, 245), and the `if __name__ == "__main__"` guard (498).
+
+Governor's previous 27-line gap was almost entirely the Darwin `/sysctl`+`vm_stat` reader and a `psutil` import fallback; those are now exercised on Linux via monkeypatched `platform.system` / `subprocess.check_output` / `__import__`.
+
+## New tests (35)
+
+| File | Count | What they cover |
+|---|---|---|
+| `tests/edge_extra/test_coverage_gaps_r8.py` | 19 | `send()` non-encodable payload → -32603; RecursionError parse path; batch non-object item; `_stdin_already_eof` on a non-tty char device; `_stdin_reader` pre-EOF; `_close_stdin_transport` swallows close errors; `build_core` stops the runner when boot raises; `load_config` UnicodeDecodeError → {}; `_psutil` import failure; macOS meminfo happy path, sysctl failure, zero total, inverted used-%; disk reader TypeError; evolve worktree `resolve()` OSError; `_json_safe` depth cap on dict/list; `emit` resolve OSError does not write; blackboard inner 413 cap; telemetry stat/glob/read OSError; `normalize_action` circular `final`; `compact_messages` OverflowError limit; `_call_key` circular → None |
+| `tests/edge_extra/test_async_faults_r8.py` | 8 | cancel an in-flight stdio request and reap the child; cancel LocalRunner mid-sleep (CancelledError + reap); cancel when `_reap` itself stalls (bounded by the 2s shield); double `shutdown()`; shutdown during a slow initialize handshake; a never-returning `avrone_chat` is cancelled after stdin EOF (bounded); a writer that blocks forever is dropped by `WRITE_TIMEOUT_S`; cancelling `serve()` with no EOF leaves no pending tasks |
+| `tests/edge_extra/test_signal_os_r8.py` | 3 | child ignores SIGTERM then is SIGKILL'd inside the reap cap; in-process EPIPE on write *and* stdin EOF still exits; a real `avrone.mcp_server` subprocess exits after both stdin and stdout are closed |
+| `tests/edge_extra/test_data_integrity_r8.py` | 5 | Codex replay of mixed valid+poison keeps valid events in order; truncated mid-file neighbors stay ordered; 12 threads × 40 `emit`s produce 480 intact JSONL lines with no lost or merged records; bridge cap keeps the newest 5 and the compacted file is valid JSONL; blackboard disk poison is ignored and valid ids stay in order |
+
+## Bugs found and fixed (root cause, Linux + macOS)
+
+1. **`avrone/mcp_server.py:140-149, 174-191`** — `send()` wrote and flushed the stdout pipe synchronously on the event loop. A stalled or full client pipe would block *every* in-flight request and prevent `serve()` from exiting. Writes now run in a worker thread via `asyncio.to_thread(_emit_bytes, ...)` and are dropped after `WRITE_TIMEOUT_S` (8s), with the existing EPIPE/OSError handling preserved.
+2. **`avrone/mcp_server.py:141, 232-246`** — After stdin EOF, `serve()` did `await gather(*_tasks)` with no bound, so a tool coroutine that never returns (e.g. a hung `chat()`) pinned the process forever. In-flight tasks are now waited on for `SHUTDOWN_TASK_TIMEOUT_S` (8s), then cancelled and reaped.
+
+No production recon policy was changed.
+
+## Gates (0 failed, 0 errored)
+
+Full non-integration (also used for the after-coverage measurement):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -m 'not integration'
+3659 passed, 362 deselected, 1 warning in 99.25s
+```
+
+Shuffled (pytest-randomly):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider -p randomly -m 'not integration'
+3659 passed, 362 deselected, 1 warning in 88.49s
+```
+
+Edge suite (291 previous + 35 new = 326):
+
+```
+AVRONE_LLM_MODE=mock python -m pytest -q -p no:cacheprovider tests/edge_extra
+326 passed in 30.16s
+```
+
+3659 = previous 3624 + 35 new tests. The warning is the existing Starlette/httpx `TestClient` deprecation. 362 deselected are the project's `integration` marker. 0 skipped.
+
+This round is committed and pushed only on `edge/round-8`. `main` is left at `5cceb52`. No PR opened.

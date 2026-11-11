@@ -137,6 +137,18 @@ def _ok_rpc_id(rid: Any) -> bool:
     return False
 
 
+WRITE_TIMEOUT_S = 8.0  # a stalled stdout write is dropped after this; serve() can still exit
+SHUTDOWN_TASK_TIMEOUT_S = 8.0  # after stdin EOF, hanging tool tasks are cancelled
+
+
+def _emit_bytes(out, data: bytes) -> None:
+    """Sync write+flush used by send(); isolated so it can run in a worker thread."""
+    if out is None:
+        return
+    out.write(data)
+    out.flush()
+
+
 class AvroneMCPServer:
     def __init__(self, core_factory=build_core):
         self._factory = core_factory
@@ -170,8 +182,12 @@ class AvroneMCPServer:
                                separators=(",", ":")) + "\n").encode()
         async with self._write_lock:
             try:
-                self._out.write(data)
-                self._out.flush()
+                # Write off the event loop and bound it: a stalled client (full pipe) must
+                # not block serve() or other requests forever.
+                await asyncio.wait_for(asyncio.to_thread(_emit_bytes, self._out, data),
+                                       timeout=WRITE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                return
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # Client gone (EPIPE/ECONNRESET): drop the write so serve() can shut down cleanly.
                 return
@@ -217,7 +233,16 @@ class AvroneMCPServer:
                 self._tasks.add(t)
                 t.add_done_callback(self._tasks.discard)
         if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            # A tool coroutine that never returns must not pin the server after the client is gone.
+            try:
+                await asyncio.wait_for(asyncio.gather(*self._tasks, return_exceptions=True),
+                                       timeout=SHUTDOWN_TASK_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                pending = [task for task in self._tasks if not task.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
         await self.shutdown()
 
     async def shutdown(self) -> None:

@@ -247,3 +247,65 @@ test("evidence helpers degrade safely on null and malformed record arguments",()
  assert.equal(c.matchesCommon(null,null),true);
  assert.equal(c.matchesCommon("not-an-object",{verification:"PASS"}),false);
 });
+
+test("coverage gates pass only with both Python versions and all four exact artifacts",()=>{
+ const c=makeContext({state:{
+  jobs:{"ci-1":[
+   {name:"test (3.11)",conclusion:"success"},
+   {name:"test (3.12)",conclusion:"success"}
+  ]},
+  artifacts:{"ci-1":[
+   {name:"coverage-xml-py3.11",expired:false},
+   {name:"coverage-xml-py3.12",expired:false},
+   {name:"coverage-json-py3.11",expired:false},
+   {name:"coverage-json-py3.12",expired:false}
+  ]}
+ }});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"ci-1",head_sha:"same",status:"completed"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["Exact-SHA Python 3.11"],"PASS");
+ assert.equal(gates["Exact-SHA Python 3.12"],"PASS");
+ assert.equal(gates["coverage.xml artifact"],"PASS");
+ assert.equal(gates["coverage.json artifact"],"PASS");
+});
+test("coverage gates do not pass on one matrix leg, missing or expired per-version artifact",()=>{
+ const baseJobs={"ci-1":[{name:"test (3.11)",conclusion:"success"},{name:"test (3.12)",conclusion:"success"}]};
+ const missing=makeContext({state:{jobs:baseJobs,artifacts:{"ci-1":[
+  {name:"coverage-xml-py3.11"},{name:"coverage-json-py3.11"},{name:"coverage-json-py3.12"}
+ ]}}});
+ let gates=Object.fromEntries(missing.evidenceData({head:{sha:"same"}},{id:"ci-1",head_sha:"same"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["coverage.xml artifact"],"NOT RUN");
+ const expired=makeContext({state:{jobs:baseJobs,artifacts:{"ci-1":[
+  {name:"coverage-xml-py3.11"},{name:"coverage-xml-py3.12",expired:true},
+  {name:"coverage-json-py3.11"},{name:"coverage-json-py3.12"}
+ ]}}});
+ gates=Object.fromEntries(expired.evidenceData({head:{sha:"same"}},{id:"ci-1",head_sha:"same"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["coverage.xml artifact"],"EXPIRED");
+ assert.equal(gates["coverage.json artifact"],"PASS");
+});
+test("Docker and Node gates pass only with exact-SHA jobs and evidence artifacts",()=>{
+ const c=makeContext({state:{
+  jobs:{"ci-2":[
+   {name:"Docker image verification",conclusion:"success"},
+   {name:"Node container lifecycle",conclusion:"success"}
+  ]},
+  artifacts:{"ci-2":[
+   {name:"docker-image-evidence",expired:false},
+   {name:"node-container-lifecycle-evidence",expired:false}
+  ]}
+ }});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"ci-2",head_sha:"same"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["Docker image verification"],"PASS");
+ assert.equal(gates["In-container Node lifecycle"],"PASS");
+});
+test("Docker and Node gates stay provisional without their artifact or fail on expired artifact",()=>{
+ const c=makeContext({state:{
+  jobs:{"ci-3":[
+   {name:"Docker image verification",conclusion:"success"},
+   {name:"Node container lifecycle",conclusion:"success"}
+  ]},
+  artifacts:{"ci-3":[{name:"docker-image-evidence",expired:true}]}
+ }});
+ const gates=Object.fromEntries(c.evidenceData({head:{sha:"same"}},{id:"ci-3",head_sha:"same"}).gates.map(g=>[g.name,g.state]));
+ assert.equal(gates["Docker image verification"],"EXPIRED");
+ assert.equal(gates["In-container Node lifecycle"],"NOT RUN");
+});

@@ -74,6 +74,8 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
             raise RuntimeError(f"Agent {aid} artifact hash does not match the sha256sum output recorded by shell.")
         actual_hashes.add(digest)
         present_values = {v for v in ("687871", "660886") if v in content}
+        if len(present_values) != 1:
+            raise RuntimeError(f"Private worker file {marker} must contain exactly one worker's expected result.")
         result_values.update(present_values)
         user = str(cfg.get("User") or "")
         checks = {
@@ -105,8 +107,8 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
         failed = [k for k, ok in checks.items() if not ok]
         if failed:
             raise RuntimeError(f"Agent container {c.get('Name')} failed isolation/artifact checks: {failed}")
-    if len(output) < 2:
-        raise RuntimeError(f"Expected two different private agent homes to contain this run's artifact; found {len(output)}.")
+    if len(output) != 2:
+        raise RuntimeError(f"Expected exactly two private agent homes to contain this run's artifact; found {len(output)}.")
     if result_values != {"687871", "660886"}:
         raise RuntimeError(f"Private agent files did not independently contain both expected results: {sorted(result_values)}")
     if actual_hashes != expected_hashes:
@@ -166,7 +168,7 @@ def main() -> int:
     joined = "\\n".join(outputs_by_agent.values())
     if "687871" not in joined or "660886" not in joined:
         raise RuntimeError("Shell outputs did not prove both expected arithmetic results.")
-    hash_pattern = re.compile(r"(?m)^([0-9a-fA-F]{64})\\s+.*sandbox-smoke-" + re.escape(nonce) + r"\\.txt(?:\\s|$)")
+    hash_pattern = re.compile(r"(?m)^([0-9a-fA-F]{64})\s+.*sandbox-smoke-" + re.escape(nonce) + r"\.txt(?:\s|$)")
     reported_hashes = {
         match.group(1).lower()
         for output in outputs_by_agent.values()

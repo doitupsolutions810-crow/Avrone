@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live Chat -> Ollama -> Trinity squad -> Docker isolation smoke test."""
 from __future__ import annotations
-import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +39,11 @@ def safe_agent_id(value: str) -> str:
     return value.strip("-_")[:48].strip("-_") or "agent"
 
 def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str, Any]]:
-    """Inspect live agent homes that contain this run's marker artifact."""
+    """Inspect this run's private files from inside the matching Docker agent homes.
+
+    Do not read Docker's reported bind-mount Source path on the host: Docker Desktop may
+    expose a VM-side path such as /host_mnt/... that is not a native macOS path.
+    """
     ids_raw = subprocess.run(["docker", "ps", "-aq", "--filter", "label=avrone.agent-home=1"],
         check=True, capture_output=True, text=True, timeout=20).stdout
     ids = [x.strip() for x in ids_raw.splitlines() if x.strip()]
@@ -54,24 +58,35 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
     expected_uid = os.environ.get("AVRONE_AGENT_UID", str(os.getuid() if hasattr(os, "getuid") else 1000))
     expected_gid = os.environ.get("AVRONE_AGENT_GID", str(os.getgid() if hasattr(os, "getgid") else 1000))
     marker = f"sandbox-smoke-{nonce}.txt"
+    container_path = f"/agent/{marker}"
     for c in containers:
         cfg, host = c.get("Config") or {}, c.get("HostConfig") or {}
         labels = cfg.get("Labels") or {}
-        aid = labels.get("avrone.agent")
+        if labels.get("avrone.agent-home") != "1":
+            continue
         mounts = c.get("Mounts") or []
         if len(mounts) != 1 or mounts[0].get("Destination") != "/agent":
             continue
-        source = Path(str(mounts[0].get("Source", "")))
-        artifact = source / marker
-        try:
-            if artifact.is_symlink() or not artifact.is_file():
-                continue
-            content = artifact.read_text(encoding="utf-8")
-            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-        except (OSError, UnicodeError):
+        if (c.get("State") or {}).get("Running") is not True:
             continue
+        cid = str(c.get("Id") or "")
+        if not cid:
+            continue
+        is_file = subprocess.run(["docker", "exec", cid, "test", "-f", container_path],
+            capture_output=True, text=True, timeout=20)
+        not_link = subprocess.run(["docker", "exec", cid, "test", "!", "-L", container_path],
+            capture_output=True, text=True, timeout=20)
+        if is_file.returncode != 0 or not_link.returncode != 0:
+            continue
+        hash_result = subprocess.run(["docker", "exec", cid, "sha256sum", "--", container_path],
+            check=True, capture_output=True, text=True, timeout=20).stdout.strip()
+        digest = hash_result.split()[0].lower() if hash_result.split() else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise RuntimeError(f"Agent {labels.get('avrone.agent')} returned a malformed in-container sha256sum.")
+        content = subprocess.run(["docker", "exec", cid, "cat", "--", container_path],
+            check=True, capture_output=True, text=True, timeout=20).stdout
         if digest not in expected_hashes:
-            raise RuntimeError(f"Agent {aid} artifact hash does not match the sha256sum output recorded by shell.")
+            raise RuntimeError(f"Agent {labels.get('avrone.agent')} artifact hash does not match shell's logged sha256sum.")
         actual_hashes.add(digest)
         present_values = {v for v in ("687871", "660886") if v in content}
         if len(present_values) != 1:
@@ -79,7 +94,7 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
         result_values.update(present_values)
         user = str(cfg.get("User") or "")
         checks = {
-            "container_running": (c.get("State") or {}).get("Running") is True,
+            "container_running": True,
             "non_root_user": bool(user.split(":", 1)[0].isdigit() and int(user.split(":", 1)[0]) > 0),
             "user_matches_workspace_owner": user == f"{expected_uid}:{expected_gid}",
             "readonly_rootfs": host.get("ReadonlyRootfs") is True,
@@ -94,16 +109,17 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
             "private_agent_home_source": "/agents/" in str(mounts[0].get("Source", "")),
             "working_dir_is_agent_home": cfg.get("WorkingDir") == "/agent",
             "home_is_agent_home": "HOME=/agent" in (cfg.get("Env") or []),
-            "artifact_is_regular_file": artifact.is_file() and not artifact.is_symlink(),
+            "artifact_is_regular_non_symlink": is_file.returncode == 0 and not_link.returncode == 0,
             "artifact_hash_matches_shell": digest in expected_hashes,
             "artifact_contains_expected_result": bool(present_values),
         }
-        output.append({"name": c.get("Name", "").lstrip("/"), "agent_id": aid,
-            "user": user, "network": host.get("NetworkMode"), "artifact": marker,
+        output.append({"name": c.get("Name", "").lstrip("/"),
+            "agent_id": labels.get("avrone.agent"), "user": user,
+            "network": host.get("NetworkMode"), "artifact": marker,
             "artifact_sha256": digest, "artifact_results": sorted(present_values),
             "memory_bytes": host.get("Memory"), "memory_swap_bytes": host.get("MemorySwap"),
             "nano_cpus": host.get("NanoCpus"), "pids_limit": host.get("PidsLimit"),
-            "mounts": [{"destination": m.get("Destination")} for m in mounts], "checks": checks})
+            "mount_destinations": [m.get("Destination") for m in mounts], "checks": checks})
         failed = [k for k, ok in checks.items() if not ok]
         if failed:
             raise RuntimeError(f"Agent container {c.get('Name')} failed isolation/artifact checks: {failed}")
@@ -112,7 +128,7 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
     if result_values != {"687871", "660886"}:
         raise RuntimeError(f"Private agent files did not independently contain both expected results: {sorted(result_values)}")
     if actual_hashes != expected_hashes:
-        raise RuntimeError("The file hashes observed in private homes do not match the distinct hashes emitted by shell.")
+        raise RuntimeError("The in-container file hashes do not match the distinct hashes emitted by shell.")
     return output
 
 def main() -> int:

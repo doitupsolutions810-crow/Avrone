@@ -47,7 +47,7 @@ def _context_lengths(value: Any) -> list[int]:
 def _num_ctx(parameters: Any) -> int | None:
     if not isinstance(parameters, str):
         return None
-    match = re.search(r"(?im)^\\s*num_ctx\\s+(\\d+)\\s*$", parameters)
+    match = re.search(r"(?im)^\s*num_ctx\s+(\d+)\s*$", parameters)
     return int(match.group(1)) if match else None
 
 

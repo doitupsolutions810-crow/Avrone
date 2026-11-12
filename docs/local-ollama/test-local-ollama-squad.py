@@ -98,6 +98,12 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
             "non_root_user": bool(user.split(":", 1)[0].isdigit() and int(user.split(":", 1)[0]) > 0),
             "user_matches_workspace_owner": user == f"{expected_uid}:{expected_gid}",
             "readonly_rootfs": host.get("ReadonlyRootfs") is True,
+            "bounded_tmpfs": (
+                "/tmp" in (host.get("Tmpfs") or {})
+                and all(token in str((host.get("Tmpfs") or {}).get("/tmp", ""))
+                        for token in ("nosuid", "nodev", "size=128m"))
+            ),
+            "no_published_ports": not bool(host.get("PortBindings") or {}),
             "capabilities_dropped": "ALL" in (host.get("CapDrop") or []),
             "no_new_privileges": any("no-new-privileges" in str(x) for x in (host.get("SecurityOpt") or [])),
             "network_is_none": host.get("NetworkMode") == "none",

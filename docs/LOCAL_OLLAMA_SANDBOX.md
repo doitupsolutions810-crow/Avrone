@@ -74,6 +74,8 @@ The benchmark may pull missing tags depending on its implementation; pre-pull on
 
 A model's advertised parameter count, active parameter count, or context window is not a substitute for an AVRONE tool-use result. The current local bench ranks protocol correctness, action JSON validity, actual shell execution, a two-worker squad and Lead synthesis. Add future tests for checkpoint resume, duplicate tool calls, malformed tool arguments, model timeout, partial worker failure and a second Lead model. Keep the run ID, exact model tag, Ollama version, host memory and hardware, quantization, latency percentiles and raw JSON together. Do not promote a new default from a one-off answer-quality comparison.
 
+The local AVRONE server also exposes `GET /api/model/capabilities` when configured for Ollama. It reads `/api/show`, `/api/tags`, `/api/ps`, and `/api/version` without pulling or loading a model; missing feature metadata is returned as `null`, not inferred. Use it to inspect tools/vision/thinking support, model context metadata, configured `num_ctx`, quantization, installed digest and the running context/VRAM footprint before selecting a worker or Lead model.
+
 ## Integration architecture: keep the working parts, add capability adapters
 
 1. Trinity remains the control plane. It already owns PLAN/SQUAD/LEAD, concurrency, checkpoints, worker failure isolation and CodeX events. Do not introduce a second scheduler just to add a new SDK.

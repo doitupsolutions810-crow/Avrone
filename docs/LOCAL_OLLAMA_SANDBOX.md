@@ -57,16 +57,15 @@ The per-agent home is lazily created on first shell use and reused across comman
 
 ## Local model selection and benchmarking (November 11, 2026)
 
-Keep qwen2.5:3b as the known AVRONE baseline until alternatives pass the real harness. The repository README reports an earlier no-mock score of 100/100 for this model on a 2-vCPU host; that is a historical repo claim, not a current result from this run.
+Keep qwen2.5:3b as the known AVRONE baseline until alternatives pass the real harness. The library now lists Qwen3.8 27B (18 GB, 256K) as a newer, higher-memory Qwen-family comparison; this replaces the earlier Qwen3.6 suggestions in this guide. The repository README reports an earlier no-mock score of 100/100 for this model on a 2-vCPU host; that is a historical repo claim, not a current result from this run.
 
-Recommended candidate order for a fresh benchmark:
+Recommended candidate order for a fresh benchmark (checked against the live Ollama library on November 11, 2026):
 
 | Model | Current Ollama listing | Why test it |
 |---|---:|---|
 | mimo-v2.6:9b | 6.6–8.7 GB, 256K context | New 9B code/agent workflow distillation, tool use and thinking; strongest first upgrade candidate |
 | granite4.2:8b | 5.3 GB, 128K context | Tool use, structured JSON, coding and RAG; Apache 2.0 |
-| qwen3.6:27b | 18–19 GB, 256K context | Newer agentic coding and thinking; workstation-class option |
-| qwen3.6:35b | 23 GB, 256K context | Higher-capacity Qwen3.6 option |
+| qwen3.8:27b | 18 GB, 256K context | Newest Qwen agentic-coding candidate in the current Ollama library; vision, tools and thinking; workstation-class option |
 | nemotron-3.5-lightning:30b | 19–25 GB, 1M context | 30B MoE / 3B active, designed for always-on agents; larger model footprint despite low active count |
 | laguna-xs-2.1:q4_K_M | 20 GB, 256K context | Linux/CUDA candidate for now; avoid macOS/Metal until the currently reported empty Chat output issue is resolved |
 

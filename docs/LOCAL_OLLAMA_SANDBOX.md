@@ -57,9 +57,9 @@ Recommended candidate order for a fresh benchmark:
 | qwen3.6:27b | 18–19 GB, 256K context | Newer agentic coding and thinking; workstation-class option |
 | qwen3.6:35b | 23 GB, 256K context | Higher-capacity Qwen3.6 option |
 | nemotron-3.5-lightning:30b | 19–25 GB, 1M context | 30B MoE / 3B active, designed for always-on agents; larger model footprint despite low active count |
-| laguna-xs-2.1:q4_K_M | 20 GB, 256K context | 33B MoE / 3B active, agentic coding and long-horizon tasks |
+| laguna-xs-2.1:q4_K_M | 20 GB, 256K context | Linux/CUDA candidate for now; avoid macOS/Metal until the currently reported empty Chat output issue is resolved |
 
-Do not pull the large candidates blindly on a memory-constrained Mac. Check free disk and unified memory first, pull one candidate at a time, and retain a reproducible record of model tag, Ollama version, quantization, context length, host hardware, latency, tool-call success and squad score. Ollama model listings and tags change; verify before pulling.
+Do not pull the large candidates blindly on a memory-constrained Mac. In particular, avoid Laguna XS 2.1 on macOS/Metal until its reported empty Chat response issue is resolved; its current Ollama model card explicitly calls this out. Check free disk and unified memory first, pull one candidate at a time, and retain a reproducible record of model tag, Ollama version, quantization, context length, host hardware, latency, tool-call success and squad score. Ollama model listings and tags change; verify before pulling.
 
 Run the existing no-mock AVRONE benchmark (it really executes the shell tool) against installed models:
 
@@ -68,6 +68,11 @@ python3 tools/model_bench.py --base http://127.0.0.1:11434 --models qwen2.5:3b,m
 ~~~
 
 The benchmark may pull missing tags depending on its implementation; pre-pull only after reviewing model storage requirements. Keep the first comparison small. Upgrade the worker model only after the Actions+tool and 2-worker squad lanes pass; test a different AVRONE_LEAD_MODEL separately before enabling a mixed-model profile.
+
+
+### How to read the first benchmark
+
+A model's advertised parameter count, active parameter count, or context window is not a substitute for an AVRONE tool-use result. The current local bench ranks protocol correctness, action JSON validity, actual shell execution, a two-worker squad and Lead synthesis. Add future tests for checkpoint resume, duplicate tool calls, malformed tool arguments, model timeout, partial worker failure and a second Lead model. Keep the run ID, exact model tag, Ollama version, host memory and hardware, quantization, latency percentiles and raw JSON together. Do not promote a new default from a one-off answer-quality comparison.
 
 ## Integration architecture: keep the working parts, add capability adapters
 

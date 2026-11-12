@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live Chat -> Ollama -> Trinity squad -> Docker isolation smoke test."""
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +38,8 @@ def safe_agent_id(value: str) -> str:
     value = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower())
     return value.strip("-_")[:48].strip("-_") or "agent"
 
-def inspect_agent_homes(expected_roles: set[str]) -> list[dict[str, Any]]:
+def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str, Any]]:
+    """Inspect live agent homes that contain this run's marker artifact."""
     ids_raw = subprocess.run(["docker", "ps", "-aq", "--filter", "label=avrone.agent-home=1"],
         check=True, capture_output=True, text=True, timeout=20).stdout
     ids = [x.strip() for x in ids_raw.splitlines() if x.strip()]
@@ -48,17 +49,35 @@ def inspect_agent_homes(expected_roles: set[str]) -> list[dict[str, Any]]:
         text=True, timeout=30).stdout
     containers = json.loads(raw)
     output = []
+    actual_hashes: set[str] = set()
+    result_values: set[str] = set()
     expected_uid = os.environ.get("AVRONE_AGENT_UID", str(os.getuid() if hasattr(os, "getuid") else 1000))
     expected_gid = os.environ.get("AVRONE_AGENT_GID", str(os.getgid() if hasattr(os, "getgid") else 1000))
+    marker = f"sandbox-smoke-{nonce}.txt"
     for c in containers:
         cfg, host = c.get("Config") or {}, c.get("HostConfig") or {}
         labels = cfg.get("Labels") or {}
         aid = labels.get("avrone.agent")
-        if aid not in expected_roles:
-            continue
         mounts = c.get("Mounts") or []
+        if len(mounts) != 1 or mounts[0].get("Destination") != "/agent":
+            continue
+        source = Path(str(mounts[0].get("Source", "")))
+        artifact = source / marker
+        try:
+            if artifact.is_symlink() or not artifact.is_file():
+                continue
+            content = artifact.read_text(encoding="utf-8")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        except (OSError, UnicodeError):
+            continue
+        if digest not in expected_hashes:
+            raise RuntimeError(f"Agent {aid} artifact hash does not match the sha256sum output recorded by shell.")
+        actual_hashes.add(digest)
+        present_values = {v for v in ("687871", "660886") if v in content}
+        result_values.update(present_values)
         user = str(cfg.get("User") or "")
         checks = {
+            "container_running": (c.get("State") or {}).get("Running") is True,
             "non_root_user": bool(user.split(":", 1)[0].isdigit() and int(user.split(":", 1)[0]) > 0),
             "user_matches_workspace_owner": user == f"{expected_uid}:{expected_gid}",
             "readonly_rootfs": host.get("ReadonlyRootfs") is True,
@@ -70,23 +89,28 @@ def inspect_agent_homes(expected_roles: set[str]) -> list[dict[str, Any]]:
             "cpu_bounded": int(host.get("NanoCpus") or 0) > 0,
             "pids_bounded": int(host.get("PidsLimit") or 0) > 0,
             "one_private_mount": len(mounts) == 1 and mounts[0].get("Destination") == "/agent",
-            "private_agent_home_source": len(mounts) == 1 and "/agents/" in str(mounts[0].get("Source", "")),
+            "private_agent_home_source": "/agents/" in str(mounts[0].get("Source", "")),
             "working_dir_is_agent_home": cfg.get("WorkingDir") == "/agent",
             "home_is_agent_home": "HOME=/agent" in (cfg.get("Env") or []),
+            "artifact_is_regular_file": artifact.is_file() and not artifact.is_symlink(),
+            "artifact_hash_matches_shell": digest in expected_hashes,
+            "artifact_contains_expected_result": bool(present_values),
         }
-        output.append({"name": c.get("Name", "").lstrip("/"), "agent_id": aid, "user": user,
-            "network": host.get("NetworkMode"), "memory_bytes": host.get("Memory"),
-            "memory_swap_bytes": host.get("MemorySwap"), "nano_cpus": host.get("NanoCpus"),
-            "pids_limit": host.get("PidsLimit"),
-            "mounts": [{"source": m.get("Source"), "destination": m.get("Destination")} for m in mounts],
-            "checks": checks})
+        output.append({"name": c.get("Name", "").lstrip("/"), "agent_id": aid,
+            "user": user, "network": host.get("NetworkMode"), "artifact": marker,
+            "artifact_sha256": digest, "artifact_results": sorted(present_values),
+            "memory_bytes": host.get("Memory"), "memory_swap_bytes": host.get("MemorySwap"),
+            "nano_cpus": host.get("NanoCpus"), "pids_limit": host.get("PidsLimit"),
+            "mounts": [{"destination": m.get("Destination")} for m in mounts], "checks": checks})
         failed = [k for k, ok in checks.items() if not ok]
         if failed:
-            raise RuntimeError(f"Agent container {c.get('Name')} failed isolation checks: {failed}")
-    found = {x["agent_id"] for x in output}
-    missing = sorted(expected_roles - found)
-    if missing:
-        raise RuntimeError(f"Persistent agent containers missing for worker homes: {missing}")
+            raise RuntimeError(f"Agent container {c.get('Name')} failed isolation/artifact checks: {failed}")
+    if len(output) < 2:
+        raise RuntimeError(f"Expected two different private agent homes to contain this run's artifact; found {len(output)}.")
+    if result_values != {"687871", "660886"}:
+        raise RuntimeError(f"Private agent files did not independently contain both expected results: {sorted(result_values)}")
+    if actual_hashes != expected_hashes:
+        raise RuntimeError("The file hashes observed in private homes do not match the distinct hashes emitted by shell.")
     return output
 
 def main() -> int:
@@ -135,14 +159,25 @@ def main() -> int:
     matched = [e for e in results if e.get("agent") in shell_agents]
     if len({e.get("agent") for e in matched}) < 2:
         raise RuntimeError("Two distinct shell tool results were not recorded in Eternal CodeX.")
-    joined = "\n".join(str((e.get("data") or {}).get("output", "")) for e in matched)
+    outputs_by_agent = {
+        agent: "\\n".join(str((e.get("data") or {}).get("output", "")) for e in matched if e.get("agent") == agent)
+        for agent in shell_agents
+    }
+    joined = "\\n".join(outputs_by_agent.values())
     if "687871" not in joined or "660886" not in joined:
         raise RuntimeError("Shell outputs did not prove both expected arithmetic results.")
+    hash_pattern = re.compile(r"(?m)^([0-9a-fA-F]{64})\\s+.*sandbox-smoke-" + re.escape(nonce) + r"\\.txt(?:\\s|$)")
+    reported_hashes = {
+        match.group(1).lower()
+        for output in outputs_by_agent.values()
+        for match in hash_pattern.finditer(output)
+    }
+    if len(reported_hashes) < 2:
+        raise RuntimeError("Two distinct sha256sum results for the run marker files were not recorded by shell.")
     errors = [e for e in events if e.get("kind") == "error" and (not e.get("agent") or e.get("agent") in shell_agents)]
     if errors:
         raise RuntimeError(f"Worker errors were recorded: {errors[:3]}")
-    expected_roles = {safe_agent_id(spawn_roles[a]) for a in shell_agents if spawn_roles.get(a)}
-    containers = inspect_agent_homes(expected_roles)
+    containers = inspect_agent_homes(nonce, reported_hashes)
     required = {"run.start", "lead.merge", "run.done"}
     present = {e.get("kind") for e in events}
     if not required.issubset(present):

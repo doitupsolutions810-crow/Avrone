@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "\${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-PROFILE="\${AVRONE_LOCAL_SANDBOX_PROFILE:-$ROOT/docs/local-ollama/local-ollama-sandbox.env}"
+PROFILE="${AVRONE_LOCAL_SANDBOX_PROFILE:-$ROOT/docs/local-ollama/local-ollama-sandbox.env}"
 if [[ ! -f "$PROFILE" ]]; then
   echo "Missing local sandbox profile: $PROFILE" >&2
   echo "Copy docs/local-ollama/local-ollama-sandbox.env.example to that path, then edit AVRONE_LLM_MODEL if needed." >&2
@@ -12,23 +12,23 @@ set -a
 # shellcheck disable=SC1090
 source "$PROFILE"
 set +a
-: "\${AVRONE_PROVIDER:=ollama}"
-: "\${AVRONE_LLM_BASE_URL:=http://127.0.0.1:11434/v1}"
-: "\${AVRONE_LLM_MODEL:=qwen2.5:3b}"
-: "\${AVRONE_RUNNER:=docker}"
-: "\${AVRONE_DOCKER_IMAGE:=python:3.12-slim}"
-: "\${AVRONE_ALLOW_NETWORK:=false}"
-: "\${AVRONE_AGENT_FS:=1}"
-: "\${AVRONE_AGENT_CONTAINER:=persistent}"
-: "\${AVRONE_AGENT_DOCKER_ISOLATE:=0}"
-: "\${AVRONE_HOST:=127.0.0.1}"
-: "\${AVRONE_PORT:=8710}"
+: "${AVRONE_PROVIDER:=ollama}"
+: "${AVRONE_LLM_BASE_URL:=http://127.0.0.1:11434/v1}"
+: "${AVRONE_LLM_MODEL:=qwen2.5:3b}"
+: "${AVRONE_RUNNER:=docker}"
+: "${AVRONE_DOCKER_IMAGE:=python:3.12-slim}"
+: "${AVRONE_ALLOW_NETWORK:=false}"
+: "${AVRONE_AGENT_FS:=1}"
+: "${AVRONE_AGENT_CONTAINER:=persistent}"
+: "${AVRONE_AGENT_DOCKER_ISOLATE:=0}"
+: "${AVRONE_HOST:=127.0.0.1}"
+: "${AVRONE_PORT:=8710}"
 export AVRONE_PROVIDER AVRONE_LLM_BASE_URL AVRONE_LLM_MODEL AVRONE_RUNNER
 export AVRONE_DOCKER_IMAGE AVRONE_ALLOW_NETWORK AVRONE_AGENT_FS AVRONE_AGENT_CONTAINER
 export AVRONE_AGENT_DOCKER_ISOLATE AVRONE_HOST AVRONE_PORT AVRONE_LLM_MODE
-export AVRONE_AGENT_UID="\${AVRONE_AGENT_UID:-$(id -u)}"
-export AVRONE_AGENT_GID="\${AVRONE_AGENT_GID:-$(id -g)}"
-export NO_PROXY="127.0.0.1,localhost,::1\${NO_PROXY:+,$NO_PROXY}"
+export AVRONE_AGENT_UID="${AVRONE_AGENT_UID:-$(id -u)}"
+export AVRONE_AGENT_GID="${AVRONE_AGENT_GID:-$(id -g)}"
+export NO_PROXY="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}"
 export no_proxy="$NO_PROXY"
 export PYTHONUNBUFFERED=1
 if [[ "$(id -u)" == "0" ]]; then
@@ -50,10 +50,10 @@ fi
 command -v docker >/dev/null || { echo "Docker CLI not found; install/start Docker Desktop first." >&2; exit 2; }
 docker info >/dev/null 2>&1 || { echo "Docker daemon unavailable; start Docker Desktop and retry." >&2; exit 2; }
 command -v ollama >/dev/null || { echo "Ollama CLI not found; install Ollama first." >&2; exit 2; }
-OLLAMA_HOST="\${OLLAMA_HOST:-http://127.0.0.1:11434}"
+OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 curl --noproxy '*' -fsS --max-time 8 "$OLLAMA_HOST/api/tags" >/dev/null ||
   { echo "Ollama API unavailable at $OLLAMA_HOST; start Ollama and retry." >&2; exit 2; }
-curl --noproxy '*' -fsS --max-time 8 "\${AVRONE_LLM_BASE_URL%/}/models" >/dev/null ||
+curl --noproxy '*' -fsS --max-time 8 "${AVRONE_LLM_BASE_URL%/}/models" >/dev/null ||
   { echo "Ollama OpenAI-compatible /v1/models endpoint unavailable at $AVRONE_LLM_BASE_URL." >&2; exit 2; }
 ollama show "$AVRONE_LLM_MODEL" >/dev/null 2>&1 ||
   { echo "Model $AVRONE_LLM_MODEL is not installed. Run: ollama pull $AVRONE_LLM_MODEL" >&2; exit 2; }

@@ -174,9 +174,49 @@ def main() -> int:
     if not isinstance(events, list):
         raise RuntimeError("Run log endpoint did not return an event array.")
     spawns = [e for e in events if e.get("kind") == "agent.spawn"]
+    all_calls = [e for e in events if e.get("kind") in {"tool.call", "tool.batch"}]
+    all_results = [e for e in events if e.get("kind") in {"tool.result", "tool.batch"}]
     calls = [e for e in events if e.get("kind") == "tool.call" and (e.get("data") or {}).get("tool") == "shell"]
     results = [e for e in events if e.get("kind") == "tool.result" and (e.get("data") or {}).get("tool") == "shell"]
     spawn_roles = {e.get("agent"): (e.get("data") or {}).get("role", "") for e in spawns}
+    diagnostic = {
+        "status": "DIAGNOSTIC",
+        "run_id": run_id,
+        "provider": status.get("provider"),
+        "model": status.get("model"),
+        "runner": status.get("runner"),
+        "event_counts": {kind: sum(1 for e in events if e.get("kind") == kind)
+                         for kind in sorted({str(e.get("kind")) for e in events})},
+        "spawns": [
+            {"agent": e.get("agent"), "role": (e.get("data") or {}).get("role"),
+             "focus": str((e.get("data") or {}).get("focus", ""))[:350]}
+            for e in spawns
+        ],
+        "tool_calls": [
+            {"agent": e.get("agent"), "tool": (e.get("data") or {}).get("tool"),
+             "step": (e.get("data") or {}).get("step"),
+             "args_keys": sorted((e.get("data") or {}).get("args", {}).keys())
+                          if isinstance((e.get("data") or {}).get("args"), dict) else []}
+            for e in all_calls
+        ],
+        "tool_results": [
+            {"agent": e.get("agent"), "tool": (e.get("data") or {}).get("tool"),
+             "output_preview": str((e.get("data") or {}).get("output", ""))[:350]}
+            for e in all_results if e.get("kind") == "tool.result"
+        ],
+        "worker_summaries": [
+            {"role": str(a.get("role", "")),
+             "result_preview": str(a.get("result", ""))[:700]}
+            for a in (result.get("agents", []) if isinstance(result, dict) else [])
+            if isinstance(a, dict)
+        ],
+        "lead_preview": str(result.get("answer", ""))[:1200] if isinstance(result, dict) else "",
+    }
+    outdir = ROOT / "data" / "local-ollama-smoke"
+    outdir.mkdir(parents=True, exist_ok=True)
+    diagnostic_path = outdir / f"{run_id}-diagnostic.json"
+    diagnostic_path.write_text(json.dumps(diagnostic, indent=2), encoding="utf-8")
+    print(json.dumps({**diagnostic, "diagnostic_path": str(diagnostic_path)}, indent=2))
     shell_agents = {e.get("agent") for e in calls if e.get("agent")}
     if len(spawns) < 2 or len(shell_agents) < 2:
         raise RuntimeError(f"Expected 2 spawned workers and 2 distinct shell callers; got {len(spawns)} and {sorted(shell_agents)}.")

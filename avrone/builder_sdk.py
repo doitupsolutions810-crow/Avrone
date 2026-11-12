@@ -40,6 +40,12 @@ class BuilderPolicy:
         "python -m pytest -q",
     )
     require_git_sha_for_verified: bool = True
+    # Optional exact workspace revision. When set, verification refuses to run on any other SHA.
+    expected_sha: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.expected_sha is not None and not re.fullmatch(r"[0-9a-fA-F]{40,64}", self.expected_sha):
+            raise ValueError("expected_sha must be a full 40-64 character Git SHA")
 
 
 @dataclass
@@ -172,6 +178,17 @@ class BuilderAgentSDK:
         sha = (getattr(sha_result, "stdout", "") or "").strip()
         if getattr(sha_result, "exit_code", 1) == 0 and re.fullmatch(r"[0-9a-fA-F]{40,64}", sha):
             evidence.target_sha = sha.lower()
+        expected_sha = self.policy.expected_sha.lower() if self.policy.expected_sha else None
+        if expected_sha and evidence.target_sha != expected_sha:
+            evidence.status = "FAIL"
+            actual = evidence.target_sha or "unavailable"
+            evidence.reason = (
+                f"Workspace SHA mismatch: expected {expected_sha}, got {actual}; "
+                "no verification commands were run."
+            )
+            evidence.finished_at = time.time()
+            result.evidence, result.status = evidence, "FAIL"
+            return evidence
         for command in selected:
             started = time.time()
             try:

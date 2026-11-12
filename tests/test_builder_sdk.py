@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from avrone.builder_sdk import BuilderAgentSDK, BuilderPolicy, BuildResult
+from avrone import agentcontainer
 
 
 class FakeRunner:
@@ -135,3 +136,60 @@ async def test_verify_with_sha_and_passing_checks_is_verified():
     assert evidence.status == "PASS"
     assert evidence.target_sha == "b" * 40
     assert result.status == "VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_verify_refuses_to_run_on_wrong_expected_sha():
+    runner = FakeRunner([FakeCommand(exit_code=0, stdout="a" * 40)])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(
+            verification_commands=("python -m pytest -q",),
+            expected_sha="b" * 40,
+        ),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL"
+    assert "SHA mismatch" in evidence.reason
+    assert evidence.commands == []
+    assert runner.commands == ["git rev-parse --verify HEAD"]
+    assert result.status == "FAIL"
+
+
+def test_agent_container_hardening_is_non_root_readonly_and_networkless(monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    args = agentcontainer.hardening_args(False, mem=512, cpu=1.0)
+    assert args[args.index("--user") + 1] == "501:20"
+    assert "--read-only" in args
+    assert args[args.index("--tmpfs") + 1] == "/tmp:rw,nosuid,nodev,size=128m"
+    assert args[args.index("--cap-drop") + 1] == "ALL"
+    assert args[args.index("--security-opt") + 1] == "no-new-privileges"
+    assert args[args.index("--memory") + 1] == "512m"
+    assert args[args.index("--memory-swap") + 1] == "512m"
+    assert args[args.index("--cpus") + 1] == "1.0"
+    assert args[args.index("--network") + 1] == "none"
+
+
+def test_agent_container_rejects_root_identity(monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "0")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "0")
+    with pytest.raises(RuntimeError, match="positive non-root"):
+        agentcontainer.hardening_args(False)
+
+
+def test_persistent_agent_container_mounts_only_agent_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    home = tmp_path / "workspace" / "agents" / "reviewer"
+    home.mkdir(parents=True)
+    argv = agentcontainer.persistent_run_argv(
+        "avrone-agent-node-reviewer", home, "python:3.12-slim",
+        allow_network=False, agent_id="reviewer",
+    )
+    assert argv.count("-v") == 1
+    assert argv[argv.index("-v") + 1] == f"{home.resolve()}:/agent"
+    assert argv[argv.index("-w") + 1] == "/agent"
+    assert argv[argv.index("--label") + 1] == "avrone.agent-home=1"
+    assert argv[-3:] == ["python:3.12-slim", "sleep", "infinity"]

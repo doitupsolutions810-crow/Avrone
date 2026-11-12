@@ -42,3 +42,8 @@ performed by this SDK. Those actions require separate operator authorization.
 The default verification commands are compileall and the full pytest suite.
 They can be narrowed or expanded only by constructing an explicit
 BuilderPolicy. Model output cannot supply verification commands.
+
+
+## Exact-revision verification
+
+Set BuilderPolicy.expected_sha when the operator knows the exact intended workspace revision. Verification reads git rev-parse HEAD first and refuses to run allowlisted checks when the workspace SHA is absent or differs. This prevents a green test run on a different checkout from being attributed to the intended PR commit.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 
 import asyncio
 import logging

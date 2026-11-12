@@ -69,8 +69,8 @@ Avrone/
 │   ├── llm.py                   Model client. Talks to any OpenAI-compatible /chat/completions endpoint.
 │   ├── mcp_client.py            Dependency-free MCP (Model Context Protocol) client.
 │   ├── mcp_server.py            Expose AVRONE itself as an MCP server over stdio.
-│   ├── modelcaps.py             Read-only Ollama model capability and runtime discovery for AVRONE.
 │   ├── memstore.py              Durable per-agent memory namespaces (Eternal CodeX memory store).
+│   ├── modelcaps.py             Read-only Ollama model capability and runtime discovery for AVRONE.
 │   ├── netdiag.py               Network diagnostics for AVRONE agents: real, bounded, from AVRONE's own host.
 │   ├── osint.py                 OSINT aggregation (v0.11): data-driven profiles from the bounded recon tools.
 │   ├── plugins.py               Plugin system.

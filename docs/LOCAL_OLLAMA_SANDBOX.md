@@ -15,16 +15,27 @@ The Docker daemon remains a privileged host service. Do not run AVRONE itself in
 
 ## Operator setup
 
+Install and start Docker Desktop for Mac (or Docker Engine on Linux) and install Ollama first. On macOS, Ollama can be installed from [ollama.com/download](https://ollama.com/download); Docker Desktop is available from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop). Do not run the AVRONE server as root.
+
+**Terminal 1 — Ollama service.** Open the Ollama app, or start the service manually and leave this terminal open:
+
+~~~bash
+ollama serve
+~~~
+
+**Terminal 2 — AVRONE.** From the repository root:
+
 ~~~bash
 cp docs/local-ollama/local-ollama-sandbox.env.example docs/local-ollama/local-ollama-sandbox.env
-ollama serve
 ollama pull qwen2.5:3b
 docker info
 python3 -m pip install -e ".[dev]"
 bash docs/local-ollama/start-local-ollama-sandbox.sh
 ~~~
 
-Keep the server terminal open. In a second terminal, run:
+The launcher refuses to proceed unless Docker is running, Ollama answers both native and OpenAI-compatible API probes, the selected model is already installed, the AVRONE package imports, and the host process is a non-root user whose UID:GID matches the private agent directory owner. It does not open external network access for agent containers.
+
+**Terminal 3 — live integration test.** With AVRONE still running:
 
 ~~~bash
 python3 docs/local-ollama/test-local-ollama-squad.py

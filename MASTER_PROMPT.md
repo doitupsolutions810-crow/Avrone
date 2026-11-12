@@ -51,8 +51,8 @@ Avrone/
 │   ├── agentpack.py             Agent packs: a portable, verifiable bundle of one agent's home.
 │   ├── agentpack_tools.py       Agent-home tools (edgepack): pack, restore and migrate YOUR OWN agent home.
 │   ├── bootstrap.py             Bootstrap: build a ready TrinityCore in one place, for the server and the CLI.
-│   ├── builder_sdk.py           Internal builder SDK over AVRONE's existing TrinityCore and Ollama gateway.
 │   ├── bridge.py                Learning bridge: a run-scoped blackboard where agents among agents conclude together.
+│   ├── builder_sdk.py           Internal builder SDK over AVRONE's existing TrinityCore and Ollama gateway.
 │   ├── checkpoint.py            Checkpoint / resume for long squad and deep runs.
 │   ├── cli.py                   avrone-cli: run AVRONE headless from a terminal or a script.
 │   ├── codex.py                 Eternal CodeX: the event bus and the permanent agent action log.

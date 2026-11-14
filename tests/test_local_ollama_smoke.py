@@ -283,9 +283,13 @@ def test_live_smoke_rejects_duplicate_durable_worker_ids():
 @pytest.mark.parametrize("mutation,expected_check", [
     ("seccomp_unconfined", "no_security_profile_overrides"),
     ("apparmor_unconfined", "no_security_profile_overrides"),
-    ("host_uts", "no_host_uts_namespace"),
-    ("host_cgroup", "no_host_cgroup_namespace"),
+    ("host_uts", "private_uts_namespace"),
+    ("host_cgroup", "private_cgroup_namespace"),
     ("volumes_from", "no_volumes_from"),
+    ("malformed_pid_namespace", "private_pid_namespace"),
+    ("malformed_ipc_namespace", "private_ipc_namespace"),
+    ("malformed_uts_namespace", "private_uts_namespace"),
+    ("malformed_cgroup_namespace", "private_cgroup_namespace"),
     ("custom_runtime", "default_runtime_only"),
     ("host_userns", "no_userns_override"),
     ("sysctl_override", "no_sysctl_overrides"),
@@ -312,6 +316,14 @@ def test_smoke_verifier_rejects_additional_security_and_namespace_escapes(
         host["CgroupnsMode"] = "host"
     elif mutation == "volumes_from":
         host["VolumesFrom"] = ["other-container"]
+    elif mutation == "malformed_pid_namespace":
+        host["PidMode"] = "shareable"
+    elif mutation == "malformed_ipc_namespace":
+        host["IpcMode"] = "container:another"
+    elif mutation == "malformed_uts_namespace":
+        host["UTSMode"] = {"mode": "private"}
+    elif mutation == "malformed_cgroup_namespace":
+        host["CgroupnsMode"] = "host-extra"
     elif mutation == "custom_runtime":
         host["Runtime"] = "nvidia"
     elif mutation == "host_userns":

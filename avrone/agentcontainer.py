@@ -228,8 +228,11 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     good_bind = False
     if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
         parts = binds[0].split(":")
-        good_bind = len(parts) >= 2 and os.path.normpath(parts[0]) == os.path.normpath(expected_source) \\
+        good_bind = (
+            len(parts) >= 2
+            and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
             and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
+        )
     mounts = payload.get("Mounts") or []
     good_mount = (
         isinstance(mounts, list) and len(mounts) == 1

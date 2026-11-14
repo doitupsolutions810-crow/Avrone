@@ -38,6 +38,12 @@ PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CLIENT_INFO = {"name": "avrone", "version": "0.2.0"}
 DEFAULT_TIMEOUT = float(os.getenv("AVRONE_MCP_TIMEOUT", "60"))
+MAX_TOOL_PAGES = 100
+MAX_REGISTERED_TOOLS = 2048
+MAX_PAGE_CURSOR_CHARS = 512
+MAX_TOOL_OUTPUT_CHARS = 32_000
+MAX_TOOL_OUTPUT_ITEMS = 512
+MAX_SCHEMA_PROPERTIES = 128
 
 
 class MCPError(RuntimeError):
@@ -327,34 +333,71 @@ class MCPClient:
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": CLIENT_INFO,
-        }, timeout=self.timeout) or {}
+        }, timeout=self.timeout)
+        if not isinstance(res, dict):
+            raise MCPError("MCP initialize response must be a JSON object")
         version = res.get("protocolVersion") or PROTOCOL_VERSION
+        if not isinstance(version, str) or not version:
+            raise MCPError("MCP initialize protocolVersion must be a non-empty string")
         if version not in SUPPORTED_VERSIONS:
             log.warning("MCP server %s negotiated unknown protocol %s; continuing", self.name, version)
         self.protocol_version = version
         if isinstance(self.transport, HTTPTransport):
             self.transport.protocol_version = version
-        self.server_info = res.get("serverInfo") or {}
-        self.capabilities = res.get("capabilities") or {}
+        server_info = res.get("serverInfo")
+        capabilities = res.get("capabilities")
+        self.server_info = server_info if isinstance(server_info, dict) else {}
+        self.capabilities = capabilities if isinstance(capabilities, dict) else {}
         await self.transport.notify("notifications/initialized")
         return res
 
     async def list_tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
         cursor: str | None = None
-        for _ in range(100):  # pagination guard
+        seen_cursors: set[str] = set()
+        for page in range(MAX_TOOL_PAGES):
             params = {"cursor": cursor} if cursor else {}
-            res = await self.transport.request("tools/list", params, timeout=self.timeout) or {}
-            tools.extend(t for t in res.get("tools", []) if isinstance(t, dict) and t.get("name"))
-            cursor = res.get("nextCursor")
-            if not cursor:
+            res = await self.transport.request("tools/list", params, timeout=self.timeout)
+            if not isinstance(res, dict):
+                raise MCPError("MCP tools/list response must be a JSON object")
+            page_tools = res.get("tools", [])
+            if not isinstance(page_tools, list):
+                raise MCPError("MCP tools/list 'tools' field must be an array")
+            for item in page_tools:
+                if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip():
+                    tools.append(item)
+                    if len(tools) > MAX_REGISTERED_TOOLS:
+                        raise MCPError(
+                            f"MCP tools/list exceeded the {MAX_REGISTERED_TOOLS}-tool registration limit"
+                        )
+            next_cursor = res.get("nextCursor")
+            if next_cursor in (None, ""):
+                cursor = None
                 break
+            if not isinstance(next_cursor, str) or len(next_cursor) > MAX_PAGE_CURSOR_CHARS:
+                raise MCPError("MCP tools/list returned an invalid pagination cursor")
+            if next_cursor in seen_cursors:
+                raise MCPError("MCP tools/list repeated a pagination cursor; refusing partial results")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            if cursor:
+                raise MCPError(
+                    f"MCP tools/list exceeded the {MAX_TOOL_PAGES}-page pagination limit; refusing partial results"
+                )
         self.tools = tools
         return tools
 
     async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> str:
-        res = await self.transport.request("tools/call", {"name": tool, "arguments": arguments or {}},
-                                           timeout=self.timeout) or {}
+        if not isinstance(tool, str) or not tool.strip():
+            raise MCPError("MCP tool name must be a non-empty string")
+        if arguments is not None and not isinstance(arguments, dict):
+            raise MCPError("MCP tool arguments must be a JSON object")
+        res = await self.transport.request(
+            "tools/call", {"name": tool, "arguments": arguments or {}}, timeout=self.timeout
+        )
+        if not isinstance(res, dict):
+            return "(invalid MCP tool result: expected a JSON object)"
         text = format_content(res)
         if res.get("isError"):
             return f"ERROR (from MCP tool {self.name}/{tool}): {text}"
@@ -368,59 +411,110 @@ class MCPClient:
         await self.transport.close()
 
 
-def format_content(result: dict[str, Any]) -> str:
-    """Flatten an MCP CallToolResult into text for an agent."""
+def _cap_mcp_output(value: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
+    if len(value) <= limit:
+        return value
+    marker = "\n...[MCP tool output truncated]"
+    return value[:max(0, limit - len(marker))] + marker
+
+
+def format_content(result: Any) -> str:
+    """Flatten an MCP CallToolResult safely, with hostile-shape handling and a hard output cap."""
+    if not isinstance(result, dict):
+        return "(invalid MCP tool result: expected a JSON object)"
+    content = result.get("content")
+    if content is None:
+        content = []
+    if not isinstance(content, list):
+        return "(invalid MCP tool result: content must be an array)"
+
     parts: list[str] = []
-    for c in result.get("content") or []:
+    for c in content[:MAX_TOOL_OUTPUT_ITEMS]:
         if not isinstance(c, dict):
             parts.append(str(c))
             continue
         kind = c.get("type")
         if kind == "text":
-            parts.append(str(c.get("text", "")))
+            value = c.get("text", "")
+            parts.append(value if isinstance(value, str) else str(value))
         elif kind == "image":
-            parts.append(f"[image: {c.get('mimeType', 'unknown')}, {len(str(c.get('data', '')))} b64 chars omitted]")
+            data = c.get("data", "")
+            try:
+                size = len(data) if isinstance(data, (str, bytes, bytearray)) else len(str(data))
+            except Exception:
+                size = 0
+            parts.append(f"[image: {c.get('mimeType', 'unknown')}, {size} b64 chars omitted]")
         elif kind == "audio":
             parts.append(f"[audio: {c.get('mimeType', 'unknown')} omitted]")
         elif kind == "resource":
-            r = c.get("resource") or {}
-            if "text" in r:
-                parts.append(f"[resource {r.get('uri', '')}]\n{r['text']}")
+            resource = c.get("resource")
+            if not isinstance(resource, dict):
+                parts.append("[resource: malformed payload omitted]")
+            elif isinstance(resource.get("text"), str):
+                parts.append(f"[resource {resource.get('uri', '')}]\n{resource['text']}")
+            elif "text" in resource:
+                parts.append("[resource: malformed text omitted]")
             else:
-                parts.append(f"[resource: {r.get('uri', '')} ({r.get('mimeType', 'binary')}) omitted]")
+                parts.append(
+                    f"[resource: {resource.get('uri', '')} ({resource.get('mimeType', 'binary')}) omitted]"
+                )
         elif kind == "resource_link":
             parts.append(f"[resource link: {c.get('uri', '')} {c.get('name', '')}]".strip())
         else:
             parts.append(f"[{kind} content omitted]")
+    if len(content) > MAX_TOOL_OUTPUT_ITEMS:
+        parts.append(f"[{len(content) - MAX_TOOL_OUTPUT_ITEMS} additional content items omitted]")
     if not parts and result.get("structuredContent") is not None:
-        parts.append(json.dumps(result["structuredContent"], ensure_ascii=False))
-    return "\n".join(parts) if parts else "(no content)"
+        try:
+            parts.append(json.dumps(result["structuredContent"], ensure_ascii=False, default=str))
+        except (TypeError, ValueError, RecursionError):
+            parts.append("[structured content omitted: not safely serializable]")
+    return _cap_mcp_output("\n".join(parts) if parts else "(no content)")
 
 
 _TYPE_MAP = {"string": "str", "integer": "int", "number": "float", "boolean": "bool",
              "array": "list", "object": "dict", "null": "null"}
 
 
-def args_doc_from_schema(schema: dict[str, Any] | None, limit: int = 300) -> str:
-    """Compact '{"path": str, "depth"?: int}' style doc from a JSON Schema."""
+def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
+    """Create a bounded compact argument doc from possibly untrusted MCP JSON Schema metadata."""
     if not isinstance(schema, dict):
         return "{}"
-    props = schema.get("properties") or {}
-    required = set(schema.get("required") or [])
-    items = []
-    for key, spec in props.items():
-        spec = spec if isinstance(spec, dict) else {}
-        t = spec.get("type")
-        if isinstance(t, list):
-            t = "|".join(_TYPE_MAP.get(x, str(x)) for x in t if x != "null") or "any"
-        elif "enum" in spec:
-            t = "|".join(json.dumps(v) for v in spec["enum"][:6])
+    if type(limit) is not int or limit < 16:
+        limit = 300
+    limit = min(limit, 2048)
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return "{}"
+    required_raw = schema.get("required")
+    required = {key for key in required_raw if isinstance(key, str)} if isinstance(required_raw, list) else set()
+
+    items: list[str] = []
+    for index, (key, raw_spec) in enumerate(props.items()):
+        if index >= MAX_SCHEMA_PROPERTIES:
+            items.append('"..."?: any')
+            break
+        name = str(key)[:80]
+        spec = raw_spec if isinstance(raw_spec, dict) else {}
+        raw_type = spec.get("type")
+        if isinstance(raw_type, list):
+            type_names = [str(value) for value in raw_type if value != "null"]
+            t = "|".join(_TYPE_MAP.get(value, value) for value in type_names) or "any"
+        elif isinstance(spec.get("enum"), list):
+            enum = spec["enum"]
+            try:
+                t = "|".join(json.dumps(value, ensure_ascii=False, default=str) for value in enum[:6])
+            except (TypeError, ValueError, RecursionError):
+                t = "any"
+        elif isinstance(raw_type, str) and raw_type:
+            t = _TYPE_MAP.get(raw_type, raw_type)
         else:
-            t = _TYPE_MAP.get(t, "any") if t else "any"
-        items.append(f'"{key}"{"" if key in required else "?"}: {t}')
+            t = "any"
+        items.append(f'"{name}"{"" if key in required else "?"}: {t}')
     doc = "{" + ", ".join(items) + "}"
     if len(doc) > limit:
-        doc = doc[: limit - 5].rsplit(",", 1)[0] + ", ...}"
+        marker = ", ...}"
+        doc = doc[:max(0, limit - len(marker))].rsplit(",", 1)[0] + marker
     return doc
 
 

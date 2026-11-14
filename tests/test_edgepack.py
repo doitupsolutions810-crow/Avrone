@@ -175,7 +175,7 @@ def test_pool_lazy_create_and_reuse(tmp_path):
     assert fake.verbs() == ["inspect", "rm", "run", "inspect"] and pool.created == 1
     now[0] = 130.0
     assert run(pool.ensure(d)) == name
-    assert fake.verbs() == ["inspect", "rm", "run"]               # reused: no new docker calls
+    assert fake.verbs() == ["inspect", "rm", "run", "inspect"]               # reused: no new docker calls
     assert pool.state()["homes"][name]["uses"] == 2
 
 

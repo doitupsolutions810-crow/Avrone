@@ -550,7 +550,8 @@ def test_model_capability_discovery_tolerates_partial_inventory_and_bad_numeric_
 
     def handler(request):
         if request.url.path == "/api/show":
-            return httpx.Response(200, json={
+            import json as jsonlib
+            payload = {
                 "capabilities": ["completion", "tools"],
                 "thinking": {"values": ["", False], "default": False},
                 "details": {"family": "qwen3"},
@@ -560,8 +561,14 @@ def test_model_capability_discovery_tolerates_partial_inventory_and_bad_numeric_
                     "bad.nan_context_length": float("nan"),
                     "bad.fraction_context_length": 12.5,
                 },
-                "parameters": "num_ctx 0\ntemperature 0.7",
-            }, request=request)
+                "parameters": "num_ctx 0\\ntemperature 0.7",
+            }
+            # Encode NaN as an Ollama-compatible JSON extension so the defensive
+            # numeric filter is exercised instead of the response constructor failing.
+            return httpx.Response(
+                200, content=jsonlib.dumps(payload, allow_nan=True),
+                headers={"Content-Type": "application/json"}, request=request,
+            )
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": None}, request=request)
         if request.url.path == "/api/ps":

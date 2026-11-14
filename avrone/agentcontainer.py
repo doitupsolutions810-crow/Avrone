@@ -326,6 +326,10 @@ class AgentContainerPool:
             return idle_secs()
         if isinstance(self._idle, bool):
             raise ValueError("idle must be a positive finite number of seconds")
+        if isinstance(self._idle, int):
+            if self._idle <= 0:
+                raise ValueError("idle must be a positive finite number of seconds")
+            return float(max(MIN_IDLE_SECS, min(7 * 86400.0, self._idle)))
         try:
             value = float(self._idle)
         except (TypeError, ValueError, OverflowError) as exc:

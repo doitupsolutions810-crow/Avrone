@@ -68,9 +68,8 @@ Return exactly ONE JSON object and no prose or Markdown fences on each turn. It 
 {{"tools": [{{"tool": "<name>", "args": {{...}}}}, {{"tool": "<name>", "args": {{...}}}}]}}
 {{"final": "<your complete findings, including any code, commands run and results>"}}
 
-If the task or focus explicitly requires an action through a tool, your first reply must be the tool-call
-object for that action. Do not announce intent, write a plan, or claim work is complete before calling
-the tool. Wait for the actual TOOL RESULT before reporting the result. Never invent command output,
+A batch may contain multiple independent calls (up to {max_calls}); never exceed that cap.
+If the task or focus explicitly requires an action through a tool, your first reply must be the tool-call object for that action. Do not announce intent, write a plan, or claim work is complete before calling the tool. Wait for the actual TOOL RESULT before reporting the result. Never invent command output,
 file contents, hashes, or state changes. If a tool is unavailable or fails, say it was not completed.
 You have at most {steps} turns.
 

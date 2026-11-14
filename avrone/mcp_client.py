@@ -59,6 +59,8 @@ MAX_PAGE_CURSOR_CHARS = 512
 MAX_TOOL_OUTPUT_CHARS = 32_000
 MAX_TOOL_OUTPUT_ITEMS = 512
 MAX_SCHEMA_PROPERTIES = 128
+MAX_MCP_SERVERS = 32
+MAX_TOTAL_REGISTERED_TOOLS = 4096
 
 
 class MCPError(RuntimeError):
@@ -340,7 +342,9 @@ def _match_response(payload: str, want_id: int) -> dict | None:
     except json.JSONDecodeError:
         return None
     for m in (obj if isinstance(obj, list) else [obj]):
-        if isinstance(m, dict) and m.get("id") == want_id and ("result" in m or "error" in m):
+        # bool is a subclass of int in Python; JSON-RPC numeric IDs must not accept true == 1.
+        if (isinstance(m, dict) and type(m.get("id")) is int and m.get("id") == want_id
+                and ("result" in m or "error" in m)):
             return m
     return None
 
@@ -555,7 +559,7 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
         if index >= MAX_SCHEMA_PROPERTIES:
             items.append('"..."?: any')
             break
-        name = str(key)[:80]
+        name = json.dumps(str(key)[:80], ensure_ascii=False)
         spec = raw_spec if isinstance(raw_spec, dict) else {}
         raw_type = spec.get("type")
         if isinstance(raw_type, list):
@@ -571,7 +575,7 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
             t = _TYPE_MAP.get(raw_type, "any")
         else:
             t = "any"
-        items.append(f'"{name}"{"" if key in required else "?"}: {t}')
+        items.append(f'{name}{"" if key in required else "?"}: {t}')
     doc = "{" + ", ".join(items) + "}"
     if len(doc) > limit:
         marker = ", ...}"
@@ -602,6 +606,7 @@ class MCPManager:
         self._status: dict[str, dict[str, Any]] = {}
         self._registered: list[str] = []
         self.registry: ToolRegistry | None = None
+        self._registration_lock = asyncio.Lock()
 
     async def start(self, registry: ToolRegistry) -> dict[str, dict[str, Any]]:
         self.registry = registry
@@ -612,7 +617,19 @@ class MCPManager:
             log.error("could not read MCP config: %s", e)
             self._status["_config"] = {"connected": False, "error": f"config: {e}", "tools": 0}
             return self.status()
-        await asyncio.gather(*(self._start_one(n, c, registry) for n, c in servers.items()))
+        if not isinstance(servers, dict):
+            self._status["_config"] = {"connected": False, "error": "config: servers must be an object", "tools": 0}
+            return self.status()
+        if len(servers) > MAX_MCP_SERVERS:
+            self._status["_config"] = {
+                "connected": False,
+                "error": f"config: server count exceeds the {MAX_MCP_SERVERS}-server limit",
+                "tools": 0,
+            }
+            return self.status()
+        if self.clients or self._registered:
+            raise MCPError("MCPManager is already started; stop it before starting again")
+        await asyncio.gather(*(self._start_one(str(n), c, registry) for n, c in servers.items()))
         return self.status()
 
     async def _start_one(self, name: str, cfg: dict[str, Any], registry: ToolRegistry) -> None:
@@ -642,15 +659,25 @@ class MCPManager:
             description = raw_description.strip().replace("\n", " ")[:500]
             tool_name = f"mcp__{_safe_part(name)}__{_safe_part(remote_name)}"
             try:
-                registry.register(Tool(
-                    name=tool_name,
-                    description=description,
-                    args_doc=args_doc_from_schema(t.get("inputSchema")),
-                    fn=self._make_fn(client, remote_name),
-                    source=f"mcp:{name}",
-                ))
-                self._registered.append(tool_name)
-                count += 1
+                async with self._registration_lock:
+                    if len(self._registered) >= MAX_TOTAL_REGISTERED_TOOLS:
+                        log.warning("skipping MCP tool %s/%s: global registration cap reached", name, remote_name)
+                        continue
+                    if registry.get(tool_name) is not None:
+                        log.warning(
+                            "skipping MCP tool %s/%s: sanitized registry name %s is already occupied",
+                            name, remote_name, tool_name,
+                        )
+                        continue
+                    registry.register(Tool(
+                        name=tool_name,
+                        description=description,
+                        args_doc=args_doc_from_schema(t.get("inputSchema")),
+                        fn=self._make_fn(client, remote_name),
+                        source=f"mcp:{name}",
+                    ))
+                    self._registered.append(tool_name)
+                    count += 1
             except ValueError as e:
                 log.warning("skipping MCP tool %s/%s: %s", name, remote_name, e)
         self._status[name] = {"connected": True, "error": None, "tools": count, "transport": client.kind,

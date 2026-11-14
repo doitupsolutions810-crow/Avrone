@@ -508,20 +508,115 @@ def test_initialize_unknown_version_and_empty_result(caplog):
     assert c.server_info == {} and c.capabilities == {} and c.transport.notes == ["notifications/initialized"]
 
 
-def test_list_tools_pagination_guard_and_empty_call():
+def test_list_tools_rejects_repeated_cursor_and_empty_call():
     class Loop(mc._Transport):
         n = 0
 
         async def request(self, method, params, timeout):
             self.n += 1
             if method == "tools/call":
-                return None
+                return {"content": []}
             return {"tools": [{"name": "same"}], "nextCursor": "again"}
     c = MCPClient("s", {"command": "x"})
     c.transport = Loop()
-    tools = run(c.list_tools())
-    assert c.transport.n == 100 and len(tools) == 100
+    with pytest.raises(MCPError, match="repeated a pagination cursor"):
+        run(c.list_tools())
+    assert c.transport.n == 2
     assert run(c.call_tool("t")) == "(no content)"
+
+
+def test_list_tools_refuses_partial_results_after_page_limit():
+    class Endless(mc._Transport):
+        n = 0
+
+        async def request(self, method, params, timeout):
+            self.n += 1
+            return {"tools": [{"name": f"tool-{self.n}"}], "nextCursor": f"cursor-{self.n}"}
+    c = MCPClient("s", {"command": "x"})
+    c.transport = Endless()
+    with pytest.raises(MCPError, match="pagination limit"):
+        run(c.list_tools())
+    assert c.transport.n == mc.MAX_TOOL_PAGES
+    assert c.tools == []
+
+
+@pytest.mark.parametrize("response", [None, "junk", [], 7, {"tools": "not-an-array"}])
+def test_list_tools_rejects_malformed_response_shapes(response):
+    class Broken(mc._Transport):
+        async def request(self, method, params, timeout):
+            return response
+    c = MCPClient("s", {"command": "x"})
+    c.transport = Broken()
+    with pytest.raises(MCPError):
+        run(c.list_tools())
+
+
+def test_initialize_rejects_non_object_and_malformed_metadata():
+    class Bad(HTTPTransport):
+        def __init__(self, value):
+            super().__init__("https://mcp.invalid/mcp")
+            self.value = value
+        async def request(self, method, params, timeout):
+            return self.value
+        async def notify(self, method, params=None):
+            return None
+    for value in (None, [], "bad", 1):
+        c = MCPClient("s", {"url": "https://mcp.invalid/mcp"})
+        c.transport = Bad(value)
+        with pytest.raises(MCPError, match="initialize response"):
+            run(c.initialize())
+    c = MCPClient("s", {"url": "https://mcp.invalid/mcp"})
+    c.transport = Bad({
+        "protocolVersion": "2025-06-18",
+        "serverInfo": ["not", "an", "object"],
+        "capabilities": "not-an-object",
+    })
+    run(c.initialize())
+    assert c.server_info == {} and c.capabilities == {}
+
+
+def test_call_tool_and_format_content_reject_malformed_shapes():
+    class Bad(HTTPTransport):
+        def __init__(self, value):
+            super().__init__("https://mcp.invalid/mcp")
+            self.value = value
+        async def request(self, method, params, timeout):
+            return self.value
+    for value in (None, "not-object", [], 17):
+        c = MCPClient("s", {"url": "https://mcp.invalid/mcp"})
+        c.transport = Bad(value)
+        assert run(c.call_tool("t")) == "(invalid MCP tool result: expected a JSON object)"
+    assert mc.format_content({"content": "not-an-array"}) == (
+        "(invalid MCP tool result: content must be an array)"
+    )
+    assert mc.format_content({"content": [{"type": "resource", "resource": "text"}]}) == (
+        "[resource: malformed payload omitted]"
+    )
+    assert len(mc.format_content({"content": [{"type": "text", "text": "x" * 40000}]})) <= (
+        mc.MAX_TOOL_OUTPUT_CHARS
+    )
+    assert mc.format_content({"content": [{"type": "text", "text": "x" * 40000}]}).endswith(
+        "[MCP tool output truncated]"
+    )
+
+
+def test_args_doc_from_schema_tolerates_hostile_json_shapes():
+    assert mc.args_doc_from_schema(None) == "{}"
+    assert mc.args_doc_from_schema({"properties": "bad"}) == "{}"
+    assert mc.args_doc_from_schema({"properties": {"x": {"enum": "not-list"}}}) == (
+        '{"x"?: any}'
+    )
+    assert mc.args_doc_from_schema({
+        "properties": {
+            "name": {"type": ["string", "null"]},
+            "choice": {"enum": ["a", "b", "c"]},
+            "broken": {"type": [None, {}, 7]},
+        },
+        "required": [[], {}, "name"],
+    }) == '{"name": str, "choice"?: "a"|"b"|"c", "broken"?: None|{}|7}'
+    schema = {"properties": {f"field-{i}": {"type": "string"} for i in range(1000)}}
+    doc = mc.args_doc_from_schema(schema, limit=180)
+    assert len(doc) <= 180 and doc.endswith(", ...}")
 
 
 # ============================================================== manager

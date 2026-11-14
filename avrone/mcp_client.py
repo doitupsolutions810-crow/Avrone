@@ -44,6 +44,10 @@ MAX_PAGE_CURSOR_CHARS = 512
 MAX_TOOL_OUTPUT_CHARS = 32_000
 MAX_TOOL_OUTPUT_ITEMS = 512
 MAX_SCHEMA_PROPERTIES = 128
+# Bound untrusted MCP HTTP responses before JSON parsing or tool-result formatting.
+MAX_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_HTTP_SSE_LINE_BYTES = 1024 * 1024
+MAX_HTTP_ERROR_BYTES = 64 * 1024
 
 
 class MCPError(RuntimeError):
@@ -219,6 +223,75 @@ class HTTPTransport(_Transport):
             h["MCP-Protocol-Version"] = self.protocol_version
         return h
 
+    async def _read_http_body(self, response: Any, limit: int, *, truncate: bool = False) -> bytes:
+        """Read a bounded HTTP body without buffering an untrusted response in full."""
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in response.aiter_bytes():
+            remaining = limit - size
+            if len(chunk) > remaining:
+                if not truncate:
+                    raise MCPError(f"HTTP response body exceeded configured limit ({limit} bytes)")
+                if remaining > 0:
+                    chunks.append(chunk[:remaining])
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        return b"".join(chunks)
+
+    async def _read_sse_response(self, response: Any, want_id: int) -> dict:
+        """Parse SSE incrementally, bounding both total bytes and any single line."""
+        data_lines: list[str] = []
+        pending = bytearray()
+        total = 0
+
+        def consume_line(raw: bytes) -> dict | None:
+            if len(raw) > MAX_HTTP_SSE_LINE_BYTES:
+                raise MCPError(
+                    f"MCP SSE line exceeded configured limit ({MAX_HTTP_SSE_LINE_BYTES} bytes)"
+                )
+            if raw.endswith(b"\\r"):
+                raw = raw[:-1]
+            line = raw.decode(errors="replace")
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+            elif line == "" and data_lines:
+                payload = "\\n".join(data_lines)
+                data_lines.clear()
+                return _match_response(payload, want_id)
+            return None
+
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > MAX_HTTP_RESPONSE_BYTES:
+                raise MCPError(
+                    f"MCP SSE response exceeded configured limit ({MAX_HTTP_RESPONSE_BYTES} bytes)"
+                )
+            pending.extend(chunk)
+            while True:
+                newline = pending.find(b"\\n")
+                if newline < 0:
+                    break
+                raw = bytes(pending[:newline])
+                del pending[:newline + 1]
+                found = consume_line(raw)
+                if found is not None:
+                    return found
+            if len(pending) > MAX_HTTP_SSE_LINE_BYTES:
+                raise MCPError(
+                    f"MCP SSE line exceeded configured limit ({MAX_HTTP_SSE_LINE_BYTES} bytes)"
+                )
+
+        if pending:
+            found = consume_line(bytes(pending))
+            if found is not None:
+                return found
+        if data_lines:
+            found = _match_response("\\n".join(data_lines), want_id)
+            if found is not None:
+                return found
+        raise MCPError("event stream ended without a response")
+
     async def _post(self, body: dict, timeout: float, want_id: int | None) -> Any:
         assert self._client is not None, "connect() first"
         async with self._client.stream("POST", self.url, json=body, headers=self._hdrs(),
@@ -234,27 +307,15 @@ class HTTPTransport(_Transport):
             if r.status_code == 404 and self.session_id and body.get("method") != "initialize":
                 raise MCPError("MCP session expired (HTTP 404)", code=404)
             if r.status_code >= 400:
-                text = (await r.aread()).decode(errors="replace")
+                raw_error = await self._read_http_body(r, MAX_HTTP_ERROR_BYTES, truncate=True)
+                text = raw_error.decode(errors="replace")
                 raise MCPError(f"HTTP {r.status_code}: {text[:300]}", code=r.status_code)
             if want_id is None:  # notification: 202 Accepted, nothing to read
                 return None
             ctype = r.headers.get("content-type", "").lower()
             if "text/event-stream" in ctype:
-                data_lines: list[str] = []
-                async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip())
-                    elif line == "" and data_lines:
-                        payload, data_lines = "\n".join(data_lines), []
-                        found = _match_response(payload, want_id)
-                        if found is not None:
-                            return found
-                if data_lines:
-                    found = _match_response("\n".join(data_lines), want_id)
-                    if found is not None:
-                        return found
-                raise MCPError("event stream ended without a response")
-            raw = await r.aread()
+                return await self._read_sse_response(r, want_id)
+            raw = await self._read_http_body(r, MAX_HTTP_RESPONSE_BYTES)
             if not raw.strip():
                 raise MCPError("empty response body")
             found = _match_response(raw.decode(errors="replace"), want_id)

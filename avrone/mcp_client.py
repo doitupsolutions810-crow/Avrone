@@ -205,8 +205,10 @@ class HTTPTransport(_Transport):
         self._client: httpx.AsyncClient | None = None
 
     async def connect(self) -> None:
+        # MCP endpoints may carry custom bearer/API-key headers. Do not automatically forward
+        # them through redirects to a different origin.
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=15),
-                                         follow_redirects=True)
+                                         follow_redirects=False)
 
     def _hdrs(self) -> dict[str, str]:
         h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
@@ -221,8 +223,13 @@ class HTTPTransport(_Transport):
         assert self._client is not None, "connect() first"
         async with self._client.stream("POST", self.url, json=body, headers=self._hdrs(),
                                        timeout=timeout) as r:
+            if 300 <= r.status_code < 400:
+                raise MCPError("HTTP redirect refused for MCP endpoint", code=r.status_code)
             sid = r.headers.get("mcp-session-id")
             if sid:
+                method = body.get("method")
+                if self.session_id and sid != self.session_id and method != "initialize":
+                    raise MCPError("MCP server changed the active session identifier unexpectedly")
                 self.session_id = sid
             if r.status_code == 404 and self.session_id and body.get("method") != "initialize":
                 raise MCPError("MCP session expired (HTTP 404)", code=404)

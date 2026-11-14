@@ -27,6 +27,10 @@ jobs:
             done
             exit 1
           }
+      - name: Validate local Ollama sandbox operator scripts
+        run: |
+          bash -n docs/local-ollama/start-local-ollama-sandbox.sh
+          python -m py_compile docs/local-ollama/test-local-ollama-squad.py
       - name: Test avrone
         run: |
           set -o pipefail

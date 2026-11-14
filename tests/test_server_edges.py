@@ -448,3 +448,97 @@ def test_establish_health_check_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(sovereign.LocalRunner, "run", failing)
     with pytest.raises(RuntimeError, match="health check failed"):
         run(sovereign.establish(rsettings(tmp_path)))
+
+
+
+def test_model_capability_discovery_reports_only_explicit_capabilities():
+    from avrone.modelcaps import describe_ollama_model
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={
+                "capabilities": ["completion", "tools", "thinking"],
+                "thinking": {"values": [False, True], "default": True},
+                "details": {"family": "qwen3", "parameter_size": "9B",
+                            "quantization_level": "Q4_K_M"},
+                "model_info": {"qwen3.context_length": 131072},
+                "parameters": "num_ctx 32768\ntemperature 0.7",
+            }, request=request)
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{
+                "name": "mimo-v2.6:9b", "digest": "abc123", "size": 7_000_000_000,
+                "details": {"family": "qwen3", "parameter_size": "9B",
+                            "quantization_level": "Q4_K_M"},
+            }]}, request=request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": [{
+                "name": "mimo-v2.6:9b", "model": "mimo-v2.6:9b",
+                "size": 6_500_000_000, "size_vram": 6_000_000_000,
+                "context_length": 65536,
+            }]}, request=request)
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.13.0"}, request=request)
+        return httpx.Response(404, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "mimo-v2.6:9b",
+            transport=httpx.MockTransport(handler),
+        )
+
+    result = asyncio.run(run())
+    assert result["model"] == "mimo-v2.6:9b"
+    assert result["installed"] is True and result["digest"] == "abc123"
+    assert result["capabilities"] == {
+        "completion": True, "tools": True, "vision": False, "thinking": True,
+    }
+    assert result["context"]["model_info_tokens"] == 131072
+    assert result["context"]["configured_num_ctx"] == 32768
+    assert result["runtime"]["loaded"] is True
+    assert result["runtime"]["context_tokens"] == 65536
+    assert result["runtime"]["vram_bytes"] == 6_000_000_000
+    assert result["details"]["quantization_level"] == "Q4_K_M"
+
+
+def test_model_capability_discovery_keeps_unknowns_unknown():
+    from avrone.modelcaps import describe_ollama_model
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"details": {"family": "unknown"}}, request=request)
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []}, request=request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": []}, request=request)
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.0.0"}, request=request)
+        return httpx.Response(404, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "mystery-model",
+            transport=httpx.MockTransport(handler),
+        )
+
+    result = asyncio.run(run())
+    assert result["installed"] is False
+    assert result["capabilities"] == {
+        "completion": None, "tools": None, "vision": None, "thinking": None,
+    }
+    assert result["context"]["model_info_tokens"] is None
+    assert result["context"]["configured_num_ctx"] is None
+    assert result["runtime"]["loaded"] is False
+
+
+def test_model_capability_endpoint_requires_ollama(client, monkeypatch):
+    from avrone import server
+    monkeypatch.setattr(server.settings, "provider", "openai")
+    r = client.get("/api/model/capabilities")
+    assert r.status_code == 409
+
+
+def test_model_capability_endpoint_validates_model_name(client, monkeypatch):
+    from avrone import server
+    monkeypatch.setattr(server.settings, "provider", "ollama")
+    r = client.get("/api/model/capabilities?model=../../etc/passwd")
+    assert r.status_code == 400

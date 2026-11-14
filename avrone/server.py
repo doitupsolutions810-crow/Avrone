@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 
 import asyncio
 import logging
@@ -283,6 +284,25 @@ async def status():
         "agents": c.active,
         "boot": BOOT_ID,
     }
+
+@app.get("/api/model/capabilities")
+async def model_capabilities(
+    request: Request,
+    model: str | None = None,
+    x_admin_token: str | None = Header(default=None),
+):
+    """Read-only model capability discovery; never pulls or loads a model."""
+    require_local(request, x_admin_token)
+    if settings.provider != "ollama":
+        raise HTTPException(409, "model capability discovery requires AVRONE_PROVIDER=ollama")
+    selected = str(model or settings.llm_model or "").strip()
+    if not selected or len(selected) > 128 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", selected):
+        raise HTTPException(400, "invalid model tag")
+    from .modelcaps import OllamaCapabilityError, describe_ollama_model
+    try:
+        return await describe_ollama_model(settings.llm_base_url, selected)
+    except OllamaCapabilityError as exc:
+        raise HTTPException(502, str(exc)) from None
 
 
 def _open_checkpoint(cid_raw: str, task: str, mode: str):

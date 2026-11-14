@@ -12,9 +12,10 @@ lazily on the agent's first command, reused for every later command and run (sta
 the container's own filesystem survive between commands), and reaped (``docker rm -f``) once it
 has been idle for AVRONE_AGENT_IDLE_SECS. It is hardened like a throwaway sandbox:
 
+    --user <non-root host UID:GID>  --read-only  --tmpfs /tmp (128 MB)
     --cap-drop ALL  --security-opt no-new-privileges  --pids-limit 512
-    --memory <AVRONE_AGENT_MEM_MB>m (default 512)   --cpus <AVRONE_AGENT_CPUS> (default 1.0)
-    --network none unless AVRONE_ALLOW_NETWORK
+    --memory <AVRONE_AGENT_MEM_MB>m (default 512)   --memory-swap equal to memory
+    --cpus <AVRONE_AGENT_CPUS> (default 1.0)  --network none unless AVRONE_ALLOW_NETWORK
 
 Every docker argv is built by a PURE function here (``persistent_run_argv`` / ``exec_argv`` /
 ``inspect_argv`` / ``rm_argv``) so it is unit-testable without Docker. ``AgentContainerPool``
@@ -83,13 +84,55 @@ def container_name(node: str, agent_id: str) -> str:
     return f"{NAME_PREFIX}-{n}-{agentfs.sanitize_agent_id(agent_id)}"
 
 
+def sandbox_identity() -> tuple[int, int]:
+    """Return a non-root UID:GID for agent containers, defaulting to the AVRONE host user.
+
+    Bind-mounted agent homes are created mode 0700 by the host process, so the container
+    identity must match their owner. Explicit overrides are useful only when the workspace
+    directories are already owned by that UID:GID. Root is rejected: a root host process
+    must explicitly arrange a non-root-owned workspace rather than silently running agents
+    as root inside containers.
+    """
+    def read_id(name: str, fallback: int) -> int:
+        raw = (os.environ.get(name) or "").strip()
+        try:
+            value = int(raw) if raw else int(fallback)
+        except ValueError as exc:
+            raise RuntimeError(f"{name} must be a positive integer") from exc
+        if value <= 0 or value > 2_147_483_647:
+            raise RuntimeError(f"{name} must be a positive non-root integer")
+        return value
+
+    uid_fallback = os.getuid() if hasattr(os, "getuid") else 1000
+    gid_fallback = os.getgid() if hasattr(os, "getgid") else 1000
+    return read_id("AVRONE_AGENT_UID", uid_fallback), read_id("AVRONE_AGENT_GID", gid_fallback)
+
+
 def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | None = None) -> list[str]:
-    """Flags every agent home container runs with (no capabilities, no privilege escalation,
-    bounded memory/cpu/pids, no network unless allowed)."""
-    args = ["--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--pids-limit", str(PIDS_LIMIT),
-            "--memory", f"{mem_mb() if mem is None else int(mem)}m",
-            "--cpus", str(cpus() if cpu is None else cpu)]
+    """Security boundary shared by persistent and one-shot agent containers.
+
+    Containers run as the non-root host owner of their private 0700 home. The image root
+    filesystem is read-only; only /agent and a bounded /tmp tmpfs are writable. Capabilities
+    and privilege escalation are disabled, swap is capped at the memory limit, and PIDs,
+    CPU and RAM are bounded. Agent networking is opt-in and should normally remain disabled.
+    """
+    uid, gid = sandbox_identity()
+    memory = mem_mb() if mem is None else int(mem)
+    args = [
+        "--user", f"{uid}:{gid}",
+        "--read-only",
+        "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
+        "--env", "HOME=/agent",
+        "--env", "TMPDIR=/tmp",
+        "--env", "PYTHONDONTWRITEBYTECODE=1",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--pids-limit", str(PIDS_LIMIT),
+        "--memory", f"{memory}m",
+        "--memory-swap", f"{memory}m",
+        "--cpus", str(cpus() if cpu is None else cpu),
+        "--ulimit", "nofile=1024:2048",
+    ]
     if not allow_network:
         args += ["--network", "none"]
     return args

@@ -182,7 +182,12 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
             "network_is_none": host.get("NetworkMode") == "none",
             "not_privileged": host.get("Privileged") is False,
             "no_device_access": host.get("Devices") in (None, [])
-                and host.get("DeviceRequests") in (None, []),
+                and host.get("DeviceRequests") in (None, [])
+                and host.get("DeviceCgroupRules") in (None, []),
+            "default_runtime_only": host.get("Runtime") in (None, "", "runc"),
+            "no_userns_override": host.get("UsernsMode") in (None, ""),
+            "no_sysctl_overrides": host.get("Sysctls") in (None, {}),
+            "no_supplemental_groups": host.get("GroupAdd") in (None, []),
             "no_host_pid_namespace": not (isinstance(pid_mode, str) and pid_mode.startswith(("host", "container"))),
             "no_host_ipc_namespace": not (isinstance(ipc_mode, str) and ipc_mode.startswith(("host", "container"))),
             "no_host_uts_namespace": not str(host.get("UTSMode") or "").startswith(("host", "container")),

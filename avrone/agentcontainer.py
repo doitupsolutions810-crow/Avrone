@@ -33,6 +33,7 @@ import os
 import re
 import socket
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -217,11 +218,21 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("container image does not match the configured image")
     if config.get("WorkingDir") != agentfs.CONTAINER_AGENT_MOUNT:
         problems.append("working directory is not /agent")
-    env = set(config.get("Env") or [])
-    required_env = {"HOME=/agent", "TMPDIR=/tmp", "PYTHONDONTWRITEBYTECODE=1",
-                    f"AVRONE_AGENT_DIR={agentfs.CONTAINER_AGENT_MOUNT}"}
-    if not required_env.issubset(env):
-        problems.append("required private-home environment is missing")
+    env = config.get("Env")
+    required_env = {
+        "HOME": "/agent", "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1",
+        "AVRONE_AGENT_DIR": agentfs.CONTAINER_AGENT_MOUNT,
+    }
+    env_values: dict[str, list[str]] = {}
+    if not isinstance(env, list) or any(not isinstance(item, str) for item in env):
+        problems.append("container environment is malformed")
+    else:
+        for item in env:
+            key, sep, value = item.partition("=")
+            if sep:
+                env_values.setdefault(key, []).append(value)
+        if any(env_values.get(key) != [value] for key, value in required_env.items()):
+            problems.append("required private-home environment is missing, duplicated, or overridden")
 
     binds = host.get("Binds") or []
     expected_source = str(Path(agent_dir).resolve())
@@ -248,36 +259,50 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     expected_nano_cpus = int(round(cpus() * 1_000_000_000))
     if host.get("ReadonlyRootfs") is not True:
         problems.append("root filesystem is writable")
-    tmpfs = host.get("Tmpfs") if isinstance(host.get("Tmpfs"), dict) else {}
-    tmpfs_spec = str(tmpfs.get("/tmp", "")).lower()
-    if not all(part in tmpfs_spec for part in ("rw", "nosuid", "nodev", "size=128m")):
-        problems.append("bounded /tmp tmpfs is missing")
-    if "ALL" not in (host.get("CapDrop") or []) or host.get("CapAdd"):
+    tmpfs = host.get("Tmpfs")
+    tmpfs_spec = tmpfs.get("/tmp") if isinstance(tmpfs, dict) and set(tmpfs) == {"/tmp"} else None
+    tmpfs_options = ([part.strip().lower() for part in tmpfs_spec.split(",")]
+                     if isinstance(tmpfs_spec, str) else [])
+    tmpfs_set = set(tmpfs_options)
+    tmpfs_required = {"rw", "nosuid", "nodev", "size=128m"}
+    if (not tmpfs_required.issubset(tmpfs_set) or len(tmpfs_options) != len(tmpfs_set)
+            or tmpfs_set.intersection({"ro", "suid", "dev", "exec"})
+            or len([part for part in tmpfs_set if part.startswith("size=")]) != 1):
+        problems.append("bounded /tmp tmpfs is missing or contains unsafe options/mounts")
+    cap_drop, cap_add = host.get("CapDrop"), host.get("CapAdd")
+    if (not isinstance(cap_drop, list) or any(not isinstance(x, str) for x in cap_drop)
+            or "ALL" not in cap_drop or cap_add not in (None, [])):
         problems.append("Linux capabilities are not fully dropped")
-    if not any("no-new-privileges" in str(item).lower() for item in (host.get("SecurityOpt") or [])):
+    security_opt = host.get("SecurityOpt")
+    if (not isinstance(security_opt, list) or any(not isinstance(x, str) for x in security_opt)
+            or "no-new-privileges" not in security_opt):
         problems.append("no-new-privileges is not enabled")
     if not allow_network and host.get("NetworkMode") != "none":
         problems.append("agent container has network access")
-    network_mode = str(host.get("NetworkMode", "")).lower()
-    if allow_network and network_mode.startswith(("host", "container")):
-        problems.append("agent container shares a host/peer network namespace")
+    raw_network_mode = host.get("NetworkMode")
+    network_mode = raw_network_mode.lower() if isinstance(raw_network_mode, str) else ""
+    if allow_network and (not network_mode or network_mode.startswith(("host", "container"))):
+        problems.append("agent container has an invalid or shared host/peer network namespace")
     if host.get("Privileged") is not False:
         problems.append("privileged container mode is enabled")
-    if host.get("PortBindings"):
+    if host.get("PortBindings") not in (None, {}):
         problems.append("container publishes ports")
-    if host.get("Devices") or host.get("DeviceRequests"):
+    if host.get("Devices") not in (None, []) or host.get("DeviceRequests") not in (None, []):
         problems.append("container has device access")
+    if host.get("VolumesFrom") not in (None, []):
+        problems.append("container inherits external volumes")
     if str(host.get("PidMode") or "").startswith(("host", "container")):
         problems.append("container shares a PID namespace")
     if str(host.get("IpcMode") or "").startswith(("host", "container")):
         problems.append("container shares an IPC namespace")
-    if host.get("AutoRemove") is True:
-        problems.append("persistent agent container is configured for auto-remove")
-    if host.get("Memory") != memory_bytes or host.get("MemorySwap") != memory_bytes:
+    if host.get("AutoRemove") is not False:
+        problems.append("persistent agent container auto-remove policy is unknown or enabled")
+    if (type(host.get("Memory")) is not int or host.get("Memory") != memory_bytes
+            or type(host.get("MemorySwap")) is not int or host.get("MemorySwap") != memory_bytes):
         problems.append("memory or swap limit does not match policy")
-    if host.get("NanoCpus") != expected_nano_cpus:
+    if type(host.get("NanoCpus")) is not int or host.get("NanoCpus") != expected_nano_cpus:
         problems.append("CPU limit does not match policy")
-    if host.get("PidsLimit") != PIDS_LIMIT:
+    if type(host.get("PidsLimit")) is not int or host.get("PidsLimit") != PIDS_LIMIT:
         problems.append("PID limit does not match policy")
 
     return not problems, True, "; ".join(problems) if problems else "compatible"
@@ -301,6 +326,7 @@ class _Home:
     last_used: float
     created: float = 0.0
     uses: int = 0
+    active: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -343,8 +369,11 @@ class AgentContainerPool:
         return persistent_run_argv(container_name(self.node, d.name), d, self.image, self.allow_network,
                                    agent_id=d.name)
 
-    async def ensure(self, agent_dir: Path) -> str:
-        """Name of a running, policy-compliant home container for agent_dir."""
+    async def ensure(self, agent_dir: Path, *, _active: bool = False) -> str:
+        """Name of a running, policy-compliant home container for agent_dir.
+
+        Internal callers may reserve an active lease atomically with lookup/creation.
+        """
         d = Path(agent_dir).resolve()
         name = container_name(self.node, d.name)
         await self.reap_idle(skip=name)
@@ -353,6 +382,8 @@ class AgentContainerPool:
             home = self.homes.get(name)
             if home is not None:
                 home.last_used, home.uses = now, home.uses + 1
+                if _active:
+                    home.active += 1
                 return name
 
             inspected = await self._exec(inspect_argv(name), 30)
@@ -392,8 +423,21 @@ class AgentContainerPool:
                     raise RuntimeError(f"new agent container {name} failed sandbox verification: {reason}")
                 self.created += 1
 
-            self.homes[name] = _Home(name, d, now, created=now, uses=1)
+            self.homes[name] = _Home(name, d, now, created=now, uses=1, active=1 if _active else 0)
             return name
+
+    @asynccontextmanager
+    async def lease(self, agent_dir: Path):
+        """Reserve an agent home until its command has finished or been cancelled."""
+        name = await self.ensure(agent_dir, _active=True)
+        try:
+            yield name
+        finally:
+            async with self._lock:
+                home = self.homes.get(name)
+                if home is not None and home.active > 0:
+                    home.active -= 1
+                    home.last_used = self.clock()
 
     async def reap_idle(self, now: float | None = None, skip: str = "") -> list[str]:
         """Remove every home container idle for longer than AVRONE_AGENT_IDLE_SECS."""
@@ -404,7 +448,8 @@ class AgentContainerPool:
         # record, inspected the still-running container, re-registered and handed it out, and the
         # reaper's rm -f killed it under the agent (its next exec failed / its state was lost).
         async with self._lock:
-            stale = [h for n, h in self.homes.items() if n != skip and now - h.last_used >= limit]
+            stale = [h for n, h in self.homes.items()
+                     if n != skip and h.active == 0 and now - h.last_used >= limit]
             for h in stale:
                 del self.homes[h.name]
             for h in stale:
@@ -429,5 +474,6 @@ class AgentContainerPool:
         now = self.clock()
         return {"mode": "persistent", "node": self.node, "idle_secs": self.idle_after,
                 "created": self.created, "reaped": self.reaped,
-                "homes": {n: {"agent": h.agent_dir.name, "uses": h.uses, "idle_s": round(now - h.last_used, 1)}
+                "homes": {n: {"agent": h.agent_dir.name, "uses": h.uses, "active": h.active,
+                              "idle_s": round(now - h.last_used, 1)}
                           for n, h in self.homes.items()}}

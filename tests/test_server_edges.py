@@ -643,3 +643,28 @@ def test_model_capability_discovery_rejects_invalid_model_tags(bad_model):
 
     with pytest.raises(OllamaCapabilityError, match="model tag is invalid"):
         asyncio.run(run())
+
+@pytest.mark.parametrize("base_url", ["http://[::1", "http://127.0.0.1:99999/v1"])
+def test_model_capability_discovery_normalizes_malformed_authority_errors(base_url):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+    async def run():
+        return await describe_ollama_model(base_url, "qwen3.8:27b")
+    with pytest.raises(OllamaCapabilityError, match="base URL is invalid"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad_model", [None, 17, [], {}])
+def test_model_capability_discovery_rejects_non_string_model_tags(bad_model):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", bad_model,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}, request=request)),
+        )
+    with pytest.raises(OllamaCapabilityError, match="model tag is invalid"):
+        asyncio.run(run())
+
+
+def test_model_capability_discovery_ignores_pathological_num_ctx_integer():
+    from avrone.modelcaps import _num_ctx
+    assert _num_ctx("num_ctx " + ("9" * 10000)) is None

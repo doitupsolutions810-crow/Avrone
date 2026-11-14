@@ -12,6 +12,11 @@ from .config import Settings
 
 BuildMode = Literal["squad", "chat", "deep"]
 BuildStatus = Literal["UNVERIFIED", "VERIFIED", "PASS", "FAIL", "NOT_RUN"]
+_GIT_SHA = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+
+
+def _full_git_sha(value: Any) -> bool:
+    return isinstance(value, str) and _GIT_SHA.fullmatch(value) is not None
 
 CONTROL_ROOM_SPEC = """
 Build the AVRONE Control Room in the existing repository and harness. Reuse
@@ -59,9 +64,9 @@ class BuilderPolicy:
             raise ValueError("verification_commands must be a tuple of non-empty strings")
         if self.expected_sha is not None and (
             not isinstance(self.expected_sha, str)
-            or not re.fullmatch(r"[0-9a-fA-F]{40,64}", self.expected_sha)
+            or not _full_git_sha(self.expected_sha)
         ):
-            raise ValueError("expected_sha must be a full 40-64 character Git SHA")
+            raise ValueError("expected_sha must be a full 40- or 64-character Git SHA")
 
 
 @dataclass
@@ -204,10 +209,18 @@ class BuilderAgentSDK:
             evidence.finished_at = time.time()
             result.evidence, result.status = evidence, "NOT_RUN"
             return evidence
-        sha_result = await self.core.runner.run("git rev-parse --verify HEAD", timeout=20)
-        sha = (getattr(sha_result, "stdout", "") or "").strip()
-        if getattr(sha_result, "exit_code", 1) == 0 and re.fullmatch(r"[0-9a-fA-F]{40,64}", sha):
-            evidence.target_sha = sha.lower()
+        sha_error: str | None = None
+        try:
+            sha_result = await self.core.runner.run("git rev-parse --verify HEAD", timeout=20)
+            sha_raw = getattr(sha_result, "stdout", "")
+            sha = sha_raw.strip() if isinstance(sha_raw, str) else ""
+            sha_exit = getattr(sha_result, "exit_code", 1)
+            if type(sha_exit) is int and sha_exit == 0 and _full_git_sha(sha):
+                evidence.target_sha = sha.lower()
+            else:
+                sha_error = "initial workspace SHA was unavailable or malformed"
+        except Exception as exc:
+            sha_error = f"initial workspace SHA read failed ({type(exc).__name__}: {exc})"[:500]
         expected_sha = self.policy.expected_sha.lower() if self.policy.expected_sha else None
         if expected_sha and evidence.target_sha != expected_sha:
             evidence.status = "FAIL"
@@ -225,8 +238,10 @@ class BuilderAgentSDK:
                 r = await self.core.runner.run(command, timeout=self.policy.verification_timeout_s)
                 evidence.commands.append({
                     "command": command,
-                    "exit_code": int(getattr(r, "exit_code", -1)),
-                    "timed_out": bool(getattr(r, "timed_out", False)),
+                    "exit_code": (getattr(r, "exit_code", -1)
+                                  if type(getattr(r, "exit_code", -1)) is int else -1),
+                    "timed_out": (getattr(r, "timed_out", False)
+                                  if isinstance(getattr(r, "timed_out", False), bool) else True),
                     "stdout": str(getattr(r, "stdout", ""))[-12000:],
                     "stderr": str(getattr(r, "stderr", ""))[-12000:],
                     "duration_s": round(time.time() - started, 3),
@@ -243,11 +258,10 @@ class BuilderAgentSDK:
                 final_sha_result = await self.core.runner.run(
                     "git rev-parse --verify HEAD", timeout=20
                 )
-                final_sha = (getattr(final_sha_result, "stdout", "") or "").strip()
-                final_sha_ok = (
-                    getattr(final_sha_result, "exit_code", 1) == 0
-                    and re.fullmatch(r"[0-9a-fA-F]{40,64}", final_sha) is not None
-                )
+                final_sha_raw = getattr(final_sha_result, "stdout", "")
+                final_sha = final_sha_raw.strip() if isinstance(final_sha_raw, str) else ""
+                final_sha_exit = getattr(final_sha_result, "exit_code", 1)
+                final_sha_ok = type(final_sha_exit) is int and final_sha_exit == 0 and _full_git_sha(final_sha)
             except Exception as exc:
                 final_sha, final_sha_ok = "", False
                 sha_error = type(exc).__name__
@@ -276,7 +290,10 @@ class BuilderAgentSDK:
             evidence.reason = f"{len(failed)} of {len(evidence.commands)} checks failed."
         elif self.policy.require_git_sha_for_verified and not evidence.target_sha:
             evidence.status = "PASS"
-            evidence.reason = "Checks passed, but no exact Git SHA was found; result remains unverified."
+            evidence.reason = (
+                "Checks passed, but no exact Git SHA was found; result remains unverified."
+                + (f" {sha_error}." if sha_error else "")
+            )
         else:
             evidence.status = "PASS"
             evidence.reason = "All allowlisted checks exited successfully."

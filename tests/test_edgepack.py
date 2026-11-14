@@ -951,3 +951,107 @@ def test_network_opt_in_never_allows_shared_host_or_container_network_namespace(
         payload["HostConfig"]["NetworkMode"] = mode
         ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), d, "img", allow_network=True)
         assert owned and not ok and "network namespace" in detail
+
+@pytest.mark.asyncio
+async def test_pool_lease_prevents_reap_during_long_running_command(tmp_path):
+    now = [0.0]
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)
+    home = agentfs.agent_dir(tmp_path / "ws", "long-worker")
+    async with pool.lease(home) as name:
+        assert pool.state()["homes"][name]["active"] == 1
+        now[0] = 600.0
+        assert await pool.reap_idle(now=now[0]) == []
+        assert name in pool.homes
+    assert pool.state()["homes"][name]["active"] == 0
+    assert pool.state()["homes"][name]["idle_s"] == 0.0
+    now[0] = 661.0
+    assert await pool.reap_idle(now=now[0]) == [name]
+    assert name not in pool.homes
+
+
+@pytest.mark.asyncio
+async def test_pool_lease_is_released_when_command_task_is_cancelled(tmp_path):
+    import asyncio
+    now = [0.0]
+    pool = ac.AgentContainerPool(FakeDocker(), "img", False, node="edge",
+                                 clock=lambda: now[0], idle=60)
+    home = agentfs.agent_dir(tmp_path / "ws", "cancel-worker")
+    entered, blocked = asyncio.Event(), asyncio.Event()
+    async def worker():
+        async with pool.lease(home) as name:
+            entered.set()
+            await blocked.wait()
+            return name
+    task = asyncio.create_task(worker())
+    await entered.wait()
+    name = next(iter(pool.homes))
+    assert pool.homes[name].active == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert pool.homes[name].active == 0
+    now[0] = 61.0
+    assert await pool.reap_idle(now=now[0]) == [name]
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    (lambda p: p["Config"].update(Env=["HOME=/agent", "HOME=/tmp", "TMPDIR=/tmp",
+                                      "PYTHONDONTWRITEBYTECODE=1", "AVRONE_AGENT_DIR=/agent"]),
+     "duplicated or overridden"),
+    (lambda p: p["Config"].update(Env=["HOME=/agent", {"TMPDIR": "/tmp"}]), "environment is malformed"),
+    (lambda p: p["HostConfig"].update(SecurityOpt=["no-new-privileges=false"]), "no-new-privileges"),
+    (lambda p: p["HostConfig"].update(Tmpfs={"/tmp": "notrw,nosuid,nodev,size=128m"}), "bounded /tmp"),
+    (lambda p: p["HostConfig"].update(Tmpfs={"/tmp": "rw,nosuid,nodev,size=128m",
+                                             "/var/run": "rw,size=16m"}), "bounded /tmp"),
+    (lambda p: p["HostConfig"].update(AutoRemove=None), "auto-remove policy"),
+    (lambda p: p["HostConfig"].update(AutoRemove="false"), "auto-remove policy"),
+    (lambda p: p["HostConfig"].update(Memory=float(512 * 1024 * 1024)), "memory or swap"),
+    (lambda p: p["HostConfig"].update(NanoCpus=1_000_000_000.0), "CPU limit"),
+    (lambda p: p["HostConfig"].update(PidsLimit=True), "PID limit"),
+    (lambda p: p["HostConfig"].update(VolumesFrom=["other-container"]), "external volumes"),
+    (lambda p: p["HostConfig"].update(CapDrop={"ALL": True}), "capabilities"),
+    (lambda p: p["HostConfig"].update(SecurityOpt={"no-new-privileges": True}), "no-new-privileges"),
+])
+def test_policy_inspector_rejects_malformed_or_lookalike_fields(mutate, reason, tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    home = agentfs.agent_dir(tmp_path / "ws", "strict-worker")
+    argv = ac.persistent_run_argv("avrone-agent-edge-strict-worker", home, "img",
+                                  False, agent_id="strict-worker")
+    payload = _fake_inspect_from_run(argv)
+    mutate(payload)
+    ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", False)
+    assert owned is True and ok is False
+    assert reason in detail
+
+@pytest.mark.asyncio
+async def test_docker_runner_holds_lease_while_exec_is_in_flight(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    settings = _settings(tmp_path, allow_network=False)
+    runner = DockerRunner(settings)
+    now = [0.0]
+    fake_docker = FakeDocker()
+    pool = ac.AgentContainerPool(fake_docker, "img", False, node="edge",
+                                 clock=lambda: now[0], idle=60)
+    runner.agent_pool = pool
+    observed = {}
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        if len(argv) > 1 and argv[1] == "exec":
+            now[0] = 100.0
+            container_name = argv[6]
+            observed["active"] = pool.state()["homes"][container_name]["active"]
+            observed["reaped"] = await pool.reap_idle(now=now[0])
+            return CommandResult(cmd, 0, "completed", "")
+        return await fake_docker(argv, timeout)
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    home = agentfs.agent_dir(settings.workspace, "busy-worker")
+    result = await runner.run("sleep 90", cwd=home)
+    assert result.exit_code == 0
+    assert observed == {"active": 1, "reaped": []}
+    name = next(iter(pool.homes))
+    assert pool.homes[name].active == 0
+    now[0] = 161.0
+    assert await pool.reap_idle(now=now[0]) == [name]

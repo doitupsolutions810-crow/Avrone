@@ -286,3 +286,63 @@ async def test_verify_rejects_duplicate_and_non_string_commands():
         await sdk.verify(result, commands=("python -m pytest -q", "python -m pytest -q"))
     with pytest.raises(ValueError, match="allowlisted"):
         await sdk.verify(result, commands=(["python -m pytest -q"],))
+
+@pytest.mark.parametrize("bad_sha", ["a" * 41, "b" * 63])
+def test_builder_policy_rejects_noncanonical_git_sha_widths(bad_sha):
+    with pytest.raises(ValueError, match="40- or 64"):
+        BuilderPolicy(expected_sha=bad_sha)
+
+
+@pytest.mark.asyncio
+async def test_verify_records_initial_sha_read_exception_and_stays_unverified():
+    class RaisesForSha(FakeRunner):
+        async def run(self, command, timeout=None):
+            self.commands.append(command)
+            if command.startswith("git rev-parse"):
+                raise OSError("git metadata unavailable")
+            return FakeCommand(exit_code=0, stdout="checks passed")
+    runner = RaisesForSha([])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "PASS" and result.status == "UNVERIFIED"
+    assert evidence.target_sha is None
+    assert "initial workspace SHA read failed" in evidence.reason
+    assert runner.commands == ["git rev-parse --verify HEAD", "python -m pytest -q"]
+
+
+@pytest.mark.asyncio
+async def test_verify_expected_sha_fails_closed_when_initial_sha_read_raises():
+    class RaisesForSha(FakeRunner):
+        async def run(self, command, timeout=None):
+            self.commands.append(command)
+            raise OSError("git unavailable")
+    runner = RaisesForSha([])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",), expected_sha="a" * 40),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.commands == [] and "unavailable" in evidence.reason
+    assert runner.commands == ["git rev-parse --verify HEAD"]
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_noncanonical_sha_width_and_boolean_exit_code():
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="a" * 41),
+        FakeCommand(exit_code=False, stdout="not a real pass"),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.target_sha is None and evidence.commands[0]["exit_code"] == -1

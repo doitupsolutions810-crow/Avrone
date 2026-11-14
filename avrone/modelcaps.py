@@ -14,8 +14,12 @@ class OllamaCapabilityError(RuntimeError):
 
 
 def _native_base(base_url: str) -> str:
-    parsed = urlsplit(str(base_url or "").strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+    try:
+        parsed = urlsplit(str(base_url or "").strip())
+        hostname, _port = parsed.hostname, parsed.port
+    except ValueError:
+        raise OllamaCapabilityError("configured Ollama base URL is invalid") from None
+    if parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
         raise OllamaCapabilityError("configured Ollama base URL is invalid")
     path = parsed.path.rstrip("/")
     if path.endswith("/v1"):
@@ -72,7 +76,12 @@ def _num_ctx(parameters: Any) -> int | None:
     if not isinstance(parameters, str):
         return None
     match = re.search(r"(?im)^\s*num_ctx\s+(\d+)\s*$", parameters)
-    return _positive_int(int(match.group(1))) if match else None
+    if not match:
+        return None
+    try:
+        return _positive_int(int(match.group(1)))
+    except ValueError:  # Python's integer digit limit protects against pathological metadata.
+        return None
 
 
 async def describe_ollama_model(
@@ -88,7 +97,8 @@ async def describe_ollama_model(
     are best-effort so partially compatible servers still return usable metadata.
     """
     base = _native_base(openai_base_url)
-    if not model or len(model) > 128 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", model):
+    if (not isinstance(model, str) or not model or len(model) > 128
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", model)):
         raise OllamaCapabilityError("model tag is invalid")
 
     issues: list[str] = []

@@ -88,7 +88,7 @@ def _strict_json_loads(payload: str) -> Any:
 
 def _safe_part(s: str) -> str:
     raw = str(s)
-    value = re.sub(r"[^A-Za-z0-9_\\-.]", "_", raw)
+    value = re.sub(r"[^A-Za-z0-9_\-.]", "_", raw)
     if value == raw and len(raw) <= 80:
         return value or "_"
     # Preserve readable names while preventing distinct remote names from colliding
@@ -738,6 +738,10 @@ class MCPManager:
         try:
             servers = self._servers_override if self._servers_override is not None \
                 else load_config(self.config_path)
+            if not isinstance(servers, dict):
+                raise MCPError("MCP server configuration must be a JSON object")
+            if len(servers) > MAX_MCP_SERVERS:
+                raise MCPError(f"MCP configuration exceeds the {MAX_MCP_SERVERS}-server limit")
         except Exception as e:
             log.error("could not read MCP config: %s", e)
             self._status["_config"] = {"connected": False, "error": f"config: {e}", "tools": 0}

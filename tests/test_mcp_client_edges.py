@@ -130,6 +130,7 @@ def test_stdio_client_full_flow_with_noise(monkeypatch):
     c, tools, ok, bad, pong = run(go())
     argv, kw = seen[0]
     assert argv == ("fake-mcp", "--x", "1") and kw["env"]["A"] == "2" and kw["cwd"] == "/tmp"
+    assert kw["limit"] == mc.MAX_STDIO_LINE_BYTES
     assert c.protocol_version == "2024-11-05" and c.server_info == {"name": "fake"}
     assert [t["name"] for t in tools] == ["t0", "t1", "t2"]
     assert ok == "hi" and bad == "ERROR (from MCP tool fs/bad): hi" and pong is True
@@ -367,7 +368,7 @@ def test_http_junk_bodies(body, msg):
 
 
 def test_http_batch_body_and_rpc_error():
-    body = json.dumps([rpc(5), rpc(1, error="plain string error")])
+    body = json.dumps([rpc(5), rpc(1, error={"code": -32000, "message": "plain string error"})])
     t = http_transport(lambda r: httpx.Response(200, text=body))
     with pytest.raises(MCPError, match="plain string error") as ei:
         run(t.request("x", None, 5))
@@ -473,6 +474,9 @@ def test_http_post_requires_connect():
     ("junk", None), ("[]", None), ("null", None), ('"s"', None), ('[1, "a", null]', None),
     ('{"jsonrpc":"2.0","id": 1}', None), ('{"jsonrpc":"2.0","id": "1", "result": 1}', None),
     ('{"jsonrpc":"2.0","id": true, "result": 1}', None),
+    ('{"jsonrpc":"2.0","id":1,"result":NaN}', None),
+    ('{"jsonrpc":"2.0","id":1,"result":Infinity}', None),
+    ('{"jsonrpc":"2.0","id":1,"result":-Infinity}', None),
     ('{"jsonrpc":"1.0","id": 1, "result": 1}', None),
     ('{"jsonrpc":"2.0","id": 1, "result": 1, "error": {"code":-1,"message":"m"}}', None),
     ('{"jsonrpc":"2.0","id": 1, "error": {"message": "m"}}', None),

@@ -257,7 +257,7 @@ def test_http_connect_builds_client(monkeypatch):
         finally:
             await t.close()
     assert run(go()) == {"ok": 1}
-    assert made["follow_redirects"] is True and made["timeout"].connect == 15
+    assert made["follow_redirects"] is False and made["timeout"].connect == 15
 
 
 def test_http_json_session_and_headers():
@@ -836,4 +836,59 @@ def test_mcp_server_timeout_rejects_invalid_values(raw):
 def test_mcp_server_timeout_is_capped():
     c = MCPClient("s", {"command": "fake", "timeout": "99999"})
     assert c.timeout == mc.MAX_TIMEOUT
+
+def test_match_response_does_not_treat_boolean_id_as_integer_one():
+    assert mc._match_response('{"id":true,"result":{"secret":"wrong request"}}', 1) is None
+
+
+def test_schema_property_names_are_json_escaped():
+    doc = args_doc_from_schema({"properties": {'bad"\\nkey': {"type": "string"}}})
+    assert doc == '{"bad\\\"\\\\nkey"?: str}'
+
+
+def test_manager_skips_sanitized_tool_name_collisions_without_overwriting(monkeypatch):
+    FakeClient.behaviour = {
+        "s": {
+            "tools": [
+                {"name": "a/b", "description": "first remote tool"},
+                {"name": "a b", "description": "second remote tool"},
+                {"name": "builtin", "description": "remote must not overwrite builtin"},
+            ]
+        }
+    }
+    monkeypatch.setattr(mc, "MCPClient", FakeClient)
+    reg = ToolRegistry()
+    reg.register(Tool("mcp__s__builtin", "existing builtin", "{}", lambda c, a: "protected", source="builtin"))
+    status = run(MCPManager(servers={"s": {"command": "c"}}).start(reg))
+    assert status["s"]["connected"] is True
+    assert status["s"]["tools"] == 1
+    assert reg.get("mcp__s__a_b").description == "first remote tool"
+    assert reg.get("mcp__s__builtin").description == "existing builtin"
+    async def call():
+        return await reg.get("mcp__s__a_b").fn(None, {})
+    assert run(call()) == "a/b:{}"
+
+
+def test_manager_refuses_second_start_until_stopped(monkeypatch):
+    FakeClient.behaviour = {"s": {"tools": [{"name": "one"}]}}
+    monkeypatch.setattr(mc, "MCPClient", FakeClient)
+    manager = MCPManager(servers={"s": {"command": "c"}})
+    registry = ToolRegistry()
+    run(manager.start(registry))
+    with pytest.raises(MCPError, match="already started"):
+        run(manager.start(registry))
+    run(manager.stop())
+    assert registry.names() == []
+
+
+def test_manager_enforces_server_count_cap(monkeypatch):
+    class NeverConnect:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("server connection must not start over cap")
+    monkeypatch.setattr(mc, "MCPClient", NeverConnect)
+    manager = MCPManager(servers={f"s{i}": {"command": "c"} for i in range(mc.MAX_MCP_SERVERS + 1)})
+    status = run(manager.start(ToolRegistry()))
+    assert status["_config"]["connected"] is False
+    assert "server count exceeds" in status["_config"]["error"]
+    assert manager.clients == {}
 

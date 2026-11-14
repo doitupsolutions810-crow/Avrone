@@ -1,6 +1,7 @@
 """Read-only Ollama model capability and runtime discovery for AVRONE."""
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -34,8 +35,8 @@ def _context_lengths(value: Any) -> list[int]:
     for key, item in value.items():
         if "context_length" in str(key).lower():
             try:
-                number = int(item)
-                if number > 0:
+                number = _context_number(item)
+                if number is not None:
                     found.append(number)
             except (TypeError, ValueError):
                 pass
@@ -44,11 +45,34 @@ def _context_lengths(value: Any) -> list[int]:
     return found
 
 
+def _positive_int(value: Any) -> int | None:
+    """Accept a positive integral number; reject booleans, NaN, infinities and fractions."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value > 0 and value.is_integer() else None
+    return None
+
+
+def _context_number(value: Any) -> int | None:
+    number = _positive_int(value)
+    if number is not None:
+        return number
+    if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value.strip()):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _num_ctx(parameters: Any) -> int | None:
     if not isinstance(parameters, str):
         return None
     match = re.search(r"(?im)^\s*num_ctx\s+(\d+)\s*$", parameters)
-    return int(match.group(1)) if match else None
+    return _positive_int(int(match.group(1))) if match else None
 
 
 async def describe_ollama_model(
@@ -128,7 +152,10 @@ async def describe_ollama_model(
     if capabilities is not None:
         thinking_supported = "thinking" in capabilities
     elif isinstance(thinking_values, list):
-        thinking_supported = any(value is True or isinstance(value, str) for value in thinking_values)
+        thinking_supported = any(
+            value is True or (isinstance(value, str) and bool(value.strip()))
+            for value in thinking_values
+        )
     else:
         thinking_supported = None
 
@@ -141,7 +168,7 @@ async def describe_ollama_model(
         "ollama_version": ollama_version,
         "installed": bool(tags) if tags_known else None,
         "digest": str(tags.get("digest")) if tags and tags.get("digest") else None,
-        "size_bytes": int(tags["size"]) if tags and isinstance(tags.get("size"), (int, float)) else None,
+        "size_bytes": _positive_int(tags.get("size")) if tags else None,
         "details": {
             "family": details.get("family"),
             "parameter_size": details.get("parameter_size"),
@@ -160,9 +187,9 @@ async def describe_ollama_model(
         },
         "runtime": {
             "loaded": bool(loaded) if runtime_known else None,
-            "context_tokens": int(loaded["context_length"]) if loaded and isinstance(loaded.get("context_length"), (int, float)) else None,
-            "size_bytes": int(loaded["size"]) if loaded and isinstance(loaded.get("size"), (int, float)) else None,
-            "vram_bytes": int(loaded["size_vram"]) if loaded and isinstance(loaded.get("size_vram"), (int, float)) else None,
+            "context_tokens": _positive_int(loaded.get("context_length")) if loaded else None,
+            "size_bytes": _positive_int(loaded.get("size")) if loaded else None,
+            "vram_bytes": _positive_int(loaded.get("size_vram")) if loaded else None,
         },
         "issues": issues,
     }

@@ -854,3 +854,72 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
         assert pool.state()["homes"][results[0]]["uses"] == 32
         await pool.close()
     run(main())
+
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    (lambda p: p["HostConfig"].update(NetworkMode="bridge"), "network access"),
+    (lambda p: p["HostConfig"].update(Privileged=True), "privileged"),
+    (lambda p: p["HostConfig"].update(ReadonlyRootfs=False), "root filesystem"),
+    (lambda p: p["Config"].update(User="0:0"), "non-root agent identity"),
+    (lambda p: p["Config"].update(Image="evil:latest"), "configured image"),
+    (lambda p: p["Config"].update(WorkingDir="/"), "working directory"),
+    (lambda p: p["Config"].update(Env=["HOME=/tmp"]), "environment"),
+    (lambda p: p["HostConfig"].update(CapAdd=["SYS_ADMIN"]), "capabilities"),
+    (lambda p: p["HostConfig"].update(CapDrop=[]), "capabilities"),
+    (lambda p: p["HostConfig"].update(SecurityOpt=[]), "no-new-privileges"),
+    (lambda p: p["HostConfig"].update(PortBindings={"80/tcp": [{"HostPort": "8080"}]}), "publishes ports"),
+    (lambda p: p["HostConfig"].update(Devices=[{"PathOnHost": "/dev/sda"}]), "device access"),
+    (lambda p: p["HostConfig"].update(DeviceRequests=[{"Count": -1}]), "device access"),
+    (lambda p: p["HostConfig"].update(PidMode="host"), "PID namespace"),
+    (lambda p: p["HostConfig"].update(IpcMode="host"), "IPC namespace"),
+    (lambda p: p["HostConfig"].update(AutoRemove=True), "auto-remove"),
+    (lambda p: p["HostConfig"].update(Memory=1), "memory or swap"),
+    (lambda p: p["HostConfig"].update(MemorySwap=1), "memory or swap"),
+    (lambda p: p["HostConfig"].update(NanoCpus=1), "CPU limit"),
+    (lambda p: p["HostConfig"].update(PidsLimit=1), "PID limit"),
+    (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind"),
+    (lambda p: p["Mounts"].append({"Type": "bind", "Destination": "/host", "RW": True}), "private /agent bind"),
+    (lambda p: p["Mounts"][0].update(RW=False), "private /agent bind"),
+    (lambda p: p["HostConfig"]["Tmpfs"].update({"/tmp": "rw,size=8g"}), "bounded /tmp"),
+])
+def test_existing_container_policy_validator_rejects_each_escape(mutate, reason, tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    agent_dir = agentfs.agent_dir(tmp_path / "ws", "builder")
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-builder", agent_dir, "img", allow_network=False, agent_id="builder"
+    )
+    payload = _fake_inspect_from_run(argv)
+    mutate(payload)
+    ok, owned, detail = ac._inspect_matches_policy(
+        json.dumps(payload), agent_dir, "img", allow_network=False
+    )
+    assert owned is True
+    assert ok is False
+    assert reason in detail
+
+
+def test_existing_container_policy_validator_accepts_only_a_valid_json_object(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    agent_dir = agentfs.agent_dir(tmp_path / "ws", "builder")
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-builder", agent_dir, "img", allow_network=False, agent_id="builder"
+    )
+    payload = _fake_inspect_from_run(argv)
+    ok, owned, detail = ac._inspect_matches_policy(
+        json.dumps(payload), agent_dir, "img", allow_network=False
+    )
+    assert (ok, owned, detail) == (True, True, "compatible")
+    for malformed in ("", "not-json", "[]", json.dumps({"State": {"Running": True}})):
+        ok, owned, _ = ac._inspect_matches_policy(malformed, agent_dir, "img", allow_network=False)
+        assert ok is False and owned is False
+
+
+@pytest.mark.parametrize("invalid", [0, -1, float("nan"), float("inf"), True, "1cpu"])
+def test_explicit_cpu_limit_rejects_invalid_values(invalid, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    with pytest.raises(ValueError, match="cpu"):
+        ac.hardening_args(False, cpu=invalid)

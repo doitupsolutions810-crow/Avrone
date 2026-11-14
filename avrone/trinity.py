@@ -74,6 +74,13 @@ or, when you are done, your final result:
 {{"final": "<your complete findings, including any code, commands run and results>"}}
 ```
 Be concrete. Verify claims with tools when you can. You have at most {steps} turns.
+Execution discipline:
+- When the assigned focus or overall task explicitly requires a tool, command, lookup, or file operation,
+  your first response MUST be the JSON tool-call object. Do not send an "I'll..." preamble or a plan.
+- Use the requested tool for the requested action. A statement that you intend to run a command is not
+  execution. Continue only after receiving the actual TOOL RESULT.
+- Never report a command, file, hash, lookup, or state change as completed unless the corresponding
+  TOOL RESULT is present in your conversation. If execution is blocked, report it as not run.
 Working habits: if a skill fits your job, skill_load it first; for multi-part work, put
 subtasks on task_board and update them; if a tool or package is missing, install it with
 env_install (self-changes are allowed and logged) and carry on; never invent tool output."""
@@ -658,7 +665,8 @@ class TrinityCore:
                              "task": (focus or task)[:300], "depth": depth, "started": time.time(),
                              "agent_id": claimed,
                              "memory_ns": ctx.memory_namespace or memstore.agent_namespace(name)}
-        self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth,
+        self.codex.emit(run_id, "agent.spawn", name, role=role, agent_id=claimed,
+                        focus=focus or task, parent=parent, depth=depth,
                         context_mode=context_mode, context_chars=len(context_pack or ""),
                         lineage=ctx.lineage, share_dir=ctx.parent_dir is not None)
         prompt = (system or WORKER_PROMPT).format(

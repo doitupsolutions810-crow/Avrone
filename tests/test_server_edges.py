@@ -542,3 +542,97 @@ def test_model_capability_endpoint_validates_model_name(client, monkeypatch):
     monkeypatch.setattr(server.settings, "provider", "ollama")
     r = client.get("/api/model/capabilities?model=../../etc/passwd")
     assert r.status_code == 400
+
+
+
+def test_model_capability_discovery_tolerates_partial_inventory_and_bad_numeric_metadata():
+    from avrone.modelcaps import describe_ollama_model
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={
+                "capabilities": ["completion", "tools"],
+                "thinking": {"values": ["", False], "default": False},
+                "details": {"family": "qwen3"},
+                "model_info": {
+                    "model.context_length": 131072,
+                    "bad.boolean_context_length": True,
+                    "bad.nan_context_length": float("nan"),
+                    "bad.fraction_context_length": 12.5,
+                },
+                "parameters": "num_ctx 0\ntemperature 0.7",
+            }, request=request)
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": None}, request=request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": {"unexpected": "shape"}}, request=request)
+        if request.url.path == "/api/version":
+            return httpx.Response(503, text="temporarily unavailable", request=request)
+        return httpx.Response(404, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "qwen3.8:27b",
+            transport=httpx.MockTransport(handler),
+        )
+
+    result = asyncio.run(run())
+    assert result["capabilities"] == {
+        "completion": True, "tools": True, "vision": False, "thinking": False,
+    }
+    assert result["context"]["model_info_tokens"] == 131072
+    assert result["context"]["configured_num_ctx"] is None
+    assert result["installed"] is None and result["digest"] is None and result["size_bytes"] is None
+    assert result["runtime"] == {
+        "loaded": None, "context_tokens": None, "size_bytes": None, "vram_bytes": None,
+    }
+    assert result["issues"] == [
+        "installed model inventory unavailable",
+        "loaded model runtime inventory unavailable",
+        "Ollama version unavailable",
+    ]
+
+
+def test_model_capability_discovery_fails_closed_when_show_request_fails():
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+
+    def handler(request):
+        return httpx.Response(404, json={"error": "model not found"}, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "missing-model",
+            transport=httpx.MockTransport(handler),
+        )
+
+    with pytest.raises(OllamaCapabilityError, match="metadata unavailable"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("base_url", [
+    "file:///etc/passwd",
+    "http://user:secret@127.0.0.1:11434/v1",
+    "not-a-url",
+])
+def test_model_capability_discovery_rejects_unsafe_base_urls_before_network(base_url):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+
+    async def run():
+        return await describe_ollama_model(base_url, "qwen3.8:27b")
+
+    with pytest.raises(OllamaCapabilityError, match="base URL is invalid"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad_model", ["", "../etc/passwd", "model name", "x" * 129, "bad\nmodel"])
+def test_model_capability_discovery_rejects_invalid_model_tags(bad_model):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", bad_model,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}, request=request)),
+        )
+
+    with pytest.raises(OllamaCapabilityError, match="model tag is invalid"):
+        asyncio.run(run())

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live Chat -> Ollama -> Trinity squad -> Docker isolation smoke test."""
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
 from typing import Any
 
@@ -38,12 +38,8 @@ def safe_agent_id(value: str) -> str:
     value = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower())
     return value.strip("-_")[:48].strip("-_") or "agent"
 
-def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str, Any]]:
-    """Inspect this run's private files from inside the matching Docker agent homes.
-
-    Do not read Docker's reported bind-mount Source path on the host: Docker Desktop may
-    expose a VM-side path such as /host_mnt/... that is not a native macOS path.
-    """
+def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Inspect exactly the two worker homes associated with this run's shell events."""
     ids_raw = subprocess.run(["docker", "ps", "-aq", "--filter", "label=avrone.agent-home=1"],
         check=True, capture_output=True, text=True, timeout=20).stdout
     ids = [x.strip() for x in ids_raw.splitlines() if x.strip()]
@@ -53,16 +49,16 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
         text=True, timeout=30).stdout
     containers = json.loads(raw)
     output = []
-    actual_hashes: set[str] = set()
-    result_values: set[str] = set()
-    expected_uid = os.environ.get("AVRONE_AGENT_UID", str(os.getuid() if hasattr(os, "getuid") else 1000))
-    expected_gid = os.environ.get("AVRONE_AGENT_GID", str(os.getgid() if hasattr(os, "getgid") else 1000))
+    found_agent_ids: set[str] = set()
     marker = f"sandbox-smoke-{nonce}.txt"
     container_path = f"/agent/{marker}"
+    expected_uid = os.environ.get("AVRONE_AGENT_UID", str(os.getuid() if hasattr(os, "getuid") else 1000))
+    expected_gid = os.environ.get("AVRONE_AGENT_GID", str(os.getgid() if hasattr(os, "getgid") else 1000))
     for c in containers:
         cfg, host = c.get("Config") or {}, c.get("HostConfig") or {}
         labels = cfg.get("Labels") or {}
-        if labels.get("avrone.agent-home") != "1":
+        agent_id = labels.get("avrone.agent")
+        if labels.get("avrone.agent-home") != "1" or agent_id not in expected_artifacts:
             continue
         mounts = c.get("Mounts") or []
         if len(mounts) != 1 or mounts[0].get("Destination") != "/agent":
@@ -77,21 +73,18 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
         not_link = subprocess.run(["docker", "exec", cid, "test", "!", "-L", container_path],
             capture_output=True, text=True, timeout=20)
         if is_file.returncode != 0 or not_link.returncode != 0:
-            continue
-        hash_result = subprocess.run(["docker", "exec", cid, "sha256sum", "--", container_path],
+            raise RuntimeError(f"Expected marker file is absent or a symlink in private agent home {agent_id}.")
+        digest_output = subprocess.run(["docker", "exec", cid, "sha256sum", "--", container_path],
             check=True, capture_output=True, text=True, timeout=20).stdout.strip()
-        digest = hash_result.split()[0].lower() if hash_result.split() else ""
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise RuntimeError(f"Agent {labels.get('avrone.agent')} returned a malformed in-container sha256sum.")
+        digest = digest_output.split()[0].lower() if digest_output.split() else ""
+        expected = expected_artifacts[agent_id]
         content = subprocess.run(["docker", "exec", cid, "cat", "--", container_path],
             check=True, capture_output=True, text=True, timeout=20).stdout
-        if digest not in expected_hashes:
-            raise RuntimeError(f"Agent {labels.get('avrone.agent')} artifact hash does not match shell's logged sha256sum.")
-        actual_hashes.add(digest)
-        present_values = {v for v in ("687871", "660886") if v in content}
-        if len(present_values) != 1:
-            raise RuntimeError(f"Private worker file {marker} must contain exactly one worker's expected result.")
-        result_values.update(present_values)
+        expected_hash = expected["sha256"]
+        if digest != expected_hash:
+            raise RuntimeError(f"Private file hash mismatch in agent {agent_id}: {digest} != {expected_hash}.")
+        if content != expected["content"]:
+            raise RuntimeError(f"Private file content mismatch in agent {agent_id}.")
         user = str(cfg.get("User") or "")
         checks = {
             "container_running": True,
@@ -104,9 +97,13 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
                         for token in ("nosuid", "nodev", "size=128m"))
             ),
             "no_published_ports": not bool(host.get("PortBindings") or {}),
-            "capabilities_dropped": "ALL" in (host.get("CapDrop") or []),
+            "capabilities_dropped": "ALL" in (host.get("CapDrop") or []) and not (host.get("CapAdd") or []),
             "no_new_privileges": any("no-new-privileges" in str(x) for x in (host.get("SecurityOpt") or [])),
             "network_is_none": host.get("NetworkMode") == "none",
+            "not_privileged": host.get("Privileged") is False,
+            "no_device_access": not bool(host.get("Devices") or host.get("DeviceRequests") or []),
+            "no_host_pid_namespace": str(host.get("PidMode") or "") not in {"host", "container"},
+            "no_host_ipc_namespace": str(host.get("IpcMode") or "") not in {"host", "container"},
             "memory_bounded": int(host.get("Memory") or 0) > 0,
             "swap_bounded_to_memory": int(host.get("MemorySwap") or 0) == int(host.get("Memory") or 0),
             "cpu_bounded": int(host.get("NanoCpus") or 0) > 0,
@@ -116,26 +113,26 @@ def inspect_agent_homes(nonce: str, expected_hashes: set[str]) -> list[dict[str,
             "working_dir_is_agent_home": cfg.get("WorkingDir") == "/agent",
             "home_is_agent_home": "HOME=/agent" in (cfg.get("Env") or []),
             "artifact_is_regular_non_symlink": is_file.returncode == 0 and not_link.returncode == 0,
-            "artifact_hash_matches_shell": digest in expected_hashes,
-            "artifact_contains_expected_result": bool(present_values),
+            "artifact_hash_matches_that_worker_shell": digest == expected_hash,
+            "artifact_content_matches_that_worker_shell": content == expected["content"],
         }
-        output.append({"name": c.get("Name", "").lstrip("/"),
-            "agent_id": labels.get("avrone.agent"), "user": user,
-            "network": host.get("NetworkMode"), "artifact": marker,
-            "artifact_sha256": digest, "artifact_results": sorted(present_values),
+        output.append({"name": c.get("Name", "").lstrip("/"), "agent_id": agent_id, "user": user,
+            "network": host.get("NetworkMode"), "artifact": marker, "artifact_sha256": digest,
             "memory_bytes": host.get("Memory"), "memory_swap_bytes": host.get("MemorySwap"),
             "nano_cpus": host.get("NanoCpus"), "pids_limit": host.get("PidsLimit"),
             "mount_destinations": [m.get("Destination") for m in mounts], "checks": checks})
+        found_agent_ids.add(agent_id)
         failed = [k for k, ok in checks.items() if not ok]
         if failed:
             raise RuntimeError(f"Agent container {c.get('Name')} failed isolation/artifact checks: {failed}")
-    if len(output) != 2:
-        raise RuntimeError(f"Expected exactly two private agent homes to contain this run's artifact; found {len(output)}.")
-    if result_values != {"687871", "660886"}:
-        raise RuntimeError(f"Private agent files did not independently contain both expected results: {sorted(result_values)}")
-    if actual_hashes != expected_hashes:
-        raise RuntimeError("The in-container file hashes do not match the distinct hashes emitted by shell.")
+    expected_ids = set(expected_artifacts)
+    if found_agent_ids != expected_ids:
+        raise RuntimeError(
+            f"Private agent homes do not match the two shell callers; expected {sorted(expected_ids)}, "
+            f"found {sorted(found_agent_ids)}."
+        )
     return output
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -156,14 +153,23 @@ def main() -> int:
     if os.environ.get("AVRONE_AGENT_CONTAINER", "off").lower() != "persistent":
         raise SystemExit("BLOCKED: profile must set AVRONE_AGENT_CONTAINER=persistent.")
     nonce = uuid.uuid4().hex[:10]
+    marker = f"sandbox-smoke-{nonce}.txt"
+    marker_content = f"AVRONE_SANDBOX_PROOF:{nonce}\\n"
+    shell_command = (
+        f"printf '%s\\n' 'AVRONE_SANDBOX_PROOF:{nonce}' > {marker} "
+        f"&& pwd && sha256sum -- {marker}"
+    )
+    expected_sha = hashlib.sha256(marker_content.encode("utf-8")).hexdigest()
     task = (
-        "Run a live two-worker tool-use test. Split into exactly two independent workers. "
-        "Each worker MUST call the shell tool in its own private working directory; do not use the python tool "
-        "instead of shell, and never use shared/ or the workspace root. Worker A must calculate 731*941 "
-        "(expected 687871). Worker B must calculate 982*673 (expected 660886). "
-        f"Each worker must create sandbox-smoke-{nonce}.txt inside its own current directory, write the assigned "
-        "calculation and result with a Python one-liner invoked through shell, then run pwd and sha256sum on that file. "
-        "Return the actual shell output and hash. Lead must compare both results."
+        "This is a deterministic one-command sandbox verification, not a research or planning task. "
+        "The Lead must spawn exactly two independent workers. Each worker must make exactly ONE tool call, "
+        "and that first response must be a shell tool call. Do not call skill_list, skill_load, task_board, "
+        "self_scan, read_file, or any other tool. Do not send a prose preamble or a plan. "
+        "Use the shell tool with args.cmd set to this exact command:\\n"
+        f"{shell_command}\\n"
+        "After the tool returns, report its actual TOOL RESULT only. Do not claim the command ran or the file "
+        "exists unless the shell tool result proves it. Both workers use the same command but run it in their "
+        "own private /agent directories."
     )
     result = request_json(base + "/api/chat",
         {"message": task, "mode": "squad", "squad_size": 2, "dispatch": "local"}, timeout=args.timeout)
@@ -174,11 +180,12 @@ def main() -> int:
     if not isinstance(events, list):
         raise RuntimeError("Run log endpoint did not return an event array.")
     spawns = [e for e in events if e.get("kind") == "agent.spawn"]
-    all_calls = [e for e in events if e.get("kind") in {"tool.call", "tool.batch"}]
-    all_results = [e for e in events if e.get("kind") in {"tool.result", "tool.batch"}]
     calls = [e for e in events if e.get("kind") == "tool.call" and (e.get("data") or {}).get("tool") == "shell"]
     results = [e for e in events if e.get("kind") == "tool.result" and (e.get("data") or {}).get("tool") == "shell"]
-    spawn_roles = {e.get("agent"): (e.get("data") or {}).get("role", "") for e in spawns}
+    spawn_by_agent = {
+        e.get("agent"): str((e.get("data") or {}).get("agent_id") or safe_agent_id((e.get("data") or {}).get("role", "")))
+        for e in spawns
+    }
     diagnostic = {
         "status": "DIAGNOSTIC",
         "run_id": run_id,
@@ -188,7 +195,8 @@ def main() -> int:
         "event_counts": {kind: sum(1 for e in events if e.get("kind") == kind)
                          for kind in sorted({str(e.get("kind")) for e in events})},
         "spawns": [
-            {"agent": e.get("agent"), "role": (e.get("data") or {}).get("role"),
+            {"agent": e.get("agent"), "agent_id": spawn_by_agent.get(e.get("agent")),
+             "role": (e.get("data") or {}).get("role"),
              "focus": str((e.get("data") or {}).get("focus", ""))[:350]}
             for e in spawns
         ],
@@ -197,12 +205,12 @@ def main() -> int:
              "step": (e.get("data") or {}).get("step"),
              "args_keys": sorted((e.get("data") or {}).get("args", {}).keys())
                           if isinstance((e.get("data") or {}).get("args"), dict) else []}
-            for e in all_calls
+            for e in calls
         ],
         "tool_results": [
             {"agent": e.get("agent"), "tool": (e.get("data") or {}).get("tool"),
              "output_preview": str((e.get("data") or {}).get("output", ""))[:350]}
-            for e in all_results if e.get("kind") == "tool.result"
+            for e in results
         ],
         "worker_summaries": [
             {"role": str(a.get("role", "")),
@@ -217,31 +225,41 @@ def main() -> int:
     diagnostic_path = outdir / f"{run_id}-diagnostic.json"
     diagnostic_path.write_text(json.dumps(diagnostic, indent=2), encoding="utf-8")
     print(json.dumps({**diagnostic, "diagnostic_path": str(diagnostic_path)}, indent=2))
-    shell_agents = {e.get("agent") for e in calls if e.get("agent")}
-    if len(spawns) < 2 or len(shell_agents) < 2:
-        raise RuntimeError(f"Expected 2 spawned workers and 2 distinct shell callers; got {len(spawns)} and {sorted(shell_agents)}.")
-    matched = [e for e in results if e.get("agent") in shell_agents]
-    if len({e.get("agent") for e in matched}) < 2:
-        raise RuntimeError("Two distinct shell tool results were not recorded in Eternal CodeX.")
-    outputs_by_agent = {
-        agent: "\\n".join(str((e.get("data") or {}).get("output", "")) for e in matched if e.get("agent") == agent)
-        for agent in shell_agents
+
+    worker_calls = {
+        agent: [e for e in calls if e.get("agent") == agent]
+        for agent in {e.get("agent") for e in spawns if e.get("agent")}
     }
-    joined = "\\n".join(outputs_by_agent.values())
-    if "687871" not in joined or "660886" not in joined:
-        raise RuntimeError("Shell outputs did not prove both expected arithmetic results.")
-    hash_pattern = re.compile(r"(?m)^([0-9a-fA-F]{64})\s+.*sandbox-smoke-" + re.escape(nonce) + r"\.txt(?:\s|$)")
-    reported_hashes = {
-        match.group(1).lower()
-        for output in outputs_by_agent.values()
-        for match in hash_pattern.finditer(output)
+    worker_results = {
+        agent: [e for e in results if e.get("agent") == agent]
+        for agent in worker_calls
     }
-    if len(reported_hashes) < 2:
-        raise RuntimeError("Two distinct sha256sum results for the run marker files were not recorded by shell.")
+    if len(spawns) != 2 or set(worker_calls) != set(e.get("agent") for e in spawns):
+        raise RuntimeError(f"Expected exactly 2 spawned workers with unique identities; got {len(spawns)} and {sorted(worker_calls)}.")
+    if any(len(worker_calls[a]) != 1 for a in worker_calls):
+        raise RuntimeError("Each worker must issue exactly one tool call in this one-action smoke test.")
+    if any(len(worker_results[a]) != 1 for a in worker_results):
+        raise RuntimeError("Each worker must have exactly one recorded tool result.")
+    if any((worker_calls[a][0].get("data") or {}).get("tool") != "shell" for a in worker_calls):
+        raise RuntimeError("Both workers must use the shell tool; another tool was called.")
+    output_by_agent = {
+        agent: str((worker_results[agent][0].get("data") or {}).get("output", ""))
+        for agent in worker_results
+    }
+    expected_line = f"{expected_sha}  {marker}"
+    for agent, output in output_by_agent.items():
+        if expected_line not in output or marker not in output:
+            raise RuntimeError(f"Worker {agent} shell output did not prove sha256sum of its unique run marker.")
+    expected_artifacts = {}
+    for agent, output in output_by_agent.items():
+        agent_id = spawn_by_agent.get(agent)
+        if not agent_id:
+            raise RuntimeError(f"Worker {agent} has no stable agent_id in its spawn event.")
+        expected_artifacts[agent_id] = {"sha256": expected_sha, "content": marker_content}
     errors = [e for e in events if e.get("kind") == "error" and (not e.get("agent") or e.get("agent") in shell_agents)]
     if errors:
         raise RuntimeError(f"Worker errors were recorded: {errors[:3]}")
-    containers = inspect_agent_homes(nonce, reported_hashes)
+    containers = inspect_agent_homes(nonce, expected_artifacts)
     required = {"run.start", "lead.merge", "run.done"}
     present = {e.get("kind") for e in events}
     if not required.issubset(present):

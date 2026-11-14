@@ -836,3 +836,25 @@ def test_unsupported_renegotiation_clears_stale_protocol_and_server_metadata():
     assert client.server_info == {}
     assert client.capabilities == {}
 \n
+
+def test_connect_closes_transport_when_initialized_notification_fails():
+    class BrokenNotify(mc._Transport):
+        def __init__(self):
+            self.connected = False
+            self.closed = False
+        async def connect(self):
+            self.connected = True
+        async def request(self, method, params, timeout):
+            return {"protocolVersion": "2025-06-18", "serverInfo": {}, "capabilities": {}}
+        async def notify(self, method, params=None):
+            raise MCPError("initialized notification failed")
+        async def close(self):
+            self.closed = True
+
+    client = MCPClient("notify-failure", {"command": "fake"})
+    transport = BrokenNotify()
+    client.transport = transport
+    with pytest.raises(MCPError, match="initialized notification failed"):
+        run(client.connect())
+    assert transport.connected and transport.closed
+\n

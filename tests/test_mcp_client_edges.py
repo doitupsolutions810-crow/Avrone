@@ -471,12 +471,59 @@ def test_http_post_requires_connect():
 # ============================================================== helpers
 @pytest.mark.parametrize("payload,want", [
     ("junk", None), ("[]", None), ("null", None), ('"s"', None), ('[1, "a", null]', None),
-    ('{"id": 1}', None), ('{"id": "1", "result": 1}', None),
-    ('{"id": 1, "error": {"message": "m"}}', {"id": 1, "error": {"message": "m"}}),
-    ('[{"id": 2, "result": 0}, {"id": 1, "result": 0}]', {"id": 1, "result": 0}),
+    ('{"jsonrpc":"2.0","id": 1}', None), ('{"jsonrpc":"2.0","id": "1", "result": 1}', None),
+    ('{"jsonrpc":"2.0","id": true, "result": 1}', None),
+    ('{"jsonrpc":"1.0","id": 1, "result": 1}', None),
+    ('{"jsonrpc":"2.0","id": 1, "result": 1, "error": {"code":-1,"message":"m"}}', None),
+    ('{"jsonrpc":"2.0","id": 1, "error": {"message": "m"}}', None),
+    ('{"jsonrpc":"2.0","id": 1, "error": {"code": -32000, "message": "m"}}',
+     {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "m"}}),
+    ('{"jsonrpc":"2.0","id": 1, "result": 1}',
+     {"jsonrpc": "2.0", "id": 1, "result": 1}),
+    ('[{"jsonrpc":"2.0","id":true,"result":"spoof"}, {"jsonrpc":"2.0","id":1,"result":0}]',
+     {"jsonrpc": "2.0", "id": 1, "result": 0}),
 ])
 def test_match_response(payload, want):
     assert _match_response(payload, 1) == want
+
+
+def test_stdio_dispatch_rejects_boolean_id_spoof_and_malformed_envelopes():
+    async def go():
+        proc = FakeProc(lambda _msg: []).streams()
+        transport = StdioTransport("fake-mcp")
+        transport.proc = proc
+        future = asyncio.get_running_loop().create_future()
+        transport._pending[1] = future
+
+        await transport._dispatch({"jsonrpc": "2.0", "id": True, "result": {"spoofed": True}})
+        await transport._dispatch({"id": 1, "result": {"missing_version": True}})
+        await transport._dispatch({"jsonrpc": "1.0", "id": 1, "result": {"wrong_version": True}})
+        await transport._dispatch({"jsonrpc": "2.0", "id": 1, "result": {}, "error": {}})
+        assert 1 in transport._pending and not future.done()
+
+        valid = {"jsonrpc": "2.0", "id": 1, "result": {"accepted": True}}
+        await transport._dispatch(valid)
+        assert await future == valid
+        assert 1 not in transport._pending
+        await transport.close()
+
+    run(go())
+
+
+def test_stdio_dispatch_rejects_invalid_server_request_ids():
+    async def go():
+        proc = FakeProc(lambda _msg: []).streams()
+        transport = StdioTransport("fake-mcp")
+        transport.proc = proc
+        await transport._dispatch({"jsonrpc": "2.0", "id": True, "method": "ping"})
+        await transport._dispatch({"jsonrpc": "1.0", "id": 5, "method": "ping"})
+        await transport._dispatch({"jsonrpc": "2.0", "id": "x" * 513, "method": "ping"})
+        assert proc.stdin.sent == []
+        await transport._dispatch({"jsonrpc": "2.0", "id": "server-1", "method": "ping"})
+        assert proc.stdin.sent == [{"jsonrpc": "2.0", "id": "server-1", "result": {}}]
+        await transport.close()
+
+    run(go())
 
 
 def test_unwrap_variants():

@@ -261,12 +261,12 @@ class HTTPTransport(_Transport):
             if line.startswith("data:"):
                 data_lines.append(line[5:].lstrip())
             elif line == "" and data_lines:
-                found = _match_response("\\n".join(data_lines), want_id)
+                found = _match_response("\n".join(data_lines), want_id)
                 data_lines = []
                 if found is not None:
                     return found
         if data_lines:
-            return _match_response("\\n".join(data_lines), want_id)
+            return _match_response("\n".join(data_lines), want_id)
         return None
 
     async def _post(self, body: dict, timeout: float, want_id: int | None) -> Any:

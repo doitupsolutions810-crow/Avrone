@@ -487,7 +487,7 @@ def test_client_requires_command_or_url():
     assert MCPClient("y", {"url": "https://a.invalid", "command": "ignored"}).kind == "http"
 
 
-def test_initialize_unknown_version_and_empty_result(caplog):
+def test_initialize_rejects_unsupported_protocol_and_accepts_empty_legacy_result():
     class T(HTTPTransport):
         def __init__(self, result):
             super().__init__("https://x.invalid")
@@ -498,14 +498,54 @@ def test_initialize_unknown_version_and_empty_result(caplog):
 
         async def notify(self, method, params=None):
             self.notes.append(method)
+
     c = MCPClient("s", {"url": "https://x.invalid"})
-    c.transport = T({"protocolVersion": "1999-01-01"})
-    with caplog.at_level(logging.WARNING, logger="avrone.mcp"):
+    c.transport = T({
+        "protocolVersion": "2026-07-28",
+        "serverInfo": {"name": "new"},
+        "capabilities": {},
+    })
+    with pytest.raises(MCPError, match="unsupported protocol"):
         run(c.initialize())
-    assert c.protocol_version == "1999-01-01" == c.transport.protocol_version and "unknown protocol" in caplog.text
+    assert c.protocol_version is None
+    assert c.transport.protocol_version is None
+    assert c.transport.notes == []  # no initialized notification after failed negotiation
+
     c.transport = T({})
-    assert run(c.initialize()) == {} and c.protocol_version == mc.PROTOCOL_VERSION
-    assert c.server_info == {} and c.capabilities == {} and c.transport.notes == ["notifications/initialized"]
+    assert run(c.initialize()) == {}
+    assert c.protocol_version == mc.PROTOCOL_VERSION
+    assert c.server_info == {} and c.capabilities == {}
+    assert c.transport.notes == ["notifications/initialized"]
+
+
+def test_connect_closes_transport_when_protocol_negotiation_fails():
+    class BadProtocol(mc._Transport):
+        def __init__(self):
+            self.connected = False
+            self.closed = False
+
+        async def connect(self):
+            self.connected = True
+
+        async def request(self, method, params, timeout):
+            return {
+                "protocolVersion": "2026-07-28",
+                "serverInfo": {"name": "future-server", "version": "1"},
+                "capabilities": {},
+            }
+
+        async def notify(self, method, params=None):
+            raise AssertionError("notifications/initialized must not be sent")
+
+        async def close(self):
+            self.closed = True
+
+    client = MCPClient("future", {"url": "https://future.invalid/mcp"})
+    transport = BadProtocol()
+    client.transport = transport
+    with pytest.raises(MCPError, match="unsupported protocol"):
+        run(client.connect())
+    assert transport.connected and transport.closed
 
 
 def test_list_tools_rejects_repeated_cursor_and_empty_call():

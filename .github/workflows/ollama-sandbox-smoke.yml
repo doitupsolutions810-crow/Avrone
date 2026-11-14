@@ -29,10 +29,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out exact PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -60,15 +60,45 @@ jobs:
             exit 1
           }
 
-      - name: Pull known AVRONE baseline model
+      - name: Pull tool-capable MiMo-V2.6 smoke-test model
         run: |
-          ollama pull qwen2.5:3b
-          ollama show qwen2.5:3b
+          MODEL=mimo-v2.6:9b
+          ollama pull "$MODEL"
+          ollama --version
+          ollama show "$MODEL"
           curl --noproxy '*' -fsS http://127.0.0.1:11434/v1/models
+          MODEL="$MODEL" python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          model = os.environ["MODEL"]
+          request = urllib.request.Request(
+              "http://127.0.0.1:11434/api/show",
+              data=json.dumps({"model": model}).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.loads(response.read().decode("utf-8"))
+          capabilities = payload.get("capabilities")
+          if not isinstance(capabilities, list) or "tools" not in {
+              str(value).lower() for value in capabilities
+          }:
+              raise SystemExit(
+                  f"BLOCKED: {model} does not advertise native tool capability: {capabilities!r}"
+              )
+          print(json.dumps({"model": model, "capabilities": capabilities}, sort_keys=True))
+          PY
 
       - name: Configure isolated local profile
         run: |
           cp docs/local-ollama/local-ollama-sandbox.env.example docs/local-ollama/local-ollama-sandbox.env
+          sed -i \
+            -e 's/^AVRONE_LLM_MODEL=.*/AVRONE_LLM_MODEL=mimo-v2.6:9b/' \
+            -e 's/^AVRONE_LEAD_MODEL=.*/AVRONE_LEAD_MODEL=mimo-v2.6:9b/' \
+            -e 's/^AVRONE_LLM_TIMEOUT=.*/AVRONE_LLM_TIMEOUT=360/' \
+            docs/local-ollama/local-ollama-sandbox.env
           {
             echo "AVRONE_AGENT_UID=$(id -u)"
             echo "AVRONE_AGENT_GID=$(id -g)"
@@ -111,7 +141,7 @@ jobs:
 
       - name: Upload integration evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ollama-docker-sandbox-evidence
           path: |

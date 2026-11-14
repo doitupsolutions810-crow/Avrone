@@ -11,7 +11,7 @@ import pytest
 
 from avrone import mcp_client as mc
 from avrone.mcp_client import (HTTPTransport, MCPClient, MCPError, MCPManager, StdioTransport, _match_response,
-                               _unwrap, args_doc_from_schema, format_content, load_config)
+                               _safe_part, _unwrap, args_doc_from_schema, format_content, load_config)
 from avrone.tools import Tool, ToolRegistry
 
 
@@ -614,6 +614,31 @@ def test_load_config_rejects_malformed_server_map(tmp_path, server_map):
         load_config(p)
 
 
+def test_load_config_enforces_server_count_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(mc, "MAX_MCP_SERVERS", 2)
+    p = tmp_path / "mcp.json"
+    p.write_text(json.dumps({"mcpServers": {
+        "one": {"command": "one"}, "two": {"command": "two"}, "three": {"command": "three"}
+    }}))
+    with pytest.raises(MCPError, match="2-server limit"):
+        load_config(p)
+
+
+def test_load_config_enforces_file_size_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(mc, "MAX_MCP_CONFIG_BYTES", 32)
+    p = tmp_path / "mcp.json"
+    p.write_bytes(b'{"mcpServers": {}}' + b" " * 32)
+    with pytest.raises(MCPError, match="32-byte limit"):
+        load_config(p)
+
+
+def test_load_config_rejects_invalid_utf8(tmp_path):
+    p = tmp_path / "mcp.json"
+    p.write_bytes(b'{"mcpServers": {"x": "\\xff"}}')
+    with pytest.raises(MCPError, match="valid UTF-8"):
+        load_config(p)
+
+
 def test_load_config_rejects_duplicate_object_keys(tmp_path):
     p = tmp_path / "mcp.json"
     p.write_text('{"mcpServers":{"one":{"url":"https://first.invalid"},"one":{"url":"https://second.invalid"}}}')
@@ -627,6 +652,13 @@ def test_load_config_rejects_non_boolean_disabled_flag(tmp_path, disabled):
     p.write_text(json.dumps({"mcpServers": {"unsafe": {"url": "https://mcp.invalid", "disabled": disabled}}}))
     with pytest.raises(MCPError, match="disabled' must be boolean"):
         load_config(p)
+
+
+def test_safe_part_is_stable_and_collision_resistant():
+    assert _safe_part("filesystem-server") == "filesystem-server"
+    assert _safe_part("server/one") != _safe_part("server?one")
+    assert _safe_part("A" * 100) != _safe_part("A" * 99 + "B")
+    assert len(_safe_part("A" * 100)) <= 80
 
 
 def test_client_requires_command_or_url():

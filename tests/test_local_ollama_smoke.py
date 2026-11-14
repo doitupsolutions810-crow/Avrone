@@ -51,6 +51,11 @@ def _container(agent_id: str, content: str, cid: str) -> dict:
             "AutoRemove": False,
             "Devices": [],
             "DeviceRequests": [],
+            "DeviceCgroupRules": [],
+            "Runtime": "runc",
+            "UsernsMode": "",
+            "Sysctls": {},
+            "GroupAdd": [],
             "PidMode": "",
             "IpcMode": "",
             "Memory": container_policy.mem_mb() * 1024 * 1024,
@@ -281,6 +286,11 @@ def test_live_smoke_rejects_duplicate_durable_worker_ids():
     ("host_uts", "no_host_uts_namespace"),
     ("host_cgroup", "no_host_cgroup_namespace"),
     ("volumes_from", "no_volumes_from"),
+    ("custom_runtime", "default_runtime_only"),
+    ("host_userns", "no_userns_override"),
+    ("sysctl_override", "no_sysctl_overrides"),
+    ("supplemental_group", "no_supplemental_groups"),
+    ("device_cgroup_rule", "no_device_access"),
 ])
 def test_smoke_verifier_rejects_additional_security_and_namespace_escapes(
     monkeypatch, mutation, expected_check
@@ -302,6 +312,16 @@ def test_smoke_verifier_rejects_additional_security_and_namespace_escapes(
         host["CgroupnsMode"] = "host"
     elif mutation == "volumes_from":
         host["VolumesFrom"] = ["other-container"]
+    elif mutation == "custom_runtime":
+        host["Runtime"] = "nvidia"
+    elif mutation == "host_userns":
+        host["UsernsMode"] = "host"
+    elif mutation == "sysctl_override":
+        host["Sysctls"] = {"net.ipv4.ip_forward": "1"}
+    elif mutation == "supplemental_group":
+        host["GroupAdd"] = ["0"]
+    elif mutation == "device_cgroup_rule":
+        host["DeviceCgroupRules"] = ["c 1:1 rwm"]
     _install_docker_stub(monkeypatch, containers)
     with pytest.raises(RuntimeError, match=expected_check):
         smoke.inspect_agent_homes("nonce", _expected(containers))

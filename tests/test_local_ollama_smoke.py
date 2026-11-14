@@ -286,6 +286,8 @@ def test_live_smoke_rejects_duplicate_durable_worker_ids():
     ("host_uts", "private_uts_namespace"),
     ("host_cgroup", "private_cgroup_namespace"),
     ("volumes_from", "no_volumes_from"),
+    ("secret_env", "required_environment_exact"),
+    ("duplicate_env", "required_environment_exact"),
     ("malformed_pid_namespace", "private_pid_namespace"),
     ("malformed_ipc_namespace", "private_ipc_namespace"),
     ("malformed_uts_namespace", "private_uts_namespace"),
@@ -316,6 +318,10 @@ def test_smoke_verifier_rejects_additional_security_and_namespace_escapes(
         host["CgroupnsMode"] = "host"
     elif mutation == "volumes_from":
         host["VolumesFrom"] = ["other-container"]
+    elif mutation == "secret_env":
+        containers[0]["Config"]["Env"].append("AVRONE_ADMIN_TOKEN=leaked")
+    elif mutation == "duplicate_env":
+        containers[0]["Config"]["Env"].append("HOME=/tmp")
     elif mutation == "malformed_pid_namespace":
         host["PidMode"] = "shareable"
     elif mutation == "malformed_ipc_namespace":

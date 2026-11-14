@@ -353,6 +353,44 @@ def test_http_status_errors_are_capped():
     assert ei.value.code == 500 and str(ei.value) == "HTTP 500: " + "E" * 300
 
 
+def test_http_json_response_body_is_bounded(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_HTTP_RESPONSE_BYTES", 64)
+    body = json.dumps(rpc(1, {"payload": "x" * 512}))
+    t = http_transport(lambda r: httpx.Response(200, text=body))
+    with pytest.raises(MCPError, match="body exceeded configured limit"):
+        run(t.request("x", None, 5))
+
+
+def test_http_sse_total_response_bytes_are_bounded(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_HTTP_RESPONSE_BYTES", 48)
+    sse = f"data: {json.dumps(rpc(1, {'payload': 'x' * 128}))}\\n\\n"
+    t = http_transport(lambda r: httpx.Response(
+        200, text=sse, headers={"content-type": "text/event-stream"}
+    ))
+    with pytest.raises(MCPError, match="SSE response exceeded configured limit"):
+        run(t.request("x", None, 5))
+
+
+def test_http_sse_single_line_is_bounded(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_HTTP_SSE_LINE_BYTES", 16)
+    monkeypatch.setattr(mc, "MAX_HTTP_RESPONSE_BYTES", 4096)
+    sse = f"data: {json.dumps(rpc(1))}\\n\\n"
+    t = http_transport(lambda r: httpx.Response(
+        200, text=sse, headers={"content-type": "text/event-stream"}
+    ))
+    with pytest.raises(MCPError, match="SSE line exceeded configured limit"):
+        run(t.request("x", None, 5))
+
+
+def test_http_error_body_is_read_only_to_error_limit(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_HTTP_ERROR_BYTES", 12)
+    t = http_transport(lambda r: httpx.Response(502, text="X" * 5000))
+    with pytest.raises(MCPError) as exc:
+        run(t.request("x", None, 5))
+    assert exc.value.code == 502
+    assert str(exc.value) == "HTTP 502: " + "X" * 12
+
+
 def test_http_404_session_expired_vs_initialize():
     def handler(r):
         return httpx.Response(404, text="nope", headers={"mcp-session-id": "OLD"})

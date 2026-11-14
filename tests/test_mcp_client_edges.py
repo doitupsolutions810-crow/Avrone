@@ -519,10 +519,37 @@ def test_load_config_variants(tmp_path, monkeypatch):
         load_config(p)
 
 
+@pytest.mark.parametrize("server_map", [None, [], "not-an-object", 7])
+def test_load_config_rejects_malformed_server_map(tmp_path, server_map):
+    p = tmp_path / "mcp.json"
+    p.write_text(json.dumps({"mcpServers": server_map}))
+    with pytest.raises(MCPError, match="server map must be a JSON object"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("disabled", ["false", 0, 1, None, []])
+def test_load_config_rejects_non_boolean_disabled_flag(tmp_path, disabled):
+    p = tmp_path / "mcp.json"
+    p.write_text(json.dumps({"mcpServers": {"unsafe": {"url": "https://mcp.invalid", "disabled": disabled}}}))
+    with pytest.raises(MCPError, match="disabled' must be boolean"):
+        load_config(p)
+
+
 def test_client_requires_command_or_url():
     with pytest.raises(MCPError, match="needs either 'command' or 'url'"):
         MCPClient("x", {})
     assert MCPClient("y", {"url": "https://a.invalid", "command": "ignored"}).kind == "http"
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, float("nan"), float("inf"), "nan", "bad", 10**1000])
+def test_client_rejects_invalid_timeout_values(timeout):
+    with pytest.raises(MCPError, match="finite positive number"):
+        MCPClient("x", {"url": "https://a.invalid", "timeout": timeout})
+
+
+def test_client_accepts_positive_numeric_timeout_and_numeric_string():
+    assert MCPClient("x", {"url": "https://a.invalid", "timeout": 2.5}).timeout == 2.5
+    assert MCPClient("x", {"url": "https://a.invalid", "timeout": "3"}).timeout == 3.0
 
 
 def test_initialize_rejects_unsupported_protocol_and_accepts_empty_legacy_result():

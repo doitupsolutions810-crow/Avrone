@@ -227,10 +227,22 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     if not isinstance(env, list) or any(not isinstance(item, str) for item in env):
         problems.append("container environment is malformed")
     else:
+        malformed_env = False
         for item in env:
             key, sep, value = item.partition("=")
-            if sep:
-                env_values.setdefault(key, []).append(value)
+            if not sep or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+                malformed_env = True
+                continue
+            env_values.setdefault(key, []).append(value)
+        if malformed_env:
+            problems.append("container environment is malformed")
+        if any(len(values) != 1 for values in env_values.values()):
+            problems.append("container environment contains duplicated variable names")
+        secret_terms = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "PRIVATE_KEY")
+        if any(any(term in key.upper() for term in secret_terms)
+               and any(value.strip() for value in values)
+               for key, values in env_values.items()):
+            problems.append("container environment contains secret-shaped credentials")
         if any(env_values.get(key) != [value] for key, value in required_env.items()):
             problems.append("required private-home environment is missing, duplicated, or overridden")
 

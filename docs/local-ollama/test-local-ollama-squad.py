@@ -104,6 +104,8 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         raise RuntimeError("No persistent AVRONE agent-home containers exist after the squad run.")
     if len(ids) != len(set(ids)):
         raise RuntimeError("Docker returned duplicate container IDs.")
+    if any(re.fullmatch(r"[0-9a-fA-F]{12,64}", value) is None for value in ids):
+        raise RuntimeError("Docker returned a malformed container ID; refusing to pass it to docker inspect/exec.")
     raw = subprocess.run(
         ["docker", "inspect", *ids], check=True, capture_output=True, text=True, timeout=30,
     ).stdout
@@ -176,12 +178,16 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
             "no_new_privileges": isinstance(host.get("SecurityOpt"), list)
                 and all(isinstance(value, str) for value in host.get("SecurityOpt"))
                 and "no-new-privileges" in host.get("SecurityOpt"),
+            "no_security_profile_overrides": host.get("SecurityOpt") == ["no-new-privileges"],
             "network_is_none": host.get("NetworkMode") == "none",
             "not_privileged": host.get("Privileged") is False,
             "no_device_access": host.get("Devices") in (None, [])
                 and host.get("DeviceRequests") in (None, []),
             "no_host_pid_namespace": not (isinstance(pid_mode, str) and pid_mode.startswith(("host", "container"))),
             "no_host_ipc_namespace": not (isinstance(ipc_mode, str) and ipc_mode.startswith(("host", "container"))),
+            "no_host_uts_namespace": not str(host.get("UTSMode") or "").startswith(("host", "container")),
+            "no_host_cgroup_namespace": not str(host.get("CgroupnsMode") or "").startswith(("host", "container")),
+            "no_volumes_from": host.get("VolumesFrom") in (None, []),
             "auto_remove_disabled": host.get("AutoRemove") is False,
             "memory_limit_exact": type(host.get("Memory")) is int and host.get("Memory") == expected_memory,
             "swap_limit_exact": type(host.get("MemorySwap")) is int and host.get("MemorySwap") == expected_memory,
@@ -242,6 +248,67 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         )
     return output
 
+def _validate_worker_tool_events(
+    spawns: list[dict[str, Any]],
+    calls: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    expected_command: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Require exactly one real, exact shell call and result from each spawned worker.
+
+    This deliberately receives ALL tool.call/tool.result events, not shell-filtered subsets:
+    a worker may not hide an extra skill/task-board/self-scan call behind a passing shell call.
+    """
+    identities = _durable_spawn_ids(spawns)
+    if len(spawns) != 2:
+        raise RuntimeError(f"Expected exactly two spawned workers, got {len(spawns)}.")
+    expected_agents = set(identities)
+    if len(calls) != 2:
+        raise RuntimeError(f"Expected exactly two total tool.call events, got {len(calls)}.")
+    if len(results) != 2:
+        raise RuntimeError(f"Expected exactly two total tool.result events, got {len(results)}.")
+
+    calls_by_agent: dict[str, dict[str, Any]] = {}
+    for event in calls:
+        if not isinstance(event, dict):
+            raise RuntimeError("A tool.call event is malformed.")
+        agent = event.get("agent")
+        data = event.get("data")
+        if agent not in expected_agents or not isinstance(data, dict):
+            raise RuntimeError("A tool.call event does not belong to one of the two spawned workers.")
+        if agent in calls_by_agent:
+            raise RuntimeError(f"Worker {agent} issued more than one tool call.")
+        if data.get("tool") != "shell":
+            raise RuntimeError(f"Worker {agent} used {data.get('tool')!r}; only shell is permitted.")
+        args = data.get("args")
+        if not isinstance(args, dict) or args != {"cmd": expected_command}:
+            raise RuntimeError(f"Worker {agent} did not submit the exact approved shell command.")
+        calls_by_agent[agent] = event
+
+    results_by_agent: dict[str, str] = {}
+    for event in results:
+        if not isinstance(event, dict):
+            raise RuntimeError("A tool.result event is malformed.")
+        agent = event.get("agent")
+        data = event.get("data")
+        if agent not in expected_agents or not isinstance(data, dict):
+            raise RuntimeError("A tool.result event does not belong to one of the two spawned workers.")
+        if agent in results_by_agent:
+            raise RuntimeError(f"Worker {agent} produced more than one tool result.")
+        if data.get("tool") != "shell":
+            raise RuntimeError(f"Worker {agent} returned a result for {data.get('tool')!r}, not shell.")
+        if agent not in calls_by_agent:
+            raise RuntimeError(f"Worker {agent} returned a tool result without a recorded call.")
+        output = data.get("output")
+        if not isinstance(output, str):
+            raise RuntimeError(f"Worker {agent} shell result is not text.")
+        results_by_agent[agent] = output
+
+    if set(calls_by_agent) != expected_agents or set(results_by_agent) != expected_agents:
+        raise RuntimeError("The two spawned workers do not each have exactly one shell call and result.")
+    return identities, results_by_agent
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base-url", default=os.environ.get("AVRONE_LOCAL_BASE_URL", "http://127.0.0.1:8710"))
@@ -288,8 +355,8 @@ def main() -> int:
     if not isinstance(events, list):
         raise RuntimeError("Run log endpoint did not return an event array.")
     spawns = [e for e in events if e.get("kind") == "agent.spawn"]
-    calls = [e for e in events if e.get("kind") == "tool.call" and (e.get("data") or {}).get("tool") == "shell"]
-    results = [e for e in events if e.get("kind") == "tool.result" and (e.get("data") or {}).get("tool") == "shell"]
+    calls = [e for e in events if e.get("kind") == "tool.call"]
+    results = [e for e in events if e.get("kind") == "tool.result"]
     spawn_by_agent = {
         e.get("agent"): ((e.get("data") or {}).get("agent_id")
                          if isinstance(e.get("data"), dict) else None)
@@ -335,36 +402,15 @@ def main() -> int:
     diagnostic_path.write_text(json.dumps(diagnostic, indent=2), encoding="utf-8")
     print(json.dumps({**diagnostic, "diagnostic_path": str(diagnostic_path)}, indent=2))
 
-    spawn_by_agent = _durable_spawn_ids(spawns)
+    spawn_by_agent, output_by_agent = _validate_worker_tool_events(
+        spawns, calls, results, shell_command
+    )
     spawn_agents = list(spawn_by_agent)
-    if len(spawns) != 2:
-        raise RuntimeError(f"Expected exactly two spawned workers, got {len(spawns)}.")
-
-    worker_calls = {
-        agent: [e for e in calls if e.get("agent") == agent]
-        for agent in {e.get("agent") for e in spawns if e.get("agent")}
-    }
-    worker_results = {
-        agent: [e for e in results if e.get("agent") == agent]
-        for agent in worker_calls
-    }
-    if set(worker_calls) != set(spawn_agents):
-        raise RuntimeError("Spawned worker identities are not represented one-to-one in the shell events.")
-    if any(len(worker_calls[a]) != 1 for a in worker_calls):
-        raise RuntimeError("Each worker must issue exactly one tool call in this one-action smoke test.")
-    if any(len(worker_results[a]) != 1 for a in worker_results):
-        raise RuntimeError("Each worker must have exactly one recorded tool result.")
-    if any((worker_calls[a][0].get("data") or {}).get("tool") != "shell" for a in worker_calls):
-        raise RuntimeError("Both workers must use the shell tool; another tool was called.")
-    output_by_agent = {
-        agent: str((worker_results[agent][0].get("data") or {}).get("output", ""))
-        for agent in worker_results
-    }
     expected_line = f"{expected_sha}  {marker}"
     for agent, output in output_by_agent.items():
         if expected_line not in output or marker not in output:
             raise RuntimeError(f"Worker {agent} shell output did not prove sha256sum of its unique run marker.")
-    shell_agents = set(worker_calls)
+    shell_agents = set(spawn_by_agent)
     expected_artifacts = {}
     for agent, output in output_by_agent.items():
         agent_id = spawn_by_agent.get(agent)

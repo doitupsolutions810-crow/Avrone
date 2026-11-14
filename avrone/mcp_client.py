@@ -338,6 +338,13 @@ class MCPClient:
             raise
 
     async def initialize(self) -> dict[str, Any]:
+        # Reset negotiated state before every handshake. A failed renegotiation must not
+        # leave a stale supported version or HTTP header behind.
+        self.protocol_version = None
+        self.server_info = {}
+        self.capabilities = {}
+        if isinstance(self.transport, HTTPTransport):
+            self.transport.protocol_version = None
         res = await self.transport.request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
@@ -345,8 +352,8 @@ class MCPClient:
         }, timeout=self.timeout)
         if not isinstance(res, dict):
             raise MCPError("MCP initialize response must be a JSON object")
-        version = res.get("protocolVersion") or PROTOCOL_VERSION
-        if not isinstance(version, str) or not version:
+        version = res.get("protocolVersion", PROTOCOL_VERSION)
+        if not isinstance(version, str) or not version.strip():
             raise MCPError("MCP initialize protocolVersion must be a non-empty string")
         if version not in SUPPORTED_VERSIONS:
             supported = ", ".join(SUPPORTED_VERSIONS)

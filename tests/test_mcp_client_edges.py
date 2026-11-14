@@ -477,6 +477,8 @@ def test_http_post_requires_connect():
     ('{"jsonrpc":"2.0","id":1,"result":NaN}', None),
     ('{"jsonrpc":"2.0","id":1,"result":Infinity}', None),
     ('{"jsonrpc":"2.0","id":1,"result":-Infinity}', None),
+    ('{"jsonrpc":"2.0","id":99,"id":1,"result":1}', None),
+    ('{"jsonrpc":"2.0","id":1,"result":{"x":1,"x":2}}', None),
     ('{"jsonrpc":"1.0","id": 1, "result": 1}', None),
     ('{"jsonrpc":"2.0","id": 1, "result": 1, "error": {"code":-1,"message":"m"}}', None),
     ('{"jsonrpc":"2.0","id": 1, "error": {"message": "m"}}', None),
@@ -489,6 +491,12 @@ def test_http_post_requires_connect():
 ])
 def test_match_response(payload, want):
     assert _match_response(payload, 1) == want
+
+
+def test_match_response_rejects_excessive_json_nesting():
+    nested = "[" * 1200 + "0" + "]" * 1200
+    payload = '{"jsonrpc":"2.0","id":1,"result":' + nested + "}"
+    assert _match_response(payload, 1) is None
 
 
 def test_stdio_dispatch_rejects_boolean_id_spoof_and_malformed_envelopes():
@@ -603,6 +611,13 @@ def test_load_config_rejects_malformed_server_map(tmp_path, server_map):
     p = tmp_path / "mcp.json"
     p.write_text(json.dumps({"mcpServers": server_map}))
     with pytest.raises(MCPError, match="server map must be a JSON object"):
+        load_config(p)
+
+
+def test_load_config_rejects_duplicate_object_keys(tmp_path):
+    p = tmp_path / "mcp.json"
+    p.write_text('{"mcpServers":{"one":{"url":"https://first.invalid"},"one":{"url":"https://second.invalid"}}}')
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
         load_config(p)
 
 

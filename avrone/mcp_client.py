@@ -61,6 +61,28 @@ class MCPError(RuntimeError):
         self.data = data
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous JSON objects rather than silently keeping the last duplicate key."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(payload: str) -> Any:
+    """Parse JSON while rejecting duplicate keys, non-standard constants, and deep nesting."""
+    try:
+        return json.loads(
+            payload,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON nesting exceeds parser limit") from exc
+
+
 def _safe_part(s: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_\-.]", "_", str(s))
     return value[:80] or "_"
@@ -114,7 +136,7 @@ class StdioTransport(_Transport):
                 if not line:
                     continue
                 try:
-                    msg = json.loads(line, parse_constant=_reject_json_constant)
+                    msg = _strict_json_loads(line)
                 except ValueError:
                     log.debug("mcp non-JSON stdout line ignored: %s", line[:200])
                     continue
@@ -395,7 +417,7 @@ def _valid_rpc_response(message: Any, want_id: int) -> bool:
 
 def _match_response(payload: str, want_id: int) -> dict | None:
     try:
-        obj = json.loads(payload, parse_constant=_reject_json_constant)
+        obj = _strict_json_loads(payload)
     except (TypeError, ValueError):
         return None
     for message in (obj if isinstance(obj, list) else [obj]):
@@ -660,7 +682,7 @@ def load_config(path: str | os.PathLike | None = None) -> dict[str, dict[str, An
     p = Path(path or os.getenv("AVRONE_MCP_CONFIG", "./mcp.json"))
     if not p.exists():
         return {}
-    data = json.loads(p.read_text() or "{}")
+    data = _strict_json_loads(p.read_text() or "{}")
     servers = data.get("mcpServers", data.get("servers", {})) if isinstance(data, dict) else {}
     if not isinstance(servers, dict):
         raise MCPError("MCP config server map must be a JSON object")

@@ -614,6 +614,19 @@ def test_load_config_rejects_malformed_server_map(tmp_path, server_map):
         load_config(p)
 
 
+def test_manager_rejects_oversized_server_override_before_starting_anything(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_MCP_SERVERS", 1)
+    manager = MCPManager(servers={
+        "one": {"url": "https://one.invalid"},
+        "two": {"url": "https://two.invalid"},
+    })
+    registry = ToolRegistry()
+    status = run(manager.start(registry))
+    assert not manager.clients
+    assert status["_config"]["connected"] is False
+    assert "1-server limit" in status["_config"]["error"]
+
+
 def test_load_config_enforces_server_count_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "MAX_MCP_SERVERS", 2)
     p = tmp_path / "mcp.json"
@@ -634,7 +647,7 @@ def test_load_config_enforces_file_size_limit(tmp_path, monkeypatch):
 
 def test_load_config_rejects_invalid_utf8(tmp_path):
     p = tmp_path / "mcp.json"
-    p.write_bytes(b'{"mcpServers": {"x": "\\xff"}}')
+    p.write_bytes(b'{"mcpServers": {"x": "' + bytes([255]) + b'"}}')
     with pytest.raises(MCPError, match="valid UTF-8"):
         load_config(p)
 

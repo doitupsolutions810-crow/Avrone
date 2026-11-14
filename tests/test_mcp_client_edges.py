@@ -503,7 +503,7 @@ def test_initialize_unknown_version_and_empty_result(caplog):
     with caplog.at_level(logging.WARNING, logger="avrone.mcp"):
         run(c.initialize())
     assert c.protocol_version == "1999-01-01" == c.transport.protocol_version and "unknown protocol" in caplog.text
-    c.transport = T(None)
+    c.transport = T({})
     assert run(c.initialize()) == {} and c.protocol_version == mc.PROTOCOL_VERSION
     assert c.server_info == {} and c.capabilities == {} and c.transport.notes == ["notifications/initialized"]
 
@@ -708,6 +708,30 @@ def test_manager_description_fallbacks_and_caps(monkeypatch):
     assert reg.get("mcp__s__a").description == "MCP tool a on s"
     assert reg.get("mcp__s__b").description == "D" * 500
     assert reg.get("mcp__s__a").source == "mcp:s"
+
+
+def test_manager_tolerates_non_string_descriptions_and_malformed_schema(monkeypatch):
+    FakeClient.behaviour = {
+        "s": {
+            "tools": [
+                {"name": "safe", "description": 17, "title": None,
+                 "inputSchema": {"properties": "not-an-object"}},
+                {"name": "wide" * 100, "description": ["not", "text"], "inputSchema": None},
+            ]
+        }
+    }
+    monkeypatch.setattr(mc, "MCPClient", FakeClient)
+    reg = ToolRegistry()
+    status = run(MCPManager(servers={"s": {"command": "c"}}).start(reg))
+    safe = reg.get("mcp__s__safe")
+    assert safe.description == "MCP tool safe on s"
+    assert safe.args_doc == "{}"
+    assert reg.get("mcp__s__" + ("wide" * 20)) is not None
+    assert status["s"]["connected"] is True
+
+
+def test_safe_part_caps_untrusted_server_names():
+    assert len(mc._safe_part("x" * 10_000)) == 80
 
 
 def test_manager_stop_before_start():

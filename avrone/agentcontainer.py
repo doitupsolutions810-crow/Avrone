@@ -290,8 +290,18 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("container publishes ports")
     if host.get("Devices") not in (None, []) or host.get("DeviceRequests") not in (None, []):
         problems.append("container has device access")
+    if host.get("DeviceCgroupRules") not in (None, []):
+        problems.append("container has device cgroup rules")
     if host.get("VolumesFrom") not in (None, []):
         problems.append("container inherits external volumes")
+    if host.get("Runtime") not in (None, "", "runc"):
+        problems.append("container uses a non-default runtime")
+    if host.get("UsernsMode") not in (None, ""):
+        problems.append("container overrides the daemon user namespace")
+    if host.get("Sysctls") not in (None, {}):
+        problems.append("container has sysctl overrides")
+    if host.get("GroupAdd") not in (None, []):
+        problems.append("container adds supplemental host groups")
     if str(host.get("PidMode") or "").startswith(("host", "container")):
         problems.append("container shares a PID namespace")
     if str(host.get("IpcMode") or "").startswith(("host", "container")):

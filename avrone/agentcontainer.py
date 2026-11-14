@@ -274,9 +274,10 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
             or "ALL" not in cap_drop or cap_add not in (None, [])):
         problems.append("Linux capabilities are not fully dropped")
     security_opt = host.get("SecurityOpt")
-    if (not isinstance(security_opt, list) or any(not isinstance(x, str) for x in security_opt)
-            or "no-new-privileges" not in security_opt):
-        problems.append("no-new-privileges is not enabled")
+    if security_opt != ["no-new-privileges"]:
+        problems.append(
+            "no-new-privileges must be the only security option; seccomp/AppArmor overrides are not accepted"
+        )
     if not allow_network and host.get("NetworkMode") != "none":
         problems.append("agent container has network access")
     raw_network_mode = host.get("NetworkMode")
@@ -295,6 +296,10 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("container shares a PID namespace")
     if str(host.get("IpcMode") or "").startswith(("host", "container")):
         problems.append("container shares an IPC namespace")
+    if str(host.get("UTSMode") or "").startswith(("host", "container")):
+        problems.append("container shares a UTS namespace")
+    if str(host.get("CgroupnsMode") or "").startswith(("host", "container")):
+        problems.append("container shares a cgroup namespace")
     if host.get("AutoRemove") is not False:
         problems.append("persistent agent container auto-remove policy is unknown or enabled")
     if (type(host.get("Memory")) is not int or host.get("Memory") != memory_bytes

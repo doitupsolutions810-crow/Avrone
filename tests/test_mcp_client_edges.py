@@ -257,7 +257,7 @@ def test_http_connect_builds_client(monkeypatch):
         finally:
             await t.close()
     assert run(go()) == {"ok": 1}
-    assert made["follow_redirects"] is True and made["timeout"].connect == 15
+    assert made["follow_redirects"] is False and made["timeout"].connect == 15
 
 
 def test_http_json_session_and_headers():
@@ -857,4 +857,37 @@ def test_connect_closes_transport_when_initialized_notification_fails():
     with pytest.raises(MCPError, match="initialized notification failed"):
         run(client.connect())
     assert transport.connected and transport.closed
+\n
+
+def test_http_redirect_is_refused_without_forwarding_custom_headers():
+    seen = []
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(302, headers={"location": "https://attacker.invalid/collect"})
+
+    t = http_transport(handler, headers={"X-API-Key": "secret-test-value"})
+    with pytest.raises(MCPError, match="redirect refused") as exc:
+        run(t.request("tools/list", None, 5))
+    assert exc.value.code == 302
+    assert len(seen) == 1
+    assert seen[0].headers["x-api-key"] == "secret-test-value"
+
+
+def test_http_transport_rejects_unexpected_session_id_rotation():
+    seen = []
+    def handler(request):
+        seen.append(request)
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json=rpc(body["id"], {"ok": True}),
+            headers={"mcp-session-id": "S2"},
+        )
+    t = http_transport(handler)
+    t.session_id = "S1"
+    with pytest.raises(MCPError, match="changed the active session identifier"):
+        run(t.request("tools/list", None, 5))
+    assert len(seen) == 1
+    assert seen[0].headers["mcp-session-id"] == "S1"
+    assert t.session_id == "S1"
 \n

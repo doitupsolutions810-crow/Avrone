@@ -27,6 +27,7 @@ throwaway container per command with AVRONE_AGENT_DOCKER_ISOLATE=1).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -85,6 +86,13 @@ def container_name(node: str, agent_id: str) -> str:
     """Docker-safe, deterministic name for one agent's home container."""
     n = _NAME_BAD.sub("-", str(node).lower()).strip("-.")[:40] or "node"
     return f"{NAME_PREFIX}-{n}-{agentfs.sanitize_agent_id(agent_id)}"
+
+
+def workspace_identity(agent_dir: Path) -> str:
+    """Stable non-reversible identity for the workspace owning one agent directory."""
+    d = Path(agent_dir).resolve()
+    root = d.parent.parent
+    return hashlib.sha256(os.fsencode(str(root))).hexdigest()[:16]
 
 
 def sandbox_identity() -> tuple[int, int]:
@@ -162,7 +170,10 @@ def persistent_run_argv(name: str, host_dir: Path, image: str, allow_network: bo
                         mem: int | None = None, cpu: float | None = None, agent_id: str = "") -> list[str]:
     """`docker run -d` for a long-lived agent home: ONLY the agent dir is mounted, at /agent."""
     mnt = agentfs.CONTAINER_AGENT_MOUNT
-    labels = ["--label", "avrone.agent-home=1"]
+    labels = [
+        "--label", "avrone.agent-home=1",
+        "--label", f"avrone.workspace={workspace_identity(host_dir)}",
+    ]
     if agent_id:
         labels += ["--label", f"avrone.agent={agentfs.sanitize_agent_id(agent_id)}"]
     return ["docker", "run", "-d", "--name", name, *labels,
@@ -204,11 +215,27 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     state = payload.get("State") if isinstance(payload.get("State"), dict) else {}
     labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
     expected_agent = agentfs.sanitize_agent_id(Path(agent_dir).name)
-    owned = labels.get("avrone.agent-home") == "1" and labels.get("avrone.agent") == expected_agent
+    expected_source = str(Path(agent_dir).resolve())
+    binds = host.get("Binds")
+    good_bind = False
+    if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
+        parts = binds[0].split(":")
+        good_bind = (
+            len(parts) == 2
+            and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
+            and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
+        )
+    owned = (
+        labels.get("avrone.agent-home") == "1"
+        and labels.get("avrone.agent") == expected_agent
+        and good_bind
+    )
     if not owned:
-        return False, False, "container name is occupied by a container not owned by this agent home"
+        return False, False, "container name is occupied by a different agent home or workspace"
 
     problems: list[str] = []
+    if labels.get("avrone.workspace") != workspace_identity(agent_dir):
+        problems.append("workspace identity label does not match this agent home")
     if state.get("Running") is not True:
         problems.append("container is not running")
     uid, gid = sandbox_identity()
@@ -234,16 +261,6 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         if any(env_values.get(key) != [value] for key, value in required_env.items()):
             problems.append("required private-home environment is missing, duplicated, or overridden")
 
-    binds = host.get("Binds") or []
-    expected_source = str(Path(agent_dir).resolve())
-    good_bind = False
-    if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
-        parts = binds[0].split(":")
-        good_bind = (
-            len(parts) >= 2
-            and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
-            and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
-        )
     mounts = payload.get("Mounts") or []
     good_mount = (
         isinstance(mounts, list) and len(mounts) == 1
@@ -381,10 +398,42 @@ class AgentContainerPool:
             now = self.clock()
             home = self.homes.get(name)
             if home is not None:
-                home.last_used, home.uses = now, home.uses + 1
-                if _active:
-                    home.active += 1
-                return name
+                if Path(home.agent_dir).resolve() != d:
+                    raise RuntimeError(
+                        f"agent container name collision for {name}: cached workspace does not match"
+                    )
+                cached_inspect = await self._exec(inspect_argv(name), 30)
+                cached_code = getattr(cached_inspect, "exit_code", 1)
+                if cached_code == 0:
+                    cached_ok, cached_owned, cached_reason = _inspect_matches_policy(
+                        str(getattr(cached_inspect, "stdout", "")), d, self.image, self.allow_network
+                    )
+                    if not cached_owned:
+                        raise RuntimeError(
+                            f"refusing to reuse agent container {name}: {cached_reason}"
+                        )
+                    if cached_ok:
+                        home.last_used, home.uses = now, home.uses + 1
+                        if _active:
+                            home.active += 1
+                        return name
+                    if home.active > 0:
+                        raise RuntimeError(
+                            f"active agent container {name} became non-compliant: {cached_reason}"
+                        )
+                    removed = await self._exec(rm_argv(name), 30)
+                    if getattr(removed, "exit_code", 1) != 0:
+                        raise RuntimeError(f"could not remove non-compliant cached agent container {name}")
+                    del self.homes[name]
+                elif _docker_not_found(cached_inspect):
+                    if home.active > 0:
+                        raise RuntimeError(f"active agent container {name} disappeared during a command")
+                    del self.homes[name]
+                else:
+                    detail = str(getattr(cached_inspect, "stderr", "") or "")[:300]
+                    raise RuntimeError(
+                        f"could not re-inspect cached agent container {name}: {detail or 'unknown Docker error'}"
+                    )
 
             inspected = await self._exec(inspect_argv(name), 30)
             code = getattr(inspected, "exit_code", 1)

@@ -923,3 +923,31 @@ def test_explicit_cpu_limit_rejects_invalid_values(invalid, monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     with pytest.raises(ValueError, match="cpu"):
         ac.hardening_args(False, cpu=invalid)
+
+
+
+@pytest.mark.parametrize("invalid", [10**1000, float("inf"), float("nan"), True, "not-a-number"])
+def test_cpu_limit_rejects_overflow_nonfinite_and_malformed_values(invalid, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    with pytest.raises(ValueError, match="cpu"):
+        ac.hardening_args(False, cpu=invalid)
+
+
+def test_explicit_idle_limit_is_bounded_but_accepts_valid_extremes():
+    minimum = ac.AgentContainerPool(FakeDocker(), "img", False, node="n", idle=0.01)
+    maximum = ac.AgentContainerPool(FakeDocker(), "img", False, node="n", idle=10**1000)
+    assert minimum.idle_after == ac.MIN_IDLE_SECS
+    assert maximum.idle_after == 7 * 86400.0
+
+
+def test_network_opt_in_never_allows_shared_host_or_container_network_namespace(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    d = agentfs.agent_dir(tmp_path / "ws", "builder")
+    argv = ac.persistent_run_argv("avrone-agent-edge-builder", d, "img", True, agent_id="builder")
+    for mode in ("host", "container:abc123"):
+        payload = _fake_inspect_from_run(argv)
+        payload["HostConfig"]["NetworkMode"] = mode
+        ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), d, "img", allow_network=True)
+        assert owned and not ok and "network namespace" in detail

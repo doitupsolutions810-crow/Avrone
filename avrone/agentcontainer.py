@@ -132,7 +132,7 @@ def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | Non
             raise ValueError("cpu must be a positive finite number")
         try:
             cpu_value = float(cpu)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("cpu must be a positive finite number") from exc
         if not math.isfinite(cpu_value) or cpu_value <= 0:
             raise ValueError("cpu must be a positive finite number")
@@ -255,7 +255,8 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("no-new-privileges is not enabled")
     if not allow_network and host.get("NetworkMode") != "none":
         problems.append("agent container has network access")
-    if allow_network and str(host.get("NetworkMode", "")).lower() in {"host", "container"}:
+    network_mode = str(host.get("NetworkMode", "")).lower()
+    if allow_network and network_mode.startswith(("host", "container")):
         problems.append("agent container shares a host/peer network namespace")
     if host.get("Privileged") is not False:
         problems.append("privileged container mode is enabled")
@@ -324,7 +325,7 @@ class AgentContainerPool:
             raise ValueError("idle must be a positive finite number of seconds")
         try:
             value = float(self._idle)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("idle must be a positive finite number of seconds") from exc
         if not math.isfinite(value) or value <= 0:
             raise ValueError("idle must be a positive finite number of seconds")

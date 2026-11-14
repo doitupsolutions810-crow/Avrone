@@ -102,8 +102,8 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
             "network_is_none": host.get("NetworkMode") == "none",
             "not_privileged": host.get("Privileged") is False,
             "no_device_access": not bool(host.get("Devices") or host.get("DeviceRequests") or []),
-            "no_host_pid_namespace": str(host.get("PidMode") or "") not in {"host", "container"},
-            "no_host_ipc_namespace": str(host.get("IpcMode") or "") not in {"host", "container"},
+            "no_host_pid_namespace": not str(host.get("PidMode") or "").startswith(("host", "container")),
+            "no_host_ipc_namespace": not str(host.get("IpcMode") or "").startswith(("host", "container")),
             "memory_bounded": int(host.get("Memory") or 0) > 0,
             "swap_bounded_to_memory": int(host.get("MemorySwap") or 0) == int(host.get("Memory") or 0),
             "cpu_bounded": int(host.get("NanoCpus") or 0) > 0,
@@ -165,8 +165,8 @@ def main() -> int:
         "The Lead must spawn exactly two independent workers. Each worker must make exactly ONE tool call, "
         "and that first response must be a shell tool call. Do not call skill_list, skill_load, task_board, "
         "self_scan, read_file, or any other tool. Do not send a prose preamble or a plan. "
-        "Use the shell tool with args.cmd set to this exact command:\\n"
-        f"{shell_command}\\n"
+        "Use the shell tool with args.cmd set to this exact command:\n"
+        f"{shell_command}\n"
         "After the tool returns, report its actual TOOL RESULT only. Do not claim the command ran or the file "
         "exists unless the shell tool result proves it. Both workers use the same command but run it in their "
         "own private /agent directories."

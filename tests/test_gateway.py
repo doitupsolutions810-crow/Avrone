@@ -117,3 +117,18 @@ def test_ollama_json_mode_only_applies_after_provider_failover(monkeypatch):
     assert out == '{"final":"ok"}'
     assert "response_format" not in seen[0][1]
     assert seen[1][1]["response_format"] == {"type": "json_object"}
+
+
+
+def test_json_mode_is_not_added_to_non_ollama_provider(monkeypatch):
+    seen = []
+
+    def handler(req):
+        import json
+        seen.append(json.loads(req.content))
+        return reply('{"final":"ok"}')
+
+    g = mk({"AVRONE_PROVIDER": "xai", "AVRONE_LLM_API_KEY": "k"}, monkeypatch, handler)
+    asyncio.run(g.chat([{"role": "system", "content": "JSON output."},
+                        {"role": "user", "content": "Return JSON."}], json_mode=True))
+    assert "response_format" not in seen[-1]

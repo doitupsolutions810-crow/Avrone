@@ -285,3 +285,32 @@ def test_mock_llm_squad_still_works(tmp_path):
     out = run(core.chat("hello", run_id="mk"))
     assert out["answer"]
     assert "tool.arg_error" not in _kinds(core, "mk")
+
+
+
+def test_required_tool_action_is_first_worker_turn_and_ollama_json_mode_is_requested(tmp_path):
+    class SpyLLM:
+        def __init__(self):
+            self.calls = []
+            self.replies = [
+                '{"tool":"echo","args":{"text":"proof"}}',
+                '{"final":"tool-result verified"}',
+            ]
+        async def chat(self, messages, **kwargs):
+            self.calls.append({"messages": [dict(m) for m in messages], "kwargs": dict(kwargs)})
+            return self.replies.pop(0)
+
+    llm = SpyLLM()
+    core = _core(tmp_path, llm, tools=_reg())
+    result = run(core.run_agent(
+        "required-action",
+        "Verifier",
+        "The required action is to call the echo tool and verify the returned text.",
+    ))
+    assert result == "tool-result verified"
+    assert llm.calls[0]["kwargs"].get("json_mode") is True
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert "first reply must be the tool-call object" in prompt
+    assert "Do not announce intent" in prompt
+    assert "Never invent command output" in prompt
+    assert "TOOL RESULT (echo):\\necho:proof" in llm.calls[1]["messages"][-1]["content"]

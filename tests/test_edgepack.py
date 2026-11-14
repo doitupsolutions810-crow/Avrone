@@ -865,6 +865,8 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["Config"].update(Image="evil:latest"), "configured image"),
     (lambda p: p["Config"].update(WorkingDir="/"), "working directory"),
     (lambda p: p["Config"].update(Env=["HOME=/tmp"]), "environment"),
+    (lambda p: p["Config"]["Env"].append("AVRONE_ADMIN_TOKEN=leaked"), "secret-shaped credentials"),
+    (lambda p: p["Config"]["Env"].append("PATH=/tmp"), "duplicated variable names"),
     (lambda p: p["HostConfig"].update(CapAdd=["SYS_ADMIN"]), "capabilities"),
     (lambda p: p["HostConfig"].update(CapDrop=[]), "capabilities"),
     (lambda p: p["HostConfig"].update(SecurityOpt=[]), "no-new-privileges"),

@@ -449,6 +449,8 @@ def format_content(result: Any) -> str:
             parts.append(f"[audio: {c.get('mimeType', 'unknown')} omitted]")
         elif kind == "resource":
             resource = c.get("resource")
+            if resource is None:
+                resource = {}
             if not isinstance(resource, dict):
                 parts.append("[resource: malformed payload omitted]")
             elif isinstance(resource.get("text"), str):
@@ -508,7 +510,7 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
             except (TypeError, ValueError, RecursionError):
                 t = "any"
         elif isinstance(raw_type, str) and raw_type:
-            t = _TYPE_MAP.get(raw_type, raw_type)
+            t = _TYPE_MAP.get(raw_type, "any")
         else:
             t = "any"
         items.append(f'"{name}"{"" if key in required else "?"}: {t}')

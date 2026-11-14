@@ -49,6 +49,7 @@ MAX_SCHEMA_PROPERTIES = 128
 MAX_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_HTTP_SSE_LINE_BYTES = 1024 * 1024
 MAX_HTTP_ERROR_BYTES = 64 * 1024
+MAX_STDIO_LINE_BYTES = 8 * 1024 * 1024
 
 
 class MCPError(RuntimeError):
@@ -92,7 +93,7 @@ class StdioTransport(_Transport):
         env = {**os.environ, **self.env}
         self.proc = await asyncio.create_subprocess_exec(
             self.command, *self.args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=env, cwd=self.cwd, limit=16 * 1024 * 1024)
+            stderr=asyncio.subprocess.PIPE, env=env, cwd=self.cwd, limit=MAX_STDIO_LINE_BYTES)
         self._reader = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
@@ -113,8 +114,8 @@ class StdioTransport(_Transport):
                 if not line:
                     continue
                 try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
+                    msg = json.loads(line, parse_constant=_reject_json_constant)
+                except ValueError:
                     log.debug("mcp non-JSON stdout line ignored: %s", line[:200])
                     continue
                 for m in (msg if isinstance(msg, list) else [msg]):
@@ -363,6 +364,11 @@ class HTTPTransport(_Transport):
         self._client = None
 
 
+def _reject_json_constant(value: str) -> None:
+    """Reject Python's non-standard NaN/Infinity JSON extensions."""
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
 def _valid_rpc_request_id(value: Any) -> bool:
     """Reject booleans and oversized strings masquerading as JSON-RPC request IDs."""
     return type(value) is int or (isinstance(value, str) and len(value) <= 512)
@@ -389,8 +395,8 @@ def _valid_rpc_response(message: Any, want_id: int) -> bool:
 
 def _match_response(payload: str, want_id: int) -> dict | None:
     try:
-        obj = json.loads(payload)
-    except (json.JSONDecodeError, TypeError, ValueError):
+        obj = json.loads(payload, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError):
         return None
     for message in (obj if isinstance(obj, list) else [obj]):
         if _valid_rpc_response(message, want_id):

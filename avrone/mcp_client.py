@@ -250,13 +250,13 @@ class HTTPTransport(_Transport):
                 raise MCPError(
                     f"MCP SSE line exceeded configured limit ({MAX_HTTP_SSE_LINE_BYTES} bytes)"
                 )
-            if raw.endswith(b"\\r"):
+            if raw.endswith(b"\r"):
                 raw = raw[:-1]
             line = raw.decode(errors="replace")
             if line.startswith("data:"):
                 data_lines.append(line[5:].lstrip())
             elif line == "" and data_lines:
-                payload = "\\n".join(data_lines)
+                payload = "\n".join(data_lines)
                 data_lines.clear()
                 return _match_response(payload, want_id)
             return None
@@ -269,7 +269,7 @@ class HTTPTransport(_Transport):
                 )
             pending.extend(chunk)
             while True:
-                newline = pending.find(b"\\n")
+                newline = pending.find(b"\n")
                 if newline < 0:
                     break
                 raw = bytes(pending[:newline])
@@ -287,7 +287,7 @@ class HTTPTransport(_Transport):
             if found is not None:
                 return found
         if data_lines:
-            found = _match_response("\\n".join(data_lines), want_id)
+            found = _match_response("\n".join(data_lines), want_id)
             if found is not None:
                 return found
         raise MCPError("event stream ended without a response")

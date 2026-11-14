@@ -193,3 +193,94 @@ def test_persistent_agent_container_mounts_only_agent_home(monkeypatch, tmp_path
     assert argv[argv.index("-w") + 1] == "/agent"
     assert argv[argv.index("--label") + 1] == "avrone.agent-home=1"
     assert argv[-3:] == ["python:3.12-slim", "sleep", "infinity"]
+
+
+@pytest.mark.parametrize("invalid", [True, 1.5, "2", 0, -1])
+@pytest.mark.asyncio
+async def test_build_rejects_non_integer_or_out_of_range_worker_counts(invalid):
+    sdk = BuilderAgentSDK(FakeCore(), policy=BuilderPolicy())
+    with pytest.raises(ValueError, match="workers"):
+        await sdk.build("Run a bounded task", workers=invalid)
+
+
+@pytest.mark.parametrize("invalid", [True, 1.5, "1", 0, -1])
+@pytest.mark.asyncio
+async def test_build_rejects_non_integer_or_out_of_range_round_counts(invalid):
+    sdk = BuilderAgentSDK(FakeCore(), policy=BuilderPolicy())
+    with pytest.raises(ValueError, match="rounds"):
+        await sdk.build("Run a bounded task", mode="deep", rounds=invalid)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"max_task_chars": 0},
+        {"max_workers": True},
+        {"max_workers": 1.5},
+        {"max_deep_rounds": -1},
+        {"verification_timeout_s": 0},
+        {"verification_commands": ["python -m pytest -q"]},
+        {"verification_commands": ("",)},
+        {"expected_sha": 123},
+    ],
+)
+def test_builder_policy_rejects_invalid_limits_and_types(override):
+    with pytest.raises(ValueError):
+        BuilderPolicy(**override)
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_when_workspace_sha_changes_during_checks():
+    original_sha = "a" * 40
+    changed_sha = "b" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=original_sha),
+        FakeCommand(exit_code=0, stdout="all tests passed"),
+        FakeCommand(exit_code=0, stdout=changed_sha),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL"
+    assert result.status == "FAIL"
+    assert "SHA changed during verification" in evidence.reason
+    assert runner.commands == [
+        "git rev-parse --verify HEAD",
+        "python -m pytest -q",
+        "git rev-parse --verify HEAD",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_closed_when_final_sha_cannot_be_read():
+    original_sha = "c" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=original_sha),
+        FakeCommand(exit_code=0, stdout="all tests passed"),
+        FakeCommand(exit_code=128, stderr="not a git repository"),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL"
+    assert result.status == "FAIL"
+    assert "Could not confirm" in evidence.reason
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_duplicate_and_non_string_commands():
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=FakeRunner([])),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    with pytest.raises(ValueError, match="duplicates"):
+        await sdk.verify(result, commands=("python -m pytest -q", "python -m pytest -q"))
+    with pytest.raises(ValueError, match="allowlisted"):
+        await sdk.verify(result, commands=(["python -m pytest -q"],))

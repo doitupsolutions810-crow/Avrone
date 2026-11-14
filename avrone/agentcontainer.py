@@ -27,6 +27,8 @@ throwaway container per command with AVRONE_AGENT_DOCKER_ISOLATE=1).
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import os
 import re
 import socket
@@ -117,7 +119,24 @@ def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | Non
     CPU and RAM are bounded. Agent networking is opt-in and should normally remain disabled.
     """
     uid, gid = sandbox_identity()
-    memory = mem_mb() if mem is None else int(mem)
+    if mem is None:
+        memory = mem_mb()
+    else:
+        if type(mem) is not int or mem <= 0:
+            raise ValueError("mem must be a positive integer in MB")
+        memory = max(MIN_MEM_MB, min(MAX_MEM_MB, mem))
+    if cpu is None:
+        cpu_limit = cpus()
+    else:
+        if isinstance(cpu, bool):
+            raise ValueError("cpu must be a positive finite number")
+        try:
+            cpu_value = float(cpu)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("cpu must be a positive finite number") from exc
+        if not math.isfinite(cpu_value) or cpu_value <= 0:
+            raise ValueError("cpu must be a positive finite number")
+        cpu_limit = round(max(MIN_CPUS, min(MAX_CPUS, cpu_value)), 2)
     args = [
         "--user", f"{uid}:{gid}",
         "--read-only",
@@ -130,7 +149,7 @@ def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | Non
         "--pids-limit", str(PIDS_LIMIT),
         "--memory", f"{memory}m",
         "--memory-swap", f"{memory}m",
-        "--cpus", str(cpus() if cpu is None else cpu),
+        "--cpus", str(cpu_limit),
         "--ulimit", "nofile=1024:2048",
     ]
     if not allow_network:
@@ -157,8 +176,112 @@ def exec_argv(name: str, cmd: str) -> list[str]:
 
 
 def inspect_argv(name: str) -> list[str]:
-    return ["docker", "inspect", "-f", "{{.State.Running}}", name]
+    # A bare .State.Running check is not enough to adopt a named container: another process
+    # could leave a running but privileged/host-network/shared-volume container under our name.
+    return ["docker", "inspect", "-f", "{{json .}}", name]
 
+
+def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
+                            allow_network: bool) -> tuple[bool, bool, str]:
+    """Return (compatible, AVRONE-owned, reason) for a docker inspect JSON object.
+
+    Docker Desktop can translate a macOS path in Mounts.Source into a VM path. HostConfig.Binds
+    preserves the requested bind specification, while Mounts proves only one writable /agent
+    bind is actually attached.
+    """
+    try:
+        payload = json.loads(str(stdout or ""))
+    except (TypeError, ValueError):
+        return False, False, "inspect output is not JSON"
+    if isinstance(payload, list) and len(payload) == 1:
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        return False, False, "inspect output is not one container object"
+
+    config = payload.get("Config") if isinstance(payload.get("Config"), dict) else {}
+    host = payload.get("HostConfig") if isinstance(payload.get("HostConfig"), dict) else {}
+    state = payload.get("State") if isinstance(payload.get("State"), dict) else {}
+    labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
+    expected_agent = agentfs.sanitize_agent_id(Path(agent_dir).name)
+    owned = labels.get("avrone.agent-home") == "1" and labels.get("avrone.agent") == expected_agent
+    if not owned:
+        return False, False, "container name is occupied by a container not owned by this agent home"
+
+    problems: list[str] = []
+    if state.get("Running") is not True:
+        problems.append("container is not running")
+    uid, gid = sandbox_identity()
+    if config.get("User") != f"{uid}:{gid}":
+        problems.append("container user does not match the non-root agent identity")
+    if config.get("Image") != image:
+        problems.append("container image does not match the configured image")
+    if config.get("WorkingDir") != agentfs.CONTAINER_AGENT_MOUNT:
+        problems.append("working directory is not /agent")
+    env = set(config.get("Env") or [])
+    required_env = {"HOME=/agent", "TMPDIR=/tmp", "PYTHONDONTWRITEBYTECODE=1",
+                    f"AVRONE_AGENT_DIR={agentfs.CONTAINER_AGENT_MOUNT}"}
+    if not required_env.issubset(env):
+        problems.append("required private-home environment is missing")
+
+    binds = host.get("Binds") or []
+    expected_source = str(Path(agent_dir).resolve())
+    good_bind = False
+    if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
+        parts = binds[0].split(":")
+        good_bind = len(parts) >= 2 and os.path.normpath(parts[0]) == os.path.normpath(expected_source) \\
+            and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
+    mounts = payload.get("Mounts") or []
+    good_mount = (
+        isinstance(mounts, list) and len(mounts) == 1
+        and isinstance(mounts[0], dict)
+        and mounts[0].get("Type") == "bind"
+        and mounts[0].get("Destination") == agentfs.CONTAINER_AGENT_MOUNT
+        and mounts[0].get("RW") is True
+    )
+    if not good_bind or not good_mount:
+        problems.append("container does not have exactly the expected private /agent bind mount")
+
+    memory_bytes = mem_mb() * 1024 * 1024
+    expected_nano_cpus = int(round(cpus() * 1_000_000_000))
+    if host.get("ReadonlyRootfs") is not True:
+        problems.append("root filesystem is writable")
+    tmpfs = host.get("Tmpfs") if isinstance(host.get("Tmpfs"), dict) else {}
+    tmpfs_spec = str(tmpfs.get("/tmp", "")).lower()
+    if not all(part in tmpfs_spec for part in ("rw", "nosuid", "nodev", "size=128m")):
+        problems.append("bounded /tmp tmpfs is missing")
+    if "ALL" not in (host.get("CapDrop") or []) or host.get("CapAdd"):
+        problems.append("Linux capabilities are not fully dropped")
+    if not any("no-new-privileges" in str(item).lower() for item in (host.get("SecurityOpt") or [])):
+        problems.append("no-new-privileges is not enabled")
+    if not allow_network and host.get("NetworkMode") != "none":
+        problems.append("agent container has network access")
+    if allow_network and str(host.get("NetworkMode", "")).lower() in {"host", "container"}:
+        problems.append("agent container shares a host/peer network namespace")
+    if host.get("Privileged") is not False:
+        problems.append("privileged container mode is enabled")
+    if host.get("PortBindings"):
+        problems.append("container publishes ports")
+    if host.get("Devices") or host.get("DeviceRequests"):
+        problems.append("container has device access")
+    if str(host.get("PidMode") or "").startswith(("host", "container")):
+        problems.append("container shares a PID namespace")
+    if str(host.get("IpcMode") or "").startswith(("host", "container")):
+        problems.append("container shares an IPC namespace")
+    if host.get("AutoRemove") is True:
+        problems.append("persistent agent container is configured for auto-remove")
+    if host.get("Memory") != memory_bytes or host.get("MemorySwap") != memory_bytes:
+        problems.append("memory or swap limit does not match policy")
+    if host.get("NanoCpus") != expected_nano_cpus:
+        problems.append("CPU limit does not match policy")
+    if host.get("PidsLimit") != PIDS_LIMIT:
+        problems.append("PID limit does not match policy")
+
+    return not problems, True, "; ".join(problems) if problems else "compatible"
+
+
+def _docker_not_found(result: Any) -> bool:
+    detail = str(getattr(result, "stderr", "") or "").lower()
+    return "no such object" in detail or "no such container" in detail
 
 def rm_argv(name: str) -> list[str]:
     return ["docker", "rm", "-f", name]
@@ -195,7 +318,17 @@ class AgentContainerPool:
 
     @property
     def idle_after(self) -> float:
-        return idle_secs() if self._idle is None else float(self._idle)
+        if self._idle is None:
+            return idle_secs()
+        if isinstance(self._idle, bool):
+            raise ValueError("idle must be a positive finite number of seconds")
+        try:
+            value = float(self._idle)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("idle must be a positive finite number of seconds") from exc
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("idle must be a positive finite number of seconds")
+        return max(MIN_IDLE_SECS, min(7 * 86400.0, value))
 
     def run_argv(self, agent_dir: Path) -> list[str]:
         d = Path(agent_dir).resolve()
@@ -203,7 +336,7 @@ class AgentContainerPool:
                                    agent_id=d.name)
 
     async def ensure(self, agent_dir: Path) -> str:
-        """Name of a running home container for `agent_dir`, creating it if needed."""
+        """Name of a running, policy-compliant home container for agent_dir."""
         d = Path(agent_dir).resolve()
         name = container_name(self.node, d.name)
         await self.reap_idle(skip=name)
@@ -213,15 +346,44 @@ class AgentContainerPool:
             if home is not None:
                 home.last_used, home.uses = now, home.uses + 1
                 return name
-            res = await self._exec(inspect_argv(name), 30)
-            running = getattr(res, "exit_code", 1) == 0 and "true" in str(getattr(res, "stdout", "")).lower()
-            if not running:
-                await self._exec(rm_argv(name), 30)  # a stopped leftover with that name; ignore errors
-                res = await self._exec(self.run_argv(d), 300)
-                if getattr(res, "exit_code", 1) != 0:
+
+            inspected = await self._exec(inspect_argv(name), 30)
+            code = getattr(inspected, "exit_code", 1)
+            compatible = False
+            if code == 0:
+                compatible, owned, reason = _inspect_matches_policy(
+                    str(getattr(inspected, "stdout", "")), d, self.image, self.allow_network
+                )
+                if not owned:
+                    # A colliding name is not permission to kill or adopt an arbitrary container.
+                    raise RuntimeError(f"refusing to adopt unowned agent container {name}: {reason}")
+                if not compatible:
+                    removed = await self._exec(rm_argv(name), 30)
+                    if getattr(removed, "exit_code", 1) != 0:
+                        raise RuntimeError(f"could not remove non-compliant agent container {name}")
+            elif _docker_not_found(inspected):
+                # Keep stale-container cleanup; rm on an absent name is harmless.
+                await self._exec(rm_argv(name), 30)
+            else:
+                detail = str(getattr(inspected, "stderr", "") or "")[:300]
+                raise RuntimeError(f"could not inspect agent container {name}: {detail or 'unknown Docker error'}")
+
+            if code != 0 or not compatible:
+                created = await self._exec(self.run_argv(d), 300)
+                if getattr(created, "exit_code", 1) != 0:
                     raise RuntimeError(f"could not start agent container {name}: "
-                                       f"{str(getattr(res, 'stderr', ''))[:300]}")
+                                       f"{str(getattr(created, 'stderr', ''))[:300]}")
+                # Validate the object Docker actually started, not just the argv AVRONE intended
+                # to submit. Custom images can exit immediately and daemons can normalize options.
+                verify = await self._exec(inspect_argv(name), 30)
+                verified, _owned, reason = _inspect_matches_policy(
+                    str(getattr(verify, "stdout", "")), d, self.image, self.allow_network
+                ) if getattr(verify, "exit_code", 1) == 0 else (False, False, "container not found after start")
+                if not verified:
+                    await self._exec(rm_argv(name), 30)
+                    raise RuntimeError(f"new agent container {name} failed sandbox verification: {reason}")
                 self.created += 1
+
             self.homes[name] = _Home(name, d, now, created=now, uses=1)
             return name
 

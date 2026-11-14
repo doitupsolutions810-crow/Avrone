@@ -186,20 +186,56 @@ def test_one_migration_in_flight_per_agent_across_threads(core, tmp_path):
 class FakeDocker:
     def __init__(self):
         self.running: set[str] = set()
+        self.inspect_payloads: dict[str, dict] = {}
 
     async def __call__(self, argv, timeout):
         await asyncio.sleep(0)
         name = argv[-1]
         if argv[1] == "inspect":
-            up = name in self.running
-            return SimpleNamespace(exit_code=0 if up else 1, stdout="true" if up else "", stderr="")
+            if name in self.running and name in self.inspect_payloads:
+                return SimpleNamespace(exit_code=0, stdout=json.dumps(self.inspect_payloads[name]), stderr="")
+            return SimpleNamespace(exit_code=1, stdout="", stderr=f"No such object: {name}")
         if argv[1] == "rm":
             await asyncio.sleep(0)
             self.running.discard(name)
+            self.inspect_payloads.pop(name, None)
         elif argv[1] == "run":
             self.running.add(argv[argv.index("--name") + 1])
+            labels = {}
+            env = []
+            for i, value in enumerate(argv[:-1]):
+                if value == "--label":
+                    key, val = argv[i + 1].split("=", 1)
+                    labels[key] = val
+                elif value in ("--env", "-e"):
+                    env.append(argv[i + 1])
+            def option(flag, default=None):
+                try:
+                    return argv[argv.index(flag) + 1]
+                except (ValueError, IndexError):
+                    return default
+            bind = option("-v")
+            src = bind.split(":", 1)[0]
+            memory = int(option("--memory", "512m").removesuffix("m")) * 1024 * 1024
+            swap = int(option("--memory-swap", "512m").removesuffix("m")) * 1024 * 1024
+            self.inspect_payloads[argv[argv.index("--name") + 1]] = {
+                "State": {"Running": True},
+                "Config": {"User": option("--user"), "Image": argv[-3], "WorkingDir": option("-w"),
+                           "Env": env, "Labels": labels},
+                "HostConfig": {
+                    "Binds": [bind], "ReadonlyRootfs": "--read-only" in argv,
+                    "Tmpfs": {"/tmp": option("--tmpfs", "")}, "CapDrop": ["ALL"], "CapAdd": [],
+                    "SecurityOpt": [option("--security-opt", "")],
+                    "NetworkMode": option("--network", "bridge"), "Privileged": False,
+                    "PortBindings": None, "Devices": [], "DeviceRequests": [],
+                    "PidMode": "", "IpcMode": "", "AutoRemove": False,
+                    "Memory": memory, "MemorySwap": swap,
+                    "NanoCpus": int(float(option("--cpus", "1.0")) * 1_000_000_000),
+                    "PidsLimit": int(option("--pids-limit", "512")),
+                },
+                "Mounts": [{"Type": "bind", "Source": src, "Destination": "/agent", "RW": True}],
+            }
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
-
 
 def test_reaper_never_removes_a_container_ensure_just_handed_out(tmp_path):
     async def one(it):

@@ -161,7 +161,9 @@ def test_container_hosted_live_record_own_only(env, monkeypatch):
     monkeypatch.setattr(ah.shutil, "which", lambda name: "/usr/bin/docker")
 
     async def fake_exec(argv, timeout):
-        return SimpleNamespace(exit_code=0, stdout="true", stderr="")
+        if argv[1] == "inspect":
+            return SimpleNamespace(exit_code=1, stdout="", stderr=f"No such object: {argv[-1]}")
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
     t = [100.0]
     pool = agentcontainer.AgentContainerPool(fake_exec, "img", False, node="node-a", clock=lambda: t[0])
     run(pool.ensure(env.home))

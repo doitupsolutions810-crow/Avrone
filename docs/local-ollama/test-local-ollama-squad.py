@@ -55,6 +55,10 @@ def _required_env_matches(env: Any) -> bool:
     return all(values.get(key) == [value] for key, value in required.items())
 
 
+def _private_namespace(value: Any) -> bool:
+    return value is None or value == "" or value == "private"
+
+
 def _safe_tmpfs(host: dict[str, Any]) -> bool:
     tmpfs = host.get("Tmpfs")
     if not isinstance(tmpfs, dict) or set(tmpfs) != {"/tmp"}:
@@ -188,10 +192,10 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
             "no_userns_override": host.get("UsernsMode") in (None, ""),
             "no_sysctl_overrides": host.get("Sysctls") in (None, {}),
             "no_supplemental_groups": host.get("GroupAdd") in (None, []),
-            "no_host_pid_namespace": not (isinstance(pid_mode, str) and pid_mode.startswith(("host", "container"))),
-            "no_host_ipc_namespace": not (isinstance(ipc_mode, str) and ipc_mode.startswith(("host", "container"))),
-            "no_host_uts_namespace": not str(host.get("UTSMode") or "").startswith(("host", "container")),
-            "no_host_cgroup_namespace": not str(host.get("CgroupnsMode") or "").startswith(("host", "container")),
+            "private_pid_namespace": _private_namespace(pid_mode),
+            "private_ipc_namespace": _private_namespace(ipc_mode),
+            "private_uts_namespace": _private_namespace(host.get("UTSMode")),
+            "private_cgroup_namespace": _private_namespace(host.get("CgroupnsMode")),
             "no_volumes_from": host.get("VolumesFrom") in (None, []),
             "auto_remove_disabled": host.get("AutoRemove") is False,
             "memory_limit_exact": type(host.get("Memory")) is int and host.get("Memory") == expected_memory,
@@ -359,6 +363,8 @@ def main() -> int:
     events = request_json(base + "/api/runs/" + urllib.parse.quote(str(run_id), safe=""))
     if not isinstance(events, list):
         raise RuntimeError("Run log endpoint did not return an event array.")
+    if any(not isinstance(event, dict) for event in events):
+        raise RuntimeError("Run log endpoint returned a malformed event envelope.")
     spawns = [e for e in events if e.get("kind") == "agent.spawn"]
     calls = [e for e in events if e.get("kind") == "tool.call"]
     results = [e for e in events if e.get("kind") == "tool.result"]

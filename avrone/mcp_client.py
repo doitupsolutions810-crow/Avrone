@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -41,6 +42,8 @@ CLIENT_INFO = {"name": "avrone", "version": "0.2.0"}
 DEFAULT_TIMEOUT = float(os.getenv("AVRONE_MCP_TIMEOUT", "60"))
 MAX_TOOL_PAGES = 100
 MAX_REGISTERED_TOOLS = 2048
+MAX_MCP_SERVERS = 64
+MAX_MCP_CONFIG_BYTES = 1024 * 1024
 MAX_PAGE_CURSOR_CHARS = 512
 MAX_TOOL_OUTPUT_CHARS = 32_000
 MAX_TOOL_OUTPUT_ITEMS = 512
@@ -84,8 +87,14 @@ def _strict_json_loads(payload: str) -> Any:
 
 
 def _safe_part(s: str) -> str:
-    value = re.sub(r"[^A-Za-z0-9_\-.]", "_", str(s))
-    return value[:80] or "_"
+    raw = str(s)
+    value = re.sub(r"[^A-Za-z0-9_\\-.]", "_", raw)
+    if value == raw and len(raw) <= 80:
+        return value or "_"
+    # Preserve readable names while preventing distinct remote names from colliding
+    # after sanitization or truncation in the shared ToolRegistry namespace.
+    suffix = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
+    return f"{value[:67] or '_'}-{suffix}"
 
 
 # --------------------------------------------------------------------------- transports
@@ -682,10 +691,20 @@ def load_config(path: str | os.PathLike | None = None) -> dict[str, dict[str, An
     p = Path(path or os.getenv("AVRONE_MCP_CONFIG", "./mcp.json"))
     if not p.exists():
         return {}
-    data = _strict_json_loads(p.read_text() or "{}")
+    with p.open("rb") as handle:
+        raw_config = handle.read(MAX_MCP_CONFIG_BYTES + 1)
+    if len(raw_config) > MAX_MCP_CONFIG_BYTES:
+        raise MCPError(f"MCP config exceeds the {MAX_MCP_CONFIG_BYTES}-byte limit")
+    try:
+        config_text = raw_config.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MCPError("MCP config must be valid UTF-8 JSON") from exc
+    data = _strict_json_loads(config_text or "{}")
     servers = data.get("mcpServers", data.get("servers", {})) if isinstance(data, dict) else {}
     if not isinstance(servers, dict):
         raise MCPError("MCP config server map must be a JSON object")
+    if len(servers) > MAX_MCP_SERVERS:
+        raise MCPError(f"MCP config exceeds the {MAX_MCP_SERVERS}-server limit")
     configured: dict[str, dict[str, Any]] = {}
     for key, value in servers.items():
         if not isinstance(value, dict):

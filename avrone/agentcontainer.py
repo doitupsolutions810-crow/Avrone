@@ -302,14 +302,14 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("container has sysctl overrides")
     if host.get("GroupAdd") not in (None, []):
         problems.append("container adds supplemental host groups")
-    if str(host.get("PidMode") or "").startswith(("host", "container")):
-        problems.append("container shares a PID namespace")
-    if str(host.get("IpcMode") or "").startswith(("host", "container")):
-        problems.append("container shares an IPC namespace")
-    if str(host.get("UTSMode") or "").startswith(("host", "container")):
-        problems.append("container shares a UTS namespace")
-    if str(host.get("CgroupnsMode") or "").startswith(("host", "container")):
-        problems.append("container shares a cgroup namespace")
+    if not _private_namespace(host.get("PidMode")):
+        problems.append("container does not use a private PID namespace")
+    if not _private_namespace(host.get("IpcMode")):
+        problems.append("container does not use a private IPC namespace")
+    if not _private_namespace(host.get("UTSMode")):
+        problems.append("container does not use a private UTS namespace")
+    if not _private_namespace(host.get("CgroupnsMode")):
+        problems.append("container does not use a private cgroup namespace")
     if host.get("AutoRemove") is not False:
         problems.append("persistent agent container auto-remove policy is unknown or enabled")
     if (type(host.get("Memory")) is not int or host.get("Memory") != memory_bytes
@@ -321,6 +321,11 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("PID limit does not match policy")
 
     return not problems, True, "; ".join(problems) if problems else "compatible"
+
+
+def _private_namespace(value: Any) -> bool:
+    """Only Docker's isolated default/private namespace values are accepted."""
+    return value is None or value == "" or value == "private"
 
 
 def _docker_not_found(result: Any) -> bool:

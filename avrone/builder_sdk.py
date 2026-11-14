@@ -44,7 +44,23 @@ class BuilderPolicy:
     expected_sha: str | None = None
 
     def __post_init__(self) -> None:
-        if self.expected_sha is not None and not re.fullmatch(r"[0-9a-fA-F]{40,64}", self.expected_sha):
+        for name, value in (
+            ("max_task_chars", self.max_task_chars),
+            ("max_workers", self.max_workers),
+            ("max_deep_rounds", self.max_deep_rounds),
+            ("verification_timeout_s", self.verification_timeout_s),
+        ):
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(self.verification_commands, tuple) or any(
+            not isinstance(command, str) or not command.strip()
+            for command in self.verification_commands
+        ):
+            raise ValueError("verification_commands must be a tuple of non-empty strings")
+        if self.expected_sha is not None and (
+            not isinstance(self.expected_sha, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{40,64}", self.expected_sha)
+        ):
             raise ValueError("expected_sha must be a full 40-64 character Git SHA")
 
 
@@ -137,10 +153,16 @@ class BuilderAgentSDK:
             raise RuntimeError("Builder SDK is closed")
         if mode not in ("squad", "chat", "deep"):
             raise ValueError("mode must be squad, chat, or deep")
-        if workers is not None and (isinstance(workers, bool) or not 1 <= int(workers) <= self.policy.max_workers):
-            raise ValueError("workers outside configured policy")
-        if rounds is not None and (isinstance(rounds, bool) or not 1 <= int(rounds) <= self.policy.max_deep_rounds):
-            raise ValueError("rounds outside configured policy")
+        if workers is not None and (
+            type(workers) is not int or not 1 <= workers <= self.policy.max_workers
+        ):
+            raise ValueError("workers must be an integer within configured policy")
+        if rounds is not None and (
+            type(rounds) is not int or not 1 <= rounds <= self.policy.max_deep_rounds
+        ):
+            raise ValueError("rounds must be an integer within configured policy")
+        if run_id is not None and not isinstance(run_id, str):
+            raise ValueError("run_id must be a string")
         rid = run_id or "builder-" + uuid.uuid4().hex[:12]
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", rid):
             raise ValueError("invalid run_id")
@@ -165,9 +187,17 @@ class BuilderAgentSDK:
                      commands: tuple[str, ...] | None = None) -> VerificationEvidence:
         if self.closed:
             raise RuntimeError("Builder SDK is closed")
-        selected = self.policy.verification_commands if commands is None else tuple(commands)
-        if any(command not in set(self.policy.verification_commands) for command in selected):
+        if commands is None:
+            selected = self.policy.verification_commands
+        else:
+            if isinstance(commands, (str, bytes)) or not isinstance(commands, (tuple, list)):
+                raise ValueError("verification commands must be a tuple or list")
+            selected = tuple(commands)
+        allowed = set(self.policy.verification_commands)
+        if any(not isinstance(command, str) or command not in allowed for command in selected):
             raise ValueError("verification command is not operator-allowlisted")
+        if len(set(selected)) != len(selected):
+            raise ValueError("verification commands must not contain duplicates")
         evidence = VerificationEvidence(started_at=time.time())
         if not selected:
             evidence.reason = "No verification commands configured."
@@ -206,6 +236,39 @@ class BuilderAgentSDK:
                     "command": command, "exit_code": -1,
                     "error": f"{type(exc).__name__}: {exc}"[:500],
                 })
+        # Bind the result to one immutable workspace revision. A concurrent checkout,
+        # reset, or branch move while checks execute invalidates the verification.
+        if evidence.target_sha:
+            try:
+                final_sha_result = await self.core.runner.run(
+                    "git rev-parse --verify HEAD", timeout=20
+                )
+                final_sha = (getattr(final_sha_result, "stdout", "") or "").strip()
+                final_sha_ok = (
+                    getattr(final_sha_result, "exit_code", 1) == 0
+                    and re.fullmatch(r"[0-9a-fA-F]{40,64}", final_sha) is not None
+                )
+            except Exception as exc:
+                final_sha, final_sha_ok = "", False
+                sha_error = type(exc).__name__
+            else:
+                sha_error = "unavailable"
+            if not final_sha_ok or final_sha.lower() != evidence.target_sha:
+                evidence.status = "FAIL"
+                if final_sha_ok:
+                    evidence.reason = (
+                        "Workspace SHA changed during verification: "
+                        f"{evidence.target_sha} -> {final_sha.lower()}."
+                    )
+                else:
+                    evidence.reason = (
+                        "Could not confirm the workspace SHA remained stable after "
+                        f"verification ({sha_error})."
+                    )
+                evidence.finished_at = time.time()
+                result.evidence, result.status = evidence, "FAIL"
+                return evidence
+
         failed = [item for item in evidence.commands
                   if item.get("exit_code") != 0 or item.get("timed_out")]
         if failed:

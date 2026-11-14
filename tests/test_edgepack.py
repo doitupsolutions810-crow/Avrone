@@ -175,7 +175,7 @@ def test_pool_lazy_create_and_reuse(tmp_path):
     assert fake.verbs() == ["inspect", "rm", "run", "inspect"] and pool.created == 1
     now[0] = 130.0
     assert run(pool.ensure(d)) == name
-    assert fake.verbs() == ["inspect", "rm", "run", "inspect"]               # reused: no new docker calls
+    assert fake.verbs() == ["inspect", "rm", "run", "inspect", "inspect"]  # cached reuse revalidates the live container
     assert pool.state()["homes"][name]["uses"] == 2
 
 
@@ -187,6 +187,71 @@ def test_pool_adopts_only_a_policy_compliant_running_leftover(tmp_path):
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
     run(pool.ensure(d))
     assert fake.verbs() == ["inspect"] and pool.created == 0
+
+
+def test_workspace_identity_distinguishes_workspaces_with_same_agent_name(tmp_path):
+    a = agentfs.agent_dir(tmp_path / "workspace-a", "builder")
+    b = agentfs.agent_dir(tmp_path / "workspace-b", "builder")
+    assert ac.workspace_identity(a) != ac.workspace_identity(b)
+    assert ac.container_name("edge", "builder") == ac.container_name("edge", "builder")
+
+
+def test_separate_pools_do_not_remove_each_others_same_name_container(tmp_path):
+    fake = FakeDocker()
+    a = agentfs.agent_dir(tmp_path / "workspace-a", "builder")
+    b = agentfs.agent_dir(tmp_path / "workspace-b", "builder")
+    pool_a = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool_b = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    name_a = run(pool_a.ensure(a))
+    calls_before = len(fake.calls)
+    with pytest.raises(RuntimeError, match="different agent home or workspace"):
+        run(pool_b.ensure(b))
+    assert name_a in fake.running
+    assert fake.inspect_payloads[name_a]["HostConfig"]["Binds"] == [f"{a.resolve()}:/agent"]
+    assert fake.verbs()[calls_before:] == ["inspect"]
+    run(pool_a.close())
+
+
+def test_one_pool_rejects_same_agent_id_from_a_second_workspace(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    a = agentfs.agent_dir(tmp_path / "workspace-a", "builder")
+    b = agentfs.agent_dir(tmp_path / "workspace-b", "builder")
+    name = run(pool.ensure(a))
+    with pytest.raises(RuntimeError, match="cached workspace does not match"):
+        run(pool.ensure(b))
+    assert name in fake.running
+    run(pool.close())
+
+
+def test_cached_container_removed_externally_is_recreated(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    d = agentfs.agent_dir(tmp_path / "ws", "builder")
+    name = run(pool.ensure(d))
+    fake.running.discard(name)
+    fake.inspect_payloads.pop(name, None)
+    assert run(pool.ensure(d)) == name
+    assert name in fake.running and pool.created == 2
+    assert fake.verbs().count("run") == 2
+    run(pool.close())
+
+
+def test_active_lease_refuses_to_recreate_disappeared_container_mid_command(tmp_path):
+    async def exercise():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        d = agentfs.agent_dir(tmp_path / "ws", "builder")
+        async with pool.lease(d) as name:
+            fake.running.discard(name)
+            fake.inspect_payloads.pop(name, None)
+            with pytest.raises(RuntimeError, match="disappeared during a command"):
+                await pool.ensure(d)
+        assert pool.homes[name].active == 0
+        assert await pool.ensure(d) == name
+        assert name in fake.running and pool.created == 2
+        await pool.close()
+    run(exercise())
 
 
 def test_pool_idle_reap(tmp_path):

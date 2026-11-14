@@ -50,8 +50,15 @@ def _required_env_matches(env: Any) -> bool:
     values: dict[str, list[str]] = {}
     for item in env:
         key, sep, value = item.partition("=")
-        if sep:
-            values.setdefault(key, []).append(value)
+        if not sep or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+            return False
+        values.setdefault(key, []).append(value)
+    if any(len(items) != 1 for items in values.values()):
+        return False
+    secret_terms = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "PRIVATE_KEY")
+    if any(any(term in key.upper() for term in secret_terms) and value[0].strip()
+           for key, value in values.items()):
+        return False
     return all(values.get(key) == [value] for key, value in required.items())
 
 

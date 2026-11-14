@@ -782,3 +782,57 @@ def test_manager_stop_before_start():
 
 def test_safe_part():
     assert mc._safe_part("a b/c:d") == "a_b_c_d" and mc._safe_part("") == "_" and mc._safe_part("ok-1.2") == "ok-1.2"
+
+@pytest.mark.parametrize("bad_version", [None, "", "   ", 7, []])
+def test_initialize_rejects_present_but_malformed_protocol_version(bad_version):
+    class T(mc._Transport):
+        def __init__(self):
+            self.closed = False
+        async def request(self, method, params, timeout):
+            return {"protocolVersion": bad_version}
+        async def notify(self, method, params=None):
+            raise AssertionError("initialized notification must not follow a malformed version")
+        async def close(self):
+            self.closed = True
+    client = MCPClient("bad-version", {"command": "fake"})
+    client.transport = T()
+    with pytest.raises(MCPError, match="non-empty string"):
+        run(client.initialize())
+    assert client.protocol_version is None
+
+
+def test_unsupported_renegotiation_clears_stale_protocol_and_server_metadata():
+    class T(HTTPTransport):
+        def __init__(self):
+            super().__init__("https://x.invalid")
+            self.result = {
+                "protocolVersion": "2025-06-18",
+                "serverInfo": {"name": "known"},
+                "capabilities": {"tools": {}},
+            }
+            self.notes = []
+        async def request(self, method, params, timeout):
+            return self.result
+        async def notify(self, method, params=None):
+            self.notes.append(method)
+
+    client = MCPClient("s", {"url": "https://x.invalid"})
+    transport = T()
+    client.transport = transport
+    run(client.initialize())
+    assert client.protocol_version == "2025-06-18"
+    assert transport.protocol_version == "2025-06-18"
+    assert client.server_info == {"name": "known"}
+
+    transport.result = {
+        "protocolVersion": "2026-07-28",
+        "serverInfo": {"name": "future"},
+        "capabilities": {"tools": {}},
+    }
+    with pytest.raises(MCPError, match="unsupported protocol"):
+        run(client.initialize())
+    assert client.protocol_version is None
+    assert transport.protocol_version is None
+    assert client.server_info == {}
+    assert client.capabilities == {}
+\n

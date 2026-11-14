@@ -742,3 +742,98 @@ def test_manager_stop_before_start():
 
 def test_safe_part():
     assert mc._safe_part("a b/c:d") == "a_b_c_d" and mc._safe_part("") == "_" and mc._safe_part("ok-1.2") == "ok-1.2"
+
+def test_http_redirect_is_rejected_and_custom_headers_are_not_forwarded(monkeypatch):
+    seen = []
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(
+            302,
+            headers={"Location": "https://attacker.invalid/collect"},
+            request=request,
+        )
+    real_client = httpx.AsyncClient
+    def factory(**kwargs):
+        assert kwargs.get("follow_redirects") is False
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+    monkeypatch.setattr(mc.httpx, "AsyncClient", factory)
+
+    async def go():
+        t = HTTPTransport(
+            "https://mcp.invalid/mcp",
+            {"Authorization": "Bearer operator-secret", "X-Private-Key": "private-value"},
+        )
+        await t.connect()
+        try:
+            await t.request("tools/list", None, 5)
+        finally:
+            await t.close()
+    with pytest.raises(MCPError, match="redirects are disabled"):
+        run(go())
+    assert len(seen) == 1
+    assert seen[0].headers["authorization"] == "Bearer operator-secret"
+    assert seen[0].headers["x-private-key"] == "private-value"
+    assert seen[0].url.host == "mcp.invalid"
+
+
+def test_http_json_response_body_is_bounded():
+    huge = b"x" * (mc.MAX_HTTP_RESPONSE_BYTES + 1)
+    t = http_transport(lambda request: httpx.Response(
+        200, content=huge, headers={"content-type": "application/json"}, request=request
+    ))
+    with pytest.raises(MCPError, match="JSON response exceeds"):
+        run(t.request("tools/list", None, 5))
+
+
+def test_http_json_declared_content_length_is_rejected_before_read():
+    def handler(request):
+        response = httpx.Response(200, content=b"{}", request=request)
+        response.headers["content-length"] = str(mc.MAX_HTTP_RESPONSE_BYTES + 1)
+        return response
+    t = http_transport(handler)
+    with pytest.raises(MCPError, match="JSON response exceeds"):
+        run(t.request("tools/list", None, 5))
+
+
+def test_http_sse_body_and_individual_lines_are_bounded():
+    huge_body = b"data: " + (b"x" * mc.MAX_HTTP_RESPONSE_BYTES)
+    t = http_transport(lambda request: httpx.Response(
+        200, content=huge_body, headers={"content-type": "text/event-stream"}, request=request
+    ))
+    with pytest.raises(MCPError, match="SSE response exceeds"):
+        run(t.request("tools/list", None, 5))
+
+    giant_line = b"data: " + (b"x" * (mc.MAX_SSE_LINE_BYTES + 1))
+    t2 = http_transport(lambda request: httpx.Response(
+        200, content=giant_line, headers={"content-type": "text/event-stream"}, request=request
+    ))
+    with pytest.raises(MCPError, match="SSE line exceeds"):
+        run(t2.request("tools/list", None, 5))
+
+
+def test_http_error_response_body_has_a_separate_small_cap():
+    huge = b"E" * (mc.MAX_HTTP_ERROR_BYTES + 1)
+    t = http_transport(lambda request: httpx.Response(500, content=huge, request=request))
+    with pytest.raises(MCPError, match="error body exceeds"):
+        run(t.request("tools/list", None, 5))
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("60", 60.0), ("0.5", 0.5), ("99999", 600.0),
+    ("NaN", 60.0), ("Infinity", 60.0), ("-1", 60.0),
+    ("0", 60.0), ("junk", 60.0), ("", 60.0),
+])
+def test_mcp_environment_timeout_is_finite_positive_and_bounded(raw, want):
+    assert mc._configured_timeout(raw) == want
+
+
+@pytest.mark.parametrize("raw", [True, False, None, "NaN", "Infinity", "-1", "0", "junk"])
+def test_mcp_server_timeout_rejects_invalid_values(raw):
+    with pytest.raises(MCPError, match="finite positive"):
+        MCPClient("s", {"command": "fake", "timeout": raw})
+
+
+def test_mcp_server_timeout_is_capped():
+    c = MCPClient("s", {"command": "fake", "timeout": "99999"})
+    assert c.timeout == mc.MAX_TIMEOUT
+

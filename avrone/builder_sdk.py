@@ -73,6 +73,7 @@ class BuilderPolicy:
 class VerificationEvidence:
     status: BuildStatus = "NOT_RUN"
     target_sha: str | None = None
+    workspace_clean: bool | None = None
     commands: list[dict[str, Any]] = field(default_factory=list)
     reason: str = "Verification has not run."
     started_at: float | None = None
@@ -188,6 +189,17 @@ class BuilderAgentSDK:
             actual_id, answer, payload = rid, str(raw or ""), {"result": raw}
         return BuildResult(actual_id, mode, "UNVERIFIED", answer, payload)
 
+    async def _git_status_porcelain(self) -> str:
+        """Read tracked and untracked worktree changes; a commit SHA alone is not a snapshot."""
+        status = await self.core.runner.run(
+            "git status --porcelain=v1 --untracked-files=all", timeout=20
+        )
+        exit_code = getattr(status, "exit_code", 1)
+        stdout = getattr(status, "stdout", None)
+        if type(exit_code) is not int or exit_code != 0 or not isinstance(stdout, str):
+            raise RuntimeError("git status could not produce a trustworthy worktree snapshot")
+        return stdout
+
     async def verify(self, result: BuildResult, *,
                      commands: tuple[str, ...] | None = None) -> VerificationEvidence:
         if self.closed:
@@ -232,6 +244,34 @@ class BuilderAgentSDK:
             evidence.finished_at = time.time()
             result.evidence, result.status = evidence, "FAIL"
             return evidence
+
+        # A Git commit SHA does not attest uncommitted tracked or untracked files.
+        # Refuse to label a dirty checkout VERIFIED even when HEAD matches expected_sha.
+        if evidence.target_sha:
+            try:
+                initial_status = await self._git_status_porcelain()
+            except Exception as exc:
+                evidence.status = "FAIL"
+                evidence.workspace_clean = None
+                evidence.reason = (
+                    "Could not inspect the worktree before verification; no checks were run "
+                    f"({type(exc).__name__}: {exc})."
+                )
+                evidence.finished_at = time.time()
+                result.evidence, result.status = evidence, "FAIL"
+                return evidence
+            if initial_status.strip():
+                evidence.status = "FAIL"
+                evidence.workspace_clean = False
+                evidence.reason = (
+                    "Workspace is dirty (tracked or untracked changes); "
+                    "no verification commands were run."
+                )
+                evidence.finished_at = time.time()
+                result.evidence, result.status = evidence, "FAIL"
+                return evidence
+            evidence.workspace_clean = True
+
         for command in selected:
             started = time.time()
             try:
@@ -282,6 +322,30 @@ class BuilderAgentSDK:
                 evidence.finished_at = time.time()
                 result.evidence, result.status = evidence, "FAIL"
                 return evidence
+
+            try:
+                final_status = await self._git_status_porcelain()
+            except Exception as exc:
+                evidence.status = "FAIL"
+                evidence.workspace_clean = None
+                evidence.reason = (
+                    "Could not confirm the worktree remained clean after verification "
+                    f"({type(exc).__name__}: {exc})."
+                )
+                evidence.finished_at = time.time()
+                result.evidence, result.status = evidence, "FAIL"
+                return evidence
+            if final_status.strip():
+                evidence.status = "FAIL"
+                evidence.workspace_clean = False
+                evidence.reason = (
+                    "Workspace became dirty during verification; checks cannot certify "
+                    "a clean exact-SHA source tree."
+                )
+                evidence.finished_at = time.time()
+                result.evidence, result.status = evidence, "FAIL"
+                return evidence
+            evidence.workspace_clean = True
 
         failed = [item for item in evidence.commands
                   if item.get("exit_code") != 0 or item.get("timed_out")]

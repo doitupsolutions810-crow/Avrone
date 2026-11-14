@@ -320,6 +320,33 @@ def test_http_sse_trailing_event_without_blank_line():
     t = http_transport(lambda r: httpx.Response(200, text=sse, headers={"content-type": "text/event-stream"}))
     assert run(t.request("x", None, 5)) == {"tail": 1}
 
+def test_http_sse_handles_crlf_delimiters_split_across_chunks():
+    class Chunks(httpx.AsyncByteStream):
+        def __init__(self, values):
+            self.values = values
+
+        async def __aiter__(self):
+            for value in self.values:
+                yield value
+
+        async def aclose(self):
+            return None
+
+    payload = json.dumps(rpc(1, {"fragmented": True})).encode()
+    stream = Chunks([
+        b"event: message\r",
+        b"\ndata: " + payload[:5],
+        payload[5:13],
+        payload[13:] + b"\r",
+        b"\n\r",
+        b"\n",
+    ])
+    t = http_transport(lambda r: httpx.Response(
+        200, stream=stream, headers={"content-type": "text/event-stream"}
+    ))
+    assert run(t.request("x", None, 5)) == {"fragmented": True}
+
+
 
 @pytest.mark.parametrize("sse", ["", "data: {\"id\": 7, \"result\": {}}\n\n", "data: junk"])
 def test_http_sse_ends_without_response(sse):

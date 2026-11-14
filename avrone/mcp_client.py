@@ -56,7 +56,8 @@ class MCPError(RuntimeError):
 
 
 def _safe_part(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_\-.]", "_", s) or "_"
+    value = re.sub(r"[^A-Za-z0-9_\-.]", "_", str(s))
+    return value[:80] or "_"
 
 
 # --------------------------------------------------------------------------- transports
@@ -572,19 +573,26 @@ class MCPManager:
         self.clients[name] = client
         count = 0
         for t in tools:
-            tool_name = f"mcp__{_safe_part(name)}__{_safe_part(t['name'])}"
+            remote_name = t["name"]
+            raw_description = t.get("description")
+            if not isinstance(raw_description, str) or not raw_description.strip():
+                raw_description = t.get("title")
+            if not isinstance(raw_description, str) or not raw_description.strip():
+                raw_description = f"MCP tool {remote_name} on {name}"
+            description = raw_description.strip().replace("\n", " ")[:500]
+            tool_name = f"mcp__{_safe_part(name)}__{_safe_part(remote_name)}"
             try:
                 registry.register(Tool(
                     name=tool_name,
-                    description=(t.get("description") or t.get("title") or f"MCP tool {t['name']} on {name}").strip().replace("\n", " ")[:500],
+                    description=description,
                     args_doc=args_doc_from_schema(t.get("inputSchema")),
-                    fn=self._make_fn(client, t["name"]),
+                    fn=self._make_fn(client, remote_name),
                     source=f"mcp:{name}",
                 ))
                 self._registered.append(tool_name)
                 count += 1
             except ValueError as e:
-                log.warning("skipping MCP tool %s/%s: %s", name, t.get("name"), e)
+                log.warning("skipping MCP tool %s/%s: %s", name, remote_name, e)
         self._status[name] = {"connected": True, "error": None, "tools": count, "transport": client.kind,
                               "server": client.server_info, "protocol": client.protocol_version}
         log.info("MCP server '%s' connected with %d tools", name, count)

@@ -85,8 +85,10 @@ async def test_verify_pass_without_sha_remains_unverified():
 async def test_verify_failure_is_not_hidden():
     runner = FakeRunner([
         FakeCommand(exit_code=0, stdout="a" * 40),
+        FakeCommand(exit_code=0, stdout=""),
         FakeCommand(exit_code=1, stderr="test failure"),
         FakeCommand(exit_code=0, stdout="a" * 40),
+        FakeCommand(exit_code=0, stdout=""),
     ])
     sdk = BuilderAgentSDK(
         FakeCore(runner=runner),
@@ -126,8 +128,10 @@ async def test_close_is_idempotent():
 async def test_verify_with_sha_and_passing_checks_is_verified():
     runner = FakeRunner([
         FakeCommand(exit_code=0, stdout="b" * 40),
+        FakeCommand(exit_code=0, stdout=""),
         FakeCommand(exit_code=0),
         FakeCommand(exit_code=0, stdout="b" * 40),
+        FakeCommand(exit_code=0, stdout=""),
     ])
     sdk = BuilderAgentSDK(
         FakeCore(runner=runner),
@@ -237,6 +241,7 @@ async def test_verify_fails_when_workspace_sha_changes_during_checks():
     changed_sha = "b" * 40
     runner = FakeRunner([
         FakeCommand(exit_code=0, stdout=original_sha),
+        FakeCommand(exit_code=0, stdout=""),
         FakeCommand(exit_code=0, stdout="all tests passed"),
         FakeCommand(exit_code=0, stdout=changed_sha),
     ])
@@ -251,6 +256,7 @@ async def test_verify_fails_when_workspace_sha_changes_during_checks():
     assert "SHA changed during verification" in evidence.reason
     assert runner.commands == [
         "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
         "python -m pytest -q",
         "git rev-parse --verify HEAD",
     ]
@@ -261,6 +267,7 @@ async def test_verify_fails_closed_when_final_sha_cannot_be_read():
     original_sha = "c" * 40
     runner = FakeRunner([
         FakeCommand(exit_code=0, stdout=original_sha),
+        FakeCommand(exit_code=0, stdout=""),
         FakeCommand(exit_code=0, stdout="all tests passed"),
         FakeCommand(exit_code=128, stderr="not a git repository"),
     ])
@@ -346,3 +353,94 @@ async def test_verify_rejects_noncanonical_sha_width_and_boolean_exit_code():
     evidence = await sdk.verify(result)
     assert evidence.status == "FAIL" and result.status == "FAIL"
     assert evidence.target_sha is None and evidence.commands[0]["exit_code"] == -1
+
+@pytest.mark.parametrize("dirty", [" M avrone/server.py\\n", "?? untracked-secret.txt\\n"])
+@pytest.mark.asyncio
+async def test_verify_refuses_dirty_tracked_or_untracked_worktrees(dirty):
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="d" * 40),
+        FakeCommand(exit_code=0, stdout=dirty),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL"
+    assert result.status == "FAIL"
+    assert evidence.workspace_clean is False
+    assert "Workspace is dirty" in evidence.reason
+    assert evidence.commands == []
+    assert runner.commands == [
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_closed_when_initial_worktree_status_is_unavailable():
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="e" * 40),
+        FakeCommand(exit_code=128, stderr="git status failed"),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.workspace_clean is None
+    assert evidence.commands == []
+    assert "Could not inspect the worktree" in evidence.reason
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_when_worktree_becomes_dirty_during_checks():
+    sha = "f" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="all tests passed"),
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout="?? generated-untracked.txt\\n"),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.workspace_clean is False
+    assert "became dirty" in evidence.reason
+    assert runner.commands == [
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+        "python -m pytest -q",
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_verify_requires_final_worktree_status_to_be_readable():
+    sha = "9" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="passed"),
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=1, stderr="status transport failed"),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.workspace_clean is None
+    assert "Could not confirm the worktree remained clean" in evidence.reason
+\n

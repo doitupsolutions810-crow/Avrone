@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -37,7 +38,21 @@ log = logging.getLogger("avrone.mcp")
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CLIENT_INFO = {"name": "avrone", "version": "0.2.0"}
-DEFAULT_TIMEOUT = float(os.getenv("AVRONE_MCP_TIMEOUT", "60"))
+def _configured_timeout(raw: str | None) -> float:
+    try:
+        value = float(raw or "60")
+    except (TypeError, ValueError, OverflowError):
+        return 60.0
+    if not math.isfinite(value) or value <= 0:
+        return 60.0
+    return min(value, 600.0)
+
+
+DEFAULT_TIMEOUT = _configured_timeout(os.getenv("AVRONE_MCP_TIMEOUT"))
+MAX_TIMEOUT = 600.0
+MAX_HTTP_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_HTTP_ERROR_BYTES = 8 * 1024
+MAX_SSE_LINE_BYTES = 64 * 1024
 MAX_TOOL_PAGES = 100
 MAX_REGISTERED_TOOLS = 2048
 MAX_PAGE_CURSOR_CHARS = 512
@@ -205,8 +220,10 @@ class HTTPTransport(_Transport):
         self._client: httpx.AsyncClient | None = None
 
     async def connect(self) -> None:
+        # MCP endpoints and their configured headers are operator-selected. Do not follow
+        # redirects: a cross-origin redirect could disclose custom API-key headers.
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=15),
-                                         follow_redirects=True)
+                                         follow_redirects=False)
 
     def _hdrs(self) -> dict[str, str]:
         h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
@@ -217,6 +234,41 @@ class HTTPTransport(_Transport):
             h["MCP-Protocol-Version"] = self.protocol_version
         return h
 
+    async def _read_bounded(self, response: httpx.Response, limit: int, kind: str) -> bytes:
+        declared = response.headers.get("content-length")
+        if declared is not None:
+            try:
+                declared_size = int(declared)
+            except (TypeError, ValueError, OverflowError):
+                raise MCPError(f"MCP {kind} has an invalid Content-Length header") from None
+            if declared_size < 0 or declared_size > limit:
+                raise MCPError(f"MCP {kind} exceeds the {limit}-byte response limit")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > limit:
+                raise MCPError(f"MCP {kind} exceeds the {limit}-byte response limit")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _parse_sse(self, raw: bytes, want_id: int) -> dict | None:
+        text = raw.decode("utf-8", errors="replace")
+        data_lines: list[str] = []
+        for line in text.splitlines():
+            if len(line.encode("utf-8")) > MAX_SSE_LINE_BYTES:
+                raise MCPError("MCP SSE line exceeds the configured line limit")
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+            elif line == "" and data_lines:
+                found = _match_response("\\n".join(data_lines), want_id)
+                data_lines = []
+                if found is not None:
+                    return found
+        if data_lines:
+            return _match_response("\\n".join(data_lines), want_id)
+        return None
+
     async def _post(self, body: dict, timeout: float, want_id: int | None) -> Any:
         assert self._client is not None, "connect() first"
         async with self._client.stream("POST", self.url, json=body, headers=self._hdrs(),
@@ -224,33 +276,30 @@ class HTTPTransport(_Transport):
             sid = r.headers.get("mcp-session-id")
             if sid:
                 self.session_id = sid
+            if 300 <= r.status_code < 400:
+                raise MCPError(
+                    f"HTTP {r.status_code}: redirects are disabled for MCP endpoints; configure the final URL directly",
+                    code=r.status_code,
+                )
             if r.status_code == 404 and self.session_id and body.get("method") != "initialize":
                 raise MCPError("MCP session expired (HTTP 404)", code=404)
             if r.status_code >= 400:
-                text = (await r.aread()).decode(errors="replace")
-                raise MCPError(f"HTTP {r.status_code}: {text[:300]}", code=r.status_code)
+                raw_error = await self._read_bounded(r, MAX_HTTP_ERROR_BYTES, "error body")
+                detail = raw_error.decode("utf-8", errors="replace")[:300]
+                raise MCPError(f"HTTP {r.status_code}: {detail}", code=r.status_code)
             if want_id is None:  # notification: 202 Accepted, nothing to read
                 return None
             ctype = r.headers.get("content-type", "").lower()
             if "text/event-stream" in ctype:
-                data_lines: list[str] = []
-                async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip())
-                    elif line == "" and data_lines:
-                        payload, data_lines = "\n".join(data_lines), []
-                        found = _match_response(payload, want_id)
-                        if found is not None:
-                            return found
-                if data_lines:
-                    found = _match_response("\n".join(data_lines), want_id)
-                    if found is not None:
-                        return found
-                raise MCPError("event stream ended without a response")
-            raw = await r.aread()
+                raw = await self._read_bounded(r, MAX_HTTP_RESPONSE_BYTES, "SSE response")
+                found = self._parse_sse(raw, want_id)
+                if found is None:
+                    raise MCPError("event stream ended without a response")
+                return found
+            raw = await self._read_bounded(r, MAX_HTTP_RESPONSE_BYTES, "JSON response")
             if not raw.strip():
                 raise MCPError("empty response body")
-            found = _match_response(raw.decode(errors="replace"), want_id)
+            found = _match_response(raw.decode("utf-8", errors="replace"), want_id)
             if found is None:
                 raise MCPError("no matching JSON-RPC response in body")
             return found
@@ -310,7 +359,16 @@ class MCPClient:
     def __init__(self, name: str, config: dict[str, Any], timeout: float = DEFAULT_TIMEOUT):
         self.name = name
         self.config = config
-        self.timeout = float(config.get("timeout", timeout))
+        raw_timeout = config.get("timeout", timeout)
+        if isinstance(raw_timeout, bool):
+            raise MCPError("MCP timeout must be a finite positive number")
+        try:
+            parsed_timeout = float(raw_timeout)
+        except (TypeError, ValueError, OverflowError):
+            raise MCPError("MCP timeout must be a finite positive number") from None
+        if not math.isfinite(parsed_timeout) or parsed_timeout <= 0:
+            raise MCPError("MCP timeout must be a finite positive number")
+        self.timeout = min(parsed_timeout, MAX_TIMEOUT)
         if config.get("url"):
             self.transport: _Transport = HTTPTransport(str(config["url"]), config.get("headers"))
             self.kind = "http"

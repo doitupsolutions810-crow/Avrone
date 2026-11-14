@@ -256,7 +256,7 @@ def test_smoke_verifier_rejects_duplicate_container_claims_for_one_worker(monkey
 def test_smoke_verifier_rejects_invalid_inspect_json_cleanly(monkeypatch):
     def malformed(args, **kwargs):
         if args[:2] == ["docker", "ps"]:
-            return subprocess.CompletedProcess(args, 0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n", "")
+            return subprocess.CompletedProcess(args, 0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
         if args[:2] == ["docker", "inspect"]:
             return subprocess.CompletedProcess(args, 0, "not-json", "")
         raise AssertionError(args)

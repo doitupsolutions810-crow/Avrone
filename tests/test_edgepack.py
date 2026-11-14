@@ -868,6 +868,12 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["HostConfig"].update(CapAdd=["SYS_ADMIN"]), "capabilities"),
     (lambda p: p["HostConfig"].update(CapDrop=[]), "capabilities"),
     (lambda p: p["HostConfig"].update(SecurityOpt=[]), "no-new-privileges"),
+    (lambda p: p["HostConfig"].update(
+        SecurityOpt=["no-new-privileges", "seccomp=unconfined"]), "seccomp/AppArmor overrides"),
+    (lambda p: p["HostConfig"].update(
+        SecurityOpt=["no-new-privileges", "apparmor=unconfined"]), "seccomp/AppArmor overrides"),
+    (lambda p: p["HostConfig"].update(UTSMode="host"), "UTS namespace"),
+    (lambda p: p["HostConfig"].update(CgroupnsMode="host"), "cgroup namespace"),
     (lambda p: p["HostConfig"].update(PortBindings={"80/tcp": [{"HostPort": "8080"}]}), "publishes ports"),
     (lambda p: p["HostConfig"].update(Devices=[{"PathOnHost": "/dev/sda"}]), "device access"),
     (lambda p: p["HostConfig"].update(DeviceRequests=[{"Count": -1}]), "device access"),

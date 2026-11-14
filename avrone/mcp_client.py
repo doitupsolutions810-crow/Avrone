@@ -130,18 +130,24 @@ class StdioTransport(_Transport):
             self._pending.clear()
 
     async def _dispatch(self, m: Any) -> None:
-        if not isinstance(m, dict):
+        if not isinstance(m, dict) or m.get("jsonrpc") != "2.0":
             return
         if "id" in m and ("result" in m or "error" in m):
-            fut = self._pending.pop(m["id"], None)
+            rid = m["id"]
+            if type(rid) is not int or not _valid_rpc_response(m, rid):
+                return
+            fut = self._pending.pop(rid, None)
             if fut and not fut.done():
                 fut.set_result(m)
         elif "method" in m and "id" in m:
             # Server->client request (ping, sampling, roots...). Answer ping, decline the rest.
-            if m["method"] == "ping":
-                await self._send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+            rid, method = m["id"], m["method"]
+            if not _valid_rpc_request_id(rid) or not isinstance(method, str) or not method.strip():
+                return
+            if method == "ping":
+                await self._send({"jsonrpc": "2.0", "id": rid, "result": {}})
             else:
-                await self._send({"jsonrpc": "2.0", "id": m["id"],
+                await self._send({"jsonrpc": "2.0", "id": rid,
                                   "error": {"code": -32601, "message": "Method not supported by client"}})
         # notifications (logging, progress, list_changed) are ignored
 
@@ -357,14 +363,38 @@ class HTTPTransport(_Transport):
         self._client = None
 
 
+def _valid_rpc_request_id(value: Any) -> bool:
+    """Reject booleans and oversized strings masquerading as JSON-RPC request IDs."""
+    return type(value) is int or (isinstance(value, str) and len(value) <= 512)
+
+
+def _valid_rpc_response(message: Any, want_id: int) -> bool:
+    """Validate the JSON-RPC 2.0 response envelope before matching a pending request."""
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        return False
+    if type(message.get("id")) is not int or message["id"] != want_id:
+        return False
+    has_result, has_error = "result" in message, "error" in message
+    if has_result == has_error:
+        return False
+    if has_error:
+        error = message["error"]
+        return (
+            isinstance(error, dict)
+            and type(error.get("code")) is int
+            and isinstance(error.get("message"), str)
+        )
+    return True
+
+
 def _match_response(payload: str, want_id: int) -> dict | None:
     try:
         obj = json.loads(payload)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError, ValueError):
         return None
-    for m in (obj if isinstance(obj, list) else [obj]):
-        if isinstance(m, dict) and m.get("id") == want_id and ("result" in m or "error" in m):
-            return m
+    for message in (obj if isinstance(obj, list) else [obj]):
+        if _valid_rpc_response(message, want_id):
+            return message
     return None
 
 

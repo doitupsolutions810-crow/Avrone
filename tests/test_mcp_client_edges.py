@@ -363,7 +363,7 @@ def test_http_json_response_body_is_bounded(monkeypatch):
 
 def test_http_sse_total_response_bytes_are_bounded(monkeypatch):
     monkeypatch.setattr(mc, "MAX_HTTP_RESPONSE_BYTES", 48)
-    sse = f"data: {json.dumps(rpc(1, {'payload': 'x' * 128}))}\\n\\n"
+    sse = f"data: {json.dumps(rpc(1, {'payload': 'x' * 128}))}\n\n"
     t = http_transport(lambda r: httpx.Response(
         200, text=sse, headers={"content-type": "text/event-stream"}
     ))
@@ -374,7 +374,7 @@ def test_http_sse_total_response_bytes_are_bounded(monkeypatch):
 def test_http_sse_single_line_is_bounded(monkeypatch):
     monkeypatch.setattr(mc, "MAX_HTTP_SSE_LINE_BYTES", 16)
     monkeypatch.setattr(mc, "MAX_HTTP_RESPONSE_BYTES", 4096)
-    sse = f"data: {json.dumps(rpc(1))}\\n\\n"
+    sse = f"data: {json.dumps(rpc(1))}\n\n"
     t = http_transport(lambda r: httpx.Response(
         200, text=sse, headers={"content-type": "text/event-stream"}
     ))

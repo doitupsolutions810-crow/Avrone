@@ -73,9 +73,13 @@ If the task or focus explicitly requires an action through a tool, your first re
 file contents, hashes, or state changes. If a tool is unavailable or fails, say it was not completed.
 You have at most {steps} turns.
 
-Working habits: if a skill fits your job, skill_load it first; for multi-part work, put subtasks on
-task_board and update them; if a tool or package is missing, install it with env_install (self-changes
-are allowed and logged) and carry on; never invent tool output."""
+General workflow habits apply only when the task does not prescribe a more immediate action.
+Priority: an explicit first-action or exact-tool requirement in the task or focus overrides every
+general workflow habit. When such a requirement exists, perform that action first. Do not call
+skill_list, skill_load, task_board, self_scan, or another preparatory tool before it.
+When no immediate action is required, load a relevant skill before multi-part work; use task_board
+to coordinate genuine multi-part tasks; install missing tools or packages only when needed and
+allowed. Never invent tool output."""
 
 LEAD_PROMPT = """You are the LEAD agent in AVRONE. Several agents worked the same task in
 parallel from different angles. Compare their work like a study group:

@@ -52,7 +52,9 @@ PLANNER_PROMPT = """You are the PLANNER in AVRONE, a multi-agent system.
 Split the user's task into {n} independent angles that different agents can work
 on IN PARALLEL (e.g. research, implementation, verification, devil's advocate).
 Every angle must be useful alone; do not make one depend on another.
-Reply with JSON only: {{"subtasks": [{{"role": "<short role name>", "focus": "<what this agent should do>"}}]}}"""
+When the task requires concrete commands, tool calls, or file operations, preserve those exact execution
+requirements in the relevant worker focus; do not turn a required action into generic research or planning.
+Reply with one JSON object only: {{"subtasks": [{{"role": "<short role name>", "focus": "<what this agent should do>"}}]}}"""
 
 WORKER_PROMPT = """You are {name}, the {role} agent in AVRONE, working inside a real Linux
 environment with a workspace directory. Overall task from the user:
@@ -61,29 +63,20 @@ environment with a workspace directory. Overall task from the user:
 Your focus: {focus}
 
 {tools}
-Reply with ONE fenced JSON block per turn, either a tool call:
-```json
+Return exactly ONE JSON object and no prose or Markdown fences on each turn. It must be one of:
 {{"tool": "<name>", "args": {{...}}}}
-```
-or, for independent calls that can run at the same time (up to {max_calls}), a batch:
-```json
 {{"tools": [{{"tool": "<name>", "args": {{...}}}}, {{"tool": "<name>", "args": {{...}}}}]}}
-```
-or, when you are done, your final result:
-```json
 {{"final": "<your complete findings, including any code, commands run and results>"}}
-```
-Be concrete. Verify claims with tools when you can. You have at most {steps} turns.
-Execution discipline:
-- When the assigned focus or overall task explicitly requires a tool, command, lookup, or file operation,
-  your first response MUST be the JSON tool-call object. Do not send an "I'll..." preamble or a plan.
-- Use the requested tool for the requested action. A statement that you intend to run a command is not
-  execution. Continue only after receiving the actual TOOL RESULT.
-- Never report a command, file, hash, lookup, or state change as completed unless the corresponding
-  TOOL RESULT is present in your conversation. If execution is blocked, report it as not run.
-Working habits: if a skill fits your job, skill_load it first; for multi-part work, put
-subtasks on task_board and update them; if a tool or package is missing, install it with
-env_install (self-changes are allowed and logged) and carry on; never invent tool output."""
+
+If the task or focus explicitly requires an action through a tool, your first reply must be the tool-call
+object for that action. Do not announce intent, write a plan, or claim work is complete before calling
+the tool. Wait for the actual TOOL RESULT before reporting the result. Never invent command output,
+file contents, hashes, or state changes. If a tool is unavailable or fails, say it was not completed.
+You have at most {steps} turns.
+
+Working habits: if a skill fits your job, skill_load it first; for multi-part work, put subtasks on
+task_board and update them; if a tool or package is missing, install it with env_install (self-changes
+are allowed and logged) and carry on; never invent tool output."""
 
 LEAD_PROMPT = """You are the LEAD agent in AVRONE. Several agents worked the same task in
 parallel from different angles. Compare their work like a study group:
@@ -720,7 +713,9 @@ class TrinityCore:
             elided = compact_messages(messages, context_chars())
             if elided:
                 self.codex.emit(run_id, "context.compact", name, elided=elided, step=step)
-            reply = reply_text(await self._chat(messages, session=f"avrone:{run_id}:{name}"))
+            reply = reply_text(await self._chat(
+                messages, session=f"avrone:{run_id}:{name}", json_mode=True
+            ))
             messages.append({"role": "assistant", "content": reply})
             if not reply.strip():
                 # An empty turn (gpt-oss does this after a long tool result, or when all its
@@ -1010,7 +1005,7 @@ class TrinityCore:
         reply = await self._chat([
             {"role": "system", "content": PLANNER_PROMPT.format(n=n)},
             {"role": "user", "content": f"TASK: {task}"},
-        ], temperature=0.4, session=f"avrone:{run_id}:planner")
+        ], temperature=0.4, session=f"avrone:{run_id}:planner", json_mode=True)
         subtasks = _normalize_subtasks(reply, n)
         self.codex.emit(run_id, "lead.planned", "Planner", subtasks=subtasks)
         return subtasks

@@ -35,8 +35,9 @@ class LLM:
         return self.gateway.status()
 
     async def chat(self, messages: list[dict[str, str]], model: str | None = None,
-                   temperature: float = 0.7, session: str | None = None, lead: bool = False) -> str:
-        return await self.gateway.chat(messages, model, temperature, session, lead)
+                   temperature: float = 0.7, session: str | None = None, lead: bool = False,
+                   json_mode: bool = False) -> str:
+        return await self.gateway.chat(messages, model, temperature, session, lead, json_mode=json_mode)
 
     async def _legacy_chat(self, messages: list[dict[str, str]], model: str | None = None,
                            temperature: float = 0.7, session: str | None = None) -> str:

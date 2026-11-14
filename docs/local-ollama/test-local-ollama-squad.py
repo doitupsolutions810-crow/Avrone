@@ -154,7 +154,7 @@ def main() -> int:
         raise SystemExit("BLOCKED: profile must set AVRONE_AGENT_CONTAINER=persistent.")
     nonce = uuid.uuid4().hex[:10]
     marker = f"sandbox-smoke-{nonce}.txt"
-    marker_content = f"AVRONE_SANDBOX_PROOF:{nonce}\\n"
+    marker_content = f"AVRONE_SANDBOX_PROOF:{nonce}\n"
     shell_command = (
         f"printf '%s\\n' 'AVRONE_SANDBOX_PROOF:{nonce}' > {marker} "
         f"&& pwd && sha256sum -- {marker}"
@@ -236,6 +236,8 @@ def main() -> int:
     }
     if len(spawns) != 2 or set(worker_calls) != set(e.get("agent") for e in spawns):
         raise RuntimeError(f"Expected exactly 2 spawned workers with unique identities; got {len(spawns)} and {sorted(worker_calls)}.")
+    if len({spawn_by_agent.get(agent) for agent in worker_calls}) != 2:
+        raise RuntimeError("The two workers did not receive distinct durable agent identities.")
     if any(len(worker_calls[a]) != 1 for a in worker_calls):
         raise RuntimeError("Each worker must issue exactly one tool call in this one-action smoke test.")
     if any(len(worker_results[a]) != 1 for a in worker_results):
@@ -250,6 +252,7 @@ def main() -> int:
     for agent, output in output_by_agent.items():
         if expected_line not in output or marker not in output:
             raise RuntimeError(f"Worker {agent} shell output did not prove sha256sum of its unique run marker.")
+    shell_agents = set(worker_calls)
     expected_artifacts = {}
     for agent, output in output_by_agent.items():
         agent_id = spawn_by_agent.get(agent)

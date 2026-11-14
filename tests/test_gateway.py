@@ -75,3 +75,45 @@ def test_lead_model_per_upstream(monkeypatch):
     assert seen["model"] == "grok-lead"
     asyncio.run(g.chat([{"role": "user", "content": "hi"}]))
     assert seen["model"] == "grok-worker"
+
+
+
+def test_ollama_json_mode_is_opt_in_and_provider_scoped(monkeypatch):
+    seen = []
+
+    def handler(req):
+        import json
+        seen.append({"url": str(req.url), "body": json.loads(req.content)})
+        return reply('{"tool":"shell","args":{"cmd":"echo json"}}')
+
+    g = mk({"AVRONE_PROVIDER": "ollama", "AVRONE_LLM_MODEL": "mimo-v2.6:9b"}, monkeypatch, handler)
+    asyncio.run(g.chat([{"role": "system", "content": "Reply with JSON."},
+                        {"role": "user", "content": "Call shell."}], json_mode=True))
+    assert seen[-1]["body"]["response_format"] == {"type": "json_object"}
+    asyncio.run(g.chat([{"role": "user", "content": "Say hello."}], json_mode=False))
+    assert "response_format" not in seen[-1]["body"]
+
+
+def test_ollama_json_mode_only_applies_after_provider_failover(monkeypatch):
+    seen = []
+
+    def handler(req):
+        import json
+        body = json.loads(req.content)
+        seen.append((str(req.url), body))
+        if "x.ai" in str(req.url):
+            return httpx.Response(429, text="rate limited")
+        return reply('{"final":"ok"}')
+
+    g = mk({
+        "AVRONE_PROVIDER": "xai",
+        "AVRONE_LLM_API_KEY": "k",
+        "AVRONE_LLM_FALLBACKS": "ollama:mimo-v2.6:9b",
+        "AVRONE_LLM_RETRIES": "1",
+        "AVRONE_LLM_BACKOFF": "0",
+    }, monkeypatch, handler)
+    out = asyncio.run(g.chat([{"role": "system", "content": "JSON only."},
+                              {"role": "user", "content": "Respond with JSON."}], json_mode=True))
+    assert out == '{"final":"ok"}'
+    assert "response_format" not in seen[0][1]
+    assert seen[1][1]["response_format"] == {"type": "json_object"}

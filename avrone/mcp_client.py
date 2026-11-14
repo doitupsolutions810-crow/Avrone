@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -378,7 +379,14 @@ class MCPClient:
     def __init__(self, name: str, config: dict[str, Any], timeout: float = DEFAULT_TIMEOUT):
         self.name = name
         self.config = config
-        self.timeout = float(config.get("timeout", timeout))
+        raw_timeout = config.get("timeout", timeout)
+        try:
+            parsed_timeout = float(raw_timeout)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise MCPError("MCP timeout must be a finite positive number") from exc
+        if isinstance(raw_timeout, bool) or not math.isfinite(parsed_timeout) or parsed_timeout <= 0:
+            raise MCPError("MCP timeout must be a finite positive number")
+        self.timeout = parsed_timeout
         if config.get("url"):
             self.transport: _Transport = HTTPTransport(str(config["url"]), config.get("headers"))
             self.kind = "http"
@@ -609,14 +617,27 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
 
 
 def load_config(path: str | os.PathLike | None = None) -> dict[str, dict[str, Any]]:
-    """Read the mcpServers map. Missing file -> {}."""
+    """Read and validate the mcpServers map. Missing file -> {}."""
     p = Path(path or os.getenv("AVRONE_MCP_CONFIG", "./mcp.json"))
     if not p.exists():
         return {}
     data = json.loads(p.read_text() or "{}")
     servers = data.get("mcpServers", data.get("servers", {})) if isinstance(data, dict) else {}
-    return {str(k): v for k, v in servers.items()
-            if isinstance(v, dict) and not v.get("disabled")}
+    if not isinstance(servers, dict):
+        raise MCPError("MCP config server map must be a JSON object")
+    configured: dict[str, dict[str, Any]] = {}
+    for key, value in servers.items():
+        if not isinstance(value, dict):
+            continue
+        name = str(key)
+        if not name.strip():
+            raise MCPError("MCP config server names must be non-empty strings")
+        disabled = value.get("disabled", False)
+        if not isinstance(disabled, bool):
+            raise MCPError(f"MCP config for server {name!r}: 'disabled' must be boolean")
+        if not disabled:
+            configured[name] = value
+    return configured
 
 
 # --------------------------------------------------------------------------- manager

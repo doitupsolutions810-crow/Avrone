@@ -313,4 +313,4 @@ def test_required_tool_action_is_first_worker_turn_and_ollama_json_mode_is_reque
     assert "first reply must be the tool-call object" in prompt
     assert "Do not announce intent" in prompt
     assert "Never invent command output" in prompt
-    assert "TOOL RESULT (echo):\\necho:proof" in llm.calls[1]["messages"][-1]["content"]
+    assert "TOOL RESULT (echo):\necho:proof" in llm.calls[1]["messages"][-1]["content"]

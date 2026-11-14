@@ -113,8 +113,8 @@ def test_smoke_verifier_accepts_two_distinct_private_agent_homes(monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     containers = [
-        _container("solver-a", "worker-A proof\\n", "cid-a"),
-        _container("solver-b", "worker-B proof\\n", "cid-b"),
+        _container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        _container("solver-b", "worker-B proof\\n", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     ]
     _install_docker_stub(monkeypatch, containers)
     result = smoke.inspect_agent_homes("nonce", _expected(containers))
@@ -139,8 +139,8 @@ def test_smoke_verifier_rejects_tampered_or_unhardened_worker_evidence(
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     containers = [
-        _container("solver-a", "worker-A proof\\n", "cid-a"),
-        _container("solver-b", "worker-B proof\\n", "cid-b"),
+        _container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        _container("solver-b", "worker-B proof\\n", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     ]
     c = containers[0]
     if mutation == "wrong_hash":
@@ -168,7 +168,7 @@ def test_smoke_verifier_rejects_missing_container_for_a_shell_caller(monkeypatch
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     containers = [
-        _container("solver-a", "worker-A proof\\n", "cid-a"),
+        _container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
     ]
     _install_docker_stub(monkeypatch, containers)
     expected = _expected(containers)
@@ -180,11 +180,11 @@ def test_smoke_verifier_rejects_missing_container_for_a_shell_caller(monkeypatch
 def test_smoke_verifier_rejects_malformed_docker_inspect_shape(monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
-    containers = [_container("solver-a", "worker-A proof\\n", "cid-a")]
+    containers = [_container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
     expected = _expected(containers)
     def malformed(args, **kwargs):
         if args[:2] == ["docker", "ps"]:
-            return subprocess.CompletedProcess(args, 0, "cid-a", "")
+            return subprocess.CompletedProcess(args, 0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
         if args[:2] == ["docker", "inspect"]:
             return subprocess.CompletedProcess(args, 0, "{}", "")
         raise AssertionError(args)
@@ -208,8 +208,8 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     containers = [
-        _container("solver-a", "worker-A proof\\n", "cid-a"),
-        _container("solver-b", "worker-B proof\\n", "cid-b"),
+        _container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        _container("solver-b", "worker-B proof\\n", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     ]
     host, cfg = containers[0]["HostConfig"], containers[0]["Config"]
     if mutation == "wrong_image":
@@ -240,9 +240,9 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
 def test_smoke_verifier_rejects_duplicate_container_claims_for_one_worker(monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
-    first = _container("solver-a", "worker-A proof\\n", "cid-a")
-    duplicate = _container("solver-a", "worker-A proof\\n", "cid-a-duplicate")
-    other = _container("solver-b", "worker-B proof\\n", "cid-b")
+    first = _container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    duplicate = _container("solver-a", "worker-A proof\\n", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+    other = _container("solver-b", "worker-B proof\\n", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     _install_docker_stub(monkeypatch, [first, duplicate, other])
     with pytest.raises(RuntimeError, match="Multiple Docker containers"):
         smoke.inspect_agent_homes("nonce", _expected([first, other]))
@@ -274,3 +274,114 @@ def test_live_smoke_rejects_duplicate_durable_worker_ids():
             {"agent": "Worker A", "data": {"agent_id": "solver-a"}},
             {"agent": "Worker B", "data": {"agent_id": "solver-a"}},
         ])
+
+@pytest.mark.parametrize("mutation,expected_check", [
+    ("seccomp_unconfined", "no_security_profile_overrides"),
+    ("apparmor_unconfined", "no_security_profile_overrides"),
+    ("host_uts", "no_host_uts_namespace"),
+    ("host_cgroup", "no_host_cgroup_namespace"),
+    ("volumes_from", "no_volumes_from"),
+])
+def test_smoke_verifier_rejects_additional_security_and_namespace_escapes(
+    monkeypatch, mutation, expected_check
+):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    containers = [
+        _container("solver-a", "worker-A proof\\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        _container("solver-b", "worker-B proof\\n", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    ]
+    host = containers[0]["HostConfig"]
+    if mutation == "seccomp_unconfined":
+        host["SecurityOpt"] = ["no-new-privileges", "seccomp=unconfined"]
+    elif mutation == "apparmor_unconfined":
+        host["SecurityOpt"] = ["no-new-privileges", "apparmor=unconfined"]
+    elif mutation == "host_uts":
+        host["UTSMode"] = "host"
+    elif mutation == "host_cgroup":
+        host["CgroupnsMode"] = "host"
+    elif mutation == "volumes_from":
+        host["VolumesFrom"] = ["other-container"]
+    _install_docker_stub(monkeypatch, containers)
+    with pytest.raises(RuntimeError, match=expected_check):
+        smoke.inspect_agent_homes("nonce", _expected(containers))
+
+
+def test_smoke_verifier_rejects_malformed_docker_ids(monkeypatch):
+    def malformed_ids(args, **kwargs):
+        if args[:2] == ["docker", "ps"]:
+            return subprocess.CompletedProcess(args, 0, "--help\\n", "")
+        raise AssertionError(f"docker inspect must not run for invalid IDs: {args!r}")
+    monkeypatch.setattr(smoke.subprocess, "run", malformed_ids)
+    with pytest.raises(RuntimeError, match="malformed container ID"):
+        smoke.inspect_agent_homes("nonce", {"solver-a": {"content": "x\\n", "sha256": "0" * 64}})
+
+
+def test_worker_prompt_gives_explicit_tool_actions_priority_over_setup_habits():
+    from avrone.trinity import WORKER_PROMPT
+    assert "overrides every general workflow habit" in WORKER_PROMPT
+    assert "Do not call" in WORKER_PROMPT and "skill_load" in WORKER_PROMPT
+    assert "perform that action first" in WORKER_PROMPT
+
+
+def test_live_smoke_requires_exactly_two_shell_calls_and_results():
+    cmd = "printf proof > marker.txt && pwd && sha256sum -- marker.txt"
+    spawns = [
+        {"agent": "WorkerA-1", "data": {"agent_id": "worker-a"}},
+        {"agent": "WorkerB-2", "data": {"agent_id": "worker-b"}},
+    ]
+    calls = [
+        {"agent": "WorkerA-1", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+    ]
+    results = [
+        {"agent": "WorkerA-1", "data": {"tool": "shell", "output": "sha256 output A"}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "output": "sha256 output B"}},
+    ]
+    identities, outputs = smoke._validate_worker_tool_events(spawns, calls, results, cmd)
+    assert identities == {"WorkerA-1": "worker-a", "WorkerB-2": "worker-b"}
+    assert set(outputs) == {"WorkerA-1", "WorkerB-2"}
+
+
+@pytest.mark.parametrize("mutation,expected_error", [
+    ("extra_call", "exactly two total tool.call"),
+    ("preparatory_call", "exactly two total tool.call"),
+    ("wrong_tool", "only shell is permitted"),
+    ("wrong_command", "exact approved shell command"),
+    ("unspawned_caller", "does not belong"),
+    ("missing_result", "exactly two total tool.result"),
+    ("duplicate_result", "more than one tool result"),
+    ("unspawned_result", "does not belong"),
+])
+def test_live_smoke_rejects_extra_or_mismatched_tool_events(mutation, expected_error):
+    cmd = "printf proof > marker.txt && pwd && sha256sum -- marker.txt"
+    spawns = [
+        {"agent": "WorkerA-1", "data": {"agent_id": "worker-a"}},
+        {"agent": "WorkerB-2", "data": {"agent_id": "worker-b"}},
+    ]
+    calls = [
+        {"agent": "WorkerA-1", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+    ]
+    results = [
+        {"agent": "WorkerA-1", "data": {"tool": "shell", "output": "sha256 output A"}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "output": "sha256 output B"}},
+    ]
+    if mutation in {"extra_call", "preparatory_call"}:
+        tool = "skill_list" if mutation == "preparatory_call" else "shell"
+        calls.append({"agent": "WorkerA-1", "data": {"tool": tool, "args": {"cmd": cmd}}})
+    elif mutation == "wrong_tool":
+        calls[0]["data"]["tool"] = "skill_list"
+    elif mutation == "wrong_command":
+        calls[0]["data"]["args"]["cmd"] = "echo fabricated"
+    elif mutation == "unspawned_caller":
+        calls[0]["agent"] = "Lead-1"
+    elif mutation == "missing_result":
+        results.pop()
+    elif mutation == "duplicate_result":
+        results.append(dict(results[0]))
+    elif mutation == "unspawned_result":
+        results[0]["agent"] = "Lead-1"
+    with pytest.raises(RuntimeError, match=expected_error):
+        smoke._validate_worker_tool_events(spawns, calls, results, cmd)
+

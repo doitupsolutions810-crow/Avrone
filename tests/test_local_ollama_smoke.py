@@ -350,7 +350,7 @@ def test_live_smoke_requires_exactly_two_shell_calls_and_results():
     ("wrong_command", "exact approved shell command"),
     ("unspawned_caller", "does not belong"),
     ("missing_result", "exactly two total tool.result"),
-    ("duplicate_result", "more than one tool result"),
+    ("duplicate_result", "exactly two total tool.result"),
     ("unspawned_result", "does not belong"),
 ])
 def test_live_smoke_rejects_extra_or_mismatched_tool_events(mutation, expected_error):

@@ -269,15 +269,18 @@ class HTTPTransport(_Transport):
                     f"MCP SSE response exceeded configured limit ({MAX_HTTP_RESPONSE_BYTES} bytes)"
                 )
             pending.extend(chunk)
+            line_start = 0
             while True:
-                newline = pending.find(b"\n")
+                newline = pending.find(b"\n", line_start)
                 if newline < 0:
                     break
-                raw = bytes(pending[:newline])
-                del pending[:newline + 1]
+                raw = bytes(pending[line_start:newline])
+                line_start = newline + 1
                 found = consume_line(raw)
                 if found is not None:
                     return found
+            if line_start:
+                del pending[:line_start]
             if len(pending) > MAX_HTTP_SSE_LINE_BYTES:
                 raise MCPError(
                     f"MCP SSE line exceeded configured limit ({MAX_HTTP_SSE_LINE_BYTES} bytes)"

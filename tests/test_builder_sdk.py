@@ -86,6 +86,7 @@ async def test_verify_failure_is_not_hidden():
     runner = FakeRunner([
         FakeCommand(exit_code=0, stdout="a" * 40),
         FakeCommand(exit_code=1, stderr="test failure"),
+        FakeCommand(exit_code=0, stdout="a" * 40),
     ])
     sdk = BuilderAgentSDK(
         FakeCore(runner=runner),
@@ -126,6 +127,7 @@ async def test_verify_with_sha_and_passing_checks_is_verified():
     runner = FakeRunner([
         FakeCommand(exit_code=0, stdout="b" * 40),
         FakeCommand(exit_code=0),
+        FakeCommand(exit_code=0, stdout="b" * 40),
     ])
     sdk = BuilderAgentSDK(
         FakeCore(runner=runner),

@@ -327,7 +327,15 @@ class MCPClient:
 
     async def connect(self) -> None:
         await self.transport.connect()
-        await self.initialize()
+        try:
+            await self.initialize()
+        except BaseException:
+            # A failed or cancelled handshake must not leak an HTTP client or stdio server process.
+            try:
+                await asyncio.shield(self.transport.close())
+            except BaseException:
+                pass
+            raise
 
     async def initialize(self) -> dict[str, Any]:
         res = await self.transport.request("initialize", {
@@ -341,7 +349,11 @@ class MCPClient:
         if not isinstance(version, str) or not version:
             raise MCPError("MCP initialize protocolVersion must be a non-empty string")
         if version not in SUPPORTED_VERSIONS:
-            log.warning("MCP server %s negotiated unknown protocol %s; continuing", self.name, version)
+            supported = ", ".join(SUPPORTED_VERSIONS)
+            raise MCPError(
+                f"MCP server {self.name} negotiated unsupported protocol {version!r}; "
+                f"this client supports only: {supported}"
+            )
         self.protocol_version = version
         if isinstance(self.transport, HTTPTransport):
             self.transport.protocol_version = version

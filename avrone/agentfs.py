@@ -130,15 +130,25 @@ def agent_dir(workspace: Path, agent_id: object, create: bool = True) -> Path:
 
 
 def is_agent_dir(workspace: Path, path: Path | None) -> bool:
-    """True if `path` is exactly one confined agent dir (workspace/agents/<id>)."""
+    """True only for an existing canonical, non-symlink workspace/agents/<id> directory."""
     if path is None:
         return False
+    root = agents_root(workspace)
+    raw = Path(path)
     try:
-        rp = Path(path).resolve()
+        # Do not resolve first: resolving a symlink to a sibling home would erase evidence
+        # that the caller supplied an alias instead of this agent's own directory.
+        if root.is_symlink() or raw.parent != root or raw.is_symlink():
+            return False
+        rp = raw.resolve(strict=True)
+        return (
+            rp == raw
+            and rp.parent == root
+            and sanitize_agent_id(rp.name) == rp.name
+            and rp.is_dir()
+        )
     except OSError:
         return False
-    root = agents_root(workspace)
-    return rp.parent == root and sanitize_agent_id(rp.name) == rp.name
 
 
 def confine(base: Path, rel: object) -> Path:

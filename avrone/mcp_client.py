@@ -889,7 +889,10 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
     if not isinstance(props, dict):
         return "{}"
     required_raw = schema.get("required")
-    required = {key for key in required_raw if isinstance(key, str)} if isinstance(required_raw, list) else set()
+    required = (
+        {key for key in required_raw[:MAX_SCHEMA_PROPERTIES] if isinstance(key, str)}
+        if isinstance(required_raw, list) else set()
+    )
 
     items: list[str] = []
     for index, (key, raw_spec) in enumerate(props.items()):
@@ -903,7 +906,7 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
         if isinstance(raw_type, list):
             # Only known JSON Schema primitive types may enter the model-facing tool signature.
             type_names = [
-                value for value in raw_type
+                value for value in raw_type[:6]
                 if isinstance(value, str) and value in _TYPE_MAP and value != "null"
             ]
             t = "|".join(_TYPE_MAP[value] for value in type_names) or "any"

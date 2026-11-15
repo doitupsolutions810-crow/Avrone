@@ -2800,3 +2800,50 @@ def test_pool_requires_workspace_binding_before_any_docker_operation(tmp_path):
         run(pool.ensure(home))
     assert fake.calls == []
     assert pool.homes == {}
+
+
+@pytest.mark.parametrize("path_kind", ["outside", "foreign_workspace", "nested", "symlink", "missing"])
+def test_pool_run_argv_rejects_unconfined_agent_homes(tmp_path, path_kind):
+    workspace = tmp_path / "configured-workspace"
+    home = agentfs.agent_dir(workspace, "trusted-worker")
+    if path_kind == "outside":
+        candidate = tmp_path / "outside-home"
+        candidate.mkdir()
+    elif path_kind == "foreign_workspace":
+        candidate = agentfs.agent_dir(tmp_path / "foreign-workspace", "foreign-worker")
+    elif path_kind == "nested":
+        candidate = home / "nested"
+        candidate.mkdir()
+    elif path_kind == "symlink":
+        candidate = home.parent / "alias-worker"
+        candidate.symlink_to(home, target_is_directory=True)
+    else:
+        candidate = home.parent / "missing-worker"
+
+    pool = ac.AgentContainerPool(
+        FakeDocker(), "img", False, node="edge", workspace=workspace
+    )
+    with pytest.raises(ValueError, match="canonical agent home in the configured workspace"):
+        pool.run_argv(candidate)
+
+
+def test_pool_run_argv_requires_workspace_binding(tmp_path):
+    home = agentfs.agent_dir(tmp_path / "workspace", "unbound-run-argv")
+    pool = ac.AgentContainerPool(FakeDocker(), "img", False, node="edge")
+
+    with pytest.raises(RuntimeError, match="bound to its configured workspace"):
+        pool.run_argv(home)
+
+
+def test_pool_run_argv_accepts_only_the_validated_agent_home(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = agentfs.agent_dir(workspace, "validated-worker")
+    pool = ac.AgentContainerPool(
+        FakeDocker(), "img", False, node="edge", workspace=workspace
+    )
+
+    argv = pool.run_argv(home, image_ref="sha256:" + "b" * 64)
+    assert argv[argv.index("--name") + 1] == "avrone-agent-edge-validated-worker"
+    assert argv.count("-v") == 1
+    assert argv[argv.index("-v") + 1] == f"{home}:/agent"
+    assert argv[-3] == "sha256:" + "b" * 64

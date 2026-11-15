@@ -481,10 +481,25 @@ class AgentContainerPool:
             raise ValueError("idle must be a positive finite number of seconds")
         return max(MIN_IDLE_SECS, min(7 * 86400.0, value))
 
+    def _validated_agent_dir(self, agent_dir: Path) -> Path:
+        """Validate a canonical private home under this pool's configured workspace."""
+        if self.workspace is None:
+            raise RuntimeError("agent container pool must be bound to its configured workspace")
+        raw_dir = Path(agent_dir)
+        if not agentfs.is_agent_dir(self.workspace, raw_dir):
+            raise ValueError("agent_dir must be a canonical agent home in the configured workspace")
+        # Reapply owner-only permissions and verify the exact canonical path before it can
+        # become a Docker bind source. This guard belongs at the argv boundary too: callers
+        # may use run_argv() directly without going through ensure().
+        resolved = agentfs.agent_dir(self.workspace, raw_dir.name, create=False)
+        if resolved != raw_dir:
+            raise ValueError("agent_dir must resolve to its canonical workspace/agents/<id> path")
+        return resolved
+
     def run_argv(
         self, agent_dir: Path, image_ref: str | None = None, *, creation_token: str | None = None
     ) -> list[str]:
-        d = Path(agent_dir).resolve()
+        d = self._validated_agent_dir(agent_dir)
         return persistent_run_argv(
             container_name(self.node, d.name), d, image_ref or self.image, self.allow_network,
             agent_id=d.name, creation_token=creation_token,
@@ -573,16 +588,7 @@ class AgentContainerPool:
             raise RuntimeError("agent container pool is closing or closed")
         if type(_active) is not bool:
             raise ValueError("_active must be a boolean")
-        if self.workspace is None:
-            raise RuntimeError("agent container pool must be bound to its configured workspace")
-        raw_dir = Path(agent_dir)
-        if not agentfs.is_agent_dir(self.workspace, raw_dir):
-            raise ValueError("agent_dir must be a canonical agent home in the configured workspace")
-        # Re-run the filesystem helper to enforce 0700 permissions on pre-existing homes
-        # before any Docker operation can bind-mount the directory.
-        d = agentfs.agent_dir(self.workspace, raw_dir.name, create=False)
-        if d != raw_dir:
-            raise ValueError("agent_dir must resolve to its canonical workspace/agents/<id> path")
+        d = self._validated_agent_dir(agent_dir)
         name = container_name(self.node, d.name)
         await self.reap_idle(skip=name)
         async with self._lock:

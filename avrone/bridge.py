@@ -30,6 +30,7 @@ import json
 import math
 import contextlib
 import hashlib
+import itertools
 import os
 import re
 import stat
@@ -45,6 +46,8 @@ from .tools import Tool
 KINDS = ("finding", "question", "answer", "correction", "conclusion")
 MAX_TEXT = 4000
 MAX_REFS = 20
+MAX_REF_SCAN = 256
+MAX_REMOTE_BATCH = 5000
 DEFAULT_MAX_POSTS, HARD_MAX_POSTS = 500, 5000
 DEFAULT_ROUNDS, HARD_MAX_ROUNDS = 1, 3
 _RUN_RE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -122,7 +125,8 @@ def _refs(refs: Any) -> list[str]:
     if not isinstance(refs, (list, tuple)):
         return []
     out: list[str] = []
-    for r in refs:
+    # Never inspect an unbounded list of malformed references from a peer.
+    for r in refs[:MAX_REF_SCAN]:
         r = _utf8_text(r).strip()
         if r and _ID_RE.match(r) and r not in out:
             out.append(r)
@@ -340,7 +344,13 @@ class Bridge:
         body = _clip(text)
         if not body:
             raise BridgeError("text is required")
-        refs_l = _refs(list(refs) if refs is not None and not isinstance(refs, str) else refs)
+        try:
+            # A generated/infinite iterable must not be consumed with list(refs).
+            bounded_refs = (refs if isinstance(refs, (str, list, tuple)) or refs is None
+                            else list(itertools.islice(iter(refs), MAX_REF_SCAN)))
+        except Exception:
+            bounded_refs = None
+        refs_l = _refs(bounded_refs)
         with self._lock:
             unknown = [r for r in refs_l if r not in self._posts]
             if unknown:
@@ -372,7 +382,12 @@ class Bridge:
         origin = str(origin_node or "remote")[:80]
         fresh: list[dict[str, Any]] = []
         with self._lock:
-            for p in posts if isinstance(posts, list) else []:
+            # Bound both parsing work and the write-ahead batch on direct API
+            # calls; HTTP body limits alone do not protect in-process callers.
+            rows = posts[:MAX_REMOTE_BATCH] if isinstance(posts, list) else []
+            if isinstance(posts, list):
+                stats["rejected"] += max(0, len(posts) - len(rows))
+            for p in rows:
                 try:
                     rec = self._parse(json.dumps(p, default=str)) if isinstance(p, dict) else None
                 except (ValueError, TypeError, RecursionError):  # circular / absurdly nested

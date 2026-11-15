@@ -258,6 +258,42 @@ def rpc(rid, result=None, error=None):
     return m
 
 
+@pytest.mark.parametrize("headers", [
+    [],
+    {"Content-Type": "text/plain"},
+    {"accept": "*/*"},
+    {"MCP-Session-Id": "spoofed"},
+    {"mcp-protocol-version": "future"},
+    {"Host": "attacker.invalid"},
+    {"Content-Length": "0"},
+    {"Transfer-Encoding": "chunked"},
+    {"X-Test": "safe\\r\\nX-Injected: yes"},
+    {"bad\\nname": "value"},
+    {"X-Test": {"nested": "value"}},
+    {"X-Test": True},
+    {"X-Test": "one", "x-test": "two"},
+])
+def test_http_transport_rejects_malformed_or_reserved_custom_headers(headers):
+    with pytest.raises(MCPError):
+        HTTPTransport("https://mcp.invalid/mcp", headers)
+
+
+def test_http_transport_accepts_scalar_non_reserved_headers_and_owns_protocol_headers():
+    transport = HTTPTransport("https://mcp.invalid/mcp", {
+        "Authorization": "Bearer token",
+        "X-Region": 3,
+    })
+    transport.session_id = "session-1"
+    transport.protocol_version = mc.PROTOCOL_VERSION
+    headers = transport._hdrs()
+    assert headers["Authorization"] == "Bearer token"
+    assert headers["X-Region"] == "3"
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Accept"] == "application/json, text/event-stream"
+    assert headers["Mcp-Session-Id"] == "session-1"
+    assert headers["MCP-Protocol-Version"] == mc.PROTOCOL_VERSION
+
+
 def test_http_connect_builds_client(monkeypatch):
     real = httpx.AsyncClient
     made = {}

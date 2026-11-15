@@ -2,6 +2,7 @@
 docker is never invoked (subprocess/_exec mocked) and fleet HTTP goes through MockTransport."""
 import asyncio
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -35,7 +36,7 @@ def _settings(tmp_path, **kw):
     return Settings(workspace=tmp_path / "ws", data_dir=tmp_path / "data", **kw)
 
 
-def _fake_inspect_from_run(argv, running=True):
+def _fake_inspect_from_run(argv, container_id, running=True):
     def option(flag, default=None):
         try:
             return argv[argv.index(flag) + 1]
@@ -55,6 +56,7 @@ def _fake_inspect_from_run(argv, running=True):
     memory = int(option("--memory", "512m").removesuffix("m")) * 1024 * 1024
     swap = int(option("--memory-swap", "512m").removesuffix("m")) * 1024 * 1024
     return {
+        "Id": container_id,
         "State": {"Running": running},
         "Image": argv[-3],
         "Config": {"User": option("--user"), "Image": argv[-3], "WorkingDir": option("-w"),
@@ -86,40 +88,80 @@ class FakeDocker:
         self.fail_image_inspect = False
         self.fail_rm_names: set[str] = set()
         self.raise_rm_names: set[str] = set()
+        self.container_ids: dict[str, str] = {}
+        self.container_id_history: dict[str, list[str]] = {}
+        self._id_to_name: dict[str, str] = {}
+        self._id_counter = 0
+
+    def _new_container_id(self, name: str) -> str:
+        self._id_counter += 1
+        container_id = hashlib.sha256(
+            f"fake-docker:{name}:{self._id_counter}".encode("utf-8")
+        ).hexdigest()
+        self.container_ids[name] = container_id
+        self.container_id_history.setdefault(name, []).append(container_id)
+        self._id_to_name[container_id] = name
+        return container_id
 
     def seed(self, argv):
         name = argv[argv.index("--name") + 1]
+        container_id = self._new_container_id(name)
         self.running.add(name)
-        self.inspect_payloads[name] = _fake_inspect_from_run(argv)
+        self.inspect_payloads[name] = _fake_inspect_from_run(argv, container_id)
+        return container_id
+
+    def rm_count(self, name: str) -> int:
+        known_ids = set(self.container_id_history.get(name, []))
+        return sum(1 for call in self.calls if len(call) == 4 and call[1] == "rm" and call[-1] in known_ids)
 
     async def __call__(self, argv, timeout):
         self.calls.append(argv)
-        name = argv[-1]
+        target = argv[-1]
         if len(argv) > 2 and argv[1:3] == ["image", "inspect"]:
             if self.fail_image_inspect:
                 return CommandResult(" ".join(argv), 1, "", "image missing")
             return CommandResult(" ".join(argv), 0, self.image_id, "")
         if argv[1] == "inspect":
-            if name in self.running and name in self.inspect_payloads:
-                return CommandResult(" ".join(argv), 0, json.dumps(self.inspect_payloads[name]), "")
-            return CommandResult(" ".join(argv), 1, "", f"No such object: {name}")
+            if target in self.running and target in self.inspect_payloads:
+                return CommandResult(" ".join(argv), 0, json.dumps(self.inspect_payloads[target]), "")
+            return CommandResult(" ".join(argv), 1, "", f"No such object: {target}")
         if argv[1] == "run":
             if self.fail_run:
                 return CommandResult("", 125, "", "image missing")
             name = argv[argv.index("--name") + 1]
+            if name in self.running:
+                return CommandResult(" ".join(argv), 125, "", f"The container name {name} is already in use")
+            container_id = self._new_container_id(name)
             self.running.add(name)
-            self.inspect_payloads[name] = _fake_inspect_from_run(argv)
+            self.inspect_payloads[name] = _fake_inspect_from_run(argv, container_id)
+            return CommandResult(" ".join(argv), 0, container_id, "")
+        if argv[1] == "exec":
+            if "AVRONE_AGENT_DIR=/agent" in argv:
+                container_id = argv[argv.index("AVRONE_AGENT_DIR=/agent") + 1]
+            else:
+                container_id = argv[2]
+            actual_name = self._id_to_name.get(container_id)
+            if actual_name is None or actual_name not in self.running or self.container_ids.get(actual_name) != container_id:
+                return CommandResult(" ".join(argv), 1, "", f"No such container: {container_id}")
+            return CommandResult(" ".join(argv), 0, "", "")
         if argv[1] == "rm":
-            if name in self.raise_rm_names:
-                self.raise_rm_names.remove(name)
+            if target in self.running:
+                actual_name = target
+                actual_id = self.container_ids.get(actual_name)
+            else:
+                actual_name = self._id_to_name.get(target)
+                actual_id = target if actual_name is not None else None
+                if actual_name is None or actual_name not in self.running or self.container_ids.get(actual_name) != actual_id:
+                    return CommandResult(" ".join(argv), 1, "", f"No such container: {target}")
+            if actual_name in self.raise_rm_names:
+                self.raise_rm_names.remove(actual_name)
                 raise RuntimeError("temporary docker rm transport error")
-            if name in self.fail_rm_names:
-                self.fail_rm_names.remove(name)
+            if actual_name in self.fail_rm_names:
+                self.fail_rm_names.remove(actual_name)
                 return CommandResult(" ".join(argv), 1, "", "temporary docker rm failure")
-            if name not in self.running:
-                return CommandResult(" ".join(argv), 1, "", f"No such container: {name}")
-            self.running.discard(name)
-            self.inspect_payloads.pop(name, None)
+            self.running.discard(actual_name)
+            self.inspect_payloads.pop(actual_name, None)
+            return CommandResult(" ".join(argv), 0, "", "")
         return CommandResult(" ".join(argv), 0, "", "")
 
     def verbs(self):
@@ -268,7 +310,7 @@ def test_pool_cached_home_repairs_policy_drift_when_idle(tmp_path):
 
     assert run(pool.ensure(home)) == name
     assert fake.inspect_payloads[name]["HostConfig"]["Privileged"] is False
-    assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+    assert fake.rm_count(name) == 1
     assert pool.created == 2
 
 
@@ -282,7 +324,7 @@ def test_pool_cached_home_refuses_policy_repair_while_active_lease_exists(tmp_pa
             with pytest.raises(RuntimeError, match="became non-compliant while leased"):
                 await pool.ensure(home)
             assert name in fake.running
-            assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+            assert fake.rm_count(name) == 0
         assert pool.homes[name].active == 0
 
     run(go())
@@ -298,7 +340,7 @@ def test_pool_cached_home_refuses_unowned_name_collision_without_removal(tmp_pat
     with pytest.raises(RuntimeError, match="unowned cached agent container"):
         run(pool.ensure(home))
     assert name in fake.running
-    assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+    assert fake.rm_count(name) == 0
     assert fake.calls.count([*ac.inspect_argv(name)]) == 2
 
 
@@ -334,7 +376,7 @@ def test_pool_rejects_unapproved_cached_mount_options(tmp_path, mutation):
         host["Binds"] = [host["Binds"][0] + ":z"]
 
     assert run(pool.ensure(home)) == name
-    assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+    assert fake.rm_count(name) == 1
     repaired = fake.inspect_payloads[name]["HostConfig"]
     assert repaired["Tmpfs"]["/tmp"] == "rw,nosuid,nodev,size=128m"
     assert repaired["Binds"] == [f"{home}:/agent"]
@@ -350,7 +392,7 @@ def test_pool_accepts_explicit_readwrite_bind_suffix(tmp_path):
     fake.inspect_payloads[name]["HostConfig"]["Binds"] = [bind + ":rw"]
 
     assert run(pool.ensure(home)) == name
-    assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+    assert fake.rm_count(name) == 0
     assert pool.created == 1
 
 
@@ -364,7 +406,7 @@ def test_pool_rejects_shared_network_namespaces_with_network_opt_in(tmp_path, mo
 
     assert run(pool.ensure(home)) == name
     assert fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] == "bridge"
-    assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+    assert fake.rm_count(name) == 1
     assert pool.created == 2
 
 
@@ -376,7 +418,7 @@ def test_pool_allows_user_defined_bridge_network_with_network_opt_in(tmp_path):
     fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] = "avrone-isolated-net"
 
     assert run(pool.ensure(home)) == name
-    assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+    assert fake.rm_count(name) == 0
     assert pool.created == 1
 
 
@@ -415,7 +457,7 @@ def test_pool_pins_mutable_tag_to_immutable_image_id(tmp_path):
     final_payload = fake.inspect_payloads[name]
     assert final_payload["Config"]["Image"] == second_id
     assert final_payload["Image"] == second_id
-    assert ["docker", "rm", "-f", name] in fake.calls
+    assert fake.rm_count(name) > 0
 
 
 @pytest.mark.parametrize("bad_image_id,fail", [
@@ -470,13 +512,13 @@ def test_pool_close_fences_inflight_ensure_before_observing_lease_drain(tmp_path
         assert pool.homes[name].active == 1
         assert not pool._lease_drained.is_set()
         assert not close_task.done()
-        assert ["docker", "rm", "-f", name] not in fake.calls
+        assert fake.rm_count(name) == 0
 
         allow_worker_exit.set()
         assert await worker_task == name
         await close_task
         assert pool._closed and pool.homes == {}
-        assert ["docker", "rm", "-f", name] in fake.calls
+        assert fake.rm_count(name) > 0
 
     run(go())
 
@@ -501,7 +543,7 @@ def test_pool_close_waits_for_active_lease_and_rejects_new_work(tmp_path):
         close_task = asyncio.create_task(pool.close())
         await asyncio.sleep(0)
         assert not pool._closed
-        assert ["docker", "rm", "-f", name] not in fake.calls
+        assert fake.rm_count(name) == 0
         with pytest.raises(RuntimeError, match="closing or closed"):
             await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "late"))
         release.set()
@@ -509,7 +551,7 @@ def test_pool_close_waits_for_active_lease_and_rejects_new_work(tmp_path):
         await close_task
         assert pool._closed
         assert pool.homes == {}
-        assert ["docker", "rm", "-f", name] in fake.calls
+        assert fake.rm_count(name) > 0
 
     run(go())
 
@@ -522,7 +564,7 @@ def test_pool_close_is_idempotent_and_rejects_work_after_close(tmp_path):
         name = await pool.ensure(home)
         await asyncio.gather(pool.close(), pool.close(), pool.close())
         await pool.close()
-        assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+        assert fake.rm_count(name) == 1
         with pytest.raises(RuntimeError, match="closing or closed"):
             await pool.ensure(home)
 
@@ -557,7 +599,7 @@ def test_pool_close_waiter_cancellation_does_not_cancel_cleanup(tmp_path):
         await second_waiter
         assert pool._closed
         assert pool.homes == {}
-        assert ["docker", "rm", "-f", name] in fake.calls
+        assert fake.rm_count(name) > 0
 
     run(go())
 
@@ -582,7 +624,7 @@ def test_pool_close_forces_removal_after_drain_deadline(tmp_path, monkeypatch):
         await asyncio.wait_for(pool.close(), timeout=1)
         assert pool._closed
         assert name not in pool.homes
-        assert ["docker", "rm", "-f", name] in fake.calls
+        assert fake.rm_count(name) > 0
         release.set()
         await worker_task
 
@@ -604,16 +646,16 @@ def test_pool_close_preserves_failed_removals_and_retries_only_remaining_homes(t
         assert not pool._closed
         assert pool._closing
         assert set(pool.homes) == {first}
-        assert fake.calls.count(["docker", "rm", "-f", first]) == 1
-        assert fake.calls.count(["docker", "rm", "-f", second]) == 1
+        assert fake.rm_count(first) == 1
+        assert fake.rm_count(second) == 1
         assert second not in fake.running
 
         await pool.close()
         assert pool._closed
         assert pool.homes == {}
         assert first not in fake.running and second not in fake.running
-        assert fake.calls.count(["docker", "rm", "-f", first]) == 2
-        assert fake.calls.count(["docker", "rm", "-f", second]) == 1
+        assert fake.rm_count(first) == 2
+        assert fake.rm_count(second) == 1
 
     run(go())
 
@@ -632,7 +674,7 @@ def test_pool_close_retries_after_docker_rm_transport_exception(tmp_path):
         await pool.close()
         assert pool._closed and pool.homes == {}
         assert name not in fake.running
-        assert fake.calls.count(["docker", "rm", "-f", name]) == 2
+        assert fake.rm_count(name) == 2
 
     run(go())
 
@@ -647,7 +689,7 @@ def test_pool_close_treats_an_externally_removed_container_as_cleaned(tmp_path):
 
         await pool.close()
         assert pool._closed and pool.homes == {}
-        assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+        assert fake.rm_count(name) == 1
 
     run(go())
 
@@ -692,12 +734,12 @@ def test_pool_idle_reap(tmp_path):
     b = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "beta")))
     now[0] = 70.0                                                 # alpha idle 70s, beta 20s
     assert run(pool.reap_idle()) == [a]
-    assert ["docker", "rm", "-f", a] in fake.calls and a not in pool.homes and b in pool.homes
+    assert fake.rm_count(a) > 0 and a not in pool.homes and b in pool.homes
     now[0] = 200.0
     c = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "gamma")))   # ensure reaps stale beta first
     assert b not in pool.homes and c in pool.homes and pool.reaped == 2
     run(pool.close())
-    assert pool.homes == {} and fake.calls[-1] == ["docker", "rm", "-f", c]
+    assert pool.homes == {} and fake.calls[-1] == ["docker", "rm", "-f", fake.container_ids[c]]
 
 
 def test_pool_idle_env(monkeypatch):
@@ -730,11 +772,12 @@ def test_docker_runner_persistent_mode(tmp_path, monkeypatch):
     runs = [a for a in seen if a[1] == "run"]
     assert len(runs) == 1 and "avrone-agent-edge1-researcher" in runs[0]
     execs = [a for a in seen if a[1] == "exec"]
-    assert [a[-1] for a in execs] == ["ls", "pwd"] and all("avrone-agent-edge1-researcher" in a for a in execs)
+    worker_id = fake.container_ids["avrone-agent-edge1-researcher"]
+    assert [a[-1] for a in execs] == ["ls", "pwd"] and all(worker_id in a for a in execs)
     run(r.run("echo hi"))                                         # non-agent command: shared container
     assert seen[-1] == ["docker", "exec", r.container, "bash", "-lc", "echo hi"]
     run(r.stop())
-    assert ["docker", "rm", "-f", "avrone-agent-edge1-researcher"] in seen
+    assert ["docker", "rm", "-f", worker_id] in seen
 
 
 
@@ -1382,6 +1425,108 @@ def test_pool_recreates_a_managed_but_unsafe_leftover(tmp_path):
     run(pool.ensure(d))
     assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"]
     assert fake.inspect_payloads["avrone-agent-edge-builder"]["HostConfig"]["NetworkMode"] == "none"
+
+
+
+def test_pool_refuses_cached_name_reassignment_and_cleanup_never_deletes_replacement(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "name-reused")
+    name = run(pool.ensure(home))
+    original_id = pool.homes[name].container_id
+
+    old_argv = pool.run_argv(home, pool.homes[name].image_id)
+    fake.running.discard(name)
+    fake.inspect_payloads.pop(name, None)
+    replacement_id = fake.seed(old_argv)
+    assert replacement_id != original_id
+
+    with pytest.raises(RuntimeError, match="changed Docker identity"):
+        run(pool.ensure(home))
+    assert fake.container_ids[name] == replacement_id
+    assert fake.running == {name}
+
+    run(pool.close())
+    assert fake.container_ids[name] == replacement_id
+    assert fake.running == {name}
+    assert ["docker", "rm", "-f", original_id] in fake.calls
+    assert ["docker", "rm", "-f", replacement_id] not in fake.calls
+
+
+def test_pool_removal_after_policy_drift_targets_only_inspected_container_id(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "drift-id")
+    name = run(pool.ensure(home))
+    old_id = pool.homes[name].container_id
+    fake.inspect_payloads[name]["HostConfig"]["Privileged"] = True
+
+    assert run(pool.ensure(home)) == name
+    new_id = pool.homes[name].container_id
+    assert new_id != old_id
+    assert ["docker", "rm", "-f", old_id] in fake.calls
+    assert ["docker", "rm", "-f", new_id] not in fake.calls
+
+
+def test_pool_rejects_run_output_id_that_does_not_match_name_inspect(tmp_path):
+    class ReassignedNameDocker(FakeDocker):
+        async def __call__(self, argv, timeout):
+            result = await super().__call__(argv, timeout)
+            if argv[1] == "run" and result.exit_code == 0:
+                name = argv[argv.index("--name") + 1]
+                self.running.discard(name)
+                self.inspect_payloads.pop(name, None)
+                super().seed(argv)
+            return result
+
+    fake = ReassignedNameDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "run-id-race")
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    with pytest.raises(RuntimeError, match="different object than docker run created"):
+        run(pool.ensure(home))
+    name = ac.container_name("edge", home.name)
+    replacement_id = fake.container_ids[name]
+    assert fake.running == {name}
+    assert ["docker", "rm", "-f", replacement_id] not in fake.calls
+
+
+def test_docker_runner_exec_uses_pinned_container_id_after_friendly_name_is_reassigned(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    seen = []
+    original_id = None
+    replacement_id = None
+    agent_name = "avrone-agent-" + runner.container.split("-")[2] + "-researcher"
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        nonlocal original_id, replacement_id
+        seen.append(argv)
+        if len(argv) > 1 and argv[1] == "exec" and "AVRONE_AGENT_DIR=/agent" in argv:
+            original_id = fake.container_ids[agent_name]
+            fake.running.discard(agent_name)
+            fake.inspect_payloads.pop(agent_name, None)
+            replacement_id = fake.seed(
+                ac.persistent_run_argv(
+                    agent_name, agentfs.agent_dir(runner.workspace, "Researcher"),
+                    fake.image_id, False, agent_id="researcher"
+                )
+            )
+        return await fake(argv, timeout)
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    agent_dir = agentfs.agent_dir(runner.workspace, "Researcher")
+    result = run(runner.run("whoami", cwd=agent_dir))
+    exec_call = next(call for call in seen if call[1] == "exec")
+    assert original_id in exec_call
+    assert replacement_id not in exec_call
+    assert result.exit_code != 0
+
+    with pytest.raises(RuntimeError, match="changed Docker identity"):
+        run(runner.run("second", cwd=agent_dir))
+    run(runner.stop())
+    assert fake.running == {agent_name}
+    assert replacement_id not in [call[-1] for call in seen if call[1] == "rm"]
 
 
 def test_pool_refuses_to_adopt_or_delete_an_unowned_name(tmp_path):

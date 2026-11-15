@@ -352,8 +352,26 @@ def _docker_not_found(result: Any) -> bool:
     detail = str(getattr(result, "stderr", "") or "").lower()
     return "no such object" in detail or "no such container" in detail
 
-def rm_argv(name: str) -> list[str]:
-    return ["docker", "rm", "-f", name]
+
+def _inspect_container_id(stdout: str) -> str | None:
+    """Return the full immutable Docker container ID from one inspect JSON object."""
+    try:
+        payload = json.loads(str(stdout or ""))
+    except (TypeError, ValueError):
+        return None
+    if isinstance(payload, list) and len(payload) == 1:
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("Id")
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{64}", value) is None:
+        return None
+    return value.lower()
+
+
+def rm_argv(container_id: str) -> list[str]:
+    """Remove one immutable Docker object, not a mutable human-readable name."""
+    return ["docker", "rm", "-f", container_id]
 
 
 Exec = Callable[[list[str], int], Awaitable[Any]]  # (argv, timeout) -> CommandResult-like
@@ -364,6 +382,7 @@ class _Home:
     name: str
     agent_dir: Path
     image_id: str
+    container_id: str
     last_used: float
     created: float = 0.0
     uses: int = 0
@@ -450,6 +469,7 @@ class AgentContainerPool:
             home = self.homes.get(name)
             previous_uses = 0
             image_id: str | None = None
+            container_id: str | None = None
             cached_home_removed_or_missing = False
             if home is not None:
                 # A name cached in memory is not proof that Docker still owns a running,
@@ -458,8 +478,15 @@ class AgentContainerPool:
                 inspected_home = await self._exec(inspect_argv(name), 30)
                 home_code = getattr(inspected_home, "exit_code", 1)
                 if home_code == 0:
+                    home_stdout = str(getattr(inspected_home, "stdout", ""))
+                    observed_id = _inspect_container_id(home_stdout)
+                    if observed_id != home.container_id:
+                        raise RuntimeError(
+                            f"cached agent container {name} changed Docker identity; "
+                            "refusing to follow a reused container name"
+                        )
                     home_ok, home_owned, home_reason = _inspect_matches_policy(
-                        str(getattr(inspected_home, "stdout", "")), d, home.image_id, self.allow_network
+                        home_stdout, d, home.image_id, self.allow_network
                     )
                     if not home_owned:
                         raise RuntimeError(
@@ -475,7 +502,7 @@ class AgentContainerPool:
                         raise RuntimeError(
                             f"cached agent container {name} became non-compliant while leased: {home_reason}"
                         )
-                    removed = await self._exec(rm_argv(name), 30)
+                    removed = await self._exec(rm_argv(home.container_id), 30)
                     if (getattr(removed, "exit_code", 1) != 0
                             and not _docker_not_found(removed)):
                         raise RuntimeError(f"could not remove non-compliant agent container {name}")
@@ -489,6 +516,10 @@ class AgentContainerPool:
                             f"cached agent container {name} disappeared while leased; "
                             "wait for active commands to drain before recreating it"
                         )
+                    removed = await self._exec(rm_argv(home.container_id), 30)
+                    if (getattr(removed, "exit_code", 1) != 0
+                            and not _docker_not_found(removed)):
+                        raise RuntimeError(f"could not remove disappeared agent container {name}")
                     cached_home_removed_or_missing = True
                 else:
                     detail = str(getattr(inspected_home, "stderr", "") or "")[:300]
@@ -516,14 +547,20 @@ class AgentContainerPool:
                 inspected = await self._exec(inspect_argv(name), 30)
                 code = getattr(inspected, "exit_code", 1)
                 if code == 0:
+                    inspected_stdout = str(getattr(inspected, "stdout", ""))
                     compatible, owned, reason = _inspect_matches_policy(
-                        str(getattr(inspected, "stdout", "")), d, image_id, self.allow_network
+                        inspected_stdout, d, image_id, self.allow_network
                     )
                     if not owned:
                         # A colliding name is not permission to kill or adopt an arbitrary container.
                         raise RuntimeError(f"refusing to adopt unowned agent container {name}: {reason}")
-                    if not compatible:
-                        removed = await self._exec(rm_argv(name), 30)
+                    inspected_id = _inspect_container_id(inspected_stdout)
+                    if inspected_id is None:
+                        raise RuntimeError(f"agent container {name} has no valid full Docker identity")
+                    if compatible:
+                        container_id = inspected_id
+                    else:
+                        removed = await self._exec(rm_argv(inspected_id), 30)
                         if (getattr(removed, "exit_code", 1) != 0
                                 and not _docker_not_found(removed)):
                             raise RuntimeError(f"could not remove non-compliant agent container {name}")
@@ -536,24 +573,43 @@ class AgentContainerPool:
                 if getattr(created, "exit_code", 1) != 0:
                     raise RuntimeError(f"could not start agent container {name}: "
                                        f"{str(getattr(created, 'stderr', ''))[:300]}")
+                # docker run -d returns the object ID. Pin it immediately so a subsequent
+                # inspect/cleanup can never be redirected by a name being reassigned.
+                created_id = str(getattr(created, "stdout", "") or "").strip().lower()
+                if re.fullmatch(r"[0-9a-f]{64}", created_id) is None:
+                    raise RuntimeError(f"Docker did not return a valid container ID for {name}")
                 # Validate the object Docker actually started, not just the argv AVRONE intended
                 # to submit. Custom images can exit immediately and daemons can normalize options.
                 verify = await self._exec(inspect_argv(name), 30)
+                verify_stdout = str(getattr(verify, "stdout", ""))
                 verified, _owned, reason = _inspect_matches_policy(
-                    str(getattr(verify, "stdout", "")), d, image_id, self.allow_network
+                    verify_stdout, d, image_id, self.allow_network
                 ) if getattr(verify, "exit_code", 1) == 0 else (False, False, "container not found after start")
-                if not verified:
-                    await self._exec(rm_argv(name), 30)
+                verified_id = _inspect_container_id(verify_stdout) if getattr(verify, "exit_code", 1) == 0 else None
+                if not verified or verified_id != created_id:
+                    await self._exec(rm_argv(created_id), 30)
+                    if verified_id != created_id:
+                        reason = "Docker container name resolved to a different object than docker run created"
                     raise RuntimeError(f"new agent container {name} failed sandbox verification: {reason}")
+                container_id = created_id
                 self.created += 1
 
+            if container_id is None:
+                raise RuntimeError(f"agent container {name} has no pinned Docker identity")
             self.homes[name] = _Home(
-                name, d, image_id, now, created=now, uses=previous_uses + 1,
+                name, d, image_id, container_id, now, created=now, uses=previous_uses + 1,
                 active=1 if _active else 0,
             )
             if _active:
                 self._lease_drained.clear()
             return name
+
+    def container_id(self, name: str) -> str:
+        """Immutable Docker target for a currently leased or registered agent home."""
+        home = self.homes.get(name)
+        if home is None:
+            raise RuntimeError(f"agent container {name} is no longer registered")
+        return home.container_id
 
     @asynccontextmanager
     async def lease(self, agent_dir: Path):
@@ -584,7 +640,7 @@ class AgentContainerPool:
             reaped: list[str] = []
             for home in stale:
                 try:
-                    result = await self._exec(rm_argv(home.name), 30)
+                    result = await self._exec(rm_argv(home.container_id), 30)
                     if (getattr(result, "exit_code", 1) != 0
                             and not _docker_not_found(result)):
                         log.warning("Docker refused to reap idle agent container %s", home.name)
@@ -623,9 +679,9 @@ class AgentContainerPool:
                 )
             async with self._lock:
                 failed: list[str] = []
-                for name in list(self.homes):
+                for name, home in list(self.homes.items()):
                     try:
-                        result = await self._exec(rm_argv(name), 30)
+                        result = await self._exec(rm_argv(home.container_id), 30)
                         if (getattr(result, "exit_code", 1) != 0
                                 and not _docker_not_found(result)):
                             failed.append(name)

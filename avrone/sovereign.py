@@ -208,9 +208,13 @@ class DockerRunner(Runner):
         agent_cwd = self._agent_cwd(cwd)
         if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
             # long-lived per-agent home container (only the agent dir mounted at /agent), reused
-            async with self._pool().lease(agent_cwd) as name:
+            pool = self._pool()
+            async with pool.lease(agent_cwd) as name:
+                # Execute against the immutable Docker ID captured at lease admission. A
+                # remove/recreate race on the friendly name must never redirect a command.
+                container_id = pool.container_id(name)
                 return await self._exec(
-                    agentcontainer.exec_argv(name, cmd), cmd, timeout or self.s.command_timeout
+                    agentcontainer.exec_argv(container_id, cmd), cmd, timeout or self.s.command_timeout
                 )
         return await self._exec(self.exec_argv(cmd, agent_cwd), cmd, timeout or self.s.command_timeout)
 

@@ -474,12 +474,21 @@ class HTTPTransport(_Transport):
                 )
             pending.extend(chunk)
             line_start = 0
-            while True:
-                newline = pending.find(b"\n", line_start)
-                if newline < 0:
-                    break
-                raw = bytes(pending[line_start:newline])
-                line_start = newline + 1
+            cursor = 0
+            while cursor < len(pending):
+                current = pending[cursor]
+                if current == 13:  # CR, optionally followed by LF
+                    if cursor + 1 == len(pending):
+                        break  # retain a trailing CR until the next network chunk
+                    delimiter_end = cursor + 2 if pending[cursor + 1] == 10 else cursor + 1
+                elif current == 10:  # LF
+                    delimiter_end = cursor + 1
+                else:
+                    cursor += 1
+                    continue
+                raw = bytes(pending[line_start:cursor])
+                line_start = delimiter_end
+                cursor = delimiter_end
                 found = consume_line(raw)
                 if found is not None:
                     return found
@@ -491,7 +500,13 @@ class HTTPTransport(_Transport):
                 )
 
         if pending:
-            found = consume_line(bytes(pending))
+            trailing = bytes(pending)
+            if trailing.endswith(b"\r"):
+                trailing = trailing[:-1]
+                pending.clear()
+                found = consume_line(trailing)
+            else:
+                found = consume_line(trailing)
             if found is not None:
                 return found
         if data_lines:

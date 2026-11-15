@@ -299,6 +299,14 @@ def test_http_transport_rejects_malformed_or_reserved_custom_headers(headers):
         HTTPTransport("https://mcp.invalid/mcp", headers)
 
 
+def test_http_transport_rejects_compressed_responses_before_body_read():
+    t = http_transport(lambda request: httpx.Response(
+        200, content=b"not-needed", headers={"content-encoding": "gzip"}
+    ))
+    with pytest.raises(MCPError, match="compressed MCP HTTP responses"):
+        run(t.request("tools/list", None, 5))
+
+
 def test_http_transport_accepts_scalar_non_reserved_headers_and_owns_protocol_headers():
     transport = HTTPTransport("https://mcp.invalid/mcp", {
         "Authorization": "Bearer token",

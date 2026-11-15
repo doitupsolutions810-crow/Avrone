@@ -420,3 +420,28 @@ def test_agent_dir_rejects_symlinked_agent_root(tmp_path):
     (workspace / agentfs.AGENTS_SUBDIR).symlink_to(outside, target_is_directory=True)
     with pytest.raises(agentfs.AgentFSError, match="agents root must not be a symlink"):
         agentfs.agent_dir(workspace, "alpha")
+
+def test_is_agent_dir_rejects_symlink_alias_to_sibling_agent_home(tmp_path):
+    workspace = tmp_path / "workspace"
+    target = agentfs.agent_dir(workspace, "target-worker")
+    alias = target.parent / "alias-worker"
+    alias.symlink_to(target, target_is_directory=True)
+
+    assert agentfs.is_agent_dir(workspace, target)
+    assert not agentfs.is_agent_dir(workspace, alias)
+
+
+def test_is_agent_dir_rejects_symlinked_agents_root_and_noncanonical_parent(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "worker").mkdir()
+    workspace.mkdir()
+    (workspace / agentfs.AGENTS_SUBDIR).symlink_to(outside, target_is_directory=True)
+    assert not agentfs.is_agent_dir(workspace, outside / "worker")
+
+    normal_workspace = tmp_path / "normal-workspace"
+    home = agentfs.agent_dir(normal_workspace, "worker")
+    alias_root = normal_workspace / "agents-alias"
+    alias_root.symlink_to(home.parent, target_is_directory=True)
+    assert not agentfs.is_agent_dir(normal_workspace, alias_root / "worker")

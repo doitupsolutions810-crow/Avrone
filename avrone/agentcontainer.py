@@ -554,6 +554,9 @@ class AgentContainerPool:
                 except Exception:  # noqa: BLE001 - continue shutting down every managed container
                     pass
             self._closed = True
+            # The pool's shutdown barrier is terminal after removal, even when the
+            # deadline forced a lease to be interrupted.
+            self._lease_drained.set()
 
     async def close(self) -> None:
         async with self._close_lock:

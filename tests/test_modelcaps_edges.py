@@ -40,7 +40,7 @@ def test_modelcaps_reads_native_metadata_and_preserves_unknowns():
     assert result["installed"] is True
     assert result["runtime"]["loaded"] is True
     assert result["capabilities"] == {
-        "completion": True, "tools": True, "vision": False, "thinking": None,
+        "completion": True, "tools": True, "vision": False, "thinking": False,
     }
     assert result["context"] == {"model_info_tokens": 32768, "configured_num_ctx": 4096}
     assert result["ollama_version"] == "0.13.0"
@@ -177,7 +177,7 @@ def test_model_context_walk_is_iterative_for_deep_metadata():
 
 def test_model_context_walk_reports_truncation(monkeypatch):
     monkeypatch.setattr(modelcaps, "MAX_MODEL_INFO_NODES", 2)
-    value = {"a": {}, "b": {}, "c": {"context_length": 8192}}
+    value = {"context": {"context_length": 8192}, "x": {}, "y": {}}
     found, truncated = modelcaps._context_lengths(value)
     assert found == []
     assert truncated is True

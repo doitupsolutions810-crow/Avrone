@@ -281,6 +281,11 @@ class Bridge:
             rec = self._parse(line)
             if rec is None:
                 continue
+            # A journal belongs to exactly one normalized run. Legacy rows
+            # without a run_id remain readable, but a foreign run must not
+            # inject its records into this run's agent memory.
+            if rec.get("run_id") not in (None, "", self.run_id):
+                continue
             self._lines += 1
             was_seen = seen_or_mark(rec["id"])
             if was_seen or rec["id"] in self._evicted or rec["id"] in self._posts:

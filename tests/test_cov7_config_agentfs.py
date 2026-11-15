@@ -148,13 +148,13 @@ def test_audit_failure_never_breaks_tool(env):
         def emit(self, *a, **kw):
             raise RuntimeError("codex down")
 
-    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace(codex=Boom())})
+    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace(runner=env.ctx.core.runner, codex=Boom())})
     assert call(env, "fs_write", ctx=ctx, path="a.txt", content="hi").startswith("wrote a.txt")
     assert call(env, "fs_read", ctx=ctx, path="/etc/passwd").startswith("ERROR")
 
 
 def test_audit_without_codex_is_silent(env):
-    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace()})
+    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace(runner=env.ctx.core.runner)})
     assert call(env, "fs_write", ctx=ctx, path="b.txt", content="ok").startswith("wrote b.txt")
 
 

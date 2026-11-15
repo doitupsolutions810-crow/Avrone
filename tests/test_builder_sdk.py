@@ -176,10 +176,13 @@ async def test_close_retries_when_cleanup_coroutine_is_cancelled():
     with pytest.raises(asyncio.CancelledError):
         await sdk.close()
     assert sdk.closed is False
-    assert sdk._closing is False
+    assert sdk._closing is True
+    with pytest.raises(RuntimeError, match="closed or closing"):
+        await sdk.build("blocked until cleanup retry succeeds")
 
     await sdk.close()
     assert sdk.closed is True
+    assert sdk._closing is False
     assert attempts == [1, 2]
 
 
@@ -250,14 +253,20 @@ async def test_close_continues_cleanup_and_retries_only_failed_callbacks():
         await sdk.close()
     assert calls == ["last", "broken", "first"]
     assert sdk.closed is False
-    assert sdk._closing is False
+    assert sdk._closing is True
     assert sdk.cleanups == [broken]
+    with pytest.raises(RuntimeError, match="closed or closing"):
+        await sdk.build("do not use partially closed resources")
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    with pytest.raises(RuntimeError, match="closed or closing"):
+        await sdk.verify(result)
 
     fail["enabled"] = False
     await sdk.close()
     assert calls == ["last", "broken", "first", "broken"]
     assert sdk.cleanups == []
     assert sdk.closed is True
+    assert sdk._closing is False
 
 
 @pytest.mark.asyncio
@@ -784,3 +793,67 @@ async def test_verify_missing_timeout_metadata_is_not_accepted_as_success():
     assert evidence.commands[0]["exit_code"] == 0
     assert evidence.commands[0]["timed_out"] is True
     assert "1 of 1 checks failed" in evidence.reason
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_inflight_build_and_verify_before_cleanup():
+    build_started = asyncio.Event()
+    release_build = asyncio.Event()
+    verify_started = asyncio.Event()
+    release_verify = asyncio.Event()
+    cleanup_calls = []
+
+    class BlockingCore(FakeCore):
+        async def squad(self, task, **kwargs):
+            self.calls.append(("squad", task, kwargs))
+            build_started.set()
+            await release_build.wait()
+            return self.raw
+
+    class BlockingRunner(FakeRunner):
+        async def run(self, command, timeout=None):
+            if command == "python -m pytest -q":
+                verify_started.set()
+                await release_verify.wait()
+            return await super().run(command, timeout=timeout)
+
+    sha = "e" * 40
+    runner = BlockingRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="all tests passed"),
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+    ])
+    core = BlockingCore(runner=runner)
+    sdk = BuilderAgentSDK(
+        core,
+        cleanups=[lambda: cleanup_calls.append("cleanup")],
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    build_task = asyncio.create_task(sdk.build("in-flight build"))
+    verify_result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    verify_task = asyncio.create_task(sdk.verify(verify_result))
+    await asyncio.gather(build_started.wait(), verify_started.wait())
+
+    close_task = asyncio.create_task(sdk.close())
+    await asyncio.sleep(0)
+    assert sdk._closing is True
+    assert sdk.closed is False
+    assert sdk._active_operations == 2
+    assert cleanup_calls == []
+
+    release_build.set()
+    await build_task
+    await asyncio.sleep(0)
+    assert sdk._active_operations == 1
+    assert cleanup_calls == []
+
+    release_verify.set()
+    evidence = await verify_task
+    await close_task
+    assert evidence.status == "PASS"
+    assert verify_result.status == "VERIFIED"
+    assert sdk._active_operations == 0
+    assert sdk.closed is True
+    assert cleanup_calls == ["cleanup"]

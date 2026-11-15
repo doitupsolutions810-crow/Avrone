@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import tarfile
 from pathlib import Path
 
@@ -2868,10 +2869,12 @@ def test_pool_run_argv_reapplies_private_home_permissions(tmp_path):
     (CommandResult("docker", False, "", "", timed_out=False), False, False),
     (CommandResult("docker", 1, "", "No such container: abc", timed_out=False), False, True),
     (CommandResult("docker", 1, "", "permission denied: No such container: abc", timed_out=False), False, False),
-    (CommandResult("docker", 1, "", "transport error\\nNo such container: abc", timed_out=False), False, False),
+    (CommandResult("docker", 1, "", "transport error\nNo such container: abc", timed_out=False), False, False),
     (CommandResult("docker", 1, "", "No such container: abc", timed_out=True), False, False),
 ])
-def test_outer_runner_uses_strict_docker_result_predicates(result, expected_success, expected_missing):
+def test_outer_runner_uses_strict_docker_result_predicates(
+    result, expected_success, expected_missing
+):
     assert ac.docker_succeeded(result) is expected_success
     assert ac.docker_not_found(result) is expected_missing
 

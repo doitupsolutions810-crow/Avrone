@@ -123,7 +123,7 @@ def _measure_rpc_json_value(
             raise MCPError("MCP JSON-RPC request contains an invalid integer") from exc
     if type(value) is float:
         if not math.isfinite(value):
-            raise MCPError("MCP JSON-RPC request contains a non-finite number")
+            raise MCPError("MCP JSON-RPC request contains values that are not valid JSON (non-finite number)")
         return len(json.dumps(value, allow_nan=False))
     if type(value) is str:
         size = 2  # surrounding quotes

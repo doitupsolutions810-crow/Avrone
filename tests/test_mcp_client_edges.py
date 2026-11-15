@@ -585,7 +585,7 @@ def test_outbound_rpc_encoder_accepts_exact_byte_limit_and_rejects_one_byte_over
         mc._encode_rpc_request(message)
 
 
-@pytest.mark.parametrize("invalid", ["\\ud800", "\\udfff", {"bad\\ud800key": "value"}])
+@pytest.mark.parametrize("invalid", ["\ud800", "\udfff", {"bad\ud800key": "value"}])
 def test_outbound_rpc_encoder_rejects_unpaired_unicode_surrogates(invalid):
     with pytest.raises(MCPError, match="invalid Unicode"):
         mc._encode_rpc_request({"jsonrpc": "2.0", "params": invalid})

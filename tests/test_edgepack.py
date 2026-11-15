@@ -84,6 +84,8 @@ class FakeDocker:
         self.inspect_payloads: dict[str, dict] = {}
         self.image_id = "sha256:" + "a" * 64
         self.fail_image_inspect = False
+        self.fail_rm_names: set[str] = set()
+        self.raise_rm_names: set[str] = set()
 
     def seed(self, argv):
         name = argv[argv.index("--name") + 1]
@@ -108,6 +110,14 @@ class FakeDocker:
             self.running.add(name)
             self.inspect_payloads[name] = _fake_inspect_from_run(argv)
         if argv[1] == "rm":
+            if name in self.raise_rm_names:
+                self.raise_rm_names.remove(name)
+                raise RuntimeError("temporary docker rm transport error")
+            if name in self.fail_rm_names:
+                self.fail_rm_names.remove(name)
+                return CommandResult(" ".join(argv), 1, "", "temporary docker rm failure")
+            if name not in self.running:
+                return CommandResult(" ".join(argv), 1, "", f"No such container: {name}")
             self.running.discard(name)
             self.inspect_payloads.pop(name, None)
         return CommandResult(" ".join(argv), 0, "", "")
@@ -342,6 +352,69 @@ def test_pool_close_forces_removal_after_drain_deadline(tmp_path, monkeypatch):
         assert ["docker", "rm", "-f", name] in fake.calls
         release.set()
         await worker_task
+
+    run(go())
+
+
+
+def test_pool_close_preserves_failed_removals_and_retries_only_remaining_homes(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        first = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "first"))
+        second = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "second"))
+        fake.fail_rm_names.add(first)
+
+        with pytest.raises(RuntimeError, match="could not remove managed agent container"):
+            await pool.close()
+
+        assert not pool._closed
+        assert pool._closing
+        assert set(pool.homes) == {first}
+        assert fake.calls.count(["docker", "rm", "-f", first]) == 1
+        assert fake.calls.count(["docker", "rm", "-f", second]) == 1
+        assert second not in fake.running
+
+        await pool.close()
+        assert pool._closed
+        assert pool.homes == {}
+        assert first not in fake.running and second not in fake.running
+        assert fake.calls.count(["docker", "rm", "-f", first]) == 2
+        assert fake.calls.count(["docker", "rm", "-f", second]) == 1
+
+    run(go())
+
+
+def test_pool_close_retries_after_docker_rm_transport_exception(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        name = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "retry-exception"))
+        fake.raise_rm_names.add(name)
+
+        with pytest.raises(RuntimeError, match="could not remove managed agent container"):
+            await pool.close()
+        assert not pool._closed and name in pool.homes
+
+        await pool.close()
+        assert pool._closed and pool.homes == {}
+        assert name not in fake.running
+        assert fake.calls.count(["docker", "rm", "-f", name]) == 2
+
+    run(go())
+
+
+def test_pool_close_treats_an_externally_removed_container_as_cleaned(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        name = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "externally-removed"))
+        fake.running.discard(name)
+        fake.inspect_payloads.pop(name, None)
+
+        await pool.close()
+        assert pool._closed and pool.homes == {}
+        assert fake.calls.count(["docker", "rm", "-f", name]) == 1
 
     run(go())
 

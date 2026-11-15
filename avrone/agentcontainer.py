@@ -533,30 +533,50 @@ class AgentContainerPool:
         return [h.name for h in stale]
 
     async def _finish_close(self) -> None:
+        current = asyncio.current_task()
         try:
-            await asyncio.wait_for(
-                self._lease_drained.wait(),
-                timeout=MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            active = sum(home.active for home in self.homes.values())
-            log.warning(
-                "Agent container pool did not drain %d active lease(s) within %.1fs; "
-                "forcing container removal",
-                active, MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS,
-            )
-        async with self._lock:
-            names = list(self.homes)
-            self.homes.clear()
-            for name in names:
-                try:
-                    await self._exec(rm_argv(name), 30)
-                except Exception:  # noqa: BLE001 - continue shutting down every managed container
-                    pass
-            self._closed = True
-            # The pool's shutdown barrier is terminal after removal, even when the
-            # deadline forced a lease to be interrupted.
-            self._lease_drained.set()
+            try:
+                await asyncio.wait_for(
+                    self._lease_drained.wait(),
+                    timeout=MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                active = sum(home.active for home in self.homes.values())
+                log.warning(
+                    "Agent container pool did not drain %d active lease(s) within %.1fs; "
+                    "forcing container removal",
+                    active, MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS,
+                )
+            async with self._lock:
+                failed: list[str] = []
+                for name in list(self.homes):
+                    try:
+                        result = await self._exec(rm_argv(name), 30)
+                        if (getattr(result, "exit_code", 1) != 0
+                                and not _docker_not_found(result)):
+                            failed.append(name)
+                            log.error("Docker refused to remove managed agent container %s", name)
+                            continue
+                        # Retain only containers whose removal is not yet confirmed, so a
+                        # later close() retry cannot lose track of a partially cleaned pool.
+                        self.homes.pop(name, None)
+                    except Exception:  # noqa: BLE001 - continue cleanup, then report every failure
+                        failed.append(name)
+                        log.warning("Docker cleanup failed for managed agent container %s", name,
+                                    exc_info=True)
+                if failed:
+                    raise RuntimeError(
+                        "could not remove managed agent container(s): " + ", ".join(failed)
+                    )
+                self._closed = True
+                # Removal is terminal only after Docker confirms every managed home is gone.
+                self._lease_drained.set()
+        except BaseException:
+            # Keep admission closed, but allow a later close() call to retry failed removals.
+            async with self._close_lock:
+                if self._close_task is current:
+                    self._close_task = None
+            raise
 
     async def close(self) -> None:
         async with self._close_lock:

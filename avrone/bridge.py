@@ -985,7 +985,22 @@ def _save_order(core: Any, order: "OrderedDict[str, None]") -> bool:
         tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         with os.fdopen(_regular_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL),
                        "w", encoding="utf-8") as stream:
-            stream.write(json.dumps({"ids": list(order)}))
+            # Keep the on-disk format identical to json.dumps({"ids": ...}),
+            # but never construct/write a registry larger than the reader's
+            # MAX_ORDER_BYTES cap. JSON is ASCII with ensure_ascii=True.
+            prefix, suffix = '{"ids": [', ']}'
+            used = len(prefix) + len(suffix)
+            if used > MAX_ORDER_BYTES:
+                raise OSError("oversized fan-in cursor registry")
+            stream.write(prefix)
+            for index, pid in enumerate(order):
+                value = json.dumps(pid)
+                cost = len(value) + (2 if index else 0)
+                if used + cost > MAX_ORDER_BYTES:
+                    raise OSError("oversized fan-in cursor registry")
+                stream.write((", " if index else "") + value)
+                used += cost
+            stream.write(suffix)
         os.replace(tmp, path)
         tmp = None
         try:

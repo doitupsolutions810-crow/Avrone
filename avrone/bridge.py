@@ -303,8 +303,18 @@ class Bridge:
                     self._replay(_journal_lines(stream))
                     self._journal_version = self._journal_state()
                     self._volatile_dirty = False
+            except FileNotFoundError:
+                # An actually removed journal is authoritative after the
+                # sidecar lock is acquired. An old cached snapshot must not
+                # continue serving deleted posts or tombstones. Do not drop
+                # volatile-only memory state when there is no durable version.
+                if self._journal_version is not None and not self._volatile_dirty:
+                    self._posts.clear()
+                    self._evicted.clear()
+                    self._lines = 0
+                    self._journal_version = None
             except OSError:
-                return
+                return  # inaccessible disk: preserve the last known snapshot
 
     def _replay(self, text: str | Iterable[str]) -> None:
         """Rebuild a bounded ring without resurrecting old duplicate identifiers."""

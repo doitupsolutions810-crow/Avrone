@@ -1061,6 +1061,138 @@ def test_safe_part_caps_untrusted_server_names():
     assert len(mc._safe_part("x" * 10_000)) == 80
 
 
+def test_mcp_client_close_waits_for_active_tool_calls_and_rejects_new_calls():
+    class Slow(mc._Transport):
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.closed = False
+        async def request(self, method, params, timeout):
+            self.started.set()
+            await self.release.wait()
+            return {"content": [{"type": "text", "text": "finished"}]}
+        async def notify(self, method, params=None):
+            return None
+        async def close(self):
+            self.closed = True
+            self.release.set()
+
+    async def go():
+        client = MCPClient("slow", {"command": "unused"})
+        transport = Slow()
+        client.transport = transport
+        call = asyncio.create_task(client.call_tool("long-task"))
+        await transport.started.wait()
+        close = asyncio.create_task(client.close())
+        await asyncio.sleep(0)
+        assert not transport.closed
+        assert client._active_calls == 1
+        with pytest.raises(MCPError, match="closing or closed"):
+            await client.call_tool("late-call")
+        transport.release.set()
+        assert await call == "finished"
+        await close
+        assert transport.closed
+        assert client._active_calls == 0
+        assert client._closed
+
+    run(go())
+
+
+def test_mcp_client_concurrent_close_is_idempotent():
+    class CountClose(mc._Transport):
+        def __init__(self):
+            self.close_calls = 0
+            self.release = asyncio.Event()
+        async def request(self, method, params, timeout):
+            return {"content": []}
+        async def notify(self, method, params=None):
+            return None
+        async def close(self):
+            self.close_calls += 1
+            await self.release.wait()
+
+    async def go():
+        client = MCPClient("close-race", {"command": "unused"})
+        transport = CountClose()
+        client.transport = transport
+        first = asyncio.create_task(client.close())
+        second = asyncio.create_task(client.close())
+        await asyncio.sleep(0)
+        assert transport.close_calls == 1
+        transport.release.set()
+        await asyncio.gather(first, second)
+        await client.close()
+        assert transport.close_calls == 1
+        assert client._closed
+
+    run(go())
+
+
+def test_mcp_client_close_caller_cancellation_does_not_cancel_cleanup():
+    class CountClose(mc._Transport):
+        def __init__(self):
+            self.close_calls = 0
+            self.release = asyncio.Event()
+        async def request(self, method, params, timeout):
+            return {}
+        async def notify(self, method, params=None):
+            return None
+        async def close(self):
+            self.close_calls += 1
+            await self.release.wait()
+
+    async def go():
+        client = MCPClient("cancel-close", {"command": "unused"})
+        transport = CountClose()
+        client.transport = transport
+        waiter = asyncio.create_task(client.close())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert transport.close_calls == 1
+        assert not client._closed
+        second_waiter = asyncio.create_task(client.close())
+        transport.release.set()
+        await second_waiter
+        assert transport.close_calls == 1
+        assert client._closed
+
+    run(go())
+
+
+def test_mcp_client_close_forces_transport_after_drain_deadline(monkeypatch):
+    class Stuck(mc._Transport):
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.closed = False
+        async def request(self, method, params, timeout):
+            self.started.set()
+            await self.release.wait()
+            return {"content": []}
+        async def notify(self, method, params=None):
+            return None
+        async def close(self):
+            self.closed = True
+            self.release.set()
+
+    async def go():
+        monkeypatch.setattr(mc, "MAX_MCP_CLOSE_DRAIN_SECONDS", 0.01)
+        client = MCPClient("stuck", {"command": "unused"})
+        transport = Stuck()
+        client.transport = transport
+        call = asyncio.create_task(client.call_tool("stuck-call"))
+        await transport.started.wait()
+        await asyncio.wait_for(client.close(), timeout=1)
+        assert transport.closed and client._closed
+        await call
+        assert client._active_calls == 0
+
+    run(go())
+
+
 def test_manager_start_is_idempotent_and_restart_after_stop(monkeypatch):
     FakeClient.behaviour = {"one": {"tools": [{"name": "echo"}]}}
     monkeypatch.setattr(mc, "MCPClient", FakeClient)

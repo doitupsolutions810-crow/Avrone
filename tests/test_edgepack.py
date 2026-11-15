@@ -2836,6 +2836,106 @@ def test_pool_run_argv_requires_workspace_binding(tmp_path):
         pool.run_argv(home)
 
 
+
+
+
+@pytest.mark.parametrize("image_ref", [
+    None,
+    "ubuntu:latest",
+    "sha256:" + "a" * 63,
+    "sha256:" + "A" * 64,
+    "",
+    True,
+])
+def test_pool_run_argv_rejects_unpinned_or_invalid_images(tmp_path, image_ref):
+    workspace = tmp_path / "workspace"
+    home = agentfs.agent_dir(workspace, "image-pin-worker")
+    pool = ac.AgentContainerPool(
+        FakeDocker(), "configured:tag", False, node="edge", workspace=workspace
+    )
+
+    with pytest.raises(ValueError, match="immutable sha256 image ID"):
+        pool.run_argv(home, image_ref=image_ref)
+
+
+def test_pool_run_argv_accepts_configured_digest_without_override(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = agentfs.agent_dir(workspace, "digest-worker")
+    image_id = "sha256:" + "f" * 64
+    pool = ac.AgentContainerPool(
+        FakeDocker(), image_id, False, node="edge", workspace=workspace
+    )
+
+    argv = pool.run_argv(home)
+    assert argv[-3] == image_id
+
+
+def test_pool_refuses_same_agent_name_from_foreign_workspace_without_removal(tmp_path):
+    first_workspace = tmp_path / "workspace-one"
+    second_workspace = tmp_path / "workspace-two"
+    first_home = agentfs.agent_dir(first_workspace, "same-agent")
+    second_home = agentfs.agent_dir(second_workspace, "same-agent")
+    fake = FakeDocker()
+    first_pool = ac.AgentContainerPool(
+        fake, "img", False, node="same-node", workspace=first_workspace
+    )
+    second_pool = ac.AgentContainerPool(
+        fake, "img", False, node="same-node", workspace=second_workspace
+    )
+
+    name = run(first_pool.ensure(first_home))
+    original_id = first_pool.container_id(name)
+    with pytest.raises(RuntimeError, match="not owned by this agent home"):
+        run(second_pool.ensure(second_home))
+
+    assert fake.container_ids[name] == original_id
+    assert name in fake.running
+    assert fake.rm_count(name) == 0
+    assert second_pool.homes == {}
+
+
+def test_pool_still_repairs_policy_drift_for_its_own_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = agentfs.agent_dir(workspace, "policy-drift-own")
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", workspace=workspace)
+
+    name = run(pool.ensure(home))
+    first_id = pool.container_id(name)
+    fake.inspect_payloads[name]["HostConfig"]["ReadonlyRootfs"] = False
+
+    assert run(pool.ensure(home)) == name
+    assert pool.container_id(name) != first_id
+    assert fake.rm_count(name) == 1
+
+
+def test_local_runner_preserves_explicit_zero_timeout(tmp_path, monkeypatch):
+    runner = LocalRunner(_settings(tmp_path))
+    seen = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(timeout)
+        return CommandResult(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    run(runner.run("true", timeout=0))
+    assert seen == [0]
+
+
+def test_docker_runner_preserves_explicit_zero_timeout(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    runner.container_id = "a" * 64
+    seen = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(timeout)
+        return CommandResult(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    run(runner.run("true", timeout=0))
+    assert seen == [0]
+
+
 def test_pool_run_argv_accepts_only_the_validated_agent_home(tmp_path):
     workspace = tmp_path / "workspace"
     home = agentfs.agent_dir(workspace, "validated-worker")

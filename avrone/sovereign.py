@@ -111,8 +111,8 @@ class LocalRunner(Runner):
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
         if agent_cwd is None:  # non-agent command: unchanged, runs at the workspace root
-            return await self._exec(["bash", "-lc", cmd], cmd, timeout or self.s.command_timeout, cwd=self.workspace)
-        return await self._exec(["bash", "-lc", cmd], cmd, timeout or self.s.command_timeout, cwd=agent_cwd,
+            effective_timeout = self.s.command_timeout if timeout is None else timeout
+        effective_timeout = self.s.command_timeout if timeout is None else timeout
                                 env=self.agent_env(agent_cwd))
 
 
@@ -485,6 +485,7 @@ class DockerRunner(Runner):
                 raise RuntimeError("Docker runner must be started and have a verified container ID before commands")
             self._active_runs += 1
             self._runs_drained.clear()
+        effective_timeout = self.s.command_timeout if timeout is None else timeout
         try:
             if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
                 # The outer lease accounts for shutdown; the pool lease protects the
@@ -493,11 +494,11 @@ class DockerRunner(Runner):
                 async with pool.lease(agent_cwd) as name:
                     container_id = pool.container_id(name)
                     return await self._exec(
-                        agentcontainer.exec_argv(container_id, cmd), cmd, timeout or self.s.command_timeout
+                        agentcontainer.exec_argv(container_id, cmd), cmd, effective_timeout
                     )
             return await self._exec(
                 self.exec_argv(cmd, agent_cwd, container_ref=target),
-                cmd, timeout or self.s.command_timeout,
+                cmd, effective_timeout,
             )
         finally:
             async with self._state_lock:

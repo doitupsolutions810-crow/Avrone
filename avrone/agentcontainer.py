@@ -217,7 +217,34 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     state = payload.get("State") if isinstance(payload.get("State"), dict) else {}
     labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
     expected_agent = agentfs.sanitize_agent_id(Path(agent_dir).name)
-    owned = labels.get("avrone.agent-home") == "1" and labels.get("avrone.agent") == expected_agent
+
+    # A matching label/name is not sufficient ownership proof: another AVRONE workspace
+    # can produce the same Docker name and agent ID. Only claim a container when its
+    # requested bind source and actual /agent mount both identify this exact private home.
+    expected_source = str(Path(agent_dir).resolve())
+    binds = host.get("Binds") or []
+    good_bind = False
+    if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
+        parts = binds[0].split(":")
+        good_bind = (
+            len(parts) in (2, 3)
+            and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
+            and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
+            and parts[2:] in ([], ["rw"])
+        )
+    mounts = payload.get("Mounts") or []
+    good_mount = (
+        isinstance(mounts, list) and len(mounts) == 1
+        and isinstance(mounts[0], dict)
+        and mounts[0].get("Type") == "bind"
+        and mounts[0].get("Destination") == agentfs.CONTAINER_AGENT_MOUNT
+        and mounts[0].get("RW") is True
+    )
+    owned = (
+        labels.get("avrone.agent-home") == "1"
+        and labels.get("avrone.agent") == expected_agent
+        and good_bind and good_mount
+    )
     if not owned:
         return False, False, "container name is occupied by a container not owned by this agent home"
 
@@ -261,25 +288,6 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         if any(env_values.get(key) != [value] for key, value in required_env.items()):
             problems.append("required private-home environment is missing, duplicated, or overridden")
 
-    binds = host.get("Binds") or []
-    expected_source = str(Path(agent_dir).resolve())
-    good_bind = False
-    if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
-        parts = binds[0].split(":")
-        good_bind = (
-            len(parts) in (2, 3)
-            and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
-            and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
-            and parts[2:] in ([], ["rw"])
-        )
-    mounts = payload.get("Mounts") or []
-    good_mount = (
-        isinstance(mounts, list) and len(mounts) == 1
-        and isinstance(mounts[0], dict)
-        and mounts[0].get("Type") == "bind"
-        and mounts[0].get("Destination") == agentfs.CONTAINER_AGENT_MOUNT
-        and mounts[0].get("RW") is True
-    )
     if not good_bind or not good_mount:
         problems.append("container does not have exactly the expected private /agent bind mount")
 
@@ -514,8 +522,14 @@ class AgentContainerPool:
         self, agent_dir: Path, image_ref: str | None = None, *, creation_token: str | None = None
     ) -> list[str]:
         d = self._validated_agent_dir(agent_dir)
+        selected_image = image_ref if image_ref is not None else self.image
+        if (
+            not isinstance(selected_image, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", selected_image) is None
+        ):
+            raise ValueError("run_argv requires a resolved immutable sha256 image ID")
         return persistent_run_argv(
-            container_name(self.node, d.name), d, image_ref or self.image, self.allow_network,
+            container_name(self.node, d.name), d, selected_image, self.allow_network,
             agent_id=d.name, creation_token=creation_token,
         )
 

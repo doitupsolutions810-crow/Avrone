@@ -396,7 +396,7 @@ def test_required_action_counts_toward_repeat_call_limit(tmp_path):
         "first_action": {"tool": "echo", "args": {"text": "repeat-me"}},
         "allow_followup_calls": True,
     }
-    task = "Run the required action.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+    task = "Run the required action.\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
 
     result = run(core.run_agent("contract-repeat", "Verifier", task))
 

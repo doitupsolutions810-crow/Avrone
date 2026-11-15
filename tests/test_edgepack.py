@@ -2552,3 +2552,78 @@ def test_docker_result_predicates_reject_missing_timeout_metadata():
     result = IncompleteResult()
     assert ac._docker_succeeded(result) is False
     assert ac._docker_not_found(result) is False
+
+@pytest.mark.parametrize("ambiguous", [
+    CommandResult("docker inspect", False, "{}", ""),
+    CommandResult("docker inspect", 0, "{}", "", timed_out=True),
+    CommandResult("docker inspect", 1, "", "No such object: agent", timed_out=True),
+])
+def test_pool_ensure_does_not_adopt_or_recreate_after_ambiguous_inspect(tmp_path, ambiguous):
+    fake = FakeDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "ambiguous-inspect")
+    name = ac.container_name("edge", home.name)
+
+    class InspectFault:
+        async def __call__(self, argv, timeout):
+            if len(argv) > 1 and argv[1] == "inspect" and argv[-1] == name:
+                return ambiguous
+            return await fake(argv, timeout)
+
+    pool = ac.AgentContainerPool(InspectFault(), "img", False, node="edge")
+    with pytest.raises(RuntimeError, match="could not inspect agent container"):
+        run(pool.ensure(home))
+    assert not any(call[1] == "run" for call in fake.calls if len(call) > 1)
+    assert not any(call[1] == "rm" for call in fake.calls if len(call) > 1)
+    assert name not in fake.running
+    assert pool.homes == {}
+
+
+def test_pool_cleans_created_container_when_docker_run_reports_timeout_after_creation(tmp_path):
+    fake = FakeDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "create-timeout")
+
+    class CreateTimeout:
+        async def __call__(self, argv, timeout):
+            result = await fake(argv, timeout)
+            if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+                return CommandResult(result.cmd, result.exit_code, result.stdout, result.stderr, timed_out=True)
+            return result
+
+    pool = ac.AgentContainerPool(CreateTimeout(), "img", False, node="edge")
+    with pytest.raises(RuntimeError, match="could not start agent container"):
+        run(pool.ensure(home))
+    name = ac.container_name("edge", home.name)
+    assert name not in fake.running
+    assert name not in pool.homes
+    assert fake.verbs().count("run") == 1
+    assert fake.verbs().count("inspect") >= 2
+    assert fake.verbs().count("rm") == 1
+
+
+def test_pool_idle_reap_retains_home_until_timeout_removal_is_confirmed(tmp_path):
+    now = [0.0]
+    fake = FakeDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "reap-timeout")
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge",
+                                 clock=lambda: now[0], idle=5)
+    name = run(pool.ensure(home))
+    container_id = pool.homes[name].container_id
+    now[0] = 6.0
+
+    class RemoveTimeout:
+        def __init__(self):
+            self.first = True
+
+        async def __call__(self, argv, timeout):
+            result = await fake(argv, timeout)
+            if len(argv) > 1 and argv[1] == "rm" and argv[-1] == container_id and self.first:
+                self.first = False
+                return CommandResult(result.cmd, result.exit_code, result.stdout, result.stderr, timed_out=True)
+            return result
+
+    pool._exec = RemoveTimeout()
+    assert run(pool.reap_idle(now=now[0])) == []
+    assert name in pool.homes
+    assert name not in fake.running  # Docker may have completed the operation despite the timeout
+    assert run(pool.reap_idle(now=now[0])) == [name]
+    assert name not in pool.homes

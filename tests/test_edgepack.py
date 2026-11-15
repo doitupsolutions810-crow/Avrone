@@ -2943,7 +2943,7 @@ def test_local_runner_preserves_explicit_zero_timeout(tmp_path, monkeypatch):
     assert seen == [0]
 
 
-@pytest.mark.parametrize("timeout", [True, -1, float("nan"), float("inf"), "5", object()])
+@pytest.mark.parametrize("timeout", [True, -1, float("nan"), float("inf"), 10**1000, "5", object()])
 def test_local_runner_rejects_invalid_timeouts_before_exec(tmp_path, monkeypatch, timeout):
     runner = LocalRunner(_settings(tmp_path))
     calls = []

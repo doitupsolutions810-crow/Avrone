@@ -595,6 +595,13 @@ class AgentContainerPool:
     async def _finish_close(self) -> None:
         current = asyncio.current_task()
         try:
+            # Fence any ensure() that passed its admission check before _closing was set.
+            # Such an ensure may still be inside the lock while resolving/creating Docker
+            # state and has not incremented the active lease counter yet. Acquiring and
+            # releasing the lock first guarantees its reservation is visible before we
+            # inspect the drain event.
+            async with self._lock:
+                pass
             try:
                 await asyncio.wait_for(
                     self._lease_drained.wait(),

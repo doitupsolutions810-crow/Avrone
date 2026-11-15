@@ -433,6 +433,54 @@ def test_pool_fails_closed_when_image_identity_cannot_be_resolved(tmp_path, bad_
     assert fake.verbs() == ["image"]  # no inspect, remove, or create without a verified image
 
 
+
+def test_pool_close_fences_inflight_ensure_before_observing_lease_drain(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        image_inspect_entered = asyncio.Event()
+        allow_image_inspect = asyncio.Event()
+        lease_entered = asyncio.Event()
+        allow_worker_exit = asyncio.Event()
+
+        async def slow_exec(argv, timeout):
+            if argv[1:3] == ["image", "inspect"]:
+                image_inspect_entered.set()
+                await allow_image_inspect.wait()
+            return await fake(argv, timeout)
+
+        pool = ac.AgentContainerPool(slow_exec, "img", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "ensure-close-race")
+
+        async def worker():
+            async with pool.lease(home) as name:
+                lease_entered.set()
+                await allow_worker_exit.wait()
+                return name
+
+        worker_task = asyncio.create_task(worker())
+        await image_inspect_entered.wait()  # ensure holds the pool lock before active += 1
+        close_task = asyncio.create_task(pool.close())
+        await asyncio.sleep(0)
+        assert not pool._closed
+        assert not any(call[1] == "rm" for call in fake.calls)
+
+        allow_image_inspect.set()
+        await lease_entered.wait()
+        name = next(iter(pool.homes))
+        assert pool.homes[name].active == 1
+        assert not pool._lease_drained.is_set()
+        assert not close_task.done()
+        assert ["docker", "rm", "-f", name] not in fake.calls
+
+        allow_worker_exit.set()
+        assert await worker_task == name
+        await close_task
+        assert pool._closed and pool.homes == {}
+        assert ["docker", "rm", "-f", name] in fake.calls
+
+    run(go())
+
+
 def test_pool_close_waits_for_active_lease_and_rejects_new_work(tmp_path):
     async def go():
         fake = FakeDocker()

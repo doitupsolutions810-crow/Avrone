@@ -1162,6 +1162,93 @@ def test_mcp_client_close_caller_cancellation_does_not_cancel_cleanup():
     run(go())
 
 
+def test_mcp_client_cancelled_tool_call_releases_drain_lease():
+    class Slow(mc._Transport):
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.closed = False
+        async def request(self, method, params, timeout):
+            self.started.set()
+            await self.release.wait()
+            return {"content": []}
+        async def notify(self, method, params=None):
+            return None
+        async def close(self):
+            self.closed = True
+
+    async def go():
+        client = MCPClient("cancel-call", {"command": "unused"})
+        transport = Slow()
+        client.transport = transport
+        call = asyncio.create_task(client.call_tool("cancel-me"))
+        await transport.started.wait()
+        assert client._active_calls == 1
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert client._active_calls == 0
+        assert client._calls_drained.is_set()
+        await client.close()
+        assert transport.closed
+
+    run(go())
+
+
+def test_manager_stop_drains_inflight_registered_tool_calls(monkeypatch):
+    async def go():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class Slow(mc._Transport):
+            def __init__(self):
+                self.closed = False
+            async def request(self, method, params, timeout):
+                if method == "initialize":
+                    return {"protocolVersion": mc.PROTOCOL_VERSION}
+                if method == "tools/list":
+                    return {"tools": [{"name": "slow"}]}
+                if method == "tools/call":
+                    started.set()
+                    await release.wait()
+                    return {"content": [{"type": "text", "text": "drained"}]}
+                raise AssertionError(f"unexpected MCP method: {method}")
+            async def notify(self, method, params=None):
+                return None
+            async def close(self):
+                self.closed = True
+                release.set()
+
+        made = []
+        real_client = mc.MCPClient
+        def factory(name, cfg, timeout=mc.DEFAULT_TIMEOUT):
+            client = real_client(name, cfg, timeout)
+            client.transport = Slow()
+            made.append(client)
+            return client
+        monkeypatch.setattr(mc, "MCPClient", factory)
+        manager = MCPManager(servers={"one": {"command": "fake"}})
+        registry = ToolRegistry()
+        await manager.start(registry)
+        tool_fn = registry.get("mcp__one__slow").fn
+        call = asyncio.create_task(tool_fn(None, {}))
+        await started.wait()
+        stop = asyncio.create_task(manager.stop())
+        await asyncio.sleep(0)
+        assert manager.clients
+        assert made[0]._active_calls == 1
+        with pytest.raises(MCPError, match="closing or closed"):
+            await tool_fn(None, {})
+        release.set()
+        assert await call == "drained"
+        await stop
+        assert made[0]._closed
+        assert manager.clients == {}
+        assert registry.names() == []
+
+    run(go())
+
+
 def test_mcp_client_close_forces_transport_after_drain_deadline(monkeypatch):
     class Stuck(mc._Transport):
         def __init__(self):

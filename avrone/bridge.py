@@ -1048,9 +1048,10 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     out["text"] = _clip(out.get("text"))
     if not out["text"]:
         raise BridgeError("text is required")
-    refs = out.get("refs")
-    if isinstance(refs, list):
-        out["refs"] = _refs([_utf8_text(r) for r in refs])
+    if "refs" in out:
+        # _refs already validates and only scans the first MAX_REF_SCAN
+        # entries. Do not materialize/sanitize an entire untrusted list first.
+        out["refs"] = _refs(out["refs"])
     return out
 
 

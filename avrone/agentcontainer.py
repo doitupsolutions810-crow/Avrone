@@ -34,6 +34,7 @@ import os
 import re
 import socket
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -162,12 +163,17 @@ def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | Non
 
 
 def persistent_run_argv(name: str, host_dir: Path, image: str, allow_network: bool,
-                        mem: int | None = None, cpu: float | None = None, agent_id: str = "") -> list[str]:
+                        mem: int | None = None, cpu: float | None = None, agent_id: str = "",
+                        creation_token: str | None = None) -> list[str]:
     """`docker run -d` for a long-lived agent home: ONLY the agent dir is mounted, at /agent."""
     mnt = agentfs.CONTAINER_AGENT_MOUNT
     labels = ["--label", "avrone.agent-home=1"]
     if agent_id:
         labels += ["--label", f"avrone.agent={agentfs.sanitize_agent_id(agent_id)}"]
+    if creation_token is not None:
+        if re.fullmatch(r"[0-9a-f]{32}", creation_token) is None:
+            raise ValueError("creation_token must be a 32-character lowercase hexadecimal token")
+        labels += ["--label", f"avrone.creation-token={creation_token}"]
     return ["docker", "run", "-d", "--name", name, *labels,
             *hardening_args(allow_network, mem, cpu),
             *agentfs.agent_volume_args(host_dir), "-w", mnt, "-e", f"AVRONE_AGENT_DIR={mnt}",
@@ -430,11 +436,13 @@ class AgentContainerPool:
             raise ValueError("idle must be a positive finite number of seconds")
         return max(MIN_IDLE_SECS, min(7 * 86400.0, value))
 
-    def run_argv(self, agent_dir: Path, image_ref: str | None = None) -> list[str]:
+    def run_argv(
+        self, agent_dir: Path, image_ref: str | None = None, *, creation_token: str | None = None
+    ) -> list[str]:
         d = Path(agent_dir).resolve()
         return persistent_run_argv(
             container_name(self.node, d.name), d, image_ref or self.image, self.allow_network,
-            agent_id=d.name,
+            agent_id=d.name, creation_token=creation_token,
         )
 
     async def _resolve_image_id(self) -> str:
@@ -451,6 +459,65 @@ class AgentContainerPool:
         if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", image_id) is None:
             raise RuntimeError("Docker returned an invalid immutable image ID")
         return image_id.lower()
+
+
+    async def _cleanup_failed_home_start(
+        self, name: str, agent_dir: Path, creation_token: str, returned_id: str | None
+    ) -> bool:
+        """Remove only the exact container created by this ensure() attempt."""
+        targets: list[str] = []
+        if returned_id is not None:
+            targets.append(returned_id)
+        if name not in targets:
+            targets.append(name)
+        expected_agent = agentfs.sanitize_agent_id(Path(agent_dir).name)
+        inspection_errors: list[str] = []
+        for target in targets:
+            inspected = await self._exec(inspect_argv(target), 30)
+            if getattr(inspected, "exit_code", 1) != 0:
+                if _docker_not_found(inspected):
+                    continue
+                inspection_errors.append(
+                    str(getattr(inspected, "stderr", "") or "unknown Docker inspection error")[:200]
+                )
+                continue
+            try:
+                payload = json.loads(str(getattr(inspected, "stdout", "") or ""))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, list) and len(payload) == 1:
+                payload = payload[0]
+            if not isinstance(payload, dict):
+                continue
+            config = payload.get("Config")
+            labels = config.get("Labels") if isinstance(config, dict) else None
+            observed_id = _inspect_container_id(str(getattr(inspected, "stdout", "")))
+            target_id = target.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", target) else None
+            if (
+                observed_id is None
+                or (target_id is not None and observed_id != target_id)
+                or payload.get("Name") != f"/{name}"
+                or not isinstance(labels, dict)
+                or labels.get("avrone.agent-home") != "1"
+                or labels.get("avrone.agent") != expected_agent
+                or labels.get("avrone.creation-token") != creation_token
+            ):
+                # A replacement container, even under the same friendly name, has a different
+                # creation token and must survive cleanup from this attempt.
+                continue
+            removed = await self._exec(rm_argv(observed_id), 30)
+            if (getattr(removed, "exit_code", 1) != 0 and not _docker_not_found(removed)):
+                raise RuntimeError(
+                    f"could not clean up failed agent container {name}: "
+                    f"{str(getattr(removed, 'stderr', '') or 'unknown Docker error')[:300]}"
+                )
+            return True
+        if inspection_errors:
+            raise RuntimeError(
+                f"could not safely inspect failed agent container {name}: "
+                + "; ".join(inspection_errors)
+            )
+        return False
 
     async def ensure(self, agent_dir: Path, *, _active: bool = False) -> str:
         """Name of a running, policy-compliant home container for agent_dir.
@@ -569,30 +636,67 @@ class AgentContainerPool:
                     raise RuntimeError(f"could not inspect agent container {name}: {detail or 'unknown Docker error'}")
 
             if code != 0 or not compatible:
-                created = await self._exec(self.run_argv(d, image_id), 300)
-                if getattr(created, "exit_code", 1) != 0:
-                    raise RuntimeError(f"could not start agent container {name}: "
-                                       f"{str(getattr(created, 'stderr', ''))[:300]}")
-                # docker run -d returns the object ID. Pin it immediately so a subsequent
-                # inspect/cleanup can never be redirected by a name being reassigned.
-                created_id = str(getattr(created, "stdout", "") or "").strip().lower()
-                if re.fullmatch(r"[0-9a-f]{64}", created_id) is None:
-                    raise RuntimeError(f"Docker did not return a valid container ID for {name}")
-                # Validate the object Docker actually started, not just the argv AVRONE intended
-                # to submit. Custom images can exit immediately and daemons can normalize options.
-                verify = await self._exec(inspect_argv(name), 30)
-                verify_stdout = str(getattr(verify, "stdout", ""))
-                verified, _owned, reason = _inspect_matches_policy(
-                    verify_stdout, d, image_id, self.allow_network
-                ) if getattr(verify, "exit_code", 1) == 0 else (False, False, "container not found after start")
-                verified_id = _inspect_container_id(verify_stdout) if getattr(verify, "exit_code", 1) == 0 else None
-                if not verified or verified_id != created_id:
-                    await self._exec(rm_argv(created_id), 30)
-                    if verified_id != created_id:
-                        reason = "Docker container name resolved to a different object than docker run created"
-                    raise RuntimeError(f"new agent container {name} failed sandbox verification: {reason}")
-                container_id = created_id
-                self.created += 1
+                creation_token = uuid.uuid4().hex
+                created_id: str | None = None
+                try:
+                    created = await self._exec(
+                        self.run_argv(d, image_id, creation_token=creation_token), 300
+                    )
+                    created_id = str(getattr(created, "stdout", "") or "").strip().lower()
+                    if getattr(created, "exit_code", 1) != 0:
+                        raise RuntimeError(
+                            f"could not start agent container {name}: "
+                            f"{str(getattr(created, 'stderr', ''))[:300]}"
+                        )
+                    if re.fullmatch(r"[0-9a-f]{64}", created_id) is None:
+                        raise RuntimeError(f"Docker did not return a valid container ID for {name}")
+                    # Validate the object Docker actually started, not just the argv AVRONE intended
+                    # to submit. Custom images can exit immediately and daemons can normalize options.
+                    verify = await self._exec(inspect_argv(name), 30)
+                    verify_stdout = str(getattr(verify, "stdout", ""))
+                    verified, _owned, reason = _inspect_matches_policy(
+                        verify_stdout, d, image_id, self.allow_network
+                    ) if getattr(verify, "exit_code", 1) == 0 else (False, False, "container not found after start")
+                    verified_id = (
+                        _inspect_container_id(verify_stdout)
+                        if getattr(verify, "exit_code", 1) == 0 else None
+                    )
+                    try:
+                        verify_payload = json.loads(verify_stdout)
+                    except (TypeError, ValueError):
+                        verify_payload = None
+                    if isinstance(verify_payload, list) and len(verify_payload) == 1:
+                        verify_payload = verify_payload[0]
+                    verify_config = (
+                        verify_payload.get("Config")
+                        if isinstance(verify_payload, dict) else None
+                    )
+                    verify_labels = (
+                        verify_config.get("Labels")
+                        if isinstance(verify_config, dict) and isinstance(verify_config.get("Labels"), dict)
+                        else {}
+                    )
+                    token_matches = verify_labels.get("avrone.creation-token") == creation_token
+                    if not verified or verified_id != created_id or not token_matches:
+                        if verified_id != created_id:
+                            reason = "Docker container name resolved to a different object than docker run created"
+                        elif not token_matches:
+                            reason = "Docker container does not carry this creation attempt's unique ownership token"
+                        raise RuntimeError(f"new agent container {name} failed sandbox verification: {reason}")
+                    container_id = created_id
+                    self.created += 1
+                except BaseException as create_error:
+                    cleanup_task = asyncio.create_task(
+                        self._cleanup_failed_home_start(name, d, creation_token, created_id)
+                    )
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except Exception as cleanup_error:  # noqa: BLE001 - preserve root failure context
+                        if not isinstance(create_error, asyncio.CancelledError):
+                            raise RuntimeError(
+                                f"{create_error}; safe agent-container cleanup also failed: {cleanup_error}"
+                            ) from create_error
+                    raise
 
             if container_id is None:
                 raise RuntimeError(f"agent container {name} has no pinned Docker identity")

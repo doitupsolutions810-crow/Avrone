@@ -1977,6 +1977,100 @@ def test_pool_removal_after_policy_drift_targets_only_inspected_container_id(tmp
     assert ["docker", "rm", "-f", new_id] not in fake.calls
 
 
+
+def test_pool_cleans_agent_home_when_run_reports_failure_after_daemon_create(tmp_path):
+    fake = FakeDocker()
+    original = fake.__call__
+    async def create_then_error(argv, timeout):
+        result = await original(argv, timeout)
+        if argv[1] == "run" and result.exit_code == 0:
+            return CommandResult(result.cmd, 125, "", "wrapper failed after daemon create")
+        return result
+    home = agentfs.agent_dir(tmp_path / "ws", "run-error")
+    pool = ac.AgentContainerPool(create_then_error, "img", False, node="edge", clock=lambda: 0.0)
+
+    with pytest.raises(RuntimeError, match="wrapper failed after daemon create"):
+        run(pool.ensure(home))
+    name = ac.container_name("edge", home.name)
+    assert name not in fake.running
+    assert pool.homes == {}
+
+
+def test_pool_preserves_same_name_replacement_with_different_creation_token(tmp_path):
+    class ReplacedNameDocker(FakeDocker):
+        async def __call__(self, argv, timeout):
+            result = await super().__call__(argv, timeout)
+            if argv[1] == "run" and result.exit_code == 0:
+                name = argv[argv.index("--name") + 1]
+                self.running.discard(name)
+                self.inspect_payloads.pop(name, None)
+                replacement = list(argv)
+                for index, value in enumerate(replacement[:-1]):
+                    if value == "--label" and replacement[index + 1].startswith("avrone.creation-token="):
+                        replacement[index + 1] = "avrone.creation-token=" + "e" * 32
+                super().seed(replacement)
+            return result
+
+    fake = ReplacedNameDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "replacement-token")
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+
+    with pytest.raises(RuntimeError, match="different object than docker run created"):
+        run(pool.ensure(home))
+    name = ac.container_name("edge", home.name)
+    assert name in fake.running
+    assert pool.homes == {}
+    replacement_id = fake.container_ids[name]
+    assert ["docker", "rm", "-f", replacement_id] not in fake.calls
+
+
+def test_pool_cleans_created_home_after_cancellation_during_docker_run(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        run_entered, allow_return = asyncio.Event(), asyncio.Event()
+        async def slow_exec(argv, timeout):
+            if argv[1] == "run":
+                result = await fake(argv, timeout)
+                run_entered.set()
+                await allow_return.wait()
+                return result
+            return await fake(argv, timeout)
+
+        home = agentfs.agent_dir(tmp_path / "ws", "cancel-run")
+        pool = ac.AgentContainerPool(slow_exec, "img", False, node="edge", clock=lambda: 0.0)
+        task = asyncio.create_task(pool.ensure(home))
+        await run_entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        name = ac.container_name("edge", home.name)
+        assert name not in fake.running
+        assert pool.homes == {}
+
+    run(go())
+
+
+def test_pool_rejects_creation_token_mismatch_without_deleting_unverified_container(tmp_path):
+    fake = FakeDocker()
+    original = fake.__call__
+    async def token_replaced(argv, timeout):
+        result = await original(argv, timeout)
+        if argv[1] == "run" and result.exit_code == 0:
+            name = argv[argv.index("--name") + 1]
+            fake.inspect_payloads[name]["Config"]["Labels"]["avrone.creation-token"] = "0" * 32
+        return result
+
+    home = agentfs.agent_dir(tmp_path / "ws", "token-mismatch")
+    pool = ac.AgentContainerPool(token_replaced, "img", False, node="edge", clock=lambda: 0.0)
+    with pytest.raises(RuntimeError, match="unique ownership token"):
+        run(pool.ensure(home))
+    name = ac.container_name("edge", home.name)
+    # A mismatched creation token invalidates trust; cleanup deliberately leaves it untouched.
+    assert name in fake.running
+    assert pool.homes == {}
+    assert fake.rm_count(name) == 0
+
+
 def test_pool_rejects_run_output_id_that_does_not_match_name_inspect(tmp_path):
     class ReassignedNameDocker(FakeDocker):
         async def __call__(self, argv, timeout):
@@ -1985,7 +2079,11 @@ def test_pool_rejects_run_output_id_that_does_not_match_name_inspect(tmp_path):
                 name = argv[argv.index("--name") + 1]
                 self.running.discard(name)
                 self.inspect_payloads.pop(name, None)
-                super().seed(argv)
+                replacement_argv = list(argv)
+                for index, value in enumerate(replacement_argv[:-1]):
+                    if value == "--label" and replacement_argv[index + 1].startswith("avrone.creation-token="):
+                        replacement_argv[index + 1] = "avrone.creation-token=" + "f" * 32
+                super().seed(replacement_argv)
             return result
 
     fake = ReassignedNameDocker()

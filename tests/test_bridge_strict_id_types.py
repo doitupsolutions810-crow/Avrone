@@ -14,7 +14,8 @@ class ExplosiveString:
 
 @pytest.mark.parametrize("invalid", [
     0, 1, 123, True, False, -1, 1.0, 1.5, float("nan"),
-    [], {}, ["text"], {"value": "id"}, 10 ** 5000, ExplosiveString(),
+    [], {}, ["text"], {"value": "id"}, pytest.param(10 ** 5000, id="huge-integer"),
+    ExplosiveString(),
 ])
 def test_public_normalizer_rejects_non_string_explicit_post_ids(invalid):
     obj, error = bm.normalize_blackboard_post({

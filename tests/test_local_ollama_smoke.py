@@ -447,6 +447,7 @@ def test_live_smoke_prompt_unambiguously_requires_only_shell():
     assert "first and only tool call must be shell" in task
     assert "Do not call think or any preparatory/non-shell tool" in task
     assert task.count(cmd) == 1
+    assert f"exact command:\\n{cmd}\\n" in task
 
 
 def test_worker_prompt_gives_explicit_tool_actions_priority_over_setup_habits():

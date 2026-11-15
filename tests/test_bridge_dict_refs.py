@@ -9,6 +9,7 @@ from avrone.bridge import Bridge
 @pytest.mark.parametrize("refs", [
     {"post-id": "untrusted"},
     {"__proto__": "injection"},
+    UserDict({"post-id": "untrusted"}),
     {},
 ])
 def test_dictionary_refs_do_not_impersonate_sequence(tmp_path, refs):

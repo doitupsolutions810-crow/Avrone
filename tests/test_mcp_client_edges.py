@@ -1099,6 +1099,33 @@ def test_mcp_client_close_waits_for_active_tool_calls_and_rejects_new_calls():
     run(go())
 
 
+def test_mcp_client_close_can_retry_after_transport_close_failure():
+    class FlakyClose(mc._Transport):
+        def __init__(self):
+            self.calls = 0
+        async def request(self, method, params, timeout):
+            return {}
+        async def notify(self, method, params=None):
+            return None
+        async def close(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient close failure")
+
+    async def go():
+        client = MCPClient("flaky-close", {"command": "unused"})
+        transport = FlakyClose()
+        client.transport = transport
+        with pytest.raises(RuntimeError, match="transient close failure"):
+            await client.close()
+        assert client._closing and not client._closed
+        await client.close()
+        assert transport.calls == 2
+        assert client._closed
+
+    run(go())
+
+
 def test_mcp_client_concurrent_close_is_idempotent():
     class CountClose(mc._Transport):
         def __init__(self):
@@ -1191,6 +1218,41 @@ def test_mcp_client_cancelled_tool_call_releases_drain_lease():
         assert client._calls_drained.is_set()
         await client.close()
         assert transport.closed
+
+    run(go())
+
+
+def test_manager_stop_cancellation_waits_for_all_transport_closes(monkeypatch):
+    async def go():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        instances = []
+
+        class WaitCloseClient(FakeClient):
+            def __init__(self, name, cfg, timeout=30):
+                super().__init__(name, cfg, timeout)
+                instances.append(self)
+            async def close(self):
+                entered.set()
+                await release.wait()
+                self.closed = True
+
+        monkeypatch.setattr(mc, "MCPClient", WaitCloseClient)
+        manager = MCPManager(servers={"one": {"command": "fake"}})
+        registry = ToolRegistry()
+        await manager.start(registry)
+        stopper = asyncio.create_task(manager.stop())
+        await entered.wait()
+        stopper.cancel()
+        await asyncio.sleep(0)
+        assert manager.clients
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stopper
+        assert instances[0].closed
+        assert manager.clients == {}
+        assert manager._registered == []
+        assert registry.names() == []
 
     run(go())
 

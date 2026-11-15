@@ -1526,6 +1526,55 @@ def test_pool_rejects_run_output_id_that_does_not_match_name_inspect(tmp_path):
     assert ["docker", "rm", "-f", replacement_id] not in fake.calls
 
 
+
+def test_pool_recovers_after_docker_run_returns_malformed_container_id(tmp_path):
+    class MalformedRunOutputDocker(FakeDocker):
+        async def __call__(self, argv, timeout):
+            result = await super().__call__(argv, timeout)
+            if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+                return CommandResult(result.cmd, 0, "not-a-full-container-id", "")
+            return result
+
+    fake = MalformedRunOutputDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "bad-run-id")
+    name = ac.container_name("edge", home.name)
+
+    # A successful docker run with malformed stdout is not permission to remove by name.
+    with pytest.raises(RuntimeError, match="valid Docker ID"):
+        run(pool.ensure(home))
+    assert name in fake.running
+    assert pool.homes == {}
+    assert fake.rm_count(name) == 0
+
+    # A later invocation independently inspects the friendly name, validates ownership,
+    # policy, and full Docker identity, then safely adopts the compliant container.
+    assert run(pool.ensure(home)) == name
+    assert pool.homes[name].container_id == fake.container_ids[name]
+    assert fake.rm_count(name) == 0
+    assert fake.verbs().count("run") == 1
+
+
+@pytest.mark.parametrize("bad_output", ["", "short", "g" * 64, "a" * 64 + "\\n" + "b" * 64])
+def test_pool_rejects_malformed_run_ids_without_name_based_cleanup(tmp_path, bad_output):
+    class MalformedRunOutputDocker(FakeDocker):
+        async def __call__(self, argv, timeout):
+            result = await super().__call__(argv, timeout)
+            if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+                return CommandResult(result.cmd, 0, bad_output, "")
+            return result
+
+    fake = MalformedRunOutputDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "bad-run-id-" + str(len(bad_output)))
+    with pytest.raises(RuntimeError, match="valid Docker ID"):
+        run(pool.ensure(home))
+    name = ac.container_name("edge", home.name)
+    assert name in fake.running
+    assert pool.homes == {}
+    assert fake.rm_count(name) == 0
+
+
 def test_docker_runner_exec_uses_pinned_container_id_after_friendly_name_is_reassigned(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
     runner = DockerRunner(_settings(tmp_path, allow_network=False))

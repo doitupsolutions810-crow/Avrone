@@ -427,7 +427,7 @@ def test_required_action_contract_allows_configured_followup_calls(tmp_path):
 
 
 @pytest.mark.parametrize("payload", [
-    '{"first_action":{"tool":"echo","args":{"nested":' + "[" * 1500 + "0" + "]" * 1500 + '},"allow_followup_calls":false}',
+    '{"first_action":{"tool":"echo","args":{"nested":' + "[" * 1500 + "0" + "]" * 1500 + '}}, "allow_followup_calls":false}',
 ])
 def test_parse_action_contract_rejects_pathological_json_nesting(payload):
     from avrone.trinity import parse_action_contract

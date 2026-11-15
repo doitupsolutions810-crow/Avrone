@@ -34,7 +34,8 @@ def _is_loopback_http_url(url: str) -> bool:
         return False
     if (parsed.scheme.lower() != "http" or not parsed.hostname
             or parsed.username is not None or parsed.password is not None
-            or parsed.query or parsed.fragment or (port is not None and port < 1)):
+            or parsed.query or parsed.fragment or parsed.netloc.endswith(":")
+            or (port is not None and port < 1)):
         return False
     host = parsed.hostname.rstrip(".").lower()
     try:
@@ -47,6 +48,20 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Do not let a loopback API response redirect this operator test off-host."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous duplicate object keys in local API responses."""
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r}")
 
 
 def _event_data(event: dict[str, Any]) -> dict[str, Any]:
@@ -90,8 +105,12 @@ def request_json(url: str, payload: dict[str, Any] | None = None, timeout: int =
                 f"Local AVRONE API response exceeded {MAX_API_RESPONSE_BYTES} bytes."
             )
         try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            return json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_json_constant,
+            )
+        except (UnicodeDecodeError, ValueError, RecursionError):
             raise RuntimeError(f"Local AVRONE API returned malformed JSON for {url}.") from None
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
@@ -193,6 +212,8 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         raise RuntimeError("No persistent AVRONE agent-home containers exist after the squad run.")
     if len(ids) != len(set(ids)):
         raise RuntimeError("Docker returned duplicate container IDs.")
+    if len(ids) > 512:
+        raise RuntimeError("Docker returned more than 512 persistent agent-home containers; refusing unbounded inspection.")
     if any(re.fullmatch(r"[0-9a-fA-F]{64}", value) is None for value in ids):
         raise RuntimeError("Docker returned a malformed full-length container ID; refusing to pass it to docker inspect/exec.")
     raw = subprocess.run(

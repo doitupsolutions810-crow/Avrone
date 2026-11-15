@@ -551,6 +551,7 @@ def test_live_smoke_rejects_extra_or_mismatched_tool_events(mutation, expected_e
     "http://localhost.attacker.test/api/status",
     "http://user@127.0.0.1:8710/api/status",
     "http://127.0.0.1:99999/api/status",
+    "http://localhost:/api/status",
     "http://127.0.0.1:8710/api/status?next=https://example.com",
     "http://127.0.0.1:8710/api/status#fragment",
     "file:///etc/passwd",
@@ -701,4 +702,50 @@ def test_event_agent_accessor_never_returns_non_string_identities(bad_agent):
 
 def test_event_agent_accessor_preserves_non_empty_string_identity():
     assert smoke._event_agent({"agent": "WorkerA-1"}) == "WorkerA-1"
+
+@pytest.mark.parametrize("body", [
+    b'{"provider":"ollama","provider":"openai"}',
+    b'{"value":NaN}',
+    b'{"value":Infinity}',
+    b'{"value":-Infinity}',
+])
+def test_request_json_rejects_duplicate_keys_and_nonstandard_json_constants(monkeypatch, body):
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _limit):
+            return body
+
+    class Opener:
+        def open(self, _request, timeout):
+            return Response()
+
+    monkeypatch.setattr(smoke.urllib.request, "build_opener", lambda *_args: Opener())
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        smoke.request_json("http://127.0.0.1:8710/api/status")
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, float("inf"), float("nan"), 10**10000])
+def test_request_json_rejects_invalid_timeouts_before_network(monkeypatch, timeout):
+    monkeypatch.setattr(
+        smoke.urllib.request, "build_opener",
+        lambda *_args: pytest.fail("network opener must not be constructed for an invalid timeout"),
+    )
+    with pytest.raises(RuntimeError, match="positive finite"):
+        smoke.request_json("http://localhost:8710/api/status", timeout=timeout)
+
+
+def test_smoke_verifier_bounds_persistent_container_inventory(monkeypatch):
+    ids = [f"{value:064x}" for value in range(1, 514)]
+
+    def fake_run(args, check=False, capture_output=False, text=False, timeout=None):
+        if args[:2] == ["docker", "ps"]:
+            return subprocess.CompletedProcess(args, 0, "\n".join(ids), "")
+        raise AssertionError("Docker inspect and image resolution must not run for oversized inventory.")
+
+    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="more than 512"):
+        smoke.inspect_agent_homes("nonce", {"solver-a": {"content": "x", "sha256": "0" * 64}})
 

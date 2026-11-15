@@ -347,8 +347,8 @@ def test_python_docker_paths(env, monkeypatch, isolate):
         return SimpleNamespace(text=lambda: "docker ok")
 
     env_dir = env.dir
-    if isolate == "0":
-        r.container_id = "f" * 64
+    # Both the shared-exec and isolated-run paths are part of a started Docker runner.
+    r.container_id = "f" * 64
     monkeypatch.setattr(r, "_exec", fake_exec)
     core = SimpleNamespace(settings=env.s, runner=r, codex=env.codex)
     ctx = SimpleNamespace(**{**vars(env.ctx), "core": core})

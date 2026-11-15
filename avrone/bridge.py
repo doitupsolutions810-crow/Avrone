@@ -682,9 +682,13 @@ def _load_order(core: Any) -> "OrderedDict[str, None]":
         return cached
     order: "OrderedDict[str, None]" = OrderedDict()
     path = _order_path(core)
-    if path is not None and path.is_file() and not path.is_symlink():
+    if path is not None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            # Validate the opened inode rather than a potentially stale
+            # path.is_file() result. Symlink/hardlink/FIFO tricks must not make
+            # the global cursor registry read an outside file or hang.
+            with os.fdopen(_regular_fd(path, os.O_RDONLY), "r", encoding="utf-8") as stream:
+                data = json.load(stream)
         except (OSError, json.JSONDecodeError, RecursionError, TypeError, ValueError):
             data = None
         ids = data.get("ids") if isinstance(data, dict) else None

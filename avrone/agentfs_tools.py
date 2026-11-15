@@ -134,7 +134,8 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
         try:
             new_size = write_confined_file(root, p, data, append=append, max_bytes=cap)
         except AgentFSError as exc:
-            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="confined_write",
+            reason = "symlink" if "symlink" in str(exc).lower() else "confined_write"
+            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason=reason,
                    bytes=len(data), reason_detail=str(exc)[:200])
             raise
         usage = dir_usage(root)
@@ -193,8 +194,8 @@ async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_fs_delete(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root = _agent_root(ctx)
-    raw = str(args.get("path", "")).strip().rstrip("/\\\\")
-    head, _, leaf = raw.replace("\\\\", "/").rpartition("/")
+    raw = str(args.get("path", "")).strip().rstrip("/\\")
+    head, _, leaf = raw.replace("\\", "/").rpartition("/")
     recursive = args.get("recursive", False)
     try:
         if not leaf or leaf in {".", ".."}:

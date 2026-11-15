@@ -320,6 +320,10 @@ class StdioTransport(_Transport):
         if not self.proc or not self.proc.stdin or self.proc.returncode is not None:
             raise MCPError("MCP server process is not running")
         data = _encode_rpc_request(obj) + b"\n"
+        if len(data) > MAX_STDIO_LINE_BYTES:
+            raise MCPError(
+                f"MCP stdio frame exceeded configured limit ({MAX_STDIO_LINE_BYTES} bytes)"
+            )
         async with self._write_lock:
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()

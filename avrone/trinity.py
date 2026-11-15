@@ -764,7 +764,7 @@ class TrinityCore:
             self.codex.emit(run_id, "action.contract.start", name, tool=required["tool"])
             [checked] = self._prechecked(run_id, name, [required], 0, budget)
             tool, out = await self._one_call(run_id, name, ctx, checked, 0, budget)
-            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\\n{out}"})
+            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
             first_step = 1
 
         for step in range(first_step, self.settings.max_steps):

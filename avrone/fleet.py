@@ -1173,7 +1173,14 @@ class FleetManager:
             check_node_url(base)
         except ValueError as e:
             raise RuntimeError(f"refusing to call peer url: {e}") from None
-        body = json.dumps(payload).encode()
+        if not isinstance(payload, dict):
+            raise RuntimeError("peer request must be a JSON object")
+        try:
+            # JSON must be strict *before* signing and opening a connection:
+            # Python's defaults allow NaN/Infinity and escaped lone surrogates.
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, RecursionError, UnicodeError):
+            raise RuntimeError("peer request must be strict UTF-8 JSON with finite numbers") from None
         headers = {"content-type": "application/json", "accept-encoding": "identity",
                    **sign(self.token, "POST", path, body)}
         async with self._client(timeout) as c, asyncio.timeout(timeout):

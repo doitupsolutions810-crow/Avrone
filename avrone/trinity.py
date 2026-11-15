@@ -410,6 +410,8 @@ def parse_action_contract(task: str) -> dict[str, Any] | None:
         return None
     if len(matches) != 1 or not matches[0]:
         raise ValueError("expected exactly one non-empty AVRONE_ACTION_CONTRACT line")
+    if len(matches[0]) > 100_000:
+        raise ValueError("AVRONE_ACTION_CONTRACT exceeds the 100000-character limit")
 
     def unique_object(pairs):
         out = {}
@@ -424,7 +426,7 @@ def parse_action_contract(task: str) -> dict[str, Any] | None:
 
     try:
         value = json.loads(matches[0], object_pairs_hook=unique_object, parse_constant=reject_constant)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(f"invalid AVRONE_ACTION_CONTRACT JSON: {exc}") from exc
     if type(value) is not dict or set(value) != {"first_action", "allow_followup_calls"}:
         raise ValueError("action contract must contain exactly first_action and allow_followup_calls")
@@ -437,6 +439,7 @@ def parse_action_contract(task: str) -> dict[str, Any] | None:
     if type(value.get("allow_followup_calls")) is not bool:
         raise ValueError("allow_followup_calls must be a boolean")
     return {"first_action": action, "allow_followup_calls": value["allow_followup_calls"]}
+
 
 def normalize_action(registry: Any, action: dict[str, Any]) -> dict[str, Any]:
     """Repair a parsed action before it runs (see normalize_call).

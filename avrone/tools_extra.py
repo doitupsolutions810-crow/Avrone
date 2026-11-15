@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import fsunify, memstore
+from . import agentfs, fsunify, memstore
 from .tools import Tool, _safe_path, runner_accepts_cwd
 
 if TYPE_CHECKING:
@@ -278,9 +278,9 @@ async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
             break
         scanned += 1
         try:
-            if f.stat().st_size > 1_000_000:
+            data = agentfs.read_confined_bytes(r.root, f, max_bytes=1_000_000)
+            if len(data) > 1_000_000:
                 continue
-            data = f.read_bytes()
         except OSError:
             continue
         if b"\0" in data[:4096]:
@@ -311,12 +311,15 @@ def _iter_files(root: Path, skip: set[Path] | None = None):
 async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
     r = fsunify.resolve(ctx, str(args.get("path", "")), "edit_file")
     p = r.path
-    if not p.is_file():
-        return f"ERROR: {args.get('path')} not found"
     old, new = str(args.get("old", "")), str(args.get("new", ""))
     if not old:
         return "ERROR: 'old' must be a non-empty string"
-    text = p.read_text(errors="replace")
+    try:
+        text = agentfs.read_confined_bytes(r.root, p).decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return f"ERROR: {args.get('path')} not found"
+    except (IsADirectoryError, agentfs.AgentFSError):
+        return f"ERROR: {args.get('path')} is not a regular confined file"
     n = text.count(old)
     name = fsunify.display(ctx, p)
     if n == 0:
@@ -327,7 +330,10 @@ async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
         from .agentfs_tools import quota_write
         quota_write(ctx, r.root, p, text.replace(old, new, 1).encode("utf-8"), tool="edit_file")
     else:
-        p.write_text(text.replace(old, new, 1))
+        try:
+            agentfs.write_confined_file(r.root, p, text.replace(old, new, 1).encode("utf-8"))
+        except agentfs.AgentFSError as exc:
+            return f"ERROR: {exc}"
     return f"edited {name} (1 replacement)"
 
 
@@ -592,14 +598,16 @@ def _read_text_for_diff(ctx: "AgentContext", raw: Any, label: str) -> tuple[str 
     rel = str(raw or "").strip()
     if not rel:
         return None, f"ERROR: {label} is required"
-    p = fsunify.resolve(ctx, rel, "diff_files").path
-    if not p.exists():
+    resolved = fsunify.resolve(ctx, rel, "diff_files")
+    p = resolved.path
+    try:
+        data = agentfs.read_confined_bytes(resolved.root, p, max_bytes=DIFF_MAX_FILE_BYTES)
+    except FileNotFoundError:
         return None, f"ERROR: {rel} not found"
-    if not p.is_file():
-        return None, f"ERROR: {rel} is not a file"
-    if p.stat().st_size > DIFF_MAX_FILE_BYTES:
+    except (IsADirectoryError, agentfs.AgentFSError):
+        return None, f"ERROR: {rel} is not a regular confined file"
+    if len(data) > DIFF_MAX_FILE_BYTES:
         return None, f"ERROR: {rel} is larger than {DIFF_MAX_FILE_BYTES} bytes"
-    data = p.read_bytes()
     if b"\0" in data[:8192]:
         return None, f"ERROR: {rel} looks like a binary file"
     return data.decode(errors="replace"), fsunify.display(ctx, p)

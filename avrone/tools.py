@@ -240,11 +240,15 @@ _INSTALL_RE = __import__("re").compile(
 
 
 async def t_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    from . import fsunify
-    p = fsunify.resolve(ctx, args.get("path", ""), "read_file").path
-    if not p.exists():
+    from . import agentfs, fsunify
+    r = fsunify.resolve(ctx, args.get("path", ""), "read_file")
+    try:
+        data = agentfs.read_confined_bytes(r.root, r.path)
+    except FileNotFoundError:
         return f"ERROR: {args.get('path')} not found"
-    return p.read_text(errors="replace")[:12000]
+    except (IsADirectoryError, agentfs.AgentFSError) as exc:
+        return f"ERROR: {exc}"
+    return data.decode("utf-8", errors="replace")[:12000]
 
 
 async def t_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -256,8 +260,11 @@ async def t_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
         size, used, quota = quota_write(ctx, r.root, p, str(args.get("content", "")).encode("utf-8"),
                                         tool="write_file")
         return f"wrote {fsunify.display(ctx, p)} ({size} bytes; agent dir {used}/{quota} bytes)"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(str(args.get("content", "")))
+    from . import agentfs
+    try:
+        agentfs.write_confined_file(r.root, p, str(args.get("content", "")).encode("utf-8"))
+    except agentfs.AgentFSError as exc:
+        return f"ERROR: {exc}"
     if r.unified:
         return f"wrote {fsunify.display(ctx, p)} ({p.stat().st_size} bytes)"
     return f"wrote {p.relative_to(ctx.core.runner.workspace.resolve())} ({p.stat().st_size} bytes)"

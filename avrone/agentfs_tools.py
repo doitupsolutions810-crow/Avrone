@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .agentfs import AgentFSError, confine
+from .agentfs import AgentFSError, confine, read_confined_bytes
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -185,24 +185,22 @@ async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_fs_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root, p = _resolve(ctx, "fs_read", args.get("path", ""))
-    if not p.exists():
-        return f"ERROR: {_rel(root, p)} not found"
-    if not p.is_file():
-        return f"ERROR: {_rel(root, p)} is a directory; use fs_list"
     try:
         limit = int(args.get("max_chars", READ_DEFAULT_CHARS))
     except (TypeError, ValueError):
         limit = READ_DEFAULT_CHARS
     limit = max(1, min(limit, READ_MAX_CHARS))
-    with p.open("rb") as f:
-        raw = f.read(limit * 4 + 4)
+    try:
+        raw = read_confined_bytes(root, p, max_bytes=limit * 4 + 4)
+    except FileNotFoundError:
+        return f"ERROR: {_rel(root, p)} not found"
+    except (IsADirectoryError, AgentFSError):
+        return f"ERROR: {_rel(root, p)} is not a regular file"
     text = raw.decode("utf-8", errors="replace")
-    size = p.stat().st_size
     out = text[:limit]
-    if len(text) > limit or size > len(raw):
-        out += f"\n...[truncated; file is {size} bytes]"
+    if len(text) > limit or len(raw) > limit * 4 + 4:
+        out += f"\\n...[truncated; file exceeds the read window]"
     return out
-
 
 async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root, p = _resolve(ctx, "fs_list", args.get("path", ""))

@@ -151,6 +151,138 @@ def is_agent_dir(workspace: Path, path: Path | None) -> bool:
         return False
 
 
+def _open_directory_chain(path: Path) -> int:
+    """Open a directory by walking every component with O_NOFOLLOW.
+
+    The returned descriptor pins the directory even if an attacker renames its pathname
+    after validation. Descriptor-relative traversal is required for this guarantee.
+    """
+    if os.name != "posix" or os.open not in getattr(os, "supports_dir_fd", set()):
+        raise AgentFSError("safe descriptor-relative filesystem access is unavailable on this platform")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory:
+        raise AgentFSError("platform lacks required no-follow directory support")
+    resolved = Path(path).resolve(strict=True)
+    if not resolved.is_dir():
+        raise AgentFSError(f"{resolved} is not a directory")
+    flags = os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(resolved.anchor, os.O_RDONLY | directory | getattr(os, "O_CLOEXEC", 0))
+    try:
+        for component in resolved.parts[1:]:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_confined_parent(root: Path, target: Path, *, create_parents: bool = False) -> tuple[int, str]:
+    """Pin the resolved target's parent beneath root and return (parent_fd, leaf_name)."""
+    base = Path(root).resolve(strict=True)
+    resolved = Path(target).resolve(strict=False)
+    if not resolved.is_relative_to(base) or resolved == base:
+        raise AgentFSError("path escapes its confined filesystem root or names the root itself")
+    relative = resolved.relative_to(base)
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise AgentFSError("invalid confined path")
+    fd = _open_directory_chain(base)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        for component in relative.parts[:-1]:
+            try:
+                child = os.open(component, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create_parents:
+                    raise
+                try:
+                    os.mkdir(component, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd, relative.parts[-1]
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_confined_file(root: Path, target: Path) -> int:
+    """Open one regular file beneath root without following any path-component symlink."""
+    parent_fd, leaf = _open_confined_parent(root, target)
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(leaf, flags, dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise AgentFSError("confined path is not a regular file")
+        return fd
+    finally:
+        os.close(parent_fd)
+
+
+def read_confined_bytes(root: Path, target: Path, max_bytes: int | None = None) -> bytes:
+    """Read a confined regular file through a pinned descriptor."""
+    fd = open_confined_file(root, target)
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read() if max_bytes is None else handle.read(max_bytes + 1)
+
+
+def write_confined_file(root: Path, target: Path, data: bytes, *, append: bool = False,
+                        max_bytes: int | None = None) -> int:
+    """Write beneath root with a pinned parent and descriptor-relative atomic replacement."""
+    parent_fd, leaf = _open_confined_parent(root, target, create_parents=True)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        os.close(parent_fd)
+        raise AgentFSError("platform lacks no-follow file support")
+    try:
+        if append:
+            fd = os.open(leaf, os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow |
+                         getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=parent_fd)
+            try:
+                metadata = os.fstat(fd)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise AgentFSError("append target must be a regular, unlinked file")
+                size = metadata.st_size + len(data)
+                if max_bytes is not None and size > max_bytes:
+                    raise AgentFSError(f"file would exceed the {max_bytes}-byte limit")
+                with os.fdopen(fd, "ab") as handle:
+                    fd = -1
+                    handle.write(data)
+                return size
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+
+        size = len(data)
+        if max_bytes is not None and size > max_bytes:
+            raise AgentFSError(f"file would exceed the {max_bytes}-byte limit")
+        temp = f".avrone-write-{os.getpid()}-{threading.get_ident()}-{os.urandom(8).hex()}"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow |
+                     getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=parent_fd)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(data)
+            os.replace(temp, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(temp, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+        return size
+    finally:
+        os.close(parent_fd)
+
+
 def confine(base: Path, rel: object) -> Path:
     """Resolve a RELATIVE path inside `base`; reject absolute paths, '..' and escapes."""
     raw = str(rel if rel is not None else "").strip()

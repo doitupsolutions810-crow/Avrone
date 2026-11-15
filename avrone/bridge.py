@@ -79,9 +79,15 @@ def bridge_rounds() -> int:
 
 def bridge_run_id(run_id: Any) -> str:
     """The bridge a run posts to: deep's '<id>-wave1' first wave shares '<id>'."""
-    rid = str(run_id or "run")
-    if rid.endswith("-wave1") and len(rid) > len("-wave1"):
-        rid = rid[: -len("-wave1")]
+    raw = str(run_id or "run")
+    if raw.endswith("-wave1") and len(raw) > len("-wave1"):
+        raw = raw[: -len("-wave1")]
+    rid = _utf8_text(raw)
+    if rid != raw:
+        # Normalization can collapse two distinct raw identifiers. Preserve
+        # their distinction across disk names and exported JSON records.
+        suffix = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
+        rid = f"{rid[:80]}-{suffix}"
     if len(rid) > MAX_RUN_ID_CHARS:
         # Preserve identity without writing a many-megabyte run id into every
         # post. Distinct long ids must not alias after truncation.
@@ -200,7 +206,7 @@ class Bridge:
                  node_id: str = "local", limit: int | None = None):
         self.run_id = bridge_run_id(run_id)
         self.codex = codex
-        self.node_id = str(node_id or "local")[:80]
+        self.node_id = _utf8_text(node_id or "local")[:80]
         try:
             requested_limit = int(limit) if limit else max_posts()
         except (TypeError, ValueError, OverflowError):
@@ -414,8 +420,8 @@ class Bridge:
                 raise BridgeError(f"unknown post id(s): {', '.join(unknown[:5])}")
             if require_refs and not refs_l:
                 raise BridgeError("refs is required: the id(s) of the post(s) you reply to")
-            rec = {"id": uuid.uuid4().hex[:12], "run_id": self.run_id, "agent": str(agent or "agent")[:80],
-                   "role": str(role or "")[:60], "kind": kind, "text": body, "refs": refs_l,
+            rec = {"id": uuid.uuid4().hex[:12], "run_id": self.run_id, "agent": _utf8_text(agent or "agent")[:80],
+                   "role": _utf8_text(role or "")[:60], "kind": kind, "text": body, "refs": refs_l,
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec
             self._trim()
@@ -436,7 +442,7 @@ class Bridge:
         """Take posts relayed from another node. Dedupe by id; a local post is never overwritten;
         a post's own origin_node is kept (else `origin_node`). Refs may point at posts we lack."""
         stats = {"merged": 0, "skipped": 0, "rejected": 0}
-        origin = str(origin_node or "remote")[:80]
+        origin = _utf8_text(origin_node or "remote")[:80]
         fresh: list[dict[str, Any]] = []
         with self._lock:
             # Bound both parsing work and the write-ahead batch on direct API

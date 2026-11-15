@@ -643,6 +643,16 @@ def test_stdio_dispatch_rejects_invalid_server_request_ids():
     run(go())
 
 
+def test_unwrap_caps_untrusted_error_messages(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_MCP_ERROR_CHARS", 32)
+    with pytest.raises(MCPError) as exc:
+        _unwrap({"error": {"code": -32000, "message": "E" * 5000, "data": {"trace": "private"}}})
+    assert len(str(exc.value)) == 32
+    assert str(exc.value).endswith("…[MCP error truncated]")
+    assert exc.value.code == -32000
+    assert exc.value.data == {"trace": "private"}
+
+
 def test_unwrap_variants():
     assert _unwrap({"result": 3}) == 3
     assert _unwrap({"error": None, "result": 4}) == 4

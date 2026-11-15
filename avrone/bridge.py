@@ -854,6 +854,10 @@ def _id_state(core: Any, pid: str) -> str | None:
     evicted = False
     for bridge in _iter_bridges(core):
         with bridge._lock:
+            # A cached run may have been populated, compacted, or tombstoned
+            # by another Core/process after it was first opened. Refresh
+            # under the global admission lock before checking uniqueness.
+            bridge._refresh_read()
             if pid in bridge._posts:
                 return "stored"
             if pid in bridge._evicted:

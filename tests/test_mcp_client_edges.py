@@ -1608,6 +1608,43 @@ def test_manager_start_is_idempotent_and_restart_after_stop(monkeypatch):
     run(go())
 
 
+def test_manager_start_exception_closes_partially_registered_servers(monkeypatch):
+    made = []
+
+    class TrackedClient(FakeClient):
+        def __init__(self, name, cfg, timeout=30):
+            super().__init__(name, cfg, timeout)
+            made.append(self)
+
+    class ExplodingRegistry(ToolRegistry):
+        def register(self, tool):
+            if tool.name == "mcp__two__explode":
+                raise RuntimeError("registry backend unavailable")
+            super().register(tool)
+
+    FakeClient.behaviour = {
+        "one": {"tools": [{"name": "ready"}]},
+        "two": {"tools": [{"name": "explode"}]},
+    }
+    monkeypatch.setattr(mc, "MCPClient", TrackedClient)
+    manager = MCPManager(servers={
+        "one": {"command": "one"},
+        "two": {"command": "two"},
+    })
+    registry = ExplodingRegistry()
+
+    with pytest.raises(RuntimeError, match="registry backend unavailable"):
+        run(manager.start(registry))
+
+    assert len(made) == 2
+    assert all(client.closed for client in made)
+    assert manager.clients == {}
+    assert manager._registered == []
+    assert registry.names() == []
+    assert manager._started is False
+    assert all(not entry["connected"] for name, entry in manager.status().items() if name in ("one", "two"))
+
+
 def test_manager_start_cancellation_closes_partial_clients_and_unregisters_tools(monkeypatch):
     async def go():
         entered = asyncio.Event()

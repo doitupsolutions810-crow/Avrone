@@ -152,6 +152,15 @@ def is_agent_dir(workspace: Path, path: Path | None) -> bool:
         return False
 
 
+def _canonical_directory_root(path: Path) -> Path:
+    """Return a trusted canonical directory path; reject a root symlink substitution."""
+    raw = Path(path)
+    resolved = raw.resolve(strict=True)
+    if raw != resolved or raw.is_symlink() or not resolved.is_dir():
+        raise AgentFSError("confined filesystem root is not a canonical, non-symlink directory")
+    return resolved
+
+
 def _open_directory_chain(path: Path) -> int:
     """Open a directory by walking every component with O_NOFOLLOW.
 
@@ -182,7 +191,7 @@ def _open_directory_chain(path: Path) -> int:
 
 def _open_confined_parent(root: Path, target: Path, *, create_parents: bool = False) -> tuple[int, str]:
     """Pin the resolved target's parent beneath root and return (parent_fd, leaf_name)."""
-    base = Path(root).resolve(strict=True)
+    base = _canonical_directory_root(root)
     resolved = Path(target).resolve(strict=False)
     if not resolved.is_relative_to(base) or resolved == base:
         raise AgentFSError("path escapes its confined filesystem root or names the root itself")
@@ -291,7 +300,7 @@ def write_confined_file(root: Path, target: Path, data: bytes, *, append: bool =
 
 def _open_confined_directory(root: Path, target: Path) -> int:
     """Open a directory beneath root through no-follow descriptor-relative traversal."""
-    base = Path(root).resolve(strict=True)
+    base = _canonical_directory_root(root)
     resolved = Path(target).resolve(strict=True)
     if not resolved.is_relative_to(base):
         raise AgentFSError("directory escapes its confined filesystem root")

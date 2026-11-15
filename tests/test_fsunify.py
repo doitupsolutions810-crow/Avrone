@@ -546,3 +546,35 @@ def test_parent_share_rejects_external_or_symlink_aliased_agent_home(env):
     (real_parent / "secret.txt").write_text("private")
     forged_alias = SimpleNamespace(**{**vars(env.ctx), "parent_dir": alias})
     assert call(env, "read_file", ctx=forged_alias, path="parent/secret.txt").startswith("ERROR")
+
+
+
+@pytest.mark.parametrize("tool", ["read_file", "write_file"])
+def test_unified_tools_refuse_agent_root_replaced_by_symlink_after_resolution(env, monkeypatch, tool):
+    (env.dir / "secret.txt").write_text("agent-secret")
+    outside = env.tmp / "outside-root-swap"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("host-secret")
+    moved = env.dir.with_name("agent-home-original")
+    original_resolve = fsunify.resolve
+    swapped = {"done": False}
+
+    def resolve_then_swap(ctx, raw, name):
+        result = original_resolve(ctx, raw, name)
+        if not swapped["done"]:
+            env.dir.rename(moved)
+            env.dir.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return result
+
+    monkeypatch.setattr(fsunify, "resolve", resolve_then_swap)
+    if tool == "read_file":
+        result = call(env, tool, path="secret.txt")
+        assert result.startswith("ERROR")
+        assert "host-secret" not in result
+    else:
+        result = call(env, tool, path="new.txt", content="must-not-escape")
+        assert result.startswith("ERROR")
+        assert not (outside / "new.txt").exists()
+    assert swapped["done"] is True
+    assert (outside / "secret.txt").read_text() == "host-secret"

@@ -293,21 +293,86 @@ def net_max_remote_agents() -> int:
     return _env_int("AVRONE_NET_MAX_REMOTE_AGENTS", 32, 1, 1024)
 
 
+def _relay_post_size(post: dict[str, Any]) -> int | None:
+    """Bound each peer post before JSON encoding; return its exact ASCII wire size.
+
+    Limit traversal depth and node count, reject cycles and excessive strings,
+    then use an incremental strict JSON encoder instead of constructing a
+    potentially enormous serialized post. Shared non-cyclic objects are allowed.
+    """
+    remaining = 8192
+    active: set[int] = set()
+    stack: list[tuple[Any, int, bool]] = [(post, 0, False)]
+    try:
+        while stack:
+            value, depth, leave = stack.pop()
+            if leave:
+                active.discard(id(value))
+                continue
+            remaining -= 1
+            if remaining < 0 or depth > 32:
+                return None
+            if isinstance(value, str):
+                if len(value) > BRIDGE_MAX_BYTES:
+                    return None
+                value.encode("utf-8")
+            elif value is None or isinstance(value, bool):
+                continue
+            elif isinstance(value, int):
+                if value.bit_length() > BRIDGE_MAX_BYTES * 8:
+                    return None
+            elif isinstance(value, float):
+                if not math.isfinite(value):
+                    return None
+            elif isinstance(value, (dict, list, tuple)):
+                if id(value) in active or len(value) > 8192:
+                    return None
+                active.add(id(value))
+                stack.append((value, depth, True))
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        stack.append((item, depth + 1, False))
+                        stack.append((key, depth + 1, False))
+                else:
+                    for item in value:
+                        stack.append((item, depth + 1, False))
+            else:
+                return None
+        total = 0
+        for chunk in json.JSONEncoder(allow_nan=False).iterencode(post):
+            total += len(chunk)  # ASCII escape mode: characters == UTF-8 bytes
+            if total > BRIDGE_MAX_BYTES:
+                return None
+        return total
+    except Exception:  # hostile in-process values must fail closed per record
+        return None
+
+
 def cap_bridge_posts(posts: Any) -> list[dict[str, Any]]:
-    """Newest-last list of JSON-able dict posts, at most BRIDGE_MAX_POSTS and BRIDGE_MAX_BYTES."""
+    """Newest-last strict JSON posts, capped by count and aggregate wire bytes."""
     if not isinstance(posts, (list, tuple)):
         return []
-    out = []
-    for p in list(posts)[-BRIDGE_MAX_POSTS:]:
+    try:
+        tail = posts[-BRIDGE_MAX_POSTS:]  # do not copy the full peer collection
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    sizes: list[int] = []
+    total = 2  # enclosing JSON array brackets
+    for p in tail:
         if not isinstance(p, dict):
             continue
-        try:
-            json.dumps(p)
-        except (TypeError, ValueError):
+        size = _relay_post_size(p)
+        if size is None:
             continue
         out.append(p)
-    while out and len(json.dumps(out).encode()) > BRIDGE_MAX_BYTES:
-        out.pop(0)  # drop the oldest first
+        sizes.append(size)
+        total += size + (2 if len(out) > 1 else 0)  # default comma-space
+    while out and total > BRIDGE_MAX_BYTES:
+        total -= sizes.pop(0)
+        out.pop(0)
+        if out:
+            total -= 2
     return out
 
 
@@ -386,11 +451,17 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
     out: dict[str, Any] = {}
     for k, (lo, hi) in _HEALTH_NUM.items():
         v = raw.get(k)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
             continue
-        out[k] = max(lo, min(hi, float(v)))
+        try:
+            number = float(v)
+        except Exception:  # huge ints and hostile numeric subclasses
+            continue
+        if not math.isfinite(number):
+            continue
+        out[k] = max(lo, min(hi, number))
     st = raw.get("state")
-    if st in HEALTH_STATES:
+    if isinstance(st, str) and st in HEALTH_STATES:
         out["state"] = st
     aa = raw.get("active_agents")
     if isinstance(aa, int) and not isinstance(aa, bool):

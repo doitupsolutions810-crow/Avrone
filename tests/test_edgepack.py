@@ -1208,6 +1208,117 @@ def test_docker_runner_stop_retries_failed_outer_remove_without_reopening_admiss
     run(go())
 
 
+
+def test_docker_runner_cleans_owned_container_after_policy_verification_failure(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    original = fake.__call__
+
+    async def unsafe_network(argv, timeout):
+        result = await original(argv, timeout)
+        if argv[1] == "run" and result.exit_code == 0 and "--name" in argv:
+            fake.inspect_payloads[runner.container]["HostConfig"]["NetworkMode"] = "bridge"
+        return result
+
+    monkeypatch.setattr(runner, "_exec", unsafe_network)
+    with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
+        run(runner.start())
+    assert runner.container_id is None
+    assert runner.container not in fake.running
+    assert fake.rm_count(runner.container) == 1
+
+
+def test_docker_runner_does_not_clean_unowned_name_after_policy_failure(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    original = fake.__call__
+
+    async def stolen_owner(argv, timeout):
+        result = await original(argv, timeout)
+        if argv[1] == "run" and result.exit_code == 0 and "--name" in argv:
+            fake.inspect_payloads[runner.container]["Config"]["Labels"]["avrone.runner"] = "other-owner"
+            return CommandResult(result.cmd, 0, "malformed-id", "")
+        return result
+
+    monkeypatch.setattr(runner, "_exec", stolen_owner)
+    with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
+        run(runner.start())
+    assert runner.container in fake.running
+    assert fake.rm_count(runner.container) == 0
+
+
+def test_docker_runner_cleans_container_when_run_reports_failure_after_creation(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    original = fake.__call__
+
+    async def create_then_error(argv, timeout):
+        result = await original(argv, timeout)
+        if argv[1] == "run" and result.exit_code == 0 and "--name" in argv:
+            return CommandResult(result.cmd, 125, "", "wrapper failed after daemon create")
+        return result
+
+    monkeypatch.setattr(runner, "_exec", create_then_error)
+    with pytest.raises(RuntimeError, match="wrapper failed after daemon create"):
+        run(runner.start())
+    assert runner.container not in fake.running
+    assert fake.rm_count(runner.container) == 1
+
+
+def test_docker_runner_cancelled_start_cleans_verified_owned_container(tmp_path, monkeypatch):
+    async def go():
+        runner = DockerRunner(_settings(tmp_path, allow_network=False))
+        fake = FakeDocker()
+        inspect_entered, allow_inspect = asyncio.Event(), asyncio.Event()
+        inspect_count = [0]
+
+        async def slow_exec(argv, cmd, timeout, cwd=None, env=None):
+            if argv[1] == "inspect":
+                inspect_count[0] += 1
+                if inspect_count[0] == 1:
+                    inspect_entered.set()
+                    await allow_inspect.wait()
+            return await fake(argv, timeout)
+
+        monkeypatch.setattr(runner, "_exec", slow_exec)
+        task = asyncio.create_task(runner.start())
+        await inspect_entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert runner.container_id is None
+        assert runner.container not in fake.running
+        assert fake.rm_count(runner.container) == 1
+
+    run(go())
+
+
+def test_docker_runner_isolated_commands_use_pinned_image_after_tag_retarget(tmp_path, monkeypatch):
+    async def go():
+        monkeypatch.setenv("AVRONE_AGENT_DOCKER_ISOLATE", "1")
+        runner = DockerRunner(_settings(tmp_path, allow_network=False))
+        fake = FakeDocker()
+        seen = []
+
+        async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+            seen.append(argv)
+            if argv[1] == "run" and "--name" not in argv:
+                return CommandResult(cmd, 0, "", "")
+            return await fake(argv, timeout)
+
+        monkeypatch.setattr(runner, "_exec", fake_exec)
+        await runner.start()
+        pinned_image = runner.image_id
+        fake.image_id = "sha256:" + "b" * 64
+        await runner.run("echo isolated", cwd=agentfs.agent_dir(runner.workspace, "isolated"))
+        isolated = next(call for call in seen if call[1] == "run" and "--name" not in call)
+        assert pinned_image in isolated
+        assert fake.image_id not in isolated
+        await runner.stop()
+
+    run(go())
+
+
 def test_docker_runner_stop_without_verified_identity_never_removes_by_friendly_name(tmp_path, monkeypatch):
     runner = DockerRunner(_settings(tmp_path))
     seen = []

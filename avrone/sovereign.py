@@ -149,6 +149,72 @@ class DockerRunner(Runner):
         candidate = value.strip().lower()
         return candidate if re.fullmatch(r"[0-9a-f]{64}", candidate) else None
 
+    def _inspect_owned_container_id(self, stdout: str) -> str | None:
+        """Return a full ID only when inspect proves this runner instance owns the object."""
+        try:
+            payload = json.loads(stdout)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(payload, list) and len(payload) == 1:
+            payload = payload[0]
+        if not isinstance(payload, dict):
+            return None
+        config = payload.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        container_id = self._full_container_id(payload.get("Id"))
+        if (
+            container_id is None
+            or payload.get("Name") != f"/{self.container}"
+            or not isinstance(labels, dict)
+            or labels.get("avrone.runner") != self._owner_token
+        ):
+            return None
+        return container_id
+
+    async def _cleanup_failed_start(self, returned_id: str | None) -> bool:
+        """Clean a failed startup only after full inspect confirms this instance's owner token."""
+        targets: list[str] = []
+        if returned_id is not None:
+            targets.append(returned_id)
+        if self.container not in targets:
+            targets.append(self.container)
+        inspection_errors: list[str] = []
+        for target in targets:
+            inspected = await self._exec(
+                ["docker", "inspect", "-f", "{{json .}}", target],
+                "docker inspect failed runner for safe cleanup", 30,
+            )
+            if inspected.exit_code != 0:
+                detail = str(inspected.stderr or "").lower()
+                if "no such container" in detail or "no such object" in detail:
+                    continue
+                inspection_errors.append(
+                    str(inspected.stderr or "unknown Docker inspection error")[:200]
+                )
+                continue
+            owned_id = self._inspect_owned_container_id(inspected.stdout)
+            if owned_id is None:
+                # A valid-looking ID or a matching friendly name alone is not authority to rm.
+                continue
+            removed = await self._exec(
+                ["docker", "rm", "-f", owned_id], "docker rm failed runner by verified ID", 30
+            )
+            if removed.exit_code != 0:
+                detail = str(removed.stderr or "").lower()
+                if "no such container" in detail or "no such object" in detail:
+                    return True
+                raise RuntimeError(
+                    f"could not clean up verified runner container {owned_id}: "
+                    f"{str(removed.stderr or 'unknown Docker error')[:300]}"
+                )
+            return True
+        if inspection_errors:
+            raise RuntimeError(
+                "could not safely inspect failed runner container for cleanup: "
+                + "; ".join(inspection_errors)
+            )
+        return False
+
     def _inspect_started_container_id(
         self, stdout: str, *, expected_image_id: str, expected_container_id: str | None = None
     ) -> str | None:
@@ -224,6 +290,7 @@ class DockerRunner(Runner):
             await self._start_locked()
 
     async def _start_locked(self) -> None:
+        self.image_id = None
         self.workspace.mkdir(parents=True, exist_ok=True)
         image_result = await self._exec(
             ["docker", "image", "inspect", "--format", "{{.Id}}", self.s.docker_image],
@@ -242,43 +309,58 @@ class DockerRunner(Runner):
         if not self.s.allow_network:
             argv += ["--network", "none"]
         argv += [image_id, "sleep", "infinity"]
-        res = await self._exec(argv, " ".join(argv), 300)
-        if res.exit_code != 0:
-            raise RuntimeError(f"Could not start environment container: {res.stderr}")
+        returned_id: str | None = None
+        try:
+            res = await self._exec(argv, " ".join(argv), 300)
+            returned_id = self._full_container_id(res.stdout)
+            if res.exit_code != 0:
+                raise RuntimeError(f"Could not start environment container: {res.stderr}")
 
-        returned_id = self._full_container_id(res.stdout)
-        if returned_id is not None:
-            # Always inspect the exact object ID Docker returned, even when stdout looks
-            # syntactically valid. This prevents a wrapper from redirecting the runner to
-            # a different container with a valid but unrelated ID.
-            inspected = await self._exec(
-                ["docker", "inspect", "-f", "{{json .}}", returned_id],
-                "docker inspect runner by ID", 30,
-            )
-            container_id = (
-                self._inspect_started_container_id(
-                    inspected.stdout, expected_image_id=image_id, expected_container_id=returned_id
+            if returned_id is not None:
+                # Always inspect the exact object ID Docker returned, even when stdout looks
+                # syntactically valid. This prevents a wrapper from redirecting the runner to
+                # a different container with a valid but unrelated ID.
+                inspected = await self._exec(
+                    ["docker", "inspect", "-f", "{{json .}}", returned_id],
+                    "docker inspect runner by ID", 30,
                 )
-                if inspected.exit_code == 0 else None
-            )
-        else:
-            # stdout was truncated or malformed. Recover only from the unique friendly name
-            # when inspect proves the unguessable owner label and the exact runner policy.
-            inspected = await self._exec(
-                ["docker", "inspect", "-f", "{{json .}}", self.container],
-                "docker inspect runner by owned name", 30,
-            )
-            container_id = (
-                self._inspect_started_container_id(inspected.stdout, expected_image_id=image_id)
-                if inspected.exit_code == 0 else None
-            )
-        if container_id is None:
-            raise RuntimeError(
-                "Docker did not return a valid environment container ID and a matching owned container "
-                "could not be verified"
-            )
-        self.image_id = image_id
-        self.container_id = container_id
+                container_id = (
+                    self._inspect_started_container_id(
+                        inspected.stdout, expected_image_id=image_id, expected_container_id=returned_id
+                    )
+                    if inspected.exit_code == 0 else None
+                )
+            else:
+                # stdout was truncated or malformed. Recover only from the unique friendly name
+                # when inspect proves the unguessable owner label and the exact runner policy.
+                inspected = await self._exec(
+                    ["docker", "inspect", "-f", "{{json .}}", self.container],
+                    "docker inspect runner by owned name", 30,
+                )
+                container_id = (
+                    self._inspect_started_container_id(inspected.stdout, expected_image_id=image_id)
+                    if inspected.exit_code == 0 else None
+                )
+            if container_id is None:
+                raise RuntimeError(
+                    "Docker did not return a valid environment container ID and a matching owned container "
+                    "could not be verified"
+                )
+            self.image_id = image_id
+            self.container_id = container_id
+        except BaseException as start_error:
+            # Docker may have created the runner even when run reports an error, stdout is
+            # malformed, verification fails, or the caller is cancelled. Inspect by exact ID
+            # first, then the unique name; remove only when the owner label and full ID match.
+            cleanup_task = asyncio.create_task(self._cleanup_failed_start(returned_id))
+            try:
+                await asyncio.shield(cleanup_task)
+            except Exception as cleanup_error:  # noqa: BLE001 - retain both failure causes
+                if not isinstance(start_error, asyncio.CancelledError):
+                    raise RuntimeError(
+                        f"{start_error}; safe runner cleanup also failed: {cleanup_error}"
+                    ) from start_error
+            raise
 
     async def _finish_stop(self) -> None:
         current = asyncio.current_task()
@@ -375,7 +457,9 @@ class DockerRunner(Runner):
             # same hardening as the persistent agent home (cap_drop ALL, no-new-privileges,
             # mem/cpu/pids limits, --network none unless AVRONE_ALLOW_NETWORK)
             argv += agentcontainer.hardening_args(self.s.allow_network)
-            return argv + [self.s.docker_image, "bash", "-lc", cmd]
+            # Keep throwaway workers on the exact immutable image verified at runner startup.
+            # Mutable tags may be retargeted between runner startup and an isolated command.
+            return argv + [self.image_id or self.s.docker_image, "bash", "-lc", cmd]
         inner = agentfs.container_agent_path(self.workspace, agent_cwd)
         argv = ["docker", "exec", "-w", inner]
         for k, v in self.agent_env(agent_cwd, in_container=inner).items():

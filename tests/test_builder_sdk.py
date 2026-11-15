@@ -219,6 +219,72 @@ async def test_open_preserves_explicit_false_extras(monkeypatch):
     await sdk.close()
 
 
+@pytest.mark.parametrize("run_id", ["..", ".", "../escape", "a/b", "bad\\nid", "x" * 81])
+@pytest.mark.asyncio
+async def test_build_rejects_unsafe_run_identifiers_before_trinity_dispatch(run_id):
+    core = FakeCore()
+    sdk = BuilderAgentSDK(core)
+    with pytest.raises(ValueError, match="invalid run_id"):
+        await sdk.build("Run a task", run_id=run_id)
+    assert core.calls == []
+
+
+@pytest.mark.asyncio
+async def test_close_continues_remaining_cleanup_callbacks_after_one_fails():
+    calls = []
+
+    def first():
+        calls.append("first")
+
+    def broken():
+        calls.append("broken")
+        raise RuntimeError("cleanup transport failed")
+
+    async def last():
+        calls.append("last")
+
+    sdk = BuilderAgentSDK(FakeCore(), cleanups=[first, broken, last])
+    await sdk.close()
+    assert calls == ["last", "broken", "first"]
+    assert sdk.closed is True
+
+
+@pytest.mark.asyncio
+async def test_context_manager_closes_resources_when_body_raises():
+    calls = []
+
+    async def cleanup():
+        calls.append("closed")
+
+    sdk = BuilderAgentSDK(FakeCore(), cleanups=[cleanup])
+    with pytest.raises(RuntimeError, match="body failure"):
+        async with sdk:
+            raise RuntimeError("body failure")
+    assert calls == ["closed"]
+    assert sdk.closed is True
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_when_timeout_metadata_is_not_a_boolean():
+    sha = "8" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="looks passed", timed_out="false"),
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.commands[0]["timed_out"] is True
+    assert "1 of 1 checks failed" in evidence.reason
+
+
 @pytest.mark.asyncio
 async def test_verify_with_sha_and_passing_checks_is_verified():
     runner = FakeRunner([

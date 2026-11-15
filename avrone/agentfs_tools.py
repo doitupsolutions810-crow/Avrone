@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .agentfs import AgentFSError, confine, read_confined_bytes
+from .agentfs import AgentFSError, confine, read_confined_bytes, write_confined_file
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -116,10 +116,7 @@ def _rel(root: Path, p: Path) -> str:
 
 def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: bool = False,
                 tool: str = "fs_write") -> tuple[int, int, int]:
-    """Write `data` to `p` inside agent dir `root`, enforcing the per-file cap and dir quota.
-
-    Shared by fs_write and the unified write_file/edit_file. Returns (file bytes, dir usage,
-    quota); raises AgentFSError (audited as agentfs.denied) on any refusal."""
+    """Write through a pinned directory descriptor while enforcing per-file and dir quotas."""
     if p == root:
         raise AgentFSError("path must name a file")
     cap, quota = max_file_bytes(), quota_bytes()
@@ -128,52 +125,22 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="not a regular file")
             raise AgentFSError(f"{_rel(root, p)} is not a regular file")
         old = p.stat().st_size if p.exists() else 0
-        new_size = (old + len(data)) if append else len(data)
-        if new_size > cap:
-            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="file_cap",
-                   bytes=new_size, cap=cap)
-            raise AgentFSError(f"file would be {new_size} bytes; per-file cap is {cap} bytes")
-        usage = dir_usage(root)
-        projected = usage - old + new_size
+        projected = dir_usage(root) - old + (old + len(data) if append else len(data))
         if projected > quota:
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="quota",
-                   bytes=new_size, usage=usage, quota=quota)
+                   bytes=len(data), usage=projected, quota=quota)
             raise AgentFSError(f"agent dir quota exceeded: {projected} > {quota} bytes "
-                               f"(using {usage}); delete files with fs_delete first")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        # re-check after mkdir: an intermediate symlinked dir must not lead out
-        if not p.parent.resolve().is_relative_to(root):
-            raise AgentFSError("path escapes your agent dir")
-        # Never follow a symlink at the leaf: one planted (e.g. by the agent's own shell) between
-        # the checks above and the write, or at the predictable temp name, used to redirect the
-        # write outside the agent dir. O_NOFOLLOW refuses a symlinked leaf; O_EXCL a planted tmp.
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
+                               f"(using {projected - len(data)}); delete files with fs_delete first")
         try:
-            if append:
-                fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow, 0o600)
-                with os.fdopen(fd, "ab") as f:
-                    f.write(data)
-            else:
-                tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{threading.get_ident()}-{os.urandom(4).hex()}")
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
-                try:
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(data)
-                    os.replace(tmp, p)
-                except BaseException:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-                    raise
-        except OSError as e:
-            if p.is_symlink() or e.errno == errno.ELOOP:
-                _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="symlink")
-                raise AgentFSError(f"{_rel(root, p)} is not a regular file (symlink)") from None
+            new_size = write_confined_file(root, p, data, append=append, max_bytes=cap)
+        except AgentFSError as exc:
+            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="confined_write",
+                   bytes=len(data), reason_detail=str(exc)[:200])
             raise
+        usage = dir_usage(root)
     _audit(ctx, "agentfs.write", path=_rel(root, p), bytes=new_size, append=append,
-           usage=projected, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
-    return new_size, projected, quota
+           usage=usage, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
+    return new_size, usage, quota
 
 
 async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:

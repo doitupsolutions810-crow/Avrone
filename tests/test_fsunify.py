@@ -445,3 +445,76 @@ def test_is_agent_dir_rejects_symlinked_agents_root_and_noncanonical_parent(tmp_
     alias_root = normal_workspace / "agents-alias"
     alias_root.symlink_to(home.parent, target_is_directory=True)
     assert not agentfs.is_agent_dir(normal_workspace, alias_root / "worker")
+
+
+@pytest.mark.parametrize("tool,path", [
+    ("read_file", "nested/secret.txt"),
+    ("fs_read", "nested/secret.txt"),
+])
+def test_confined_reads_do_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monkeypatch, tool, path):
+    nested = env.dir / "nested"
+    nested.mkdir()
+    (nested / "secret.txt").write_text("agent-private")
+    outside = env.tmp / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("host-private")
+    moved = env.dir / "nested-original"
+
+    original_open_parent = agentfs._open_confined_parent
+    swapped = {"done": False}
+
+    def swap_after_pin(root, target, *, create_parents=False):
+        parent_fd, leaf = original_open_parent(root, target, create_parents=create_parents)
+        if not swapped["done"] and Path(target).name == "secret.txt":
+            nested.rename(moved)
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return parent_fd, leaf
+
+    monkeypatch.setattr(agentfs, "_open_confined_parent", swap_after_pin)
+    result = call(env, tool, path=path)
+    assert swapped["done"] is True
+    assert result == "agent-private"
+    assert (outside / "secret.txt").read_text() == "host-private"
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_confined_writes_do_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monkeypatch, shared):
+    root = env.ws if shared else env.dir
+    nested = root / "nested"
+    nested.mkdir()
+    outside = env.tmp / ("outside-shared" if shared else "outside-agent")
+    outside.mkdir()
+    (outside / "result.txt").write_text("host-original")
+    moved = root / "nested-original"
+    requested = "shared/nested/result.txt" if shared else "nested/result.txt"
+
+    original_open_parent = agentfs._open_confined_parent
+    swapped = {"done": False}
+
+    def swap_after_pin(root_arg, target, *, create_parents=False):
+        parent_fd, leaf = original_open_parent(root_arg, target, create_parents=create_parents)
+        if not swapped["done"] and Path(target).name == "result.txt":
+            nested.rename(moved)
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return parent_fd, leaf
+
+    monkeypatch.setattr(agentfs, "_open_confined_parent", swap_after_pin)
+    result = call(env, "write_file", path=requested, content="safe-agent-write")
+    assert swapped["done"] is True
+    assert result.startswith("wrote")
+    assert (moved / "result.txt").read_text() == "safe-agent-write"
+    assert (outside / "result.txt").read_text() == "host-original"
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_descriptor_write_enforces_file_limit_even_after_concurrent_file_growth(tmp_path, append):
+    from avrone.agentfs import write_confined_file
+
+    root = agentfs.agent_dir(tmp_path / "ws", "quota-race")
+    target = root / "limited.bin"
+    target.write_bytes(b"x" * 8)
+    with pytest.raises(agentfs.AgentFSError, match="limit"):
+        write_confined_file(root, target, b"y" * 8, append=append, max_bytes=12)
+    assert target.read_bytes() == b"x" * 8

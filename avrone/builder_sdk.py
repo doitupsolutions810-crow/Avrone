@@ -240,8 +240,15 @@ class BuilderAgentSDK:
             "git status --porcelain=v1 --untracked-files=all", timeout=20
         )
         exit_code = getattr(status, "exit_code", 1)
+        timed_out = getattr(status, "timed_out", None)
         stdout = getattr(status, "stdout", None)
-        if type(exit_code) is not int or exit_code != 0 or not isinstance(stdout, str):
+        if (
+            type(exit_code) is not int
+            or exit_code != 0
+            or type(timed_out) is not bool
+            or timed_out
+            or not isinstance(stdout, str)
+        ):
             raise RuntimeError("git status could not produce a trustworthy worktree snapshot")
         return stdout
 
@@ -272,10 +279,17 @@ class BuilderAgentSDK:
             sha_raw = getattr(sha_result, "stdout", "")
             sha = sha_raw.strip() if isinstance(sha_raw, str) else ""
             sha_exit = getattr(sha_result, "exit_code", 1)
-            if type(sha_exit) is int and sha_exit == 0 and _full_git_sha(sha):
+            sha_timed_out = getattr(sha_result, "timed_out", None)
+            if (
+                type(sha_exit) is int
+                and sha_exit == 0
+                and type(sha_timed_out) is bool
+                and not sha_timed_out
+                and _full_git_sha(sha)
+            ):
                 evidence.target_sha = sha.lower()
             else:
-                sha_error = "initial workspace SHA was unavailable or malformed"
+                sha_error = "initial workspace SHA was unavailable, timed out, or malformed"
         except Exception as exc:
             sha_error = f"initial workspace SHA read failed ({type(exc).__name__}: {exc})"[:500]
         expected_sha = self.policy.expected_sha.lower() if self.policy.expected_sha else None
@@ -346,7 +360,14 @@ class BuilderAgentSDK:
                 final_sha_raw = getattr(final_sha_result, "stdout", "")
                 final_sha = final_sha_raw.strip() if isinstance(final_sha_raw, str) else ""
                 final_sha_exit = getattr(final_sha_result, "exit_code", 1)
-                final_sha_ok = type(final_sha_exit) is int and final_sha_exit == 0 and _full_git_sha(final_sha)
+                final_sha_timed_out = getattr(final_sha_result, "timed_out", None)
+                final_sha_ok = (
+                    type(final_sha_exit) is int
+                    and final_sha_exit == 0
+                    and type(final_sha_timed_out) is bool
+                    and not final_sha_timed_out
+                    and _full_git_sha(final_sha)
+                )
             except Exception as exc:
                 final_sha, final_sha_ok = "", False
                 sha_error = type(exc).__name__

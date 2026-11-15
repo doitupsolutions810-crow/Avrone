@@ -38,6 +38,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Iterable
 

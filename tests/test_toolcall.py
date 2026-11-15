@@ -354,10 +354,14 @@ def test_parse_action_contract_rejects_duplicate_contract_lines():
         parse_action_contract(one + "\n" + one)
 
 
-def test_required_action_contract_executes_before_first_llm_turn_and_blocks_followups(tmp_path):
+@pytest.mark.parametrize("attempted_action", [
+    '{"tool":"think","args":{"thought":"loop instead of executing"}}',
+    '{"tools":[{"tool":"echo","args":{"text":"extra"}},{"tool":"think","args":{"thought":"also extra"}}]}',
+])
+def test_required_action_contract_executes_before_first_llm_turn_and_blocks_followups(tmp_path, attempted_action):
     log = []
     llm = ScriptLLM([
-        '{"tool":"echo","args":{"text":"model-attempted-extra-tool"}}',
+        attempted_action,
         '{"final":"reported from actual tool result"}',
     ])
     core = _core(tmp_path, llm, tools=_reg(log), steps=4)
@@ -396,6 +400,32 @@ def test_required_action_contract_allows_configured_followup_calls(tmp_path):
     assert log == [("echo", "required"), ("echo", "followup")]
     calls = [e for e in core.codex.replay("action-contract-followup") if e["kind"] == "tool.call"]
     assert [e["data"]["args"]["text"] for e in calls] == ["required", "followup"]
+
+
+@pytest.mark.parametrize("payload", [
+    '{"first_action":{"tool":"echo","args":{"nested":' + "[" * 1500 + "0" + "]" * 1500 + '},"allow_followup_calls":false}',
+])
+def test_parse_action_contract_rejects_pathological_json_nesting(payload):
+    from avrone.trinity import parse_action_contract
+
+    with pytest.raises(ValueError, match="invalid AVRONE_ACTION_CONTRACT JSON"):
+        parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
+
+
+def test_parse_action_contract_rejects_oversized_payload_before_json_decode():
+    from avrone.trinity import parse_action_contract
+
+    payload = " " * 100_001
+    with pytest.raises(ValueError, match="100000-character limit"):
+        parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
+
+
+def test_parse_action_contract_rejects_non_standard_json_constants():
+    from avrone.trinity import parse_action_contract
+
+    payload = '{"first_action":{"tool":"echo","args":{"value":NaN}},"allow_followup_calls":false}'
+    with pytest.raises(ValueError, match="non-standard JSON constant"):
+        parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
 
 
 def test_invalid_required_action_contract_fails_before_llm_or_tool_execution(tmp_path):

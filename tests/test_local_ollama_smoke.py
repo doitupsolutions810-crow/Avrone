@@ -440,6 +440,15 @@ def test_smoke_verifier_rejects_malformed_docker_ids(monkeypatch):
         smoke.inspect_agent_homes("nonce", {"solver-a": {"content": "x\\n", "sha256": "0" * 64}})
 
 
+def test_live_smoke_prompt_unambiguously_requires_only_shell():
+    cmd = "printf proof > marker.txt && pwd && sha256sum -- marker.txt"
+    task = smoke.build_smoke_task(cmd)
+    assert "exactly two independent workers" in task
+    assert "first and only tool call must be shell" in task
+    assert "Do not call think or any preparatory/non-shell tool" in task
+    assert task.count(cmd) == 1
+
+
 def test_worker_prompt_gives_explicit_tool_actions_priority_over_setup_habits():
     from avrone.trinity import WORKER_PROMPT
     assert "overrides every general workflow habit" in WORKER_PROMPT
@@ -470,6 +479,7 @@ def test_live_smoke_requires_exactly_two_shell_calls_and_results():
     ("extra_call", "exactly two total tool.call"),
     ("preparatory_call", "exactly two total tool.call"),
     ("wrong_tool", "only shell is permitted"),
+    ("think_tool", "only shell is permitted"),
     ("wrong_command", "exact approved shell command"),
     ("unspawned_caller", "does not belong"),
     ("missing_result", "exactly two total tool.result"),
@@ -493,8 +503,8 @@ def test_live_smoke_rejects_extra_or_mismatched_tool_events(mutation, expected_e
     if mutation in {"extra_call", "preparatory_call"}:
         tool = "skill_list" if mutation == "preparatory_call" else "shell"
         calls.append({"agent": "WorkerA-1", "data": {"tool": tool, "args": {"cmd": cmd}}})
-    elif mutation == "wrong_tool":
-        calls[0]["data"]["tool"] = "skill_list"
+    elif mutation in {"wrong_tool", "think_tool"}:
+        calls[0]["data"]["tool"] = "think" if mutation == "think_tool" else "skill_list"
     elif mutation == "wrong_command":
         calls[0]["data"]["args"]["cmd"] = "echo fabricated"
     elif mutation == "unspawned_caller":

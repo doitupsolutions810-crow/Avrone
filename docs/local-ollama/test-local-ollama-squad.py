@@ -362,6 +362,8 @@ def build_smoke_task(shell_command: str) -> str:
         "own private /agent directories.\n"
         "AVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
     )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base-url", default=os.environ.get("AVRONE_LOCAL_BASE_URL", "http://127.0.0.1:8710"))

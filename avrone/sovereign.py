@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -65,6 +66,19 @@ class Runner:
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
 
+    def _effective_timeout(self, timeout: int | float | None) -> int | float:
+        """Resolve the default while rejecting ambiguous or unsafe timeout values."""
+        selected = self.s.command_timeout if timeout is None else timeout
+        if isinstance(selected, bool) or not isinstance(selected, (int, float)):
+            raise ValueError("timeout must be a non-negative finite number of seconds")
+        try:
+            finite = math.isfinite(selected)
+        except (OverflowError, TypeError, ValueError):
+            finite = False
+        if not finite or selected < 0:
+            raise ValueError("timeout must be a non-negative finite number of seconds")
+        return selected
+
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         raise NotImplementedError
 
@@ -110,7 +124,7 @@ class LocalRunner(Runner):
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
-        effective_timeout = self.s.command_timeout if timeout is None else timeout
+        effective_timeout = self._effective_timeout(timeout)
         if agent_cwd is None:  # non-agent command: unchanged, runs at the workspace root
             return await self._exec(
                 ["bash", "-lc", cmd], cmd, effective_timeout, cwd=self.workspace
@@ -482,6 +496,7 @@ class DockerRunner(Runner):
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
+        effective_timeout = self._effective_timeout(timeout)
         async with self._state_lock:
             if self._closing or self._closed:
                 raise RuntimeError("Docker runner is closing or stopped")
@@ -490,7 +505,6 @@ class DockerRunner(Runner):
                 raise RuntimeError("Docker runner must be started and have a verified container ID before commands")
             self._active_runs += 1
             self._runs_drained.clear()
-        effective_timeout = self.s.command_timeout if timeout is None else timeout
         try:
             if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
                 # The outer lease accounts for shutdown; the pool lease protects the

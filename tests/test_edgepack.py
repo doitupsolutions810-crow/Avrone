@@ -2943,6 +2943,21 @@ def test_local_runner_preserves_explicit_zero_timeout(tmp_path, monkeypatch):
     assert seen == [0]
 
 
+@pytest.mark.parametrize("timeout", [True, -1, float("nan"), float("inf"), "5", object()])
+def test_local_runner_rejects_invalid_timeouts_before_exec(tmp_path, monkeypatch, timeout):
+    runner = LocalRunner(_settings(tmp_path))
+    calls = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        calls.append(timeout)
+        return CommandResult(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(ValueError, match="non-negative finite"):
+        run(runner.run("true", timeout=timeout))
+    assert calls == []
+
+
 def test_docker_runner_preserves_explicit_zero_timeout(tmp_path, monkeypatch):
     runner = DockerRunner(_settings(tmp_path))
     runner.container_id = "a" * 64
@@ -2955,6 +2970,26 @@ def test_docker_runner_preserves_explicit_zero_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_exec", fake_exec)
     run(runner.run("true", timeout=0))
     assert seen == [0]
+
+
+@pytest.mark.parametrize("timeout", [True, -1, float("nan"), float("inf"), "5", object()])
+def test_docker_runner_rejects_invalid_timeouts_without_leaking_active_run(
+    tmp_path, monkeypatch, timeout
+):
+    runner = DockerRunner(_settings(tmp_path))
+    runner.container_id = "a" * 64
+    calls = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        calls.append(timeout)
+        return CommandResult(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(ValueError, match="non-negative finite"):
+        run(runner.run("true", timeout=timeout))
+    assert calls == []
+    assert runner._active_runs == 0
+    assert runner._runs_drained.is_set()
 
 
 def test_pool_run_argv_accepts_only_the_validated_agent_home(tmp_path):

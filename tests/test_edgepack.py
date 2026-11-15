@@ -2627,3 +2627,40 @@ def test_pool_idle_reap_retains_home_until_timeout_removal_is_confirmed(tmp_path
     assert name not in fake.running  # Docker may have completed the operation despite the timeout
     assert run(pool.reap_idle(now=now[0])) == [name]
     assert name not in pool.homes
+
+@pytest.mark.parametrize("timeout_metadata", [True, "false", 0, None])
+def test_pool_does_not_adopt_valid_container_when_inspect_timeout_metadata_is_ambiguous(
+    tmp_path, timeout_metadata
+):
+    fake = FakeDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "valid-but-ambiguous")
+    name = ac.container_name("edge", home.name)
+    argv = ac.persistent_run_argv(
+        name, home, fake.image_id, False, agent_id=home.name
+    )
+    container_id = fake.seed(argv)
+    valid_json = json.dumps(fake.inspect_payloads[name])
+
+    class AmbiguousInspectResult:
+        exit_code = 0
+        stdout = valid_json
+        stderr = ""
+
+        def __init__(self, timed_out):
+            if timed_out is not None:
+                self.timed_out = timed_out
+
+    class InspectFault:
+        async def __call__(self, command, timeout):
+            if len(command) > 1 and command[1] == "inspect" and command[-1] == name:
+                return AmbiguousInspectResult(timeout_metadata)
+            return await fake(command, timeout)
+
+    pool = ac.AgentContainerPool(InspectFault(), "img", False, node="edge")
+    with pytest.raises(RuntimeError, match="could not inspect agent container"):
+        run(pool.ensure(home))
+    assert fake.container_ids[name] == container_id
+    assert name in fake.running
+    assert fake.rm_count(name) == 0
+    assert not any(command[1] == "run" for command in fake.calls if len(command) > 1)
+    assert pool.homes == {}

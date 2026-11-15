@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from plugins import platform_bridge as bridge
+from tests.test_platform_bridge import _load_bridge
 
 
 def run(coro):
@@ -29,6 +29,7 @@ def configure(monkeypatch):
 
 
 def test_bridge_rejects_declared_oversized_body_before_reading(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
 
     class NeverRead(httpx.AsyncByteStream):
@@ -62,6 +63,7 @@ def test_bridge_rejects_declared_oversized_body_before_reading(monkeypatch):
 
 
 def test_bridge_bounds_chunked_body_without_content_length(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
 
     class Oversized(httpx.AsyncByteStream):
@@ -88,9 +90,9 @@ def test_bridge_bounds_chunked_body_without_content_length(monkeypatch):
 
 
 def test_bridge_accepts_exact_response_size_boundary(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
-    payload = json.dumps({"value": "x" * (bridge.MAX_RESPONSE_BYTES - 14)}).encode()
-    payload = payload[:bridge.MAX_RESPONSE_BYTES - 1] + b"}"
+    payload = json.dumps({"value": "x" * (bridge.MAX_RESPONSE_BYTES - 12)}).encode()
     assert len(payload) == bridge.MAX_RESPONSE_BYTES
 
     install_transport(monkeypatch, lambda request: httpx.Response(200, content=payload))
@@ -100,6 +102,7 @@ def test_bridge_accepts_exact_response_size_boundary(monkeypatch):
 
 
 def test_bridge_rejects_compressed_response_without_reading(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
 
     class NeverRead(httpx.AsyncByteStream):
@@ -121,6 +124,7 @@ def test_bridge_rejects_compressed_response_without_reading(monkeypatch):
 
 
 def test_bridge_refuses_redirect_without_forwarding_secret(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
     seen = []
 
@@ -138,6 +142,7 @@ def test_bridge_refuses_redirect_without_forwarding_secret(monkeypatch):
 
 @pytest.mark.parametrize("content_length", ["-1", "invalid", "1.5"])
 def test_bridge_rejects_malformed_content_length(monkeypatch, content_length):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
 
     class NeverRead(httpx.AsyncByteStream):
@@ -159,6 +164,7 @@ def test_bridge_rejects_malformed_content_length(monkeypatch, content_length):
 
 
 def test_bridge_preserves_error_status_without_unbounded_error_body(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
     install_transport(monkeypatch, lambda request: httpx.Response(
         503, json={"error": "maintenance", "details": "retry later"}
@@ -170,6 +176,7 @@ def test_bridge_preserves_error_status_without_unbounded_error_body(monkeypatch)
 
 
 def test_bridge_returns_bounded_text_for_non_json_success(monkeypatch):
+    _registry, bridge = _load_bridge()
     configure(monkeypatch)
     install_transport(monkeypatch, lambda request: httpx.Response(
         200, content=b"\xff" + b"x" * 40

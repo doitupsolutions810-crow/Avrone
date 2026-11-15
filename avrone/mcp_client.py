@@ -683,6 +683,8 @@ class MCPClient:
             raise
         async with self._call_lock:
             self._closed = True
+            if self._close_task is current:
+                self._close_task = None
 
     async def connect(self) -> None:
         try:
@@ -803,6 +805,8 @@ class MCPClient:
 
     async def close(self) -> None:
         async with self._call_lock:
+            if self._closed:
+                return
             self._closing = True
             if self._close_task is None:
                 self._close_task = asyncio.create_task(self._finish_close())

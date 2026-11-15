@@ -2475,3 +2475,33 @@ async def test_docker_runner_holds_lease_while_exec_is_in_flight(tmp_path, monke
     assert pool.homes[name].active == 0
     now[0] = 161.0
     assert await pool.reap_idle(now=now[0]) == [name]
+
+@pytest.mark.parametrize("invalid", [0, 1, "false", "true", None, [], {}])
+def test_container_network_policy_requires_explicit_boolean_at_argv_boundary(invalid, tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    home = agentfs.agent_dir(tmp_path / "ws", "network-worker")
+    with pytest.raises(ValueError, match="allow_network must be a boolean"):
+        ac.hardening_args(invalid)
+    with pytest.raises(ValueError, match="allow_network must be a boolean"):
+        ac.persistent_run_argv("avrone-agent-edge-network-worker", home, "img", invalid, agent_id="network-worker")
+
+
+@pytest.mark.parametrize("invalid", [0, 1, "false", "true", None, [], {}])
+def test_container_pool_rejects_non_boolean_network_policy_before_use(invalid):
+    with pytest.raises(ValueError, match="allow_network must be a boolean"):
+        ac.AgentContainerPool(FakeDocker(), "img", invalid, node="edge")
+
+
+@pytest.mark.parametrize("invalid", [0, 1, "false", "true", None, [], {}])
+def test_existing_container_inspector_fails_closed_on_non_boolean_network_policy(invalid, tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    home = agentfs.agent_dir(tmp_path / "ws", "strict-network-worker")
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-strict-network-worker", home, "img", False, agent_id="strict-network-worker"
+    )
+    payload = _fake_inspect_from_run(argv, "a" * 64)
+    ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", invalid)
+    assert ok is False and owned is False
+    assert "allow_network policy must be a boolean" in detail

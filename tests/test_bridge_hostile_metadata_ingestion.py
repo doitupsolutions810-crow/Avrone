@@ -86,3 +86,29 @@ def test_randomized_metadata_is_json_serializable_without_agent_crash():
         assert record["text"] == f"valid-{i}"
         assert math.isfinite(record["ts"])
         json.dumps(record, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+class HostileEquality:
+    def __eq__(self, other):
+        raise RuntimeError("untrusted equality must never execute")
+
+
+class CrashingInt(int):
+    def __str__(self):
+        raise RuntimeError("injected integer stringification failure")
+
+
+def test_invalid_id_never_executes_hostile_equality():
+    record, error = bm.normalize_blackboard_post({
+        "id": HostileEquality(), "kind": "finding", "text": "valid",
+    })
+    assert record is None
+    assert error == "bad post id"
+
+
+def test_nested_integer_stringifier_cannot_crash_public_json_projection():
+    post = {"id": "stored", "kind": "finding", "text": "safe",
+            "payload": {"fault": CrashingInt(9), "next": "preserved"}}
+    rendered = bm.public_post(post)
+    assert rendered["payload"] == {"fault": 0, "next": "preserved"}
+    json.dumps(rendered, ensure_ascii=False, allow_nan=False).encode("utf-8")

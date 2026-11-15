@@ -461,6 +461,48 @@ def test_required_action_contract_fails_closed_when_precheck_rejects_tool_or_arg
     assert not any(e["kind"] == "tool.call" for e in events)
 
 
+def test_squad_propagates_original_action_contract_to_both_workers(tmp_path, monkeypatch):
+    class SquadLLM:
+        async def chat(self, messages, **kwargs):
+            session = kwargs.get("session", "")
+            if session.endswith(":planner"):
+                return json.dumps({"subtasks": [
+                    {"role": "WorkerA", "focus": "Investigate first angle."},
+                    {"role": "WorkerB", "focus": "Investigate second angle."},
+                ]})
+            if session.endswith(":WorkerA-1"):
+                return '{"final":"worker A reports the actual tool result"}'
+            if session.endswith(":WorkerB-2"):
+                return '{"final":"worker B reports the actual tool result"}'
+            if kwargs.get("lead"):
+                return "Merged the two verified worker reports."
+            return '{"final":"unexpected session"}'
+
+    monkeypatch.setenv("AVRONE_BRIDGE_ROUNDS", "0")
+    monkeypatch.setenv("AVRONE_LESSONS", "off")
+    log = []
+    core = _core(tmp_path, SquadLLM(), tools=_reg(log), steps=4)
+    core._lessons_block = lambda *_: ""
+    core._distill = lambda *_: []
+    contract = {
+        "first_action": {"tool": "echo", "args": {"text": "squad-contract-proof"}},
+        "allow_followup_calls": False,
+    }
+    task = "Run the two-worker verification.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+
+    result = run(core.squad(task, n=2, run_id="squad-action-contract", dispatch="local"))
+
+    assert result["answer"] == "Merged the two verified worker reports."
+    assert log == [("echo", "squad-contract-proof"), ("echo", "squad-contract-proof")]
+    events = core.codex.replay("squad-action-contract")
+    calls = [e for e in events if e["kind"] == "tool.call"]
+    assert len(calls) == 2
+    assert {e["agent"] for e in calls} == {"WorkerA-1", "WorkerB-2"}
+    assert all(e["data"]["tool"] == "echo" for e in calls)
+    starts = [e for e in events if e["kind"] == "action.contract.start"]
+    assert {e["agent"] for e in starts} == {"WorkerA-1", "WorkerB-2"}
+
+
 def test_action_contract_marker_in_planner_focus_is_not_trusted(tmp_path):
     log = []
     llm = ScriptLLM(['{"final":"ordinary task complete"}'])

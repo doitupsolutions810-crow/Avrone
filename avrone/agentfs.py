@@ -268,7 +268,7 @@ def write_confined_file(root: Path, target: Path, data: bytes, *, append: bool =
         size = len(data)
         if max_bytes is not None and size > max_bytes:
             raise AgentFSError(f"file would exceed the {max_bytes}-byte limit")
-        temp = f".avrone-write-{os.getpid()}-{threading.get_ident()}-{os.urandom(8).hex()}"
+        temp = f".avrone-write-{os.getpid()}-{os.urandom(16).hex()}"
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow |
                      getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=parent_fd)
         try:

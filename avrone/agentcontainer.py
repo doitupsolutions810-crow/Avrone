@@ -358,7 +358,19 @@ def _private_namespace(value: Any) -> bool:
     return value is None or value == "" or value == "private"
 
 
+def _docker_succeeded(result: Any) -> bool:
+    """Accept success only with an exact integer zero and explicit no-timeout result."""
+    exit_code = getattr(result, "exit_code", None)
+    timed_out = getattr(result, "timed_out", None)
+    return type(exit_code) is int and exit_code == 0 and type(timed_out) is bool and not timed_out
+
+
 def _docker_not_found(result: Any) -> bool:
+    """Treat absence as confirmed only for an explicit nonzero, non-timeout Docker response."""
+    exit_code = getattr(result, "exit_code", None)
+    timed_out = getattr(result, "timed_out", None)
+    if type(exit_code) is not int or exit_code == 0 or type(timed_out) is not bool or timed_out:
+        return False
     detail = str(getattr(result, "stderr", "") or "").lower()
     return "no such object" in detail or "no such container" in detail
 
@@ -455,7 +467,7 @@ class AgentContainerPool:
         result = await self._exec(
             ["docker", "image", "inspect", "--format", "{{.Id}}", self.image], 30
         )
-        if getattr(result, "exit_code", 1) != 0:
+        if not _docker_succeeded(result):
             detail = str(getattr(result, "stderr", "") or "")[:300]
             raise RuntimeError(
                 f"could not resolve configured Docker image {self.image!r}: "
@@ -480,7 +492,7 @@ class AgentContainerPool:
         inspection_errors: list[str] = []
         for target in targets:
             inspected = await self._exec(inspect_argv(target), 30)
-            if getattr(inspected, "exit_code", 1) != 0:
+            if not _docker_succeeded(inspected):
                 if _docker_not_found(inspected):
                     continue
                 inspection_errors.append(
@@ -512,7 +524,7 @@ class AgentContainerPool:
                 # creation token and must survive cleanup from this attempt.
                 continue
             removed = await self._exec(rm_argv(observed_id), 30)
-            if (getattr(removed, "exit_code", 1) != 0 and not _docker_not_found(removed)):
+            if not _docker_succeeded(removed) and not _docker_not_found(removed):
                 raise RuntimeError(
                     f"could not clean up failed agent container {name}: "
                     f"{str(getattr(removed, 'stderr', '') or 'unknown Docker error')[:300]}"
@@ -549,8 +561,7 @@ class AgentContainerPool:
                 # correctly configured container. The daemon may have restarted, an operator
                 # may have removed it, or an external actor may have changed its policy.
                 inspected_home = await self._exec(inspect_argv(name), 30)
-                home_code = getattr(inspected_home, "exit_code", 1)
-                if home_code == 0:
+                if _docker_succeeded(inspected_home):
                     home_stdout = str(getattr(inspected_home, "stdout", ""))
                     observed_id = _inspect_container_id(home_stdout)
                     if observed_id != home.container_id:
@@ -576,8 +587,7 @@ class AgentContainerPool:
                             f"cached agent container {name} became non-compliant while leased: {home_reason}"
                         )
                     removed = await self._exec(rm_argv(home.container_id), 30)
-                    if (getattr(removed, "exit_code", 1) != 0
-                            and not _docker_not_found(removed)):
+                    if not _docker_succeeded(removed) and not _docker_not_found(removed):
                         raise RuntimeError(f"could not remove non-compliant agent container {name}")
                     cached_home_removed_or_missing = True
                 elif _docker_not_found(inspected_home):
@@ -590,8 +600,7 @@ class AgentContainerPool:
                             "wait for active commands to drain before recreating it"
                         )
                     removed = await self._exec(rm_argv(home.container_id), 30)
-                    if (getattr(removed, "exit_code", 1) != 0
-                            and not _docker_not_found(removed)):
+                    if not _docker_succeeded(removed) and not _docker_not_found(removed):
                         raise RuntimeError(f"could not remove disappeared agent container {name}")
                     cached_home_removed_or_missing = True
                 else:
@@ -618,8 +627,8 @@ class AgentContainerPool:
                 code = 1
             else:
                 inspected = await self._exec(inspect_argv(name), 30)
-                code = getattr(inspected, "exit_code", 1)
-                if code == 0:
+                inspect_ok = _docker_succeeded(inspected)
+                if inspect_ok:
                     inspected_stdout = str(getattr(inspected, "stdout", ""))
                     compatible, owned, reason = _inspect_matches_policy(
                         inspected_stdout, d, image_id, self.allow_network
@@ -634,14 +643,13 @@ class AgentContainerPool:
                         container_id = inspected_id
                     else:
                         removed = await self._exec(rm_argv(inspected_id), 30)
-                        if (getattr(removed, "exit_code", 1) != 0
-                                and not _docker_not_found(removed)):
+                        if not _docker_succeeded(removed) and not _docker_not_found(removed):
                             raise RuntimeError(f"could not remove non-compliant agent container {name}")
                 elif not _docker_not_found(inspected):
                     detail = str(getattr(inspected, "stderr", "") or "")[:300]
                     raise RuntimeError(f"could not inspect agent container {name}: {detail or 'unknown Docker error'}")
 
-            if code != 0 or not compatible:
+            if not inspect_ok or not compatible:
                 creation_token = uuid.uuid4().hex
                 created_id: str | None = None
                 try:
@@ -649,7 +657,7 @@ class AgentContainerPool:
                         self.run_argv(d, image_id, creation_token=creation_token), 300
                     )
                     created_id = str(getattr(created, "stdout", "") or "").strip().lower()
-                    if getattr(created, "exit_code", 1) != 0:
+                    if not _docker_succeeded(created):
                         raise RuntimeError(
                             f"could not start agent container {name}: "
                             f"{str(getattr(created, 'stderr', ''))[:300]}"
@@ -662,10 +670,10 @@ class AgentContainerPool:
                     verify_stdout = str(getattr(verify, "stdout", ""))
                     verified, _owned, reason = _inspect_matches_policy(
                         verify_stdout, d, image_id, self.allow_network
-                    ) if getattr(verify, "exit_code", 1) == 0 else (False, False, "container not found after start")
+                    ) if _docker_succeeded(verify) else (False, False, "container not found or inspect did not complete successfully")
                     verified_id = (
                         _inspect_container_id(verify_stdout)
-                        if getattr(verify, "exit_code", 1) == 0 else None
+                        if _docker_succeeded(verify) else None
                     )
                     try:
                         verify_payload = json.loads(verify_stdout)
@@ -751,8 +759,7 @@ class AgentContainerPool:
             for home in stale:
                 try:
                     result = await self._exec(rm_argv(home.container_id), 30)
-                    if (getattr(result, "exit_code", 1) != 0
-                            and not _docker_not_found(result)):
+                    if not _docker_succeeded(result) and not _docker_not_found(result):
                         log.warning("Docker refused to reap idle agent container %s", home.name)
                         continue
                     # Keep the ownership record until Docker confirms removal (or says the
@@ -792,8 +799,7 @@ class AgentContainerPool:
                 for name, home in list(self.homes.items()):
                     try:
                         result = await self._exec(rm_argv(home.container_id), 30)
-                        if (getattr(result, "exit_code", 1) != 0
-                                and not _docker_not_found(result)):
+                        if not _docker_succeeded(result) and not _docker_not_found(result):
                             failed.append(name)
                             log.error("Docker refused to remove managed agent container %s", name)
                             continue

@@ -656,3 +656,49 @@ def test_local_mcp_credentials_and_sandbox_profile_are_git_ignored():
     assert "mcp.json" in ignore
     assert "docs/local-ollama/local-ollama-sandbox.env" in ignore
 
+@pytest.mark.parametrize("bad_agent", [None, 7, [], {}])
+def test_live_smoke_rejects_non_string_tool_call_agent_identities(bad_agent):
+    cmd = "printf proof > marker.txt && pwd && sha256sum -- marker.txt"
+    spawns = [
+        {"agent": "WorkerA-1", "data": {"agent_id": "worker-a"}},
+        {"agent": "WorkerB-2", "data": {"agent_id": "worker-b"}},
+    ]
+    calls = [
+        {"agent": bad_agent, "data": {"tool": "shell", "args": {"cmd": cmd}}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+    ]
+    results = [
+        {"agent": "WorkerA-1", "data": {"tool": "shell", "output": "sha256 output A"}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "output": "sha256 output B"}},
+    ]
+    with pytest.raises(RuntimeError, match="does not belong"):
+        smoke._validate_worker_tool_events(spawns, calls, results, cmd)
+
+
+@pytest.mark.parametrize("bad_agent", [None, 7, [], {}])
+def test_live_smoke_rejects_non_string_tool_result_agent_identities(bad_agent):
+    cmd = "printf proof > marker.txt && pwd && sha256sum -- marker.txt"
+    spawns = [
+        {"agent": "WorkerA-1", "data": {"agent_id": "worker-a"}},
+        {"agent": "WorkerB-2", "data": {"agent_id": "worker-b"}},
+    ]
+    calls = [
+        {"agent": "WorkerA-1", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "args": {"cmd": cmd}}},
+    ]
+    results = [
+        {"agent": bad_agent, "data": {"tool": "shell", "output": "sha256 output A"}},
+        {"agent": "WorkerB-2", "data": {"tool": "shell", "output": "sha256 output B"}},
+    ]
+    with pytest.raises(RuntimeError, match="does not belong"):
+        smoke._validate_worker_tool_events(spawns, calls, results, cmd)
+
+
+@pytest.mark.parametrize("bad_agent", [None, 7, [], {}])
+def test_event_agent_accessor_never_returns_non_string_identities(bad_agent):
+    assert smoke._event_agent({"agent": bad_agent}) is None
+
+
+def test_event_agent_accessor_preserves_non_empty_string_identity():
+    assert smoke._event_agent({"agent": "WorkerA-1"}) == "WorkerA-1"
+

@@ -53,6 +53,11 @@ def _event_data(event: dict[str, Any]) -> dict[str, Any]:
     value = event.get("data")
     return value if isinstance(value, dict) else {}
 
+def _event_agent(event: dict[str, Any]) -> str | None:
+    """Return only canonical string event identities; malformed values are never hash keys."""
+    value = event.get("agent")
+    return value if isinstance(value, str) and value.strip() else None
+
 
 def request_json(url: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> Any:
     if not _is_loopback_http_url(url):
@@ -394,9 +399,9 @@ def _validate_worker_tool_events(
     for event in calls:
         if not isinstance(event, dict):
             raise RuntimeError("A tool.call event is malformed.")
-        agent = event.get("agent")
+        agent = _event_agent(event)
         data = event.get("data")
-        if agent not in expected_agents or not isinstance(data, dict):
+        if agent is None or agent not in expected_agents or not isinstance(data, dict):
             raise RuntimeError("A tool.call event does not belong to one of the two spawned workers.")
         if agent in calls_by_agent:
             raise RuntimeError(f"Worker {agent} issued more than one tool call.")
@@ -411,9 +416,9 @@ def _validate_worker_tool_events(
     for event in results:
         if not isinstance(event, dict):
             raise RuntimeError("A tool.result event is malformed.")
-        agent = event.get("agent")
+        agent = _event_agent(event)
         data = event.get("data")
-        if agent not in expected_agents or not isinstance(data, dict):
+        if agent is None or agent not in expected_agents or not isinstance(data, dict):
             raise RuntimeError("A tool.result event does not belong to one of the two spawned workers.")
         if agent in results_by_agent:
             raise RuntimeError(f"Worker {agent} produced more than one tool result.")
@@ -497,8 +502,9 @@ def main() -> int:
     calls = [e for e in events if e.get("kind") == "tool.call"]
     results = [e for e in events if e.get("kind") == "tool.result"]
     spawn_by_agent = {
-        e.get("agent"): _event_data(e).get("agent_id")
-        for e in spawns
+        agent: _event_data(event).get("agent_id")
+        for event in spawns
+        if (agent := _event_agent(event)) is not None
     }
     diagnostic = {
         "status": "DIAGNOSTIC",
@@ -509,13 +515,13 @@ def main() -> int:
         "event_counts": {kind: sum(1 for e in events if e.get("kind") == kind)
                          for kind in sorted({str(e.get("kind")) for e in events})},
         "spawns": [
-            {"agent": e.get("agent"), "agent_id": spawn_by_agent.get(e.get("agent")),
+            {"agent": _event_agent(e), "agent_id": spawn_by_agent.get(_event_agent(e)),
              "role": _event_data(e).get("role"),
              "focus": str(_event_data(e).get("focus", ""))[:350]}
             for e in spawns
         ],
         "tool_calls": [
-            {"agent": e.get("agent"), "tool": _event_data(e).get("tool"),
+            {"agent": _event_agent(e), "tool": _event_data(e).get("tool"),
              "step": _event_data(e).get("step"),
              "args_keys": sorted(_event_data(e).get("args", {}).keys())
                           if isinstance(_event_data(e).get("args"), dict) else []}
@@ -555,7 +561,7 @@ def main() -> int:
         if not agent_id:
             raise RuntimeError(f"Worker {agent} has no stable agent_id in its spawn event.")
         expected_artifacts[agent_id] = {"sha256": expected_sha, "content": marker_content}
-    errors = [e for e in events if e.get("kind") == "error" and (not e.get("agent") or e.get("agent") in shell_agents)]
+    errors = [e for e in events if e.get("kind") == "error" and (_event_agent(e) is None or _event_agent(e) in shell_agents)]
     if errors:
         raise RuntimeError(f"Worker errors were recorded: {errors[:3]}")
     containers = inspect_agent_homes(nonce, expected_artifacts)

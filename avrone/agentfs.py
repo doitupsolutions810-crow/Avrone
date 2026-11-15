@@ -229,6 +229,35 @@ def stat_confined(root: Path, target: Path) -> os.stat_result:
         os.close(parent_fd)
 
 
+def _measure_directory_contents(directory_fd: int) -> int:
+    """Measure file and symlink sizes beneath a pinned directory without following links."""
+    total = 0
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    for name in os.listdir(directory_fd):
+        try:
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(name, flags, dir_fd=directory_fd)
+            try:
+                total += _measure_directory_contents(child_fd)
+            finally:
+                os.close(child_fd)
+        else:
+            total += metadata.st_size
+    return total
+
+
+def dir_usage_confined(root: Path, directory: Path) -> int:
+    """Count file bytes using a pinned descriptor tree."""
+    directory_fd = _open_confined_directory(root, directory)
+    try:
+        return _measure_directory_contents(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def list_confined_entries(root: Path, directory: Path) -> list[tuple[str, os.stat_result]]:
     """List one confined directory using a pinned descriptor; never follow child symlinks."""
     directory_fd = _open_confined_directory(root, directory)

@@ -21,13 +21,14 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .agentfs import (
     AgentFSError, confine, read_confined_bytes, write_confined_file, delete_confined_entry,
-    stat_confined, list_confined_entries,
+    stat_confined, list_confined_entries, dir_usage_confined,
     agent_dir as create_agent_dir, agents_root, sanitize_agent_id,
 )
 from .tools import Tool
@@ -131,7 +132,7 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="not a regular file")
             raise AgentFSError(f"{_rel(root, p)} is not a regular file")
         old = p.stat().st_size if p.exists() else 0
-        projected = dir_usage(root) - old + (old + len(data) if append else len(data))
+        projected = dir_usage_confined(root, root) - old + (old + len(data) if append else len(data))
         if projected > quota:
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="quota",
                    bytes=len(data), usage=projected, quota=quota)
@@ -144,7 +145,7 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason=reason,
                    bytes=len(data), reason_detail=str(exc)[:200])
             raise
-        usage = dir_usage(root)
+        usage = dir_usage_confined(root, root)
     _audit(ctx, "agentfs.write", path=_rel(root, p), bytes=new_size, append=append,
            usage=usage, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
     return new_size, usage, quota
@@ -194,33 +195,31 @@ async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return "ERROR: recursive must be a boolean"
 
     lines: list[str] = []
-    truncated = False
+    total_entries = 0
 
     def walk(directory: Path, prefix: str) -> None:
-        nonlocal truncated
+        nonlocal total_entries
         try:
             entries = list_confined_entries(root, directory)
         except (OSError, AgentFSError):
             return
         entries.sort(key=lambda item: item[0].lower())
         for name, item_stat in entries:
-            if len(lines) >= LIST_MAX_ENTRIES:
-                truncated = True
-                return
-            rel = (directory / name).relative_to(root).as_posix()
-            if stat.S_ISDIR(item_stat.st_mode):
-                lines.append(f"{prefix}{name}/")
-                if recursive:
-                    walk(directory / name, prefix + "  ")
-            elif stat.S_ISLNK(item_stat.st_mode):
-                lines.append(f"{prefix}{name} -> (symlink)")
-            else:
-                lines.append(f"{prefix}{name}  {item_stat.st_size} bytes")
+            total_entries += 1
+            if len(lines) < LIST_MAX_ENTRIES:
+                if stat.S_ISDIR(item_stat.st_mode):
+                    lines.append(f"{prefix}{name}/")
+                elif stat.S_ISLNK(item_stat.st_mode):
+                    lines.append(f"{prefix}{name} -> (symlink)")
+                else:
+                    lines.append(f"{prefix}{name}  {item_stat.st_size} bytes")
+            if recursive and stat.S_ISDIR(item_stat.st_mode):
+                walk(directory / name, prefix + "  ")
 
     walk(p, "")
-    if truncated:
-        lines.append(f"...[{max(0, LIST_MAX_ENTRIES)}+ more]")
-    head = f"[agent dir {getattr(ctx, 'agent_id', '') or root.name}: {dir_usage(root)}/{quota_bytes()} bytes used]"
+    if total_entries > LIST_MAX_ENTRIES:
+        lines.append(f"...[{total_entries - LIST_MAX_ENTRIES} more]")
+    head = f"[agent dir {getattr(ctx, 'agent_id', '') or root.name}: {dir_usage_confined(root, root)}/{quota_bytes()} bytes used]"
     return head + "\\n" + ("\\n".join(lines) if lines else "(empty)")
 
 

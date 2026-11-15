@@ -231,9 +231,42 @@ class Bridge:
         self._posts: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
         self._evicted: "OrderedDict[str, None]" = OrderedDict()  # tombstones: ids the ring dropped
         self._lines = 0
+        self._journal_version = None
         self._load()
 
     # ------------------------------------------------------------ io
+    def _journal_state(self):
+        """Identity/version of the journal for detecting another writer's append."""
+        if self.path is None:
+            return None
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    @contextlib.contextmanager
+    def _write_transaction(self):
+        """Lock and rebase the duplicate decision on the latest durable state.
+
+        The lock must span both ID validation/allocation and append. A per-file
+        flock taken by _write alone is too late when another Bridge instance
+        already holds a stale snapshot.
+        """
+        if self.path is None:
+            yield False
+            return
+        with contextlib.ExitStack() as stack:
+            locked = False
+            try:
+                stack.enter_context(self._file_lock())
+                locked = True
+            except OSError:
+                pass  # keep the original best-effort in-memory behavior
+            if locked and self._journal_state() != self._journal_version:
+                self._load()
+            yield locked
+
     def _load(self) -> None:
         if self.path is None:
             return
@@ -242,6 +275,7 @@ class Bridge:
                 with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
                                encoding="utf-8", errors="replace") as stream:
                     self._replay(_journal_lines(stream))
+                    self._journal_version = self._journal_state()
             except OSError:
                 return
 
@@ -367,11 +401,11 @@ class Bridge:
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    def _write(self, recs: list[dict[str, Any]]) -> None:
+    def _write(self, recs: list[dict[str, Any]], *, file_lock_held: bool = False) -> None:
         if self.path is None or not recs:
             return
         try:
-            with self._file_lock():
+            with (contextlib.nullcontext() if file_lock_held else self._file_lock()):
                 with os.fdopen(_regular_fd(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND), "r+b") as f:
                     f.seek(0, os.SEEK_END)
                     lead = b""
@@ -397,6 +431,7 @@ class Bridge:
                         with contextlib.suppress(OSError):
                             tmp.unlink()
                     self._lines = len(self._posts)
+                self._journal_version = self._journal_state()
         except OSError:
             pass  # the in-memory bridge still works; persistence is best effort
 
@@ -425,7 +460,7 @@ class Bridge:
         except Exception:
             bounded_refs = None
         refs_l = _refs(bounded_refs)
-        with self._lock:
+        with self._lock, self._write_transaction() as file_lock_held:
             unknown = [r for r in refs_l if r not in self._posts]
             if unknown:
                 raise BridgeError(f"unknown post id(s): {', '.join(unknown[:5])}")
@@ -445,7 +480,7 @@ class Bridge:
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec
             self._trim()
-            self._write([rec])
+            self._write([rec], file_lock_held=file_lock_held)
         if self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.post", rec["agent"], post_id=rec["id"], post_kind=kind,
@@ -464,7 +499,7 @@ class Bridge:
         stats = {"merged": 0, "skipped": 0, "rejected": 0}
         origin = _utf8_text(origin_node or "remote")[:80]
         fresh: list[dict[str, Any]] = []
-        with self._lock:
+        with self._lock, self._write_transaction() as file_lock_held:
             # Bound both parsing work and the write-ahead batch on direct API
             # calls; HTTP body limits alone do not protect in-process callers.
             rows = posts[:MAX_REMOTE_BATCH] if isinstance(posts, list) else []
@@ -489,7 +524,7 @@ class Bridge:
                 fresh.append(rec)
                 stats["merged"] += 1
             self._trim()
-            self._write(fresh)
+            self._write(fresh, file_lock_held=file_lock_held)
         if fresh and self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.merge", "Bridge", origin=origin, merged=len(fresh))

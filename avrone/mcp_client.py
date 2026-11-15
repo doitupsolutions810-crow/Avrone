@@ -44,6 +44,7 @@ MAX_TOOL_PAGES = 100
 MAX_REGISTERED_TOOLS = 2048
 MAX_MCP_TOOL_NAME_CHARS = 256
 MAX_SCHEMA_ENUM_CHARS = 80
+MAX_MCP_ERROR_CHARS = 4096
 MAX_MCP_SERVERS = 64
 MAX_MCP_CONFIG_BYTES = 1024 * 1024
 MAX_PAGE_CURSOR_CHARS = 512
@@ -489,7 +490,11 @@ def _match_response(payload: str, want_id: int) -> dict | None:
 def _unwrap(resp: dict) -> Any:
     if "error" in resp and resp["error"] is not None:
         err = resp["error"] if isinstance(resp["error"], dict) else {"message": str(resp["error"])}
-        raise MCPError(str(err.get("message", "error")), err.get("code"), err.get("data"))
+        message = str(err.get("message", "error"))
+        if len(message) > MAX_MCP_ERROR_CHARS:
+            marker = "…[MCP error truncated]"
+            message = message[:MAX_MCP_ERROR_CHARS - len(marker)] + marker
+        raise MCPError(message, err.get("code"), err.get("data"))
     return resp.get("result")
 
 

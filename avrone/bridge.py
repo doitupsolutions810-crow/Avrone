@@ -37,6 +37,7 @@ import stat
 import threading
 import time
 import uuid
+import weakref
 from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
@@ -56,7 +57,7 @@ DEFAULT_ROUNDS, HARD_MAX_ROUNDS = 1, 3
 _RUN_RE = re.compile(r"[^A-Za-z0-9_.-]")
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 
-_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _LOCKS_GUARD = threading.Lock()
 
 

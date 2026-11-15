@@ -43,6 +43,8 @@ python3 docs/local-ollama/test-local-ollama-squad.py
 
 The smoke test posts a real two-worker mode=squad request to the loopback /api/chat endpoint, confirms that Ollama and Docker are the active backends, requires both workers to call the real shell tool, reads the actual Eternal CodeX run events, and inspects each corresponding agent container. It checks non-root identity, read-only root filesystem, only-/agent mount, disabled network, dropped capabilities, no-new-privileges, and resource limits. A natural-language answer without tool events and matching container evidence is a FAIL.
 
+The live test uses a machine-readable `AVRONE_ACTION_CONTRACT:` line in the original run task. Trinity validates the JSON and tool arguments, executes the required first tool action before asking the model for a response, and records it through the normal `tool.call`/`tool.result` events. The smoke contract sets `allow_followup_calls=false`, so later model-generated calls (including `think`) are blocked rather than counted as execution. The contract is read only from the original run task, not planner-generated focus text. Invalid, duplicate, oversized, or schema-rejected contracts fail closed. Tasks without this opt-in line retain the ordinary model-selected tool flow.
+
 The report is written under data/local-ollama-smoke/<run_id>.json. The test does not pull a model or image, change host configuration, or modify repository files.
 
 ## Useful checks

@@ -758,3 +758,29 @@ async def test_verify_rejects_untrustworthy_final_git_status_timeout_metadata(ti
         "git rev-parse --verify HEAD",
         "git status --porcelain=v1 --untracked-files=all",
     ]
+
+
+@pytest.mark.asyncio
+async def test_verify_missing_timeout_metadata_is_not_accepted_as_success():
+    class CommandWithoutTimeout:
+        exit_code = 0
+        stdout = "all checks passed"
+        stderr = ""
+
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="d" * 40),
+        FakeCommand(exit_code=0, stdout=""),
+        CommandWithoutTimeout(),
+        FakeCommand(exit_code=0, stdout="d" * 40),
+        FakeCommand(exit_code=0, stdout=""),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.commands[0]["exit_code"] == 0
+    assert evidence.commands[0]["timed_out"] is True
+    assert "1 of 1 checks failed" in evidence.reason

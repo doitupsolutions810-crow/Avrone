@@ -14,7 +14,7 @@ Pre-change head: 7c10f9ad7ea8b38d15af2c72e9a4fc33233340a4
 | Source | Evidence | Certification |
 | --- | --- | --- |
 | [Fleet source](../../avrone/fleet.py) | Counts actual admitted events, clamps incorrect results, safely extracts native int for active_agents | GitHub source changed |
-| [Fleet merge accounting regressions](../../tests/test_bridge_fleet_merge_accounting.py) | 27 new test cases, 500 seeded stress scenarios, duplicates/rejections with real Bridge | Test module committed; exact-head CI pending |
+| [Fleet merge accounting regressions](../../tests/test_bridge_fleet_merge_accounting.py) | 29 repository test cases (27 isolated helper cases plus 2 real Bridge integration cases), 500 seeded stress scenarios, duplicates/rejections with real Bridge | Test module committed; exact-head CI pending |
 | [Previous Fleet evidence](fleet-bridge-edgecases-2026-11-15.md) | Relay 64 KiB and hostile telemetry limits | Prior committed evidence |
 | [Bridge fast workflow](../../.github/workflows/bridge-fast.yml) | Includes tests/test_bridge_*.py for Python 3.11 and 3.12 | Workflow inspected |
 | [Full CI workflow](../../.github/workflows/ci.yml) | Full checkout, Python 3.11/3.12 pytest | Workflow inspected |

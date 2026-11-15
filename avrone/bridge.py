@@ -1179,6 +1179,21 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
         dest = for_core(core, str(post.get("run_id") or "run"))
         stats = dest.merge_remote([post], str(post.get("origin_node") or "local"))
         if stats.get("merged") == 1:
+            if dest.path is not None and dest._volatile_dirty:
+                # Disk-backed global admission must not acknowledge a post
+                # which could not be persisted. The per-run API can offer
+                # best-effort memory writes; the global cursor cannot, or
+                # clients may checkpoint an event lost on process restart.
+                # Restore the last durable state before rejecting admission,
+                # so this failed event is neither visible nor deduplicated.
+                with dest._lock:
+                    dest._posts.clear()
+                    dest._evicted.clear()
+                    dest._lines = 0
+                    dest._journal_version = None
+                    dest._volatile_dirty = False
+                    dest._load()
+                raise BridgeError("global post not persisted")
             _sync_order(core, _posts_by_id(core))
             return False, pid
         if stats.get("skipped"):

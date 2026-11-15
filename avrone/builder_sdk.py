@@ -195,7 +195,7 @@ class BuilderAgentSDK:
         if run_id is not None and not isinstance(run_id, str):
             raise ValueError("run_id must be a string")
         rid = run_id or "builder-" + uuid.uuid4().hex[:12]
-        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", rid):
+        if rid in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", rid):
             raise ValueError("invalid run_id")
         prompt = self._task(task, context)
         if mode == "chat":

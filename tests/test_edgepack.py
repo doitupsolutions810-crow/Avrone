@@ -2969,7 +2969,7 @@ def test_pool_run_argv_accepts_only_the_validated_agent_home(tmp_path):
     assert argv[argv.index("--name") + 1] == "avrone-agent-edge-validated-worker"
     assert argv.count("-v") == 1
     assert argv[argv.index("-v") + 1] == f"{home}:/agent"
-    assert argv[-3] == "sha256:" + "b" * 64
+    assert argv[-3] == image_id
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission semantics required")

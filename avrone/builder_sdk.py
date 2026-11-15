@@ -1,6 +1,7 @@
 """Internal builder SDK over AVRONE's existing TrinityCore and Ollama gateway."""
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import uuid
@@ -109,6 +110,8 @@ class BuilderAgentSDK:
         self.cleanups = cleanups or []
         self.policy = policy or BuilderPolicy()
         self.closed = False
+        self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def open(cls, settings: Settings | None = None, *,
@@ -126,10 +129,24 @@ class BuilderAgentSDK:
         core, cleanups = await build_core(settings, extras=extras)
         return cls(core, cleanups, policy)
 
-    async def close(self) -> None:
-        if not self.closed:
-            self.closed = True
+    async def _finish_close(self) -> None:
+        try:
             await run_cleanups(self.cleanups)
+        except BaseException:
+            self._closing = False
+            raise
+        self.closed = True
+        self._closing = False
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        if self._close_task is None or (self._close_task.done() and not self.closed):
+            self._closing = True
+            self._close_task = asyncio.create_task(self._finish_close())
+        # Cancellation of a caller must not cancel runner/plugin/MCP cleanup.
+        # Concurrent callers all await the same task; failed cleanup can be retried.
+        await asyncio.shield(self._close_task)
 
     async def __aenter__(self) -> "BuilderAgentSDK":
         return self
@@ -161,8 +178,8 @@ class BuilderAgentSDK:
                     workers: int | None = None, run_id: str | None = None,
                     checkpoint: Any = None, dispatch: str | None = None,
                     rounds: int | None = None, context: str | None = None) -> BuildResult:
-        if self.closed:
-            raise RuntimeError("Builder SDK is closed")
+        if self.closed or self._closing:
+            raise RuntimeError("Builder SDK is closed or closing")
         if mode not in ("squad", "chat", "deep"):
             raise ValueError("mode must be squad, chat, or deep")
         if workers is not None and (
@@ -208,8 +225,8 @@ class BuilderAgentSDK:
 
     async def verify(self, result: BuildResult, *,
                      commands: tuple[str, ...] | None = None) -> VerificationEvidence:
-        if self.closed:
-            raise RuntimeError("Builder SDK is closed")
+        if self.closed or self._closing:
+            raise RuntimeError("Builder SDK is closed or closing")
         if commands is None:
             selected = self.policy.verification_commands
         else:

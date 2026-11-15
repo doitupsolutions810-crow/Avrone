@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from avrone import builder_sdk
 from avrone.builder_sdk import BuilderAgentSDK, BuilderPolicy, BuildResult
 from avrone import agentcontainer
 
@@ -160,6 +161,62 @@ async def test_close_shields_cleanup_from_caller_cancellation_and_shares_task():
     assert sdk.closed is True
     assert sdk._closing is False
     assert calls == ["started", "finished"]
+
+
+@pytest.mark.asyncio
+async def test_close_retries_when_cleanup_coroutine_is_cancelled():
+    attempts = []
+
+    async def cleanup():
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise asyncio.CancelledError()
+
+    sdk = BuilderAgentSDK(FakeCore(), cleanups=[cleanup])
+    with pytest.raises(asyncio.CancelledError):
+        await sdk.close()
+    assert sdk.closed is False
+    assert sdk._closing is False
+
+    await sdk.close()
+    assert sdk.closed is True
+    assert attempts == [1, 2]
+
+
+@pytest.mark.parametrize("invalid", [0, 1, "false", None, [], {}])
+@pytest.mark.asyncio
+async def test_open_rejects_non_boolean_extras_before_bootstrapping(monkeypatch, invalid):
+    from types import SimpleNamespace
+
+    calls = []
+
+    async def unexpected_build_core(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("build_core must not run for an invalid extras flag")
+
+    monkeypatch.setattr(builder_sdk, "build_core", unexpected_build_core)
+    settings = SimpleNamespace(provider="ollama", llm_model="qwen2.5:3b")
+    with pytest.raises(ValueError, match="extras must be a boolean"):
+        await BuilderAgentSDK.open(settings, policy=BuilderPolicy(), extras=invalid)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_open_preserves_explicit_false_extras(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+    core = FakeCore()
+
+    async def fake_build_core(settings, *, extras=True):
+        calls.append((settings, extras))
+        return core, []
+
+    monkeypatch.setattr(builder_sdk, "build_core", fake_build_core)
+    settings = SimpleNamespace(provider="ollama", llm_model="qwen2.5:3b")
+    sdk = await BuilderAgentSDK.open(settings, policy=BuilderPolicy(), extras=False)
+    assert calls == [(settings, False)]
+    await sdk.close()
 
 
 @pytest.mark.asyncio

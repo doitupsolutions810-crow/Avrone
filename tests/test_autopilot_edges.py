@@ -278,6 +278,16 @@ def test_missing_drive(env):
 def test_readonly_drive(env):
     env.drive.chmod(stat.S_IRUSR | stat.S_IXUSR)
     try:
+        # Some container filesystems/capabilities permit actual writes even
+        # when POSIX mode bits deny them (uid != 0 is not a sufficient guard).
+        probe = env.drive / ".readonly-probe"
+        try:
+            probe.write_text("probe")
+        except PermissionError:
+            pass
+        else:
+            probe.unlink()
+            pytest.skip("host filesystem permits writes despite read-only directory mode")
         r = env.run()
     finally:
         env.drive.chmod(0o755)
@@ -2169,6 +2179,14 @@ def test_merge_me_readonly_file_keeps_looping(env):
     m = env.repo / "MERGE_ME.md"; m.write_text("old"); 
     os.chmod(env.repo, 0o555)
     try:
+        probe = env.repo / ".readonly-probe"
+        try:
+            probe.write_text("probe")
+        except PermissionError:
+            pass
+        else:
+            probe.unlink()
+            pytest.skip("host filesystem permits writes despite read-only directory mode")
         r = env.run(LANES="tools")
     finally:
         os.chmod(env.repo, 0o755)

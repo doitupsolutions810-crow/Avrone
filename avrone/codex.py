@@ -137,7 +137,10 @@ def _scrub(v: Any, depth: int = 0) -> Any:
     if depth > 8:
         return redact(v) if not isinstance(v, (int, float, bool, type(None))) else v
     if isinstance(v, dict):
-        return {k: _scrub(x, depth + 1) for k, x in v.items()}
+        # Event data is JSON-projected first, so its keys are strings.
+        # A secret embedded in a key is just as sensitive as a value.
+        return {_scrub(k, depth + 1): _scrub(x, depth + 1)
+                for k, x in v.items()}
     if isinstance(v, (list, tuple)):
         return [_scrub(x, depth + 1) for x in v]
     return v

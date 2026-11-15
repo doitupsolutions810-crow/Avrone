@@ -143,7 +143,7 @@ def _refs(refs: Any) -> list[str]:
     # Never inspect an unbounded list of malformed references from a peer.
     for r in refs[:MAX_REF_SCAN]:
         r = _utf8_text(r).strip()
-        if r and _ID_RE.match(r) and r not in out:
+        if r and _ID_RE.fullmatch(r) and r not in out:
             out.append(r)
         if len(out) >= MAX_REFS:
             break
@@ -313,7 +313,7 @@ class Bridge:
             return None
         if not isinstance(rec, dict) or set(rec) != {"tombstones"} or not isinstance(rec["tombstones"], list):
             return None
-        return [t for t in rec["tombstones"] if isinstance(t, str) and _ID_RE.match(t)]
+        return [t for t in rec["tombstones"] if isinstance(t, str) and _ID_RE.fullmatch(t)]
 
     def _tomb(self, post_id: str) -> None:
         self._evicted.pop(post_id, None)
@@ -331,7 +331,7 @@ class Bridge:
             rec = json.loads(line)
         except (ValueError, RecursionError):
             return None
-        if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not _ID_RE.match(rec["id"]):
+        if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not _ID_RE.fullmatch(rec["id"]):
             return None
         if rec.get("kind") not in KINDS or not isinstance(rec.get("text"), str):
             return None
@@ -670,7 +670,7 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     raw_id = data.get("id")
     if raw_id not in (None, ""):
         pid = str(raw_id)
-        if not _ID_RE.match(pid):
+        if not _ID_RE.fullmatch(pid):
             return None, "bad post id"
     else:
         pid = uuid.uuid4().hex[:12]
@@ -810,7 +810,7 @@ def _load_order(core: Any) -> "OrderedDict[str, None]":
         ids = data.get("ids") if isinstance(data, dict) else None
         if isinstance(ids, list):
             for item in ids:
-                if isinstance(item, str) and _ID_RE.match(item) and item not in order:
+                if isinstance(item, str) and _ID_RE.fullmatch(item) and item not in order:
                     order[item] = None
     try:
         core._blackboard_order = order
@@ -989,7 +989,7 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     """
     post = seal_blackboard_post(post)
     pid = str(post.get("id") or "")
-    if not _ID_RE.match(pid):
+    if not _ID_RE.fullmatch(pid):
         raise BridgeError("bad post id")
     with _blackboard_lock(core):
         if _id_state(core, pid) is not None:

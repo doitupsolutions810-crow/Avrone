@@ -53,6 +53,7 @@ MAX_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_HTTP_SSE_LINE_BYTES = 1024 * 1024
 MAX_HTTP_ERROR_BYTES = 64 * 1024
 MAX_STDIO_LINE_BYTES = 8 * 1024 * 1024
+MAX_RPC_REQUEST_BYTES = 8 * 1024 * 1024
 
 
 class MCPError(RuntimeError):
@@ -84,6 +85,23 @@ def _strict_json_loads(payload: str) -> Any:
         )
     except RecursionError as exc:
         raise ValueError("JSON nesting exceeds parser limit") from exc
+
+
+def _encode_rpc_request(message: dict[str, Any]) -> bytes:
+    """Serialize outbound JSON-RPC with strict JSON semantics and a byte ceiling."""
+    if not isinstance(message, dict):
+        raise MCPError("MCP JSON-RPC request must be a JSON object")
+    try:
+        encoded = json.dumps(
+            message, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as exc:
+        raise MCPError("MCP JSON-RPC request contains values that are not valid JSON") from exc
+    if len(encoded) > MAX_RPC_REQUEST_BYTES:
+        raise MCPError(
+            f"MCP JSON-RPC request exceeded configured limit ({MAX_RPC_REQUEST_BYTES} bytes)"
+        )
+    return encoded
 
 
 def _safe_part(s: str) -> str:
@@ -186,7 +204,7 @@ class StdioTransport(_Transport):
     async def _send(self, obj: dict) -> None:
         if not self.proc or not self.proc.stdin or self.proc.returncode is not None:
             raise MCPError("MCP server process is not running")
-        data = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
+        data = _encode_rpc_request(obj) + b"\n"
         async with self._write_lock:
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
@@ -336,7 +354,8 @@ class HTTPTransport(_Transport):
 
     async def _post(self, body: dict, timeout: float, want_id: int | None) -> Any:
         assert self._client is not None, "connect() first"
-        async with self._client.stream("POST", self.url, json=body, headers=self._hdrs(),
+        encoded_body = _encode_rpc_request(body)
+        async with self._client.stream("POST", self.url, content=encoded_body, headers=self._hdrs(),
                                        timeout=timeout) as r:
             if 300 <= r.status_code < 400:
                 raise MCPError("HTTP redirect refused for MCP endpoint", code=r.status_code)

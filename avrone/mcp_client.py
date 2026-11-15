@@ -682,11 +682,16 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
             items.append('"..."?: any')
             break
         name = str(key)[:80]
+        safe_name = json.dumps(name, ensure_ascii=True)
         spec = raw_spec if isinstance(raw_spec, dict) else {}
         raw_type = spec.get("type")
         if isinstance(raw_type, list):
-            type_names = [str(value) for value in raw_type if value != "null"]
-            t = "|".join(_TYPE_MAP.get(value, value) for value in type_names) or "any"
+            # Only known JSON Schema primitive types may enter the model-facing tool signature.
+            type_names = [
+                value for value in raw_type
+                if isinstance(value, str) and value in _TYPE_MAP and value != "null"
+            ]
+            t = "|".join(_TYPE_MAP[value] for value in type_names) or "any"
         elif isinstance(spec.get("enum"), list):
             enum = spec["enum"]
             try:
@@ -697,7 +702,7 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
             t = _TYPE_MAP.get(raw_type, "any")
         else:
             t = "any"
-        items.append(f'"{name}"{"" if key in required else "?"}: {t}')
+        items.append(f'{safe_name}{"" if key in required else "?"}: {t}')
     doc = "{" + ", ".join(items) + "}"
     if len(doc) > limit:
         marker = ", ...}"

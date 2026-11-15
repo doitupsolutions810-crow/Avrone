@@ -837,6 +837,45 @@ def test_initialize_rejects_unsupported_protocol_and_accepts_empty_legacy_result
     assert c.transport.notes == ["notifications/initialized"]
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+def test_connect_closes_partially_allocated_transport_on_failure_or_cancellation(cancel):
+    async def go():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class PartialConnect(mc._Transport):
+            def __init__(self):
+                self.closed = False
+            async def connect(self):
+                entered.set()
+                if cancel:
+                    await release.wait()
+                else:
+                    raise RuntimeError("partial allocation failed")
+            async def request(self, method, params, timeout):
+                raise AssertionError("initialize must not run")
+            async def notify(self, method, params=None):
+                return None
+            async def close(self):
+                self.closed = True
+
+        client = MCPClient("partial", {"command": "unused"})
+        transport = PartialConnect()
+        client.transport = transport
+        task = asyncio.create_task(client.connect())
+        await entered.wait()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(RuntimeError, match="partial allocation failed"):
+                await task
+        assert transport.closed
+
+    run(go())
+
+
 def test_connect_closes_transport_when_protocol_negotiation_fails():
     class BadProtocol(mc._Transport):
         def __init__(self):

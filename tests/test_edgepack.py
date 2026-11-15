@@ -2967,3 +2967,24 @@ def test_runner_start_cleans_up_after_success_shaped_docker_run_timeout(tmp_path
         run(runner.start())
     assert runner.container_id is None
     assert not any(call[1] == "exec" for call in calls)
+
+
+@pytest.mark.parametrize("result", [
+    CommandResult("echo ready", 0, "ready", "", timed_out=True),
+    CommandResult("echo ready", False, "ready", "", timed_out=False),
+])
+def test_establish_rejects_ambiguous_runner_health_check_success(tmp_path, monkeypatch, result):
+    from avrone import sovereign
+
+    async def fake_start(self):
+        return None
+
+    async def fake_run(self, cmd, timeout=None, cwd=None):
+        return result
+
+    monkeypatch.setattr(sovereign.LocalRunner, "start", fake_start)
+    monkeypatch.setattr(sovereign.LocalRunner, "run", fake_run)
+    settings = _settings(tmp_path, runner="local")
+
+    with pytest.raises(RuntimeError, match="Environment health check failed"):
+        run(sovereign.establish(settings))

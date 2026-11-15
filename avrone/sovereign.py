@@ -299,7 +299,10 @@ class DockerRunner(Runner):
             "docker image inspect runner", 30,
         )
         image_id = str(image_result.stdout or "").strip().lower()
-        if not agentcontainer.docker_succeeded(image_result) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        if (
+            not agentcontainer.docker_succeeded(image_result)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None
+        ):
             detail = str(image_result.stderr or "")[:300]
             raise RuntimeError(
                 "Could not resolve the Docker runner image to a valid immutable ID"
@@ -316,7 +319,10 @@ class DockerRunner(Runner):
             res = await self._exec(argv, " ".join(argv), 300)
             returned_id = self._full_container_id(res.stdout)
             if not agentcontainer.docker_succeeded(res):
-                raise RuntimeError(f"Could not start environment container: {res.stderr or 'Docker run did not complete successfully'}")
+                raise RuntimeError(
+                    "Could not start environment container: "
+                    f"{res.stderr or 'Docker run did not complete successfully'}"
+                )
 
             if returned_id is not None:
                 # Always inspect the exact object ID Docker returned, even when stdout looks
@@ -396,7 +402,10 @@ class DockerRunner(Runner):
                     result = await self._exec(
                         ["docker", "rm", "-f", container_id], "docker rm", 30
                     )
-                    if not (agentcontainer.docker_succeeded(result) or agentcontainer.docker_not_found(result)):
+                    if not (
+                        agentcontainer.docker_succeeded(result)
+                        or agentcontainer.docker_not_found(result)
+                    ):
                         raise RuntimeError(
                             f"Could not remove environment container {container_id}: "
                             f"{str(result.stderr or 'unknown Docker error')[:300]}"
@@ -513,6 +522,6 @@ async def establish(settings: Settings) -> Runner:
         else:
             raise
     check = await runner.run("echo ready", timeout=60)
-    if check.exit_code != 0:
+    if not agentcontainer.result_succeeded(check):
         raise RuntimeError(f"Environment health check failed: {check.text()}")
     return runner

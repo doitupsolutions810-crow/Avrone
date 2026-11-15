@@ -371,11 +371,15 @@ def _private_namespace(value: Any) -> bool:
     return value is None or value == "" or value == "private"
 
 
-def _docker_succeeded(result: Any) -> bool:
-    """Accept success only with an exact integer zero and explicit no-timeout result."""
+def result_succeeded(result: Any) -> bool:
+    """Accept process success only with an exact integer zero and explicit no-timeout result."""
     exit_code = getattr(result, "exit_code", None)
     timed_out = getattr(result, "timed_out", None)
     return type(exit_code) is int and exit_code == 0 and type(timed_out) is bool and not timed_out
+
+
+def _docker_succeeded(result: Any) -> bool:
+    return result_succeeded(result)
 
 
 def _docker_not_found(result: Any) -> bool:
@@ -402,7 +406,7 @@ def _docker_not_found(result: Any) -> bool:
 
 def docker_succeeded(result: Any) -> bool:
     """Public shared predicate for an unambiguous successful Docker CLI result."""
-    return _docker_succeeded(result)
+    return result_succeeded(result)
 
 
 def docker_not_found(result: Any) -> bool:

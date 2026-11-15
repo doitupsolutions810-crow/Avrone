@@ -265,3 +265,58 @@ def test_docker_run_passes_argv_without_docker(tmp_path, monkeypatch):
     assert "/workspace/agents/w" in got["argv"]
     with pytest.raises(agentfs.AgentFSError):
         run(r.run("echo hi", cwd=tmp_path))
+
+
+def _reserve_test_identity(core, run_id, name, agent_id):
+    from avrone import memstore
+
+    claimed, memory_namespace = core._claim_identity(run_id, name, agent_id)
+    core.active[name] = {
+        "run_id": run_id,
+        "status": "working",
+        "agent_id": claimed,
+        "memory_ns": memory_namespace or memstore.agent_namespace(name),
+    }
+    return claimed, memory_namespace
+
+
+def test_live_identity_claims_disambiguate_punctuation_collisions(tmp_path):
+    core, _ = _core(tmp_path, [])
+
+    first, first_ns = _reserve_test_identity(core, "run-1", "Builder-1", "Builder!")
+    second, second_ns = _reserve_test_identity(core, "run-1", "Builder-2", "Builder?")
+    third, third_ns = _reserve_test_identity(core, "run-1", "Builder-3", "Builder.")
+
+    assert [first, second, third] == ["builder", "builder-2", "builder-3"]
+    assert len({first_ns or "builder", second_ns, third_ns}) == 3
+    assert len({core.active[name]["agent_id"] for name in ("Builder-1", "Builder-2", "Builder-3")}) == 3
+
+
+def test_live_identity_claims_disambiguate_truncation_collisions(tmp_path):
+    core, _ = _core(tmp_path, [])
+    prefix = "x" * agentfs.MAX_ID_LEN
+
+    first, _ = _reserve_test_identity(core, "run-1", "Long-1", prefix + "-first")
+    second, second_ns = _reserve_test_identity(core, "run-1", "Long-2", prefix + "-second")
+    third, third_ns = _reserve_test_identity(core, "run-1", "Long-3", prefix + "-third")
+
+    assert first == prefix
+    assert second == prefix[:agentfs.MAX_ID_LEN - 2] + "-2"
+    assert third == prefix[:agentfs.MAX_ID_LEN - 2] + "-3"
+    assert all(len(value) <= agentfs.MAX_ID_LEN for value in (first, second, third))
+    assert len({first, second, third}) == 3
+    assert second_ns and third_ns and second_ns != third_ns
+
+
+def test_live_identity_suffix_collision_and_completed_id_reuse(tmp_path):
+    core, _ = _core(tmp_path, [])
+
+    first, _ = _reserve_test_identity(core, "run-1", "Alpha-1", "worker")
+    literal_suffix, _ = _reserve_test_identity(core, "run-1", "Beta-1", "worker-2")
+    duplicate, _ = _reserve_test_identity(core, "run-1", "Gamma-1", "worker")
+
+    assert (first, literal_suffix, duplicate) == ("worker", "worker-2", "worker-3")
+    core.active["Alpha-1"]["status"] = "done"
+    replacement, _ = _reserve_test_identity(core, "run-1", "Delta-1", "worker")
+    assert replacement == "worker"
+    assert len({literal_suffix, duplicate, replacement}) == 3

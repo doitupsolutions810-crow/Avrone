@@ -1978,6 +1978,23 @@ def test_pool_removal_after_policy_drift_targets_only_inspected_container_id(tmp
 
 
 
+
+def test_persistent_run_argv_validates_and_includes_creation_token(tmp_path):
+    home = agentfs.agent_dir(tmp_path / "ws", "builder")
+    token = "a" * 32
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-builder", home, "img", False, agent_id="builder",
+        creation_token=token,
+    )
+    label_values = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--label"]
+    assert "avrone.creation-token=" + token in label_values
+    with pytest.raises(ValueError, match="creation_token"):
+        ac.persistent_run_argv(
+            "avrone-agent-edge-builder", home, "img", False, agent_id="builder",
+            creation_token="not-safe"
+        )
+
+
 def test_pool_cleans_agent_home_when_run_reports_failure_after_daemon_create(tmp_path):
     fake = FakeDocker()
     original = fake.__call__
@@ -2098,12 +2115,18 @@ def test_pool_rejects_run_output_id_that_does_not_match_name_inspect(tmp_path):
 
 
 
-def test_pool_recovers_after_docker_run_returns_malformed_container_id(tmp_path):
+def test_pool_cleans_malformed_run_id_then_creates_a_fresh_home_on_retry(tmp_path):
     class MalformedRunOutputDocker(FakeDocker):
+        def __init__(self):
+            super().__init__()
+            self.run_attempts = 0
+
         async def __call__(self, argv, timeout):
             result = await super().__call__(argv, timeout)
             if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
-                return CommandResult(result.cmd, 0, "not-a-full-container-id", "")
+                self.run_attempts += 1
+                if self.run_attempts == 1:
+                    return CommandResult(result.cmd, 0, "not-a-full-container-id", "")
             return result
 
     fake = MalformedRunOutputDocker()
@@ -2111,23 +2134,21 @@ def test_pool_recovers_after_docker_run_returns_malformed_container_id(tmp_path)
     home = agentfs.agent_dir(tmp_path / "ws", "bad-run-id")
     name = ac.container_name("edge", home.name)
 
-    # A successful docker run with malformed stdout is not permission to remove by name.
-    with pytest.raises(RuntimeError, match="valid Docker ID"):
+    with pytest.raises(RuntimeError, match="valid container ID"):
         run(pool.ensure(home))
-    assert name in fake.running
+    assert name not in fake.running
     assert pool.homes == {}
-    assert fake.rm_count(name) == 0
+    assert fake.rm_count(name) == 1
 
-    # A later invocation independently inspects the friendly name, validates ownership,
-    # policy, and full Docker identity, then safely adopts the compliant container.
+    # A later invocation creates and verifies a new object, not an unverified leftover.
     assert run(pool.ensure(home)) == name
     assert pool.homes[name].container_id == fake.container_ids[name]
-    assert fake.rm_count(name) == 0
-    assert fake.verbs().count("run") == 1
+    assert fake.rm_count(name) == 1
+    assert fake.verbs().count("run") == 2
 
 
 @pytest.mark.parametrize("bad_output", ["", "short", "g" * 64, "a" * 64 + "\\n" + "b" * 64])
-def test_pool_rejects_malformed_run_ids_without_name_based_cleanup(tmp_path, bad_output):
+def test_pool_cleans_malformed_run_ids_using_per_attempt_token(tmp_path, bad_output):
     class MalformedRunOutputDocker(FakeDocker):
         async def __call__(self, argv, timeout):
             result = await super().__call__(argv, timeout)
@@ -2138,12 +2159,12 @@ def test_pool_rejects_malformed_run_ids_without_name_based_cleanup(tmp_path, bad
     fake = MalformedRunOutputDocker()
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
     home = agentfs.agent_dir(tmp_path / "ws", "bad-run-id-" + str(len(bad_output)))
-    with pytest.raises(RuntimeError, match="valid Docker ID"):
+    with pytest.raises(RuntimeError, match="valid container ID"):
         run(pool.ensure(home))
     name = ac.container_name("edge", home.name)
-    assert name in fake.running
+    assert name not in fake.running
     assert pool.homes == {}
-    assert fake.rm_count(name) == 0
+    assert fake.rm_count(name) == 1
 
 
 def test_docker_runner_exec_uses_pinned_container_id_after_friendly_name_is_reassigned(tmp_path, monkeypatch):

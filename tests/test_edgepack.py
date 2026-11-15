@@ -2547,7 +2547,7 @@ async def test_pool_image_resolution_requires_exact_success_metadata(result, val
     (CommandResult("inspect", 0, "", "ordinary failure"), False),
     (CommandResult("inspect", 1, "", "permission denied: No such container: missing"), False),
     (CommandResult("inspect", 1, "", "daemon transport failed\\nNo such container: missing"), False),
-    (CommandResult("inspect", 1, "", "No such container: missing\\npermission denied"), False),
+    (CommandResult("inspect", 1, "", "No such container: missing\npermission denied"), False),
 ])
 def test_docker_not_found_requires_exact_single_line_diagnostic(result, expected):
     assert ac._docker_not_found(result) is expected

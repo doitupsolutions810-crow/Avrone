@@ -1970,3 +1970,34 @@ def test_http_transport_rejects_unexpected_session_id_rotation():
     assert len(seen) == 1
     assert seen[0].headers["mcp-session-id"] == "S1"
     assert t.session_id == "S1"
+
+def test_http_close_streams_and_discards_untrusted_session_delete_body():
+    class NeverRead(httpx.AsyncByteStream):
+        def __init__(self):
+            self.iterated = False
+            self.closed = False
+
+        async def __aiter__(self):
+            self.iterated = True
+            yield b"x" * (1024 * 1024)
+
+        async def aclose(self):
+            self.closed = True
+
+    body = NeverRead()
+
+    def handler(request):
+        assert request.method == "DELETE"
+        assert request.headers["mcp-session-id"] == "session-to-close"
+        return httpx.Response(200, stream=body)
+
+    async def go():
+        transport = http_transport(handler)
+        transport.session_id = "session-to-close"
+        await transport.close()
+        return transport
+
+    transport = run(go())
+    assert transport._client is None
+    assert body.iterated is False
+    assert body.closed is True

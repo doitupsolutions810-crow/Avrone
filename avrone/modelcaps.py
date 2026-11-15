@@ -1,6 +1,7 @@
 """Read-only Ollama model capability and runtime discovery for AVRONE."""
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any
@@ -13,13 +14,69 @@ class OllamaCapabilityError(RuntimeError):
     """The configured Ollama server could not provide model metadata."""
 
 
+# Native model metadata should be small; do not buffer arbitrarily large responses.
+MAX_OLLAMA_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_MODEL_INFO_NODES = 50_000
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Ollama metadata contains duplicate JSON object keys")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Ollama metadata contains non-standard JSON constant {value}")
+
+
+async def _request_json(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    """Fetch bounded, uncompressed JSON from an Ollama native endpoint."""
+    kwargs: dict[str, Any] = {"headers": {"Accept-Encoding": "identity"}}
+    if payload is not None:
+        kwargs["json"] = payload
+    async with client.stream(method, url, **kwargs) as response:
+        response.raise_for_status()
+        encoding = response.headers.get("content-encoding", "identity").strip().lower()
+        if encoding not in ("", "identity"):
+            raise ValueError("compressed Ollama metadata responses are not accepted")
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            if not re.fullmatch(r"[0-9]+", content_length.strip()):
+                raise ValueError("Ollama metadata has an invalid Content-Length")
+            if int(content_length) > MAX_OLLAMA_METADATA_RESPONSE_BYTES:
+                raise ValueError("Ollama metadata response exceeded the configured byte limit")
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            if len(body) + len(chunk) > MAX_OLLAMA_METADATA_RESPONSE_BYTES:
+                raise ValueError("Ollama metadata response exceeded the configured byte limit")
+            body.extend(chunk)
+    try:
+        return json.loads(
+            bytes(body),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError("Ollama metadata response is not valid bounded JSON") from exc
+
+
 def _native_base(base_url: str) -> str:
     try:
         parsed = urlsplit(str(base_url or "").strip())
         hostname, _port = parsed.hostname, parsed.port
     except ValueError:
         raise OllamaCapabilityError("configured Ollama base URL is invalid") from None
-    if parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
+    if (parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
         raise OllamaCapabilityError("configured Ollama base URL is invalid")
     path = parsed.path.rstrip("/")
     if path.endswith("/v1"):
@@ -32,21 +89,26 @@ def _tag_key(value: Any) -> str:
     return name[:-7] if name.endswith(":latest") else name
 
 
-def _context_lengths(value: Any) -> list[int]:
+def _context_lengths(value: Any) -> tuple[list[int], bool]:
+    """Walk untrusted model metadata iteratively with a hard node ceiling."""
     found: list[int] = []
     if not isinstance(value, dict):
-        return found
-    for key, item in value.items():
-        if "context_length" in str(key).lower():
-            try:
+        return found, False
+    pending = [value]
+    visited = 0
+    while pending:
+        current = pending.pop()
+        visited += 1
+        if visited > MAX_MODEL_INFO_NODES:
+            return found, True
+        for key, item in current.items():
+            if isinstance(key, str) and "context_length" in key.lower():
                 number = _context_number(item)
                 if number is not None:
                     found.append(number)
-            except (TypeError, ValueError):
-                pass
-        if isinstance(item, dict):
-            found.extend(_context_lengths(item))
-    return found
+            if isinstance(item, dict):
+                pending.append(item)
+    return found, False
 
 
 def _positive_int(value: Any) -> int | None:
@@ -105,12 +167,10 @@ async def describe_ollama_model(
     timeout = httpx.Timeout(12.0, connect=3.0)
     async with httpx.AsyncClient(timeout=timeout, transport=transport, trust_env=False) as client:
         try:
-            response = await client.post(f"{base}/api/show", json={"model": model})
-            response.raise_for_status()
-            show = response.json()
+            show = await _request_json(client, "POST", f"{base}/api/show", payload={"model": model})
             if not isinstance(show, dict):
                 raise ValueError("invalid show response")
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError, RecursionError) as exc:
             raise OllamaCapabilityError(
                 f"Ollama model metadata unavailable for {model} ({type(exc).__name__})"
             ) from None
@@ -118,41 +178,35 @@ async def describe_ollama_model(
         tags_known = False
         tags: dict[str, Any] | None = None
         try:
-            response = await client.get(f"{base}/api/tags")
-            response.raise_for_status()
-            tags_payload = response.json()
+            tags_payload = await _request_json(client, "GET", f"{base}/api/tags")
             tags_list = tags_payload.get("models", []) if isinstance(tags_payload, dict) else []
             if not isinstance(tags_list, list):
                 raise ValueError("invalid model inventory")
             tags_known = True
             tags = next((entry for entry in tags_list
                          if isinstance(entry, dict) and _tag_key(entry.get("name") or entry.get("model")) == _tag_key(model)), None)
-        except (httpx.HTTPError, ValueError, TypeError):
+        except (httpx.HTTPError, ValueError, TypeError, RecursionError):
             issues.append("installed model inventory unavailable")
 
         runtime_known = False
         loaded: dict[str, Any] | None = None
         try:
-            response = await client.get(f"{base}/api/ps")
-            response.raise_for_status()
-            ps_payload = response.json()
+            ps_payload = await _request_json(client, "GET", f"{base}/api/ps")
             ps_list = ps_payload.get("models", []) if isinstance(ps_payload, dict) else []
             if not isinstance(ps_list, list):
                 raise ValueError("invalid running model inventory")
             runtime_known = True
             loaded = next((entry for entry in ps_list
                            if isinstance(entry, dict) and _tag_key(entry.get("name") or entry.get("model")) == _tag_key(model)), None)
-        except (httpx.HTTPError, ValueError, TypeError):
+        except (httpx.HTTPError, ValueError, TypeError, RecursionError):
             issues.append("loaded model runtime inventory unavailable")
 
         ollama_version: str | None = None
         try:
-            response = await client.get(f"{base}/api/version")
-            response.raise_for_status()
-            version_payload = response.json()
+            version_payload = await _request_json(client, "GET", f"{base}/api/version")
             if isinstance(version_payload, dict) and version_payload.get("version"):
                 ollama_version = str(version_payload["version"])
-        except (httpx.HTTPError, ValueError, TypeError):
+        except (httpx.HTTPError, ValueError, TypeError, RecursionError):
             issues.append("Ollama version unavailable")
 
     capabilities_raw = show.get("capabilities")
@@ -171,7 +225,9 @@ async def describe_ollama_model(
 
     details = show.get("details") if isinstance(show.get("details"), dict) else {}
     model_info = show.get("model_info") if isinstance(show.get("model_info"), dict) else {}
-    contexts = _context_lengths(model_info)
+    contexts, context_metadata_truncated = _context_lengths(model_info)
+    if context_metadata_truncated:
+        issues.append("model context metadata traversal limit reached")
     return {
         "provider": "ollama",
         "model": model,

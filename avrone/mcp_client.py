@@ -571,12 +571,16 @@ class HTTPTransport(_Transport):
             log.debug("mcp notify %s failed: %s", method, e)
 
     async def close(self) -> None:
-        if self._client is None:
+        client = self._client
+        if client is None:
             return
         if self.session_id:  # politely end the session; servers may answer 405
+            # The DELETE body is irrelevant. Stream and immediately close it rather than
+            # buffering an untrusted peer's arbitrary response into memory during shutdown.
             with contextlib.suppress(Exception):
-                await self._client.delete(self.url, headers=self._hdrs(), timeout=5)
-        await self._client.aclose()
+                async with client.stream("DELETE", self.url, headers=self._hdrs(), timeout=5):
+                    pass
+        await client.aclose()
         self._client = None
 
 

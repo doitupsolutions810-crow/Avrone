@@ -198,7 +198,7 @@ def test_quota_write_tmp_cleanup_tolerates_missing_tmp(env, monkeypatch):
 def test_quota_write_symlink_planted_at_leaf_is_refused(env, monkeypatch):
     outside = env.tmp / "o.txt"
     outside.write_text("secret")
-    original_open_parent = aft._open_confined_parent
+    original_open_parent = agentfs._open_confined_parent
 
     def plant_then_open(root, target, *, create_parents=False):
         parent_fd, leaf = original_open_parent(root, target, create_parents=create_parents)
@@ -206,7 +206,7 @@ def test_quota_write_symlink_planted_at_leaf_is_refused(env, monkeypatch):
             os.symlink(outside, leaf, dir_fd=parent_fd)
         return parent_fd, leaf
 
-    monkeypatch.setattr(aft, "_open_confined_parent", plant_then_open)
+    monkeypatch.setattr(agentfs, "_open_confined_parent", plant_then_open)
     with pytest.raises(AgentFSError, match="symlink"):
         aft.quota_write(env.ctx, env.dir, env.dir / "leaf.txt", b"pwn", append=True)
     assert outside.read_text() == "secret"
@@ -305,7 +305,7 @@ def test_delete_does_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monk
     (outside / "victim.txt").write_text("host-owned")
     moved = env.dir / "nested-original"
 
-    original_open_directory = aft._open_confined_directory
+    original_open_directory = agentfs._open_confined_directory
     swapped = {"done": False}
 
     def swap_after_pin(root, parent):
@@ -316,7 +316,7 @@ def test_delete_does_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monk
             swapped["done"] = True
         return fd
 
-    monkeypatch.setattr(aft, "_open_confined_directory", swap_after_pin)
+    monkeypatch.setattr(agentfs, "_open_confined_directory", swap_after_pin)
     result = call(env, "fs_delete", path="nested/victim.txt")
     assert swapped["done"] is True
     assert result == "deleted nested/victim.txt (11 bytes freed)"

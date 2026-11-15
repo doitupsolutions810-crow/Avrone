@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,10 @@ from pathlib import Path
 
 from . import agentcontainer, agentfs
 from .config import Settings
+
+
+log = logging.getLogger(__name__)
+MAX_DOCKER_RUNNER_CLOSE_DRAIN_SECONDS = 15.0
 
 
 async def _reap(proc) -> None:
@@ -121,6 +126,13 @@ class DockerRunner(Runner):
         self.container_id: str | None = None
         self.image_id: str | None = None
         self._owner_token = uuid.uuid4().hex
+        self._state_lock = asyncio.Lock()
+        self._runs_drained = asyncio.Event()
+        self._runs_drained.set()
+        self._active_runs = 0
+        self._closing = False
+        self._closed = False
+        self._stop_task: asyncio.Task | None = None
         self.agent_pool: agentcontainer.AgentContainerPool | None = None  # AVRONE_AGENT_CONTAINER=persistent
 
     def _pool(self) -> agentcontainer.AgentContainerPool:
@@ -202,8 +214,16 @@ class DockerRunner(Runner):
         return container_id
 
     async def start(self) -> None:
-        if self.container_id is not None:
-            return
+        async with self._state_lock:
+            if self._closing or self._closed:
+                raise RuntimeError("Docker runner is closing or stopped")
+            if self.container_id is not None:
+                return
+            # Serialize concurrent boot requests so they cannot race to claim the same
+            # Docker name or create duplicate environments.
+            await self._start_locked()
+
+    async def _start_locked(self) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
         image_result = await self._exec(
             ["docker", "image", "inspect", "--format", "{{.Id}}", self.s.docker_image],
@@ -260,58 +280,82 @@ class DockerRunner(Runner):
         self.image_id = image_id
         self.container_id = container_id
 
-    async def stop(self) -> None:
-        pool_error: Exception | None = None
-        cancelled: asyncio.CancelledError | None = None
-        if self.agent_pool is not None:
-            try:
-                await self.agent_pool.close()
-            except asyncio.CancelledError as exc:
-                # The pool shields its internal cleanup task. Even when this waiter is
-                # cancelled, still attempt to remove the outer runner container.
-                cancelled = exc
-            except Exception as exc:  # noqa: BLE001 - clean the outer container regardless
-                pool_error = exc
-
-        async def remove_runner_container() -> None:
-            container_id = self.container_id
-            if container_id is None:
-                # Never use the friendly name as a cleanup target when this runner instance
-                # has no verified Docker identity.
-                return
-            result = await self._exec(
-                ["docker", "rm", "-f", container_id], "docker rm", 30
-            )
-            if (result.exit_code != 0
-                    and "no such container" not in str(result.stderr or "").lower()
-                    and "no such object" not in str(result.stderr or "").lower()):
-                raise RuntimeError(
-                    f"Could not remove environment container {container_id}: "
-                    f"{str(result.stderr or 'unknown Docker error')[:300]}"
-                )
-            if self.container_id == container_id:
-                self.container_id = None
-
-        # Shield the independent outer-container cleanup from caller cancellation. The
-        # cancellation is re-raised only after the removal attempt has completed.
-        remove_task = asyncio.create_task(remove_runner_container())
+    async def _finish_stop(self) -> None:
+        current = asyncio.current_task()
         try:
-            await asyncio.shield(remove_task)
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
             try:
-                await asyncio.shield(remove_task)
-            except Exception as cleanup_exc:  # noqa: BLE001
-                if pool_error is None:
-                    pool_error = cleanup_exc
-        except Exception as exc:  # noqa: BLE001
-            if pool_error is None:
-                pool_error = exc
+                await asyncio.wait_for(
+                    self._runs_drained.wait(),
+                    timeout=MAX_DOCKER_RUNNER_CLOSE_DRAIN_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Docker runner %s did not drain %d active command(s) within %.1fs; "
+                    "forcing shutdown",
+                    self.container, self._active_runs, MAX_DOCKER_RUNNER_CLOSE_DRAIN_SECONDS,
+                )
 
-        if cancelled is not None:
-            raise cancelled
-        if pool_error is not None:
-            raise pool_error
+            pool_error: BaseException | None = None
+            cancelled: asyncio.CancelledError | None = None
+            if self.agent_pool is not None:
+                try:
+                    await self.agent_pool.close()
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+                except Exception as exc:  # noqa: BLE001 - still remove outer runner container
+                    pool_error = exc
+
+            remove_error: BaseException | None = None
+            container_id = self.container_id
+            if container_id is not None:
+                try:
+                    result = await self._exec(
+                        ["docker", "rm", "-f", container_id], "docker rm", 30
+                    )
+                    if (result.exit_code != 0
+                            and "no such container" not in str(result.stderr or "").lower()
+                            and "no such object" not in str(result.stderr or "").lower()):
+                        raise RuntimeError(
+                            f"Could not remove environment container {container_id}: "
+                            f"{str(result.stderr or 'unknown Docker error')[:300]}"
+                        )
+                    async with self._state_lock:
+                        if self.container_id == container_id:
+                            self.container_id = None
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+                except Exception as exc:  # noqa: BLE001
+                    remove_error = exc
+
+            if cancelled is not None:
+                raise cancelled
+            if pool_error is not None:
+                raise pool_error
+            if remove_error is not None:
+                raise remove_error
+
+            async with self._state_lock:
+                self._closed = True
+                if self._stop_task is current:
+                    self._stop_task = None
+        except BaseException:
+            # Keep admission closed, but permit a subsequent stop() to retry only the
+            # cleanup that remains incomplete.
+            async with self._state_lock:
+                if self._stop_task is current:
+                    self._stop_task = None
+            raise
+
+    async def stop(self) -> None:
+        async with self._state_lock:
+            if self._closed:
+                return
+            self._closing = True
+            if self._stop_task is None:
+                self._stop_task = asyncio.create_task(self._finish_stop())
+            task = self._stop_task
+        # Caller cancellation must not interrupt lease draining or Docker cleanup.
+        await asyncio.shield(task)
 
     def exec_argv(
         self, cmd: str, agent_cwd: Path | None = None, *, container_ref: str | None = None
@@ -340,23 +384,34 @@ class DockerRunner(Runner):
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
-        if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
-            # long-lived per-agent home container (only the agent dir mounted at /agent), reused
-            pool = self._pool()
-            async with pool.lease(agent_cwd) as name:
-                # Execute against the immutable Docker ID captured at lease admission. A
-                # remove/recreate race on the friendly name must never redirect a command.
-                container_id = pool.container_id(name)
-                return await self._exec(
-                    agentcontainer.exec_argv(container_id, cmd), cmd, timeout or self.s.command_timeout
-                )
-        target = self.container_id
-        if target is None:
-            raise RuntimeError("Docker runner must be started and have a verified container ID before shared commands")
-        return await self._exec(
-            self.exec_argv(cmd, agent_cwd, container_ref=target),
-            cmd, timeout or self.s.command_timeout,
-        )
+        async with self._state_lock:
+            if self._closing or self._closed:
+                raise RuntimeError("Docker runner is closing or stopped")
+            target = self.container_id
+            if target is None:
+                raise RuntimeError("Docker runner must be started and have a verified container ID before commands")
+            self._active_runs += 1
+            self._runs_drained.clear()
+        try:
+            if agent_cwd is not None and agentcontainer.container_mode() == "persistent":
+                # The outer lease accounts for shutdown; the pool lease protects the
+                # individual worker container from idle reap and replacement.
+                pool = self._pool()
+                async with pool.lease(agent_cwd) as name:
+                    container_id = pool.container_id(name)
+                    return await self._exec(
+                        agentcontainer.exec_argv(container_id, cmd), cmd, timeout or self.s.command_timeout
+                    )
+            return await self._exec(
+                self.exec_argv(cmd, agent_cwd, container_ref=target),
+                cmd, timeout or self.s.command_timeout,
+            )
+        finally:
+            async with self._state_lock:
+                self._active_runs = max(0, self._active_runs - 1)
+                if self._active_runs == 0:
+                    self._runs_drained.set()
+
 
 
 async def establish(settings: Settings) -> Runner:

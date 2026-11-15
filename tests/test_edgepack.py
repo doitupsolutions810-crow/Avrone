@@ -902,8 +902,10 @@ def test_docker_runner_stop_still_removes_outer_container_when_pool_close_waiter
         stop_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stop_task
-        assert seen == [["docker", "rm", "-f", expected_runner_id]]
+        assert seen == []  # the shielded shutdown task is still waiting for the pool
         release.set()
+        await runner.stop()
+        assert seen == [["docker", "rm", "-f", expected_runner_id]]
 
     run(go())
 
@@ -1056,6 +1058,154 @@ def test_docker_runner_fails_closed_if_image_resolution_is_invalid(tmp_path, mon
         run(runner.start())
     assert len(seen) == 1
     assert seen[0][1:3] == ["image", "inspect"]
+
+
+
+def test_docker_runner_stop_waits_for_active_shared_command_and_rejects_new_work(tmp_path, monkeypatch):
+    async def go():
+        runner = DockerRunner(_settings(tmp_path, allow_network=False))
+        fake = FakeDocker()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        seen = []
+
+        async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+            seen.append(argv)
+            if len(argv) > 1 and argv[1] == "exec":
+                entered.set()
+                await release.wait()
+            return await fake(argv, timeout)
+
+        monkeypatch.setattr(runner, "_exec", fake_exec)
+        await runner.start()
+        runner_id = runner.container_id
+        command = asyncio.create_task(runner.run("long-work"))
+        await entered.wait()
+        stop_task = asyncio.create_task(runner.stop())
+        await asyncio.sleep(0)
+        assert ["docker", "rm", "-f", runner_id] not in seen
+        with pytest.raises(RuntimeError, match="closing or stopped"):
+            await runner.run("late-work")
+        release.set()
+        assert (await command).exit_code == 0
+        await stop_task
+        assert ["docker", "rm", "-f", runner_id] in seen
+        assert runner._active_runs == 0 and runner._closed
+
+    run(go())
+
+
+def test_docker_runner_cancelled_command_releases_shutdown_lease(tmp_path, monkeypatch):
+    async def go():
+        runner = DockerRunner(_settings(tmp_path, allow_network=False))
+        fake = FakeDocker()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        seen = []
+
+        async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+            seen.append(argv)
+            if len(argv) > 1 and argv[1] == "exec":
+                entered.set()
+                await release.wait()
+            return await fake(argv, timeout)
+
+        monkeypatch.setattr(runner, "_exec", fake_exec)
+        await runner.start()
+        command = asyncio.create_task(runner.run("cancel-me"))
+        await entered.wait()
+        assert runner._active_runs == 1
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await command
+        assert runner._active_runs == 0 and runner._runs_drained.is_set()
+        await runner.stop()
+        assert runner._closed
+        release.set()
+
+    run(go())
+
+
+def test_docker_runner_forces_shutdown_after_bounded_command_drain(tmp_path, monkeypatch):
+    async def go():
+        monkeypatch.setattr(sovereign, "MAX_DOCKER_RUNNER_CLOSE_DRAIN_SECONDS", 0.01)
+        runner = DockerRunner(_settings(tmp_path, allow_network=False))
+        fake = FakeDocker()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        seen = []
+
+        async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+            seen.append(argv)
+            if len(argv) > 1 and argv[1] == "exec":
+                entered.set()
+                await release.wait()
+            return await fake(argv, timeout)
+
+        monkeypatch.setattr(runner, "_exec", fake_exec)
+        await runner.start()
+        runner_id = runner.container_id
+        command = asyncio.create_task(runner.run("stuck"))
+        await entered.wait()
+        await asyncio.wait_for(runner.stop(), timeout=1)
+        assert runner._closed and runner.container_id is None
+        assert ["docker", "rm", "-f", runner_id] in seen
+        release.set()
+        result = await command
+        assert result.exit_code != 0
+        assert runner._active_runs == 0
+
+    from avrone import sovereign
+    run(go())
+
+
+def test_docker_runner_concurrent_start_is_serialized(tmp_path, monkeypatch):
+    async def go():
+        runner = DockerRunner(_settings(tmp_path))
+        fake = FakeDocker()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+            if argv[1:3] == ["image", "inspect"]:
+                entered.set()
+                await release.wait()
+            return await fake(argv, timeout)
+
+        monkeypatch.setattr(runner, "_exec", fake_exec)
+        first = asyncio.create_task(runner.start())
+        await entered.wait()
+        second = asyncio.create_task(runner.start())
+        await asyncio.sleep(0)
+        assert not second.done()
+        release.set()
+        await asyncio.gather(first, second)
+        assert runner.container_id is not None
+        assert sum(call[1] == "run" for call in fake.calls) == 1
+        await runner.stop()
+
+    run(go())
+
+
+def test_docker_runner_stop_retries_failed_outer_remove_without_reopening_admission(tmp_path, monkeypatch):
+    async def go():
+        runner = DockerRunner(_settings(tmp_path))
+        fake = FakeDocker()
+        await runner.start()
+        runner_id = runner.container_id
+        fake.fail_rm_names.add(runner.container)
+        with pytest.raises(RuntimeError, match="Could not remove environment container"):
+            await runner.stop()
+        assert not runner._closed and runner._closing
+        assert runner.container_id == runner_id
+        with pytest.raises(RuntimeError, match="closing or stopped"):
+            await runner.run("must-not-start")
+        await runner.stop()
+        assert runner._closed and runner.container_id is None
+        assert runner_id not in fake.container_ids.values()
+        assert fake.rm_count(runner.container) == 2
+
+    run(go())
 
 
 def test_docker_runner_stop_without_verified_identity_never_removes_by_friendly_name(tmp_path, monkeypatch):
@@ -2038,6 +2188,7 @@ async def test_docker_runner_holds_lease_while_exec_is_in_flight(tmp_path, monke
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     settings = _settings(tmp_path, allow_network=False)
     runner = DockerRunner(settings)
+    runner.container_id = "c" * 64  # test this per-agent lease path without booting the outer runner
     now = [0.0]
     fake_docker = FakeDocker()
     pool = ac.AgentContainerPool(fake_docker, "img", False, node="edge",

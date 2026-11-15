@@ -169,10 +169,15 @@ class Bridge:
         self.path: Path | None = None
         if data_dir is not None:
             d = Path(data_dir) / "bridge"
-            d.mkdir(parents=True, exist_ok=True)
-            if not d.is_symlink():
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass  # disk may be missing or unavailable; the bridge still runs in memory
+            if d.is_dir() and not d.is_symlink():
                 self.path = d / f"{safe_run_id(self.run_id)}.jsonl"
-        key = str(self.path.resolve()) if self.path else f"mem:{id(self)}"
+        # Resolving the *file* itself can raise on a symlink loop before _load
+        # has a chance to reject it. An absolute path is a stable lock key.
+        key = str(self.path.absolute()) if self.path else f"mem:{id(self)}"
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(key, threading.RLock())
         self._posts: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
@@ -594,7 +599,7 @@ def _iter_bridges(core: Any) -> list[Bridge]:
         if bridge.path is not None:
             try:
                 seen.add(str(bridge.path.resolve()))
-            except OSError:
+            except (OSError, RuntimeError):
                 pass
     data_dir = _data_dir(core)
     if data_dir is None:
@@ -603,11 +608,14 @@ def _iter_bridges(core: Any) -> list[Bridge]:
     if not folder.is_dir() or folder.is_symlink():
         return out
     for path in sorted(folder.glob("*.jsonl")):
+        # Check the entry *before* resolve: symlink loops may raise RuntimeError.
+        if path.is_symlink() or not path.is_file():
+            continue
         try:
             resolved = str(path.resolve())
-        except OSError:
+        except (OSError, RuntimeError):
             continue
-        if resolved in seen or not path.is_file() or path.is_symlink():
+        if resolved in seen:
             continue
         out.append(Bridge(path.stem, data_dir))
         seen.add(resolved)

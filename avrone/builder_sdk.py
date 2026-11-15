@@ -335,12 +335,12 @@ class BuilderAgentSDK:
             started = time.time()
             try:
                 r = await self.core.runner.run(command, timeout=self.policy.verification_timeout_s)
+                reported_timeout = getattr(r, "timed_out", None)
                 evidence.commands.append({
                     "command": command,
                     "exit_code": (getattr(r, "exit_code", -1)
                                   if type(getattr(r, "exit_code", -1)) is int else -1),
-                    "timed_out": (getattr(r, "timed_out", False)
-                                  if isinstance(getattr(r, "timed_out", False), bool) else True),
+                    "timed_out": (reported_timeout if type(reported_timeout) is bool else True),
                     "stdout": str(getattr(r, "stdout", ""))[-12000:],
                     "stderr": str(getattr(r, "stderr", ""))[-12000:],
                     "duration_s": round(time.time() - started, 3),

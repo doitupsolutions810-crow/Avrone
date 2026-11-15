@@ -110,10 +110,15 @@ class LocalRunner(Runner):
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
-        if agent_cwd is None:  # non-agent command: unchanged, runs at the workspace root
-            effective_timeout = self.s.command_timeout if timeout is None else timeout
         effective_timeout = self.s.command_timeout if timeout is None else timeout
-                                env=self.agent_env(agent_cwd))
+        if agent_cwd is None:  # non-agent command: unchanged, runs at the workspace root
+            return await self._exec(
+                ["bash", "-lc", cmd], cmd, effective_timeout, cwd=self.workspace
+            )
+        return await self._exec(
+            ["bash", "-lc", cmd], cmd, effective_timeout, cwd=agent_cwd,
+            env=self.agent_env(agent_cwd),
+        )
 
 
 class DockerRunner(Runner):

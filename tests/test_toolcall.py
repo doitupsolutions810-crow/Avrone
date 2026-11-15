@@ -503,6 +503,32 @@ def test_squad_propagates_original_action_contract_to_both_workers(tmp_path, mon
     assert {e["agent"] for e in starts} == {"WorkerA-1", "WorkerB-2"}
 
 
+def test_nested_agent_does_not_replay_parent_required_action_contract(tmp_path):
+    log = []
+    llm = ScriptLLM(['{"final":"nested agent complete"}'])
+    core = _core(tmp_path, llm, tools=_reg(log), steps=4)
+    contract = {
+        "first_action": {"tool": "echo", "args": {"text": "must-run-only-in-parent"}},
+        "allow_followup_calls": False,
+    }
+    parent_task = "Original operator task.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+
+    result = run(core.run_agent(
+        "nested-contract",
+        "Child",
+        "Handle this child task",
+        depth=1,
+        run_task=parent_task,
+    ))
+
+    assert result == "nested agent complete"
+    assert log == []
+    assert len(llm.seen) == 1
+    events = core.codex.replay("nested-contract")
+    assert not any(e["kind"].startswith("action.contract.") for e in events)
+    assert not any(e["kind"] == "tool.call" for e in events)
+
+
 def test_action_contract_marker_in_planner_focus_is_not_trusted(tmp_path):
     log = []
     llm = ScriptLLM(['{"final":"ordinary task complete"}'])

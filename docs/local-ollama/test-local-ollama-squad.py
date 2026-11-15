@@ -75,10 +75,8 @@ def _safe_tmpfs(host: dict[str, Any]) -> bool:
         return False
     options = [item.strip().lower() for item in spec.split(",")]
     option_set = set(options)
-    required, forbidden = {"rw", "nosuid", "nodev", "size=128m"}, {"ro", "suid", "dev", "exec"}
-    return (required.issubset(option_set) and len(options) == len(option_set)
-            and not option_set.intersection(forbidden)
-            and len([item for item in option_set if item.startswith("size=")]) == 1)
+    required = {"rw", "nosuid", "nodev", "size=128m"}
+    return option_set == required and len(options) == len(required)
 
 
 def _durable_spawn_ids(spawns: list[dict[str, Any]]) -> dict[str, str]:
@@ -184,7 +182,8 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
             pieces = binds[0].split(":")
             bind_ok = (
-                len(pieces) == 2 and pieces[1] == "/agent"
+                len(pieces) in (2, 3) and pieces[1] == "/agent"
+                and pieces[2:] in ([], ["rw"])
                 and Path(pieces[0]).name == agent_id and Path(pieces[0]).parent.name == "agents"
             )
         mount_ok = (

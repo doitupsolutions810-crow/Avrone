@@ -181,6 +181,23 @@ def test_smoke_verifier_rejects_tampered_or_unhardened_worker_evidence(
         smoke.inspect_agent_homes("nonce", _expected(containers))
 
 
+
+def test_smoke_verifier_accepts_explicit_readwrite_bind_suffix(monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    containers = [
+        _container("solver-a", "worker-A proof\\n", "a" * 64),
+        _container("solver-b", "worker-B proof\\n", "b" * 64),
+    ]
+    for item in containers:
+        item["HostConfig"]["Binds"] = [item["HostConfig"]["Binds"][0] + ":rw"]
+    _install_docker_stub(monkeypatch, containers)
+
+    result = smoke.inspect_agent_homes("nonce", _expected(containers))
+    assert len(result) == 2
+    assert all(all(item["checks"].values()) for item in result)
+
+
 def test_smoke_verifier_rejects_missing_container_for_a_shell_caller(monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
@@ -215,12 +232,15 @@ def test_smoke_verifier_rejects_malformed_docker_inspect_shape(monkeypatch):
     ("nnp_false", "no_new_privileges"),
     ("extra_tmpfs", "bounded_tmpfs"),
     ("tmpfs_lookalike", "bounded_tmpfs"),
+    ("tmpfs_extra_option", "bounded_tmpfs"),
     ("auto_remove", "auto_remove_disabled"),
     ("wrong_memory", "memory_limit_exact"),
     ("wrong_cpu", "cpu_limit_exact"),
     ("wrong_pids", "pids_limit_exact"),
     ("duplicate_home_env", "required_environment_exact"),
     ("wrong_bind", "one_private_mount"),
+    ("wrong_bind_readonly", "one_private_mount"),
+    ("wrong_bind_relabel", "one_private_mount"),
 ])
 def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch, mutation, expected_error):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
@@ -252,6 +272,10 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
         cfg["Env"].append("HOME=/tmp")
     elif mutation == "wrong_bind":
         host["Binds"] = ["/etc:/agent"]
+    elif mutation == "wrong_bind_readonly":
+        host["Binds"] = [host["Binds"][0] + ":ro"]
+    elif mutation == "wrong_bind_relabel":
+        host["Binds"] = [host["Binds"][0] + ":z"]
     _install_docker_stub(monkeypatch, containers)
     with pytest.raises(RuntimeError, match=expected_error):
         smoke.inspect_agent_homes("nonce", _expected(containers))

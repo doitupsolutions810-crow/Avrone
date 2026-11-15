@@ -272,6 +272,69 @@ def test_pool_cached_home_keeps_immutable_image_pin_after_tag_retarget(tmp_path)
     ]
 
 
+
+@pytest.mark.parametrize("mutation", ["tmpfs_extra_mode", "bind_readonly", "bind_relabel"])
+def test_pool_rejects_unapproved_cached_mount_options(tmp_path, mutation):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", mutation)
+    name = run(pool.ensure(home))
+    host = fake.inspect_payloads[name]["HostConfig"]
+    if mutation == "tmpfs_extra_mode":
+        host["Tmpfs"]["/tmp"] += ",mode=1777"
+    elif mutation == "bind_readonly":
+        host["Binds"] = [host["Binds"][0] + ":ro"]
+    elif mutation == "bind_relabel":
+        host["Binds"] = [host["Binds"][0] + ":z"]
+
+    assert run(pool.ensure(home)) == name
+    assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+    repaired = fake.inspect_payloads[name]["HostConfig"]
+    assert repaired["Tmpfs"]["/tmp"] == "rw,nosuid,nodev,size=128m"
+    assert repaired["Binds"] == [f"{home}:/agent"]
+    assert pool.created == 2
+
+
+def test_pool_accepts_explicit_readwrite_bind_suffix(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "rw-bind")
+    name = run(pool.ensure(home))
+    bind = fake.inspect_payloads[name]["HostConfig"]["Binds"][0]
+    fake.inspect_payloads[name]["HostConfig"]["Binds"] = [bind + ":rw"]
+
+    assert run(pool.ensure(home)) == name
+    assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+    assert pool.created == 1
+
+
+@pytest.mark.parametrize("mode", ["service:backend", "service", "container:peer", "host"])
+def test_pool_rejects_shared_network_namespaces_with_network_opt_in(tmp_path, mode):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", True, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "shared-net")
+    name = run(pool.ensure(home))
+    fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] = mode
+
+    assert run(pool.ensure(home)) == name
+    assert fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] == "bridge"
+    assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+    assert pool.created == 2
+
+
+def test_pool_allows_user_defined_bridge_network_with_network_opt_in(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", True, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "custom-net")
+    name = run(pool.ensure(home))
+    fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] = "avrone-isolated-net"
+
+    assert run(pool.ensure(home)) == name
+    assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+    assert pool.created == 1
+
+
+
 def test_pool_adopts_only_a_policy_compliant_running_leftover(tmp_path):
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
     fake = FakeDocker()

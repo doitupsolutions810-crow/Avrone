@@ -257,9 +257,10 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
         parts = binds[0].split(":")
         good_bind = (
-            len(parts) >= 2
+            len(parts) in (2, 3)
             and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
             and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
+            and parts[2:] in ([], ["rw"])
         )
     mounts = payload.get("Mounts") or []
     good_mount = (
@@ -282,9 +283,7 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
                      if isinstance(tmpfs_spec, str) else [])
     tmpfs_set = set(tmpfs_options)
     tmpfs_required = {"rw", "nosuid", "nodev", "size=128m"}
-    if (not tmpfs_required.issubset(tmpfs_set) or len(tmpfs_options) != len(tmpfs_set)
-            or tmpfs_set.intersection({"ro", "suid", "dev", "exec"})
-            or len([part for part in tmpfs_set if part.startswith("size=")]) != 1):
+    if tmpfs_set != tmpfs_required or len(tmpfs_options) != len(tmpfs_required):
         problems.append("bounded /tmp tmpfs is missing or contains unsafe options/mounts")
     cap_drop, cap_add = host.get("CapDrop"), host.get("CapAdd")
     if (not isinstance(cap_drop, list) or any(not isinstance(x, str) for x in cap_drop)
@@ -299,7 +298,11 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("agent container has network access")
     raw_network_mode = host.get("NetworkMode")
     network_mode = raw_network_mode.lower() if isinstance(raw_network_mode, str) else ""
-    if allow_network and (not network_mode or network_mode.startswith(("host", "container"))):
+    if allow_network and (
+        not network_mode
+        or network_mode in {"host", "container", "service"}
+        or network_mode.startswith(("container:", "service:"))
+    ):
         problems.append("agent container has an invalid or shared host/peer network namespace")
     if host.get("Privileged") is not False:
         problems.append("privileged container mode is enabled")

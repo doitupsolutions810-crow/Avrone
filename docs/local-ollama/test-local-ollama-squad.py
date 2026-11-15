@@ -359,7 +359,7 @@ def build_smoke_task(shell_command: str) -> str:
         "Do not call think or any preparatory/non-shell tool. Do not send a prose preamble or a plan. "
         "After the tool returns, report its actual TOOL RESULT only. Do not claim the command ran or the file "
         "exists unless the shell tool result proves it. Both workers use the same command but run it in their "
-        "own private /agent directories.\\n"
+        "own private /agent directories.\n"
         "AVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
     )
 def main() -> int:

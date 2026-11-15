@@ -643,6 +643,79 @@ def test_docker_runner_persistent_mode(tmp_path, monkeypatch):
     assert ["docker", "rm", "-f", "avrone-agent-edge1-researcher"] in seen
 
 
+
+def test_docker_runner_stop_removes_outer_container_even_when_agent_pool_close_fails(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    runner = DockerRunner(s)
+    seen = []
+
+    class BrokenPool:
+        async def close(self):
+            raise RuntimeError("agent pool could not remove one home")
+
+    runner.agent_pool = BrokenPool()
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(argv)
+        return CommandResult(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="agent pool could not remove"):
+        run(runner.stop())
+    assert seen == [["docker", "rm", "-f", runner.container]]
+
+
+def test_docker_runner_stop_reports_outer_container_removal_failure(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        return CommandResult(cmd, 125, "", "permission denied")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="Could not remove environment container"):
+        run(runner.stop())
+
+
+def test_docker_runner_stop_treats_an_already_missing_outer_container_as_success(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        return CommandResult(cmd, 1, "", "No such container: " + runner.container)
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    run(runner.stop())
+
+
+def test_docker_runner_stop_still_removes_outer_container_when_pool_close_waiter_is_cancelled(
+    tmp_path, monkeypatch
+):
+    async def go():
+        runner = DockerRunner(_settings(tmp_path))
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        seen = []
+
+        class SlowPool:
+            async def close(self):
+                entered.set()
+                await release.wait()
+
+        runner.agent_pool = SlowPool()
+
+        async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+            seen.append(argv)
+            return CommandResult(cmd, 0, "", "")
+
+        monkeypatch.setattr(runner, "_exec", fake_exec)
+        stop_task = asyncio.create_task(runner.stop())
+        await entered.wait()
+        stop_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+        assert seen == [["docker", "rm", "-f", runner.container]]
+        release.set()
+
+    run(go())
+
+
 def test_docker_runner_off_by_default_unchanged(tmp_path, monkeypatch):
     s = _settings(tmp_path)
     r = DockerRunner(s)

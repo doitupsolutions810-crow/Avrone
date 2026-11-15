@@ -137,9 +137,50 @@ class DockerRunner(Runner):
             raise RuntimeError(f"Could not start environment container: {res.stderr}")
 
     async def stop(self) -> None:
+        pool_error: Exception | None = None
+        cancelled: asyncio.CancelledError | None = None
         if self.agent_pool is not None:
-            await self.agent_pool.close()
-        await self._exec(["docker", "rm", "-f", self.container], "docker rm", 30)
+            try:
+                await self.agent_pool.close()
+            except asyncio.CancelledError as exc:
+                # The pool shields its internal cleanup task. Even when this waiter is
+                # cancelled, still attempt to remove the outer runner container.
+                cancelled = exc
+            except Exception as exc:  # noqa: BLE001 - clean the outer container regardless
+                pool_error = exc
+
+        async def remove_runner_container() -> None:
+            result = await self._exec(
+                ["docker", "rm", "-f", self.container], "docker rm", 30
+            )
+            if (result.exit_code != 0
+                    and "no such container" not in str(result.stderr or "").lower()
+                    and "no such object" not in str(result.stderr or "").lower()):
+                raise RuntimeError(
+                    f"Could not remove environment container {self.container}: "
+                    f"{str(result.stderr or 'unknown Docker error')[:300]}"
+                )
+
+        # Shield the independent outer-container cleanup from caller cancellation. The
+        # cancellation is re-raised only after the removal attempt has completed.
+        remove_task = asyncio.create_task(remove_runner_container())
+        try:
+            await asyncio.shield(remove_task)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+            try:
+                await asyncio.shield(remove_task)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                if pool_error is None:
+                    pool_error = cleanup_exc
+        except Exception as exc:  # noqa: BLE001
+            if pool_error is None:
+                pool_error = exc
+
+        if cancelled is not None:
+            raise cancelled
+        if pool_error is not None:
+            raise pool_error
 
     def exec_argv(self, cmd: str, agent_cwd: Path | None = None) -> list[str]:
         """argv for one command. Agent commands run in their own dir.

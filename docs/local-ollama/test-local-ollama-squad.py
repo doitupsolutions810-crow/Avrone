@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live Chat -> Ollama -> Trinity squad -> Docker isolation smoke test."""
 from __future__ import annotations
-import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, hashlib, ipaddress, json, math, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 from pathlib import Path
 from typing import Any
 
@@ -22,18 +22,78 @@ def load_profile(path: Path) -> None:
         if re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
             os.environ.setdefault(key, value.strip("\"'"))
 
+MAX_API_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+def _is_loopback_http_url(url: str) -> bool:
+    """Accept only plain-HTTP loopback AVRONE API URLs without URL ambiguity."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        port = parsed.port  # Access validates malformed and out-of-range ports.
+    except (TypeError, ValueError):
+        return False
+    if (parsed.scheme.lower() != "http" or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment or (port is not None and port < 1)):
+        return False
+    host = parsed.hostname.rstrip(".").lower()
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not let a loopback API response redirect this operator test off-host."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _event_data(event: dict[str, Any]) -> dict[str, Any]:
+    value = event.get("data")
+    return value if isinstance(value, dict) else {}
+
+
 def request_json(url: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> Any:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    if not _is_loopback_http_url(url):
+        raise RuntimeError("Refusing API request outside the loopback HTTP boundary.")
+    if type(timeout) not in (int, float) or timeout <= 0:
+        raise RuntimeError("Local AVRONE API timeout must be a positive finite number.")
+    try:
+        timeout_is_finite = math.isfinite(timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout_is_finite = False
+    if not timeout_is_finite:
+        raise RuntimeError("Local AVRONE API timeout must be a positive finite number.")
+    if payload is not None and not isinstance(payload, dict):
+        raise RuntimeError("Local AVRONE API request payload must be a JSON object.")
+    try:
+        data = None if payload is None else json.dumps(
+            payload, ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
+        raise RuntimeError("Local AVRONE API request payload is not valid JSON.") from None
     req = urllib.request.Request(url, data=data,
         headers={"Content-Type": "application/json"} if data is not None else {},
         method="POST" if data is not None else "GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        opener = urllib.request.build_opener(_NoRedirect())
+        with opener.open(req, timeout=timeout) as response:
+            raw = response.read(MAX_API_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_API_RESPONSE_BYTES:
+            raise RuntimeError(
+                f"Local AVRONE API response exceeded {MAX_API_RESPONSE_BYTES} bytes."
+            )
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            raise RuntimeError(f"Local AVRONE API returned malformed JSON for {url}.") from None
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise RuntimeError(f"Refusing HTTP redirect from the loopback AVRONE API ({exc.code}).") from None
         detail = exc.read(3000).decode("utf-8", "replace")
         raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise RuntimeError(f"Could not reach {url}: {exc}") from exc
 
 def safe_agent_id(value: str) -> str:
@@ -169,6 +229,11 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
     expected_image_id = image_result.stdout.strip().lower() if isinstance(image_result.stdout, str) else ""
     if re.fullmatch(r"sha256:[0-9a-f]{64}", expected_image_id) is None:
         raise RuntimeError("Docker image inspect returned a malformed immutable image ID.")
+    workspace_value = os.environ.get("AVRONE_WORKSPACE", "")
+    workspace = Path(workspace_value).expanduser() if workspace_value else ROOT / "workspace"
+    if not workspace.is_absolute():
+        workspace = ROOT / workspace
+    expected_workspace = workspace.resolve(strict=False)
     expected_memory = container_policy.mem_mb() * 1024 * 1024
     expected_nano_cpus = int(round(container_policy.cpus() * 1_000_000_000))
 
@@ -196,10 +261,14 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         bind_ok = False
         if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
             pieces = binds[0].split(":")
+            bind_source = Path(pieces[0]).expanduser() if pieces else Path("/")
+            if not bind_source.is_absolute():
+                bind_source = ROOT / bind_source
+            expected_source = (expected_workspace / "agents" / agent_id).resolve(strict=False)
             bind_ok = (
-                len(pieces) in (2, 3) and pieces[1] == "/agent"
-                and pieces[2:] in ([], ["rw"])
-                and Path(pieces[0]).name == agent_id and Path(pieces[0]).parent.name == "agents"
+                len(pieces) in (2, 3) and bind_source.is_absolute()
+                and pieces[1] == "/agent" and pieces[2:] in ([], ["rw"])
+                and bind_source.resolve(strict=False) == expected_source
             )
         mount_ok = (
             mount.get("Type") == "bind" and mount.get("Destination") == "/agent"
@@ -387,11 +456,14 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1200)
     args = ap.parse_args()
     load_profile(args.profile)
-    parsed = urllib.parse.urlparse(args.base_url)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise SystemExit("BLOCKED: smoke test only permits a loopback AVRONE API URL.")
+    if not _is_loopback_http_url(args.base_url):
+        raise SystemExit("BLOCKED: smoke test only permits an unambiguous loopback HTTP AVRONE API URL.")
+    if type(args.timeout) is not int or args.timeout <= 0:
+        raise SystemExit("BLOCKED: --timeout must be a positive integer number of seconds.")
     base = args.base_url.rstrip("/")
     status = request_json(base + "/api/status")
+    if not isinstance(status, dict):
+        raise RuntimeError("AVRONE status response must be a JSON object.")
     if status.get("provider") != "ollama" or status.get("runner") != "docker":
         raise SystemExit(f"BLOCKED: expected provider=ollama and runner=docker; observed {status.get('provider')} / {status.get('runner')}.")
     if os.environ.get("AVRONE_ALLOW_NETWORK", "false").lower() not in {"false", "0", "no", "off"}:
@@ -409,10 +481,14 @@ def main() -> int:
     task = build_smoke_task(shell_command)
     result = request_json(base + "/api/chat",
         {"message": task, "mode": "squad", "squad_size": 2, "dispatch": "local"}, timeout=args.timeout)
-    run_id = result.get("run_id") if isinstance(result, dict) else None
-    if not run_id:
-        raise RuntimeError("Chat returned no run_id; this is not a verified run.")
-    events = request_json(base + "/api/runs/" + urllib.parse.quote(str(run_id), safe=""))
+    if not isinstance(result, dict):
+        raise RuntimeError("AVRONE chat response must be a JSON object.")
+    run_id = result.get("run_id")
+    if (not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 200
+            or any(ord(ch) < 33 or ord(ch) == 127 for ch in run_id)):
+        raise RuntimeError("Chat returned no safe run_id; this is not a verified run.")
+    run_id = run_id.strip()
+    events = request_json(base + "/api/runs/" + urllib.parse.quote(run_id, safe=""))
     if not isinstance(events, list):
         raise RuntimeError("Run log endpoint did not return an event array.")
     if any(not isinstance(event, dict) for event in events):
@@ -421,8 +497,7 @@ def main() -> int:
     calls = [e for e in events if e.get("kind") == "tool.call"]
     results = [e for e in events if e.get("kind") == "tool.result"]
     spawn_by_agent = {
-        e.get("agent"): ((e.get("data") or {}).get("agent_id")
-                         if isinstance(e.get("data"), dict) else None)
+        e.get("agent"): _event_data(e).get("agent_id")
         for e in spawns
     }
     diagnostic = {
@@ -435,26 +510,26 @@ def main() -> int:
                          for kind in sorted({str(e.get("kind")) for e in events})},
         "spawns": [
             {"agent": e.get("agent"), "agent_id": spawn_by_agent.get(e.get("agent")),
-             "role": (e.get("data") or {}).get("role"),
-             "focus": str((e.get("data") or {}).get("focus", ""))[:350]}
+             "role": _event_data(e).get("role"),
+             "focus": str(_event_data(e).get("focus", ""))[:350]}
             for e in spawns
         ],
         "tool_calls": [
-            {"agent": e.get("agent"), "tool": (e.get("data") or {}).get("tool"),
-             "step": (e.get("data") or {}).get("step"),
-             "args_keys": sorted((e.get("data") or {}).get("args", {}).keys())
-                          if isinstance((e.get("data") or {}).get("args"), dict) else []}
+            {"agent": e.get("agent"), "tool": _event_data(e).get("tool"),
+             "step": _event_data(e).get("step"),
+             "args_keys": sorted(_event_data(e).get("args", {}).keys())
+                          if isinstance(_event_data(e).get("args"), dict) else []}
             for e in calls
         ],
         "tool_results": [
-            {"agent": e.get("agent"), "tool": (e.get("data") or {}).get("tool"),
-             "output_preview": str((e.get("data") or {}).get("output", ""))[:350]}
+            {"agent": e.get("agent"), "tool": _event_data(e).get("tool"),
+             "output_preview": str(_event_data(e).get("output", ""))[:350]}
             for e in results
         ],
         "worker_summaries": [
             {"role": str(a.get("role", "")),
              "result_preview": str(a.get("result", ""))[:700]}
-            for a in (result.get("agents", []) if isinstance(result, dict) else [])
+            for a in (result.get("agents") if isinstance(result.get("agents"), list) else [])
             if isinstance(a, dict)
         ],
         "lead_preview": str(result.get("answer", ""))[:1200] if isinstance(result, dict) else "",

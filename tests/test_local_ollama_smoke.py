@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,6 +77,7 @@ def _container(agent_id: str, content: str, cid: str) -> dict:
 
 
 def _install_docker_stub(monkeypatch, containers):
+    monkeypatch.setenv("AVRONE_WORKSPACE", "/workspace")
     container_map = {c["Id"]: c for c in containers}
     def fake_run(args, check=False, capture_output=False, text=False, timeout=None):
         if args[:3] == ["docker", "image", "inspect"]:
@@ -247,6 +249,7 @@ def test_smoke_verifier_rejects_malformed_docker_inspect_shape(monkeypatch):
     ("wrong_bind", "one_private_mount"),
     ("wrong_bind_readonly", "one_private_mount"),
     ("wrong_bind_relabel", "one_private_mount"),
+    ("wrong_workspace_root", "one_private_mount"),
 ])
 def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch, mutation, expected_error):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
@@ -292,6 +295,8 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
         host["Binds"] = [host["Binds"][0] + ":ro"]
     elif mutation == "wrong_bind_relabel":
         host["Binds"] = [host["Binds"][0] + ":z"]
+    elif mutation == "wrong_workspace_root":
+        host["Binds"] = ["/another/agents/solver-a:/agent"]
     _install_docker_stub(monkeypatch, containers)
     with pytest.raises(RuntimeError, match=expected_error):
         smoke.inspect_agent_homes("nonce", _expected(containers))
@@ -539,4 +544,110 @@ def test_live_smoke_rejects_extra_or_mismatched_tool_events(mutation, expected_e
         results[0]["agent"] = "Lead-1"
     with pytest.raises(RuntimeError, match=expected_error):
         smoke._validate_worker_tool_events(spawns, calls, results, cmd)
+
+@pytest.mark.parametrize("url", [
+    "https://127.0.0.1:8710/api/status",
+    "http://example.com/api/status",
+    "http://localhost.attacker.test/api/status",
+    "http://user@127.0.0.1:8710/api/status",
+    "http://127.0.0.1:99999/api/status",
+    "http://127.0.0.1:8710/api/status?next=https://example.com",
+    "http://127.0.0.1:8710/api/status#fragment",
+    "file:///etc/passwd",
+    "http://[::1",
+])
+def test_live_smoke_rejects_non_loopback_or_ambiguous_api_urls(url):
+    assert smoke._is_loopback_http_url(url) is False
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:8710/api/status",
+    "http://127.4.5.6:8710/api/status",
+    "http://localhost:8710/api/status",
+    "http://[::1]:8710/api/status",
+])
+def test_live_smoke_accepts_loopback_api_urls(url):
+    assert smoke._is_loopback_http_url(url) is True
+
+
+def test_request_json_refuses_redirects_even_from_loopback(monkeypatch):
+    class RedirectingOpener:
+        def open(self, request, timeout):
+            raise smoke.urllib.error.HTTPError(
+                request.full_url, 302, "Found", {"Location": "http://example.com/"}, None
+            )
+
+    def fake_build_opener(*handlers):
+        assert len(handlers) == 1 and isinstance(handlers[0], smoke._NoRedirect)
+        return RedirectingOpener()
+
+    monkeypatch.setattr(smoke.urllib.request, "build_opener", fake_build_opener)
+    with pytest.raises(RuntimeError, match="redirect"):
+        smoke.request_json("http://127.0.0.1:8710/api/status")
+
+
+def test_request_json_converts_malformed_json_to_bounded_runtime_error(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _limit):
+            return b"{not-json"
+
+    class Opener:
+        def open(self, _request, timeout):
+            assert timeout == 5
+            return Response()
+
+    monkeypatch.setattr(smoke.urllib.request, "build_opener", lambda *_args: Opener())
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        smoke.request_json("http://localhost:8710/api/status", timeout=5)
+
+
+def test_request_json_rejects_oversized_local_api_responses(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, limit):
+            return b"x" * limit
+
+    class Opener:
+        def open(self, _request, timeout):
+            return Response()
+
+    monkeypatch.setattr(smoke.urllib.request, "build_opener", lambda *_args: Opener())
+    with pytest.raises(RuntimeError, match="exceeded"):
+        smoke.request_json("http://127.0.0.1:8710/api/status")
+
+
+def test_live_smoke_rejects_non_object_status_before_field_access(monkeypatch):
+    monkeypatch.setattr(smoke, "request_json", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(smoke.sys, "argv", [
+        "test-local-ollama-squad.py", "--profile", str(ROOT / "missing-profile.env")
+    ])
+    with pytest.raises(RuntimeError, match="status response must be a JSON object"):
+        smoke.main()
+
+
+def test_live_smoke_rejects_non_object_chat_response(monkeypatch):
+    monkeypatch.setenv("AVRONE_ALLOW_NETWORK", "false")
+    monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
+    responses = iter([
+        {"provider": "ollama", "runner": "docker"},
+        [],
+    ])
+    monkeypatch.setattr(smoke, "request_json", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(smoke.sys, "argv", [
+        "test-local-ollama-squad.py", "--profile", str(ROOT / "missing-profile.env")
+    ])
+    with pytest.raises(RuntimeError, match="chat response must be a JSON object"):
+        smoke.main()
+
+
+@pytest.mark.parametrize("data", [None, "not-an-object", 7, [], ["unexpected"]])
+def test_event_diagnostic_data_accessor_never_assumes_dict_shape(data):
+    assert smoke._event_data({"data": data}) == {}
 

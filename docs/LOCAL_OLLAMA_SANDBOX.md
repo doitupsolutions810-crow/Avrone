@@ -100,3 +100,24 @@ The local AVRONE server also exposes `GET /api/model/capabilities` when configur
 ## Current verification boundary
 
 Repository-side unit tests can validate Docker argv and policy without a daemon. The live Chat/Ollama/container test requires this Mac's Docker daemon, installed Ollama model and running AVRONE server. If Desktop Commander is not connected, those checks are BLOCKED until the host is connected; do not treat offline tests as evidence of live execution.
+
+## Connect external platforms without exposing agent containers
+
+Ollama is AVRONE's **inference backend**; it does not inherit ChatGPT's connected-app sessions or credentials. External platform tools are supplied separately through AVRONE's host-side plugin/MCP layer:
+
+- AVRONE_MCP_CONFIG points to an operator-owned mcp.json. The existing client supports stdio and Streamable HTTP MCP servers; discovered tools are namespaced mcp__<server>__<tool>.
+- The host-side AVRONE process owns MCP/API connections. Agent Docker containers remain --network none and receive no provider tokens. Do not solve a missing integration by enabling worker-container egress or mounting the Docker socket into a worker.
+- Start with read-only tools and least-privilege credentials. Add writes only through a reviewed, explicit operation contract with validation, idempotency where appropriate, audit events, and an independent verification step.
+- Keep mcp.json, .env, provider tokens, and local sandbox profiles untracked; restrict their filesystem permissions. Never commit API keys, session cookies, service-role keys, or generated credentials.
+
+For the connected platform families, keep the boundaries distinct:
+
+| Platform | AVRONE integration seam | Required gate before claiming it is connected |
+|---|---|---|
+| GitHub | Repository/PR workflow through the GitHub connector or a separately configured GitHub MCP server | Resolve the live repository and ref; apply branch protections; keep writes on a reviewable branch; never infer that a commit has passed CI from a queued run |
+| ElevenLabs | Explicit agent or voice operations through an operator-configured ElevenLabs API/MCP adapter | Resolve the intended agent and workspace; inspect before editing; test the draft/branch before deployment |
+| Supabase | Project-scoped database/API adapter, preferably read-only during discovery | Resolve the exact project; keep service-role credentials host-only; retain RLS and migration review; run advisors and read-back verification for schema changes |
+| Railway | Project/service/deployment adapter or operator CLI workflow | Resolve project, environment, and service IDs; inspect deployment state and logs; report deployed only after a terminal SUCCESS |
+| Replit | A resolved Replit App ID and an app-specific update/inspection path | Resolve the exact app in the intended account; do not guess IDs or publish on the basis of a queued build |
+
+A connected service must be reported as READY only after its configured MCP/API handshake and at least one allowlisted read operation pass. Missing credentials, unresolved app/project/service identity, or an absent runtime must remain BLOCKED or UNCONFIGURED; they are not simulated as live integrations. The existing plugins/platform_bridge.py remains a fixed-resource bridge for the sibling services it explicitly lists—it is not a generic proxy and must not be expanded with guessed endpoints.

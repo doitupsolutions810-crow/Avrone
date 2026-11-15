@@ -79,6 +79,21 @@ def _safe_tmpfs(host: dict[str, Any]) -> bool:
     return option_set == required and len(options) == len(required)
 
 
+def _safe_ulimits(host: dict[str, Any]) -> bool:
+    values = host.get("Ulimits")
+    return (
+        isinstance(values, list)
+        and len(values) == 1
+        and isinstance(values[0], dict)
+        and set(values[0]) == {"Name", "Soft", "Hard"}
+        and values[0].get("Name") == "nofile"
+        and type(values[0].get("Soft")) is int
+        and values[0].get("Soft") == 1024
+        and type(values[0].get("Hard")) is int
+        and values[0].get("Hard") == 2048
+    )
+
+
 def _durable_spawn_ids(spawns: list[dict[str, Any]]) -> dict[str, str]:
     identities: dict[str, str] = {}
     seen_ids: set[str] = set()
@@ -229,6 +244,7 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
             "swap_limit_exact": type(host.get("MemorySwap")) is int and host.get("MemorySwap") == expected_memory,
             "cpu_limit_exact": type(host.get("NanoCpus")) is int and host.get("NanoCpus") == expected_nano_cpus,
             "pids_limit_exact": type(host.get("PidsLimit")) is int and host.get("PidsLimit") == container_policy.PIDS_LIMIT,
+            "open_file_limit_exact": _safe_ulimits(host),
             "one_private_mount": mount_ok and bind_ok,
             "required_environment_exact": _required_env_matches(cfg.get("Env")),
             "working_dir_is_agent_home": cfg.get("WorkingDir") == "/agent",

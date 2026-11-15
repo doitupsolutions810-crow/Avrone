@@ -1061,6 +1061,53 @@ def test_safe_part_caps_untrusted_server_names():
     assert len(mc._safe_part("x" * 10_000)) == 80
 
 
+def test_manager_start_is_idempotent_and_restart_after_stop(monkeypatch):
+    FakeClient.behaviour = {"one": {"tools": [{"name": "echo"}]}}
+    monkeypatch.setattr(mc, "MCPClient", FakeClient)
+    manager = MCPManager(servers={"one": {"command": "c"}})
+    registry = ToolRegistry()
+
+    async def go():
+        await asyncio.gather(manager.start(registry), manager.start(registry))
+        first = manager.clients["one"]
+        assert manager.status()["one"]["tools"] == 1
+        assert len(manager._registered) == 1
+        await manager.start(registry)
+        assert manager.clients["one"] is first
+        assert not first.closed
+        await manager.stop()
+        assert first.closed
+        assert not manager.clients and not manager._registered
+        await manager.start(registry)
+        second = manager.clients["one"]
+        assert second is not first
+        assert manager.status()["one"]["tools"] == 1
+        await manager.stop()
+        assert second.closed
+
+    run(go())
+
+
+def test_manager_cannot_switch_registries_without_stopping(monkeypatch):
+    FakeClient.behaviour = {"one": {"tools": [{"name": "echo"}]}}
+    monkeypatch.setattr(mc, "MCPClient", FakeClient)
+    manager = MCPManager(servers={"one": {"command": "c"}})
+    original = ToolRegistry()
+    other = ToolRegistry()
+
+    async def go():
+        await manager.start(original)
+        first = manager.clients["one"]
+        with pytest.raises(MCPError, match="already started with another registry"):
+            await manager.start(other)
+        assert manager.registry is original
+        assert manager.clients["one"] is first and not first.closed
+        assert other.names() == []
+        await manager.stop()
+
+    run(go())
+
+
 def test_manager_stop_before_start():
     m = MCPManager(servers={})
     run(m.stop())

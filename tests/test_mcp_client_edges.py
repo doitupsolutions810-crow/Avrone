@@ -406,6 +406,15 @@ def test_http_sse_trailing_event_without_blank_line():
     assert run(t.request("x", None, 5)) == {"tail": 1}
 
 
+def test_http_sse_accepts_standalone_cr_line_endings():
+    payload = json.dumps(rpc(1, {"cr_only": True})).encode()
+    stream = httpx.ByteStream(b"event: message\\rdata: " + payload + b"\\r\\r")
+    t = http_transport(lambda r: httpx.Response(
+        200, stream=stream, headers={"content-type": "text/event-stream"}
+    ))
+    assert run(t.request("x", None, 5)) == {"cr_only": True}
+
+
 def test_http_sse_handles_crlf_delimiters_split_across_chunks():
     class Chunks(httpx.AsyncByteStream):
         def __init__(self, values):

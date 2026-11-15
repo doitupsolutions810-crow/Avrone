@@ -598,7 +598,10 @@ class Bridge:
             out = [p for p in out if p["kind"] == str(kind).lower()]
         if agent:
             a = str(agent).lower()
-            out = [p for p in out if a in p["agent"].lower() or a == p["role"].lower()]
+            # Older journals may omit agent/role even when other fields are
+            # valid. Treat absent metadata as nonmatching, not a KeyError.
+            out = [p for p in out if a in p.get("agent", "").lower()
+                   or a == p.get("role", "").lower()]
         if query:
             q = str(query).lower()
             out = [p for p in out if q in p["text"].lower()]

@@ -1148,7 +1148,6 @@ def test_list_tools_refuses_partial_results_after_page_limit():
     assert c.tools == []
 
 
-@pytest.mark.parametrize("response", [None, "junk", [], 7, {"tools": "not-an-array"}])
 def test_list_tools_rejects_oversized_tool_names():
     class Oversized(mc._Transport):
         async def request(self, method, params, timeout):
@@ -1171,6 +1170,7 @@ def test_call_tool_rejects_oversized_name_before_transport_call():
         run(client.call_tool("x" * (mc.MAX_MCP_TOOL_NAME_CHARS + 1)))
 
 
+@pytest.mark.parametrize("response", [None, "junk", [], 7, {"tools": "not-an-array"}])
 def test_list_tools_rejects_malformed_response_shapes(response):
     class Broken(mc._Transport):
         async def request(self, method, params, timeout):

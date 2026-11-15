@@ -651,3 +651,8 @@ def test_live_smoke_rejects_non_object_chat_response(monkeypatch):
 def test_event_diagnostic_data_accessor_never_assumes_dict_shape(data):
     assert smoke._event_data({"data": data}) == {}
 
+def test_local_mcp_credentials_and_sandbox_profile_are_git_ignored():
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "mcp.json" in ignore
+    assert "docs/local-ollama/local-ollama-sandbox.env" in ignore
+

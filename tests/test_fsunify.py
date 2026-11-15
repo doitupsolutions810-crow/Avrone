@@ -1,6 +1,7 @@
 """Generic file tools unified with the per-agent filesystem (fsunify lane)."""
 import asyncio
 import os
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -385,3 +386,37 @@ def test_tool_docs_mention_shared():
         line = next(ln for ln in docs.splitlines() if ln.startswith(f"- {name} "))
         assert "shared/" in line, name
     assert "agent dir" in next(ln for ln in docs.splitlines() if ln.startswith("- python "))
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission semantics required")
+@pytest.mark.parametrize("create", [True, False])
+def test_agent_dir_enforces_owner_only_permissions_on_existing_directories(tmp_path, create):
+    workspace = tmp_path / "workspace"
+    root = workspace / agentfs.AGENTS_SUBDIR
+    home = root / "alpha"
+    home.mkdir(parents=True)
+    os.chmod(root, 0o777)
+    os.chmod(home, 0o777)
+
+    resolved = agentfs.agent_dir(workspace, "alpha", create=create)
+    assert resolved == home.resolve()
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
+def test_agent_dir_rejects_a_regular_file_in_place_of_agent_home(tmp_path):
+    workspace = tmp_path / "workspace"
+    root = workspace / agentfs.AGENTS_SUBDIR
+    root.mkdir(parents=True)
+    (root / "alpha").write_text("not a directory")
+    with pytest.raises(agentfs.AgentFSError, match="safe, accessible directory|not a directory"):
+        agentfs.agent_dir(workspace, "alpha")
+
+
+def test_agent_dir_rejects_symlinked_agent_root(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace.mkdir()
+    (workspace / agentfs.AGENTS_SUBDIR).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(agentfs.AgentFSError, match="agents root must not be a symlink"):
+        agentfs.agent_dir(workspace, "alpha")

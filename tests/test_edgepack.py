@@ -1226,14 +1226,15 @@ def test_docker_runner_off_by_default_unchanged(tmp_path, monkeypatch):
     r = DockerRunner(s)
     seen = []
 
+    fake = FakeDocker()
     async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
         seen.append(argv)
-        output = "c" * 64 if len(argv) > 1 and argv[1] == "run" else ""
-        return CommandResult(cmd, 0, output, "")
+        return await fake(argv, timeout)
     monkeypatch.setattr(r, "_exec", fake_exec)
     run(r.start())
     run(r.run("ls", cwd=agentfs.agent_dir(s.workspace, "Researcher")))
-    assert seen[1][:2] == ["docker", "exec"] and "c" * 64 in seen[1] and r.agent_pool is None
+    exec_call = next(call for call in seen if call[1] == "exec")
+    assert r.container_id in exec_call and r.agent_pool is None
 
 
 # ------------------------------------------------------------------ 2. agent packs
@@ -1912,6 +1913,7 @@ def test_pool_rejects_malformed_run_ids_without_name_based_cleanup(tmp_path, bad
 def test_docker_runner_exec_uses_pinned_container_id_after_friendly_name_is_reassigned(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
     runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    runner.container_id = "c" * 64  # isolate worker-ID routing from outer-runner startup
     fake = FakeDocker()
     seen = []
     original_id = None

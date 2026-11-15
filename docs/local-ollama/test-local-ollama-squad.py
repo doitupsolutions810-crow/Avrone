@@ -346,6 +346,22 @@ def _validate_worker_tool_events(
     return identities, results_by_agent
 
 
+def build_smoke_task(shell_command: str) -> str:
+    """Build an unambiguous request for one real shell action per isolated worker."""
+    return (
+        "This is a deterministic one-command sandbox verification, not a research or planning task. "
+        "The Lead must spawn exactly two independent workers. "
+        "Each worker's first and only tool call must be shell. "
+        "Do not call think or any preparatory/non-shell tool. "
+        "Do not send a prose preamble or a plan. "
+        "Use the shell tool with args.cmd set to this exact command:\\n"
+        f"{shell_command}\\n"
+        "After the tool returns, report its actual TOOL RESULT only. Do not claim the command ran or the file "
+        "exists unless the shell tool result proves it. Both workers use the same command but run it in their "
+        "own private /agent directories."
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base-url", default=os.environ.get("AVRONE_LOCAL_BASE_URL", "http://127.0.0.1:8710"))
@@ -372,17 +388,7 @@ def main() -> int:
         f"&& pwd && sha256sum -- {marker}"
     )
     expected_sha = hashlib.sha256(marker_content.encode("utf-8")).hexdigest()
-    task = (
-        "This is a deterministic one-command sandbox verification, not a research or planning task. "
-        "The Lead must spawn exactly two independent workers. Each worker must make exactly ONE tool call, "
-        "and that first response must be a shell tool call. Do not call skill_list, skill_load, task_board, "
-        "self_scan, read_file, or any other tool. Do not send a prose preamble or a plan. "
-        "Use the shell tool with args.cmd set to this exact command:\n"
-        f"{shell_command}\n"
-        "After the tool returns, report its actual TOOL RESULT only. Do not claim the command ran or the file "
-        "exists unless the shell tool result proves it. Both workers use the same command but run it in their "
-        "own private /agent directories."
-    )
+    task = build_smoke_task(shell_command)
     result = request_json(base + "/api/chat",
         {"message": task, "mode": "squad", "squad_size": 2, "dispatch": "local"}, timeout=args.timeout)
     run_id = result.get("run_id") if isinstance(result, dict) else None

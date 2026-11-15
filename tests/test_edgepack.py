@@ -238,6 +238,114 @@ def test_pool_fails_closed_when_image_identity_cannot_be_resolved(tmp_path, bad_
     assert fake.verbs() == ["image"]  # no inspect, remove, or create without a verified image
 
 
+def test_pool_close_waits_for_active_lease_and_rejects_new_work(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "busy")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def worker():
+            async with pool.lease(home) as name:
+                entered.set()
+                await release.wait()
+                return name
+
+        worker_task = asyncio.create_task(worker())
+        await entered.wait()
+        name = next(iter(pool.homes))
+        close_task = asyncio.create_task(pool.close())
+        await asyncio.sleep(0)
+        assert not pool._closed
+        assert ["docker", "rm", "-f", name] not in fake.calls
+        with pytest.raises(RuntimeError, match="closing or closed"):
+            await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "late"))
+        release.set()
+        assert await worker_task == name
+        await close_task
+        assert pool._closed
+        assert pool.homes == {}
+        assert ["docker", "rm", "-f", name] in fake.calls
+
+    run(go())
+
+
+def test_pool_close_is_idempotent_and_rejects_work_after_close(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "done")
+        name = await pool.ensure(home)
+        await asyncio.gather(pool.close(), pool.close(), pool.close())
+        await pool.close()
+        assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+        with pytest.raises(RuntimeError, match="closing or closed"):
+            await pool.ensure(home)
+
+    run(go())
+
+
+def test_pool_close_waiter_cancellation_does_not_cancel_cleanup(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "cancel-waiter")
+        name = await pool.ensure(home)
+        original_exec = pool._exec
+        rm_entered = asyncio.Event()
+        allow_rm = asyncio.Event()
+
+        async def slow_rm(argv, timeout):
+            if len(argv) > 1 and argv[1] == "rm":
+                rm_entered.set()
+                await allow_rm.wait()
+            return await original_exec(argv, timeout)
+
+        pool._exec = slow_rm
+        waiter = asyncio.create_task(pool.close())
+        await rm_entered.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not pool._closed
+        second_waiter = asyncio.create_task(pool.close())
+        allow_rm.set()
+        await second_waiter
+        assert pool._closed
+        assert pool.homes == {}
+        assert ["docker", "rm", "-f", name] in fake.calls
+
+    run(go())
+
+
+def test_pool_close_forces_removal_after_drain_deadline(tmp_path, monkeypatch):
+    async def go():
+        monkeypatch.setattr(ac, "MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS", 0.01)
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "stuck")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def worker():
+            async with pool.lease(home):
+                entered.set()
+                await release.wait()
+
+        worker_task = asyncio.create_task(worker())
+        await entered.wait()
+        name = next(iter(pool.homes))
+        await asyncio.wait_for(pool.close(), timeout=1)
+        assert pool._closed
+        assert name not in pool.homes
+        assert ["docker", "rm", "-f", name] in fake.calls
+        release.set()
+        await worker_task
+
+    run(go())
+
+
 def test_pool_idle_reap(tmp_path):
     fake, now = FakeDocker(), [0.0]
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)

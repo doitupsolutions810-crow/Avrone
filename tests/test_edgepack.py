@@ -74,6 +74,13 @@ def _fake_inspect_from_run(argv, container_id, running=True):
             "Memory": memory, "MemorySwap": swap,
             "NanoCpus": int(float(option("--cpus", "1.0")) * 1_000_000_000),
             "PidsLimit": int(option("--pids-limit", "512")),
+            "Ulimits": [
+                {
+                    "Name": "nofile",
+                    "Soft": int(option("--ulimit", "nofile=1024:2048").split("=", 1)[1].split(":", 1)[0]),
+                    "Hard": int(option("--ulimit", "nofile=1024:2048").split("=", 1)[1].split(":", 1)[1]),
+                }
+            ],
         },
         "Mounts": [{"Type": "bind", "Source": source, "Destination": destination, "RW": True}],
     }
@@ -2293,6 +2300,10 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["HostConfig"].update(MemorySwap=1), "memory or swap"),
     (lambda p: p["HostConfig"].update(NanoCpus=1), "CPU limit"),
     (lambda p: p["HostConfig"].update(PidsLimit=1), "PID limit"),
+    (lambda p: p["HostConfig"].update(Ulimits=[]), "open-file descriptor limit"),
+    (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 65536}]), "open-file descriptor limit"),
+    (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 2048}, {"Name": "memlock", "Soft": 1, "Hard": 1}]), "open-file descriptor limit"),
+    (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": True, "Hard": 2048}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind"),
     (lambda p: p["Mounts"].append({"Type": "bind", "Destination": "/host", "RW": True}), "private /agent bind"),
     (lambda p: p["Mounts"][0].update(RW=False), "private /agent bind"),
@@ -2664,3 +2675,24 @@ def test_pool_does_not_adopt_valid_container_when_inspect_timeout_metadata_is_am
     assert fake.rm_count(name) == 0
     assert not any(command[1] == "run" for command in fake.calls if len(command) > 1)
     assert pool.homes == {}
+
+def test_existing_container_policy_rejects_missing_or_malformed_ulimit_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    home = agentfs.agent_dir(tmp_path / "ws", "ulimit-worker")
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-ulimit-worker", home, "img", False, agent_id="ulimit-worker"
+    )
+    payload = _fake_inspect_from_run(argv, "a" * 64)
+    payload["HostConfig"].pop("Ulimits")
+    ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", False)
+    assert owned is True and ok is False
+    assert "open-file descriptor limit" in detail
+
+    payload = _fake_inspect_from_run(argv, "a" * 64)
+    payload["HostConfig"]["Ulimits"] = [
+        {"Name": "nofile", "Soft": 1024, "Hard": 2048, "Extra": "unexpected"}
+    ]
+    ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", False)
+    assert owned is True and ok is False
+    assert "open-file descriptor limit" in detail

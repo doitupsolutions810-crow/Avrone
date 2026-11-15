@@ -642,7 +642,7 @@ class Bridge:
         def block(title: str, items: list[dict[str, Any]]) -> None:
             if items:
                 parts.append(title + "\n" + "\n".join(
-                    f"- [{p['id']}] {p['agent']}: {p['text'][:600]}" for p in items))
+                    f"- [{p['id']}] {p.get('agent') or 'agent'}: {p['text'][:600]}" for p in items))
         block("What agents concluded together:", concl)
         block("Corrections raised:", corr)
         block("Unresolved disagreements / open questions:", open_)
@@ -673,7 +673,7 @@ def compact(posts: list[dict[str, Any]], width: int = 300) -> str:
         refs = f" re {','.join(p['refs'])}" if p.get("refs") else ""
         org = "" if p.get("origin_node") in (None, "", "local") else f" @{p['origin_node']}"
         t = p["text"].replace("\n", " ")
-        lines.append(f"[{p['id']}] {p['kind']} {p['agent']}{org}{refs}: {t[:width]}"
+        lines.append(f"[{p['id']}] {p['kind']} {p.get('agent') or 'agent'}{org}{refs}: {t[:width]}"
                      + ("..." if len(t) > width else ""))
     return "\n".join(lines)
 

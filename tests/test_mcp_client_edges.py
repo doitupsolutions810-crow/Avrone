@@ -408,7 +408,7 @@ def test_http_sse_trailing_event_without_blank_line():
 
 def test_http_sse_accepts_standalone_cr_line_endings():
     payload = json.dumps(rpc(1, {"cr_only": True})).encode()
-    stream = httpx.ByteStream(b"event: message\\rdata: " + payload + b"\\r\\r")
+    stream = httpx.ByteStream(b"event: message\rdata: " + payload + b"\r\r")
     t = http_transport(lambda r: httpx.Response(
         200, stream=stream, headers={"content-type": "text/event-stream"}
     ))

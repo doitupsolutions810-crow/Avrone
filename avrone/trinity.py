@@ -759,7 +759,7 @@ class TrinityCore:
         repeats, last_key = 0, None
         budget = {"arg_errors": 0, "spent": 0}  # consecutive ARG ERRORs; spent = stop validating
         try:
-            contract = parse_action_contract(ctx.run_task or "")
+            contract = parse_action_contract(ctx.run_task or "") if ctx.depth == 0 else None
         except ValueError as exc:
             self.codex.emit(run_id, "action.contract.invalid", name, message=str(exc)[:500])
             return f"[{name} failed: invalid action contract: {exc}]"

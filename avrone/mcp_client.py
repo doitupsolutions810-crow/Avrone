@@ -59,6 +59,8 @@ MAX_STDIO_LINE_BYTES = 8 * 1024 * 1024
 MAX_STDIO_STDERR_LINE_CHARS = 4096
 MAX_MCP_CLOSE_DRAIN_SECONDS = 10.0
 MAX_RPC_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_RPC_REQUEST_DEPTH = 100
+MAX_RPC_REQUEST_NODES = 200_000
 
 
 class MCPError(RuntimeError):
@@ -92,10 +94,93 @@ def _strict_json_loads(payload: str) -> Any:
         raise ValueError("JSON nesting exceeds parser limit") from exc
 
 
+def _measure_rpc_json_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    active: set[int] | None = None,
+    nodes: list[int] | None = None,
+) -> int:
+    """Measure valid compact JSON output without first materializing the encoded body."""
+    if active is None:
+        active = set()
+    if nodes is None:
+        nodes = [0]
+    nodes[0] += 1
+    if nodes[0] > MAX_RPC_REQUEST_NODES:
+        raise MCPError(f"MCP JSON-RPC request exceeded the {MAX_RPC_REQUEST_NODES}-node limit")
+    if depth > MAX_RPC_REQUEST_DEPTH:
+        raise MCPError(f"MCP JSON-RPC request exceeded the {MAX_RPC_REQUEST_DEPTH}-level nesting limit")
+
+    if value is None:
+        return 4
+    if type(value) is bool:
+        return 4 if value else 5
+    if type(value) is int:
+        try:
+            return len(str(value))
+        except (ValueError, OverflowError) as exc:
+            raise MCPError("MCP JSON-RPC request contains an invalid integer") from exc
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise MCPError("MCP JSON-RPC request contains a non-finite number")
+        return len(json.dumps(value, allow_nan=False))
+    if type(value) is str:
+        size = 2  # surrounding quotes
+        for char in value:
+            codepoint = ord(char)
+            if char in ('"', "\\") or codepoint in (8, 9, 10, 12, 13):
+                size += 2
+            elif codepoint < 32:
+                size += 6  # \u00XX
+            else:
+                try:
+                    size += len(char.encode("utf-8"))
+                except UnicodeEncodeError as exc:
+                    raise MCPError("MCP JSON-RPC request contains invalid Unicode") from exc
+            if size > MAX_RPC_REQUEST_BYTES:
+                raise MCPError(
+                    f"MCP JSON-RPC request exceeded configured limit ({MAX_RPC_REQUEST_BYTES} bytes)"
+                )
+        return size
+
+    if type(value) not in (dict, list, tuple):
+        raise MCPError("MCP JSON-RPC request contains values that are not valid JSON")
+
+    identity = id(value)
+    if identity in active:
+        raise MCPError("MCP JSON-RPC request contains a circular reference")
+    active.add(identity)
+    try:
+        if type(value) is dict:
+            size = 2 + max(0, len(value) - 1) + len(value)  # braces, commas, colons
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise MCPError("MCP JSON-RPC object keys must be strings")
+                size += _measure_rpc_json_value(key, depth=depth + 1, active=active, nodes=nodes)
+                size += _measure_rpc_json_value(item, depth=depth + 1, active=active, nodes=nodes)
+                if size > MAX_RPC_REQUEST_BYTES:
+                    raise MCPError(
+                        f"MCP JSON-RPC request exceeded configured limit ({MAX_RPC_REQUEST_BYTES} bytes)"
+                    )
+            return size
+        size = 2 + max(0, len(value) - 1)  # brackets and commas
+        for item in value:
+            size += _measure_rpc_json_value(item, depth=depth + 1, active=active, nodes=nodes)
+            if size > MAX_RPC_REQUEST_BYTES:
+                raise MCPError(
+                    f"MCP JSON-RPC request exceeded configured limit ({MAX_RPC_REQUEST_BYTES} bytes)"
+                )
+        return size
+    finally:
+        active.remove(identity)
+
+
 def _encode_rpc_request(message: dict[str, Any]) -> bytes:
     """Serialize outbound JSON-RPC with strict JSON semantics and a byte ceiling."""
-    if not isinstance(message, dict):
+    if type(message) is not dict:
         raise MCPError("MCP JSON-RPC request must be a JSON object")
+    _measure_rpc_json_value(message)
     try:
         encoded = json.dumps(
             message, separators=(",", ":"), ensure_ascii=False, allow_nan=False

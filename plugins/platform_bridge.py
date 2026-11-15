@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 from urllib.parse import urlsplit
+from typing import Any
 
 import httpx
 
@@ -61,6 +62,28 @@ RESOURCE_PATHS: dict[str, dict[str, str]] = {
 MAX_RESPONSE_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 8_000
 TIMEOUT = httpx.Timeout(8.0, connect=3.0)
+
+
+def _unique_response_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key in platform response")
+        result[key] = value
+    return result
+
+
+def _reject_response_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant in platform response: {value}")
+
+
+def _parse_remote_json(raw: bytes) -> Any:
+    """Parse untrusted remote JSON without duplicate-key or non-standard-number ambiguity."""
+    return json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_unique_response_object,
+        parse_constant=_reject_response_constant,
+    )
 
 
 def _targets() -> dict[str, str]:
@@ -210,10 +233,10 @@ async def _request(
     if not is_success:
         remote_error = None
         try:
-            err_obj = json.loads(raw.decode("utf-8"))
+            err_obj = _parse_remote_json(raw)
             if isinstance(err_obj, dict) and isinstance(err_obj.get("error"), str):
                 remote_error = err_obj["error"][:300]
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
             pass
         return json.dumps({
             "ok": False,
@@ -227,8 +250,8 @@ async def _request(
         data = None
     else:
         try:
-            data = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            data = _parse_remote_json(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
             data = raw.decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
     return json.dumps({
         "ok": True,

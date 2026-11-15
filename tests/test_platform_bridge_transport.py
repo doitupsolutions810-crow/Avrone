@@ -191,3 +191,29 @@ def test_bridge_rejects_invalid_and_oversized_content_lengths():
     # Decimal parsing is separately exercised via malformed wire headers; direct
     # values also ensure the hard ceiling remains an ordinary bounded integer.
     assert bridge.MAX_RESPONSE_BYTES == 64 * 1024
+
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"mission_id":"safe","mission_id":"../other"}',
+    b'{"measurement":NaN}',
+    b'{"measurement":Infinity}',
+])
+def test_bridge_downgrades_ambiguous_nonstandard_json_to_untrusted_text(monkeypatch, raw):
+    _registry, bridge = _load_bridge()
+    configure(monkeypatch)
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=raw))
+    result = json.loads(run(bridge._request("grokbot", "GET", "/api/status")))
+    assert result["ok"] is True
+    assert result["data"] == raw.decode("utf-8")
+
+
+def test_bridge_downgrades_pathologically_nested_json_without_crashing(monkeypatch):
+    _registry, bridge = _load_bridge()
+    configure(monkeypatch)
+    raw = b"[" * 2_000 + b"0" + b"]" * 2_000
+    install_transport(monkeypatch, lambda request: httpx.Response(200, content=raw))
+    result = json.loads(run(bridge._request("grokbot", "GET", "/api/status")))
+    assert result["ok"] is True
+    assert result["data"].startswith("[" * 2_000)
+    assert len(result["data"]) <= bridge.MAX_TEXT_CHARS

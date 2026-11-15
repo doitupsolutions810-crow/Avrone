@@ -198,6 +198,46 @@ def test_pool_adopts_only_a_policy_compliant_running_leftover(tmp_path):
     assert fake.verbs() == ["image", "inspect"] and pool.created == 0
 
 
+def test_pool_pins_mutable_tag_to_immutable_image_id(tmp_path):
+    fake = FakeDocker()
+    first_id = fake.image_id
+    d = agentfs.agent_dir(tmp_path / "ws", "builder")
+    first_pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    name = run(first_pool.ensure(d))
+    first_payload = fake.inspect_payloads[name]
+    assert first_payload["Config"]["Image"] == first_id
+    assert first_payload["Image"] == first_id
+    first_run = next(call for call in fake.calls if len(call) > 1 and call[1] == "run")
+    assert first_run[-3] == first_id
+
+    second_id = "sha256:" + "b" * 64
+    fake.image_id = second_id  # the tag now points at a different local image
+    restarted_pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 1.0)
+    run(restarted_pool.ensure(d))
+    run_calls = [call for call in fake.calls if len(call) > 1 and call[1] == "run"]
+    assert len(run_calls) == 2
+    assert run_calls[1][-3] == second_id
+    final_payload = fake.inspect_payloads[name]
+    assert final_payload["Config"]["Image"] == second_id
+    assert final_payload["Image"] == second_id
+    assert ["docker", "rm", "-f", name] in fake.calls
+
+
+@pytest.mark.parametrize("bad_image_id,fail", [
+    ("not-an-image-id", False),
+    ("", True),
+])
+def test_pool_fails_closed_when_image_identity_cannot_be_resolved(tmp_path, bad_image_id, fail):
+    fake = FakeDocker()
+    fake.image_id = bad_image_id
+    fake.fail_image_inspect = fail
+    d = agentfs.agent_dir(tmp_path / "ws", "builder")
+    pool = ac.AgentContainerPool(fake, "img:missing", False, node="edge", clock=lambda: 0.0)
+    with pytest.raises(RuntimeError, match="resolve configured Docker image|invalid immutable image ID"):
+        run(pool.ensure(d))
+    assert fake.verbs() == ["image"]  # no inspect, remove, or create without a verified image
+
+
 def test_pool_idle_reap(tmp_path):
     fake, now = FakeDocker(), [0.0]
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)
@@ -876,6 +916,7 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["HostConfig"].update(ReadonlyRootfs=False), "root filesystem"),
     (lambda p: p["Config"].update(User="0:0"), "non-root agent identity"),
     (lambda p: p["Config"].update(Image="evil:latest"), "configured image"),
+    (lambda p: p.update(Image="sha256:" + "b" * 64), "actual image ID"),
     (lambda p: p["Config"].update(WorkingDir="/"), "working directory"),
     (lambda p: p["Config"].update(Env=["HOME=/tmp"]), "environment"),
     (lambda p: p["Config"]["Env"].append("AVRONE_ADMIN_TOKEN=leaked"), "secret-shaped credentials"),

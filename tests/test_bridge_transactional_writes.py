@@ -104,3 +104,67 @@ def test_two_processes_started_from_stale_snapshots_cannot_both_accept_id(tmp_pa
     restored = bm.Bridge("cross-process-duplicate", tmp_path, limit=7)
     assert len(restored.posts()) == 1
     assert restored.posts()[0]["id"] == "shared-remote-id"
+
+
+
+def test_flaky_sidecar_lock_cannot_retry_unprotected_post_to_disk(tmp_path, monkeypatch):
+    """A transient lock error must not turn a stale admission into a write."""
+    bridge = bm.Bridge("flaky-lock-post", tmp_path)
+    real = bridge._file_lock
+    calls = []
+    @contextlib.contextmanager
+    def flaky_lock():
+        calls.append("attempt")
+        if len(calls) == 1:
+            raise OSError("first lock attempt denied")
+        with real():
+            yield
+    monkeypatch.setattr(bridge, "_file_lock", flaky_lock)
+
+    post = bridge.post("worker", "finding", "memory-only")
+    assert bridge.get(post["id"])["text"] == "memory-only"
+    assert calls == ["attempt"]
+    assert bm.Bridge("flaky-lock-post", tmp_path).posts() == []
+
+
+def test_flaky_sidecar_lock_cannot_retry_unprotected_remote_merge(tmp_path, monkeypatch):
+    """Remote IDs require the same no-unprotected-write guarantee."""
+    bridge = bm.Bridge("flaky-lock-merge", tmp_path)
+    real = bridge._file_lock
+    calls = []
+    @contextlib.contextmanager
+    def flaky_lock():
+        calls.append("attempt")
+        if len(calls) == 1:
+            raise OSError("first lock attempt denied")
+        with real():
+            yield
+    monkeypatch.setattr(bridge, "_file_lock", flaky_lock)
+
+    stats = bridge.merge_remote([_post("remote-unsafe", "memory-only")], "remote")
+    assert stats["merged"] == 1
+    assert bridge.get("remote-unsafe")["text"] == "memory-only"
+    assert calls == ["attempt"]
+    assert bm.Bridge("flaky-lock-merge", tmp_path).posts() == []
+
+
+def test_restored_sidecar_lock_persists_later_post_only(tmp_path, monkeypatch):
+    """After a transient failure the next successful transaction can persist."""
+    bridge = bm.Bridge("flaky-lock-recover", tmp_path)
+    original = bridge._file_lock
+    attempts = []
+    @contextlib.contextmanager
+    def once_denied():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("temporary lock error")
+        with original():
+            yield
+    monkeypatch.setattr(bridge, "_file_lock", once_denied)
+
+    volatile = bridge.post("worker", "finding", "volatile")
+    durable = bridge.post("worker", "finding", "durable")
+    assert volatile["id"] != durable["id"]
+    assert len(attempts) == 2
+    persisted = bm.Bridge("flaky-lock-recover", tmp_path).posts()
+    assert [p["id"] for p in persisted] == [durable["id"]]

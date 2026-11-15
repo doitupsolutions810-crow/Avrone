@@ -496,7 +496,11 @@ class Bridge:
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec
             self._trim()
-            self._write([rec], file_lock_held=file_lock_held)
+            if file_lock_held:
+                # Never retry the sidecar after admission proceeded without it:
+                # a later success would persist an unrebased, unsafe decision.
+                # Degraded mode remains explicitly in-memory only.
+                self._write([rec], file_lock_held=True)
         if self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.post", rec["agent"], post_id=rec["id"], post_kind=kind,
@@ -540,7 +544,8 @@ class Bridge:
                 fresh.append(rec)
                 stats["merged"] += 1
             self._trim()
-            self._write(fresh, file_lock_held=file_lock_held)
+            if file_lock_held:
+                self._write(fresh, file_lock_held=True)
         if fresh and self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.merge", "Bridge", origin=origin, merged=len(fresh))

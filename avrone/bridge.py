@@ -757,15 +757,15 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     if not text:
         return None, "text is required"
     raw_id = data.get("id")
-    if raw_id not in (None, ""):
-        # Do not coerce numbers/bools/objects into IDs: 123 and "123" must
-        # not become the same blackboard identity, and large int conversion
-        # can raise before the request is validated.
-        if not isinstance(raw_id, str) or not _ID_RE.fullmatch(raw_id):
-            return None, "bad post id"
+    # Reject non-string IDs before doing equality comparisons: a hostile
+    # in-process object may implement __eq__ with side effects or exceptions.
+    # For str subclasses, str.__len__ bypasses an overridden __len__ method.
+    if raw_id is None or (isinstance(raw_id, str) and str.__len__(raw_id) == 0):
+        pid = uuid.uuid4().hex[:12]
+    elif isinstance(raw_id, str) and _ID_RE.fullmatch(raw_id):
         pid = raw_id
     else:
-        pid = uuid.uuid4().hex[:12]
+        return None, "bad post id"
     try:
         sealed = seal_blackboard_post({
             "id": pid,
@@ -1119,7 +1119,7 @@ def _json_safe(value: Any, seen: set[int] | None = None, *,
     if isinstance(value, int):
         try:
             str(value)
-        except ValueError:
+        except Exception:  # hostile integer subclass stringifier
             return 0
         return value
     if isinstance(value, float):

@@ -793,35 +793,36 @@ def _blackboard_lock(core: Any) -> threading.RLock:
 
 @contextlib.contextmanager
 def _blackboard_file_lock(core: Any):
-    """Serialize global fan-in admission and cursor state across processes.
+    """Yield True only when global admission is safe across processes.
 
-    Per-Core RLocks cannot coordinate separate workers. A stable lock sidecar
-    prevents both duplicate-ID acceptance and atomic cursor lost updates.
+    An unavailable lock must not silently permit disk-backed admission. Pure
+    in-memory cores need no filesystem lock and remain fully operational.
+    Readers may fall back to a snapshot but must not persist cursor updates.
     """
     order_path = _order_path(core)
     if order_path is None:
-        yield
+        yield _data_dir(core) is None
         return
     lock_path = order_path.with_suffix(order_path.suffix + ".lock")
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = _regular_fd(lock_path, os.O_RDWR | os.O_CREAT)
     except OSError:
-        yield  # preserve in-memory fallback when persistence is unavailable
+        yield False
         return
     with os.fdopen(fd, "a+b") as stream:
         try:
             import fcntl
-        except ImportError:  # pragma: no cover - Windows without flock
-            yield
+        except ImportError:  # pragma: no cover - platforms without flock
+            yield False
             return
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         except OSError:
-            yield
+            yield False
             return
         try:
-            yield
+            yield True
         finally:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
@@ -984,7 +985,8 @@ def _save_order(core: Any, order: "OrderedDict[str, None]") -> None:
                 tmp.unlink()
 
 
-def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str, None]":
+def _sync_order(core: Any, by_id: dict[str, dict[str, Any]], *,
+                persist: bool = True) -> "OrderedDict[str, None]":
     """Drop gone ids. First snapshot is oldest-ts-first; later ids append.
 
     Appending keeps ``since`` safe: a post accepted after the cursor is returned
@@ -992,6 +994,8 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str
     place it before the cursor and the relay would never see it.
     """
     order = _load_order(core)
+    if not persist:
+        order = OrderedDict(order)  # never mutate the cached persisted order
     changed = False
     for pid in list(order):
         if pid not in by_id:
@@ -1006,7 +1010,7 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str
         for pid in fresh:
             order[pid] = None
         changed = True
-    if changed:
+    if changed and persist:
         _save_order(core, order)
     return order
 
@@ -1132,9 +1136,9 @@ def safe_since(since: str | None) -> str | None:
 def blackboard_posts(core: Any, since: str | None = None) -> list[dict[str, Any]]:
     """Fan-in of every run bridge, oldest first. ``since`` matches ``Bridge.export``."""
     since = safe_since(since)
-    with _blackboard_lock(core), _blackboard_file_lock(core):
+    with _blackboard_lock(core), _blackboard_file_lock(core) as locked:
         by_id = _posts_by_id(core)
-        order = _sync_order(core, by_id)
+        order = _sync_order(core, by_id, persist=locked)
         posts = [public_post(by_id[pid]) for pid in order if pid in by_id]
         if since:
             ids = [post["id"] for post in posts]
@@ -1153,7 +1157,9 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     pid = post.get("id")
     if not isinstance(pid, str) or not _ID_RE.fullmatch(pid):
         raise BridgeError("bad post id")
-    with _blackboard_lock(core), _blackboard_file_lock(core):
+    with _blackboard_lock(core), _blackboard_file_lock(core) as locked:
+        if not locked:
+            raise BridgeError("global blackboard lock unavailable")
         if _id_state(core, pid) is not None:
             return True, pid
         dest = for_core(core, str(post.get("run_id") or "run"))

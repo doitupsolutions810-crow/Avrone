@@ -760,9 +760,20 @@ class MCPManager:
         self._status: dict[str, dict[str, Any]] = {}
         self._registered: list[str] = []
         self.registry: ToolRegistry | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._started = False
 
     async def start(self, registry: ToolRegistry) -> dict[str, dict[str, Any]]:
-        self.registry = registry
+        async with self._lifecycle_lock:
+            if self._started:
+                if registry is not self.registry:
+                    raise MCPError("MCP manager is already started with another registry; stop it before switching")
+                return self.status()
+            self.registry = registry
+            self._status.clear()
+            return await self._start_locked(registry)
+
+    async def _start_locked(self, registry: ToolRegistry) -> dict[str, dict[str, Any]]:
         try:
             servers = self._servers_override if self._servers_override is not None \
                 else load_config(self.config_path)
@@ -775,6 +786,7 @@ class MCPManager:
             self._status["_config"] = {"connected": False, "error": f"config: {e}", "tools": 0}
             return self.status()
         await asyncio.gather(*(self._start_one(n, c, registry) for n, c in servers.items()))
+        self._started = True
         return self.status()
 
     async def _start_one(self, name: str, cfg: dict[str, Any], registry: ToolRegistry) -> None:
@@ -829,15 +841,17 @@ class MCPManager:
         return fn
 
     async def stop(self) -> None:
-        if self.registry is not None:
-            for n in self._registered:
-                self.registry.unregister(n)
-        self._registered.clear()
-        await asyncio.gather(*(c.close() for c in self.clients.values()), return_exceptions=True)
-        for name in self.clients:
-            if name in self._status:
-                self._status[name]["connected"] = False
-        self.clients.clear()
+        async with self._lifecycle_lock:
+            if self.registry is not None:
+                for n in self._registered:
+                    self.registry.unregister(n)
+            self._registered.clear()
+            await asyncio.gather(*(c.close() for c in self.clients.values()), return_exceptions=True)
+            for name in self.clients:
+                if name in self._status:
+                    self._status[name]["connected"] = False
+            self.clients.clear()
+            self._started = False
 
     def status(self) -> dict[str, dict[str, Any]]:
         return {k: dict(v) for k, v in self._status.items()}

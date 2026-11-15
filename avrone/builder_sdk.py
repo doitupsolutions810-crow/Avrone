@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import re
 import time
+from functools import wraps
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
@@ -102,6 +103,18 @@ class BuildResult:
         return asdict(self)
 
 
+def _track_sdk_operation(method):
+    """Keep shutdown from disposing shared resources during an in-flight operation."""
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs):
+        self._begin_operation()
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._end_operation()
+    return wrapped
+
+
 class BuilderAgentSDK:
     """A thin, policy-bound facade; Trinity remains the execution engine."""
 
@@ -113,6 +126,20 @@ class BuilderAgentSDK:
         self.closed = False
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
+        self._active_operations = 0
+        self._operations_drained = asyncio.Event()
+        self._operations_drained.set()
+
+    def _begin_operation(self) -> None:
+        if self.closed or self._closing:
+            raise RuntimeError("Builder SDK is closed or closing")
+        self._active_operations += 1
+        self._operations_drained.clear()
+
+    def _end_operation(self) -> None:
+        self._active_operations -= 1
+        if self._active_operations == 0:
+            self._operations_drained.set()
 
     @classmethod
     async def open(cls, settings: Settings | None = None, *,
@@ -133,6 +160,8 @@ class BuilderAgentSDK:
         return cls(core, cleanups, policy)
 
     async def _finish_close(self) -> None:
+        # No runner/plugin/MCP resource is disposed until every accepted operation exits.
+        await self._operations_drained.wait()
         failed: list[Any] = []
         failures: list[BaseException] = []
         for cleanup in reversed(self.cleanups):
@@ -148,7 +177,8 @@ class BuilderAgentSDK:
             # Successful callbacks are consumed exactly once; retain only failed callbacks
             # so a later close() retries unfinished resources without double-closing others.
             self.cleanups = list(reversed(failed))
-            self._closing = False
+            # Keep the facade unavailable: some shared resources may already be closed.
+            # A subsequent close() retries the remaining callbacks and reopens only on success.
             first = failures[0]
             if isinstance(first, asyncio.CancelledError):
                 raise first
@@ -196,6 +226,7 @@ class BuilderAgentSDK:
         )
         return "\n\n".join(parts)
 
+    @_track_sdk_operation
     async def build(self, task: str, *, mode: BuildMode = "squad",
                     workers: int | None = None, run_id: str | None = None,
                     checkpoint: Any = None, dispatch: str | None = None,
@@ -252,6 +283,7 @@ class BuilderAgentSDK:
             raise RuntimeError("git status could not produce a trustworthy worktree snapshot")
         return stdout
 
+    @_track_sdk_operation
     async def verify(self, result: BuildResult, *,
                      commands: tuple[str, ...] | None = None) -> VerificationEvidence:
         if self.closed or self._closing:

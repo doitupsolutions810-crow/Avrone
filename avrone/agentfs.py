@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path
 
 AGENTS_SUBDIR = "agents"
@@ -69,6 +70,30 @@ def agents_root(workspace: Path) -> Path:
     return Path(workspace).resolve() / AGENTS_SUBDIR
 
 
+def _secure_private_directory(path: Path) -> None:
+    """Verify the final path component is a directory and force owner-only permissions."""
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise AgentFSError(f"directory {path} is not a safe, accessible directory") from exc
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise AgentFSError(f"path {path} is not a directory")
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o700)
+            else:
+                os.chmod(path, 0o700)
+        except OSError as exc:
+            raise AgentFSError(f"could not enforce private permissions on {path}") from exc
+    finally:
+        os.close(fd)
+
+
 def agent_dir(workspace: Path, agent_id: object, create: bool = True) -> Path:
     """The confined, persistent directory for `agent_id` (created on demand).
 
@@ -83,8 +108,21 @@ def agent_dir(workspace: Path, agent_id: object, create: bool = True) -> Path:
     if p.is_symlink():
         raise AgentFSError(f"agent dir {sid!r} must not be a symlink")
     if create:
-        root.mkdir(parents=True, exist_ok=True)
-        p.mkdir(mode=0o700, exist_ok=True)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise AgentFSError("agents root could not be created safely") from exc
+    if root.exists():
+        _secure_private_directory(root)
+    if create:
+        try:
+            p.mkdir(mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise AgentFSError(f"agent dir {sid!r} could not be created safely") from exc
+    if p.is_symlink():
+        raise AgentFSError(f"agent dir {sid!r} must not be a symlink")
+    if p.exists():
+        _secure_private_directory(p)
     rp = p.resolve()
     if rp.parent != root.resolve() or not rp.is_relative_to(ws):
         raise AgentFSError("agent dir escapes the workspace")

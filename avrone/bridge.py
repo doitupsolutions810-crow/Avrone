@@ -51,6 +51,7 @@ MAX_REFS = 20
 MAX_REF_SCAN = 256
 MAX_REMOTE_BATCH = 5000
 MAX_JOURNAL_LINE_CHARS = 128 * 1024  # bound JSONL replay memory per record
+MAX_ORDER_BYTES = 16 * 1024 * 1024  # bound global blackboard cursor state
 MAX_RUN_ID_CHARS = 1024  # keep persisted identifiers below the replay line cap
 DEFAULT_MAX_POSTS, HARD_MAX_POSTS = 500, 5000
 DEFAULT_ROUNDS, HARD_MAX_ROUNDS = 1, 3
@@ -803,8 +804,13 @@ def _load_order(core: Any) -> "OrderedDict[str, None]":
             # Validate the opened inode rather than a potentially stale
             # path.is_file() result. Symlink/hardlink/FIFO tricks must not make
             # the global cursor registry read an outside file or hang.
-            with os.fdopen(_regular_fd(path, os.O_RDONLY), "r", encoding="utf-8") as stream:
-                data = json.load(stream)
+            with os.fdopen(_regular_fd(path, os.O_RDONLY), "rb") as stream:
+                # Even an ordinary regular file can be adversarially huge.
+                # Never ask json.load() to consume it without a hard bound.
+                payload = stream.read(MAX_ORDER_BYTES + 1)
+            if len(payload) > MAX_ORDER_BYTES:
+                raise ValueError("oversized fan-in cursor registry")
+            data = json.loads(payload)
         except (OSError, json.JSONDecodeError, RecursionError, TypeError, ValueError):
             data = None
         ids = data.get("ids") if isinstance(data, dict) else None

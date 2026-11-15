@@ -50,6 +50,12 @@ class BuilderPolicy:
 
     def __post_init__(self) -> None:
         for name, value in (
+            ("require_ollama", self.require_ollama),
+            ("require_git_sha_for_verified", self.require_git_sha_for_verified),
+        ):
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be a boolean")
+        for name, value in (
             ("max_task_chars", self.max_task_chars),
             ("max_workers", self.max_workers),
             ("max_deep_rounds", self.max_deep_rounds),

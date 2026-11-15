@@ -695,6 +695,8 @@ class MCPClient:
             self.transport: _Transport = HTTPTransport(str(config["url"]), _http_headers_from_config(config))
             self.kind = "http"
         elif config.get("command"):
+            if "header_env" in config:
+                raise MCPError("MCP HTTP header_env is only valid for URL-backed servers")
             self.transport = StdioTransport(str(config["command"]), config.get("args"),
                                             config.get("env"), config.get("cwd"))
             self.kind = "stdio"

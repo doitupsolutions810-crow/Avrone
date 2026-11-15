@@ -2075,3 +2075,11 @@ def test_mcp_http_header_env_rejects_non_object_direct_headers(monkeypatch):
             "url": "https://mcp.supabase.com/mcp",
             "headers": ["Authorization: Bearer secret"],
         })
+
+
+def test_mcp_http_header_env_is_rejected_for_stdio_server_before_spawn():
+    with pytest.raises(MCPError, match="only valid for URL-backed servers"):
+        MCPClient("local", {
+            "command": "must-not-spawn",
+            "header_env": {"Authorization": "TOKEN"},
+        })

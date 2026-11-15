@@ -194,7 +194,11 @@ class Env:
         shutil.rmtree(self.repo / ".venv", ignore_errors=True)
         venv.mkdir(parents=True)
         (venv / "activate").write_text("")
-        (venv / "python").symlink_to(sys.executable)
+        # A raw symlink can make Python resolve the fake .venv as its runtime
+        # home instead of the real installed interpreter; use a forwarding
+        # wrapper so the offline-dependency case exercises the real packages.
+        (venv / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        (venv / "python").chmod(0o755)
         self.drive = tmp / drive_name
         self.drive.mkdir()
         self.stub = tmp / "stub"; self.stub.mkdir()
@@ -958,6 +962,22 @@ def test_drive_swapped_mid_run_detected(env):
 
 
 def test_state_goes_readonly_while_advancing(env):
+    # Verify the host really enforces directory mode bits before simulating
+    # an unwritable state folder. Some containers bypass chmod restrictions.
+    probe_dir = env.tmp / "readonly-capability-probe"
+    probe_dir.mkdir()
+    probe_dir.chmod(0o555)
+    try:
+        probe = probe_dir / "probe"
+        try:
+            probe.write_text("probe")
+        except PermissionError:
+            pass
+        else:
+            probe.unlink()
+            pytest.skip("host filesystem permits writes despite read-only directory mode")
+    finally:
+        probe_dir.chmod(0o755)
     env.flag("chat_smoke_pass"); env.flag("chat_readonly_state")
     try:
         r = env.run()

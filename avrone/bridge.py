@@ -81,7 +81,14 @@ def bridge_rounds() -> int:
 
 def bridge_run_id(run_id: Any) -> str:
     """The bridge a run posts to: deep's '<id>-wave1' first wave shares '<id>'."""
-    raw = str(run_id or "run")
+    # Never invoke an untrusted object's __bool__ or overridden __str__.
+    # Preserve raw str bytes for the later collision-avoidance digest.
+    if run_id is None or (type(run_id) in (bool, int, float) and not run_id):
+        raw = "run"
+    elif isinstance(run_id, str):
+        raw = str.__str__(run_id) or "run"
+    else:
+        raw = _utf8_text(run_id) or "run"
     if raw.endswith("-wave1") and len(raw) > len("-wave1"):
         raw = raw[: -len("-wave1")]
     rid = _utf8_text(raw)
@@ -105,7 +112,12 @@ def safe_run_id(run_id: Any) -> str:
     name, bind a deterministic digest of the original value to the safe stem,
     so "a/b" cannot read the journal belonging to the real run "ab".
     """
-    raw = str(run_id or "")
+    if run_id is None or (type(run_id) in (bool, int, float) and not run_id):
+        raw = ""
+    elif isinstance(run_id, str):
+        raw = str.__str__(run_id)
+    else:
+        raw = _utf8_text(run_id)
     stem = _RUN_RE.sub("", raw)[:80].lstrip(".") or "run"
     if raw == stem:
         return stem
@@ -122,7 +134,10 @@ def _utf8_text(value: Any) -> str:
     from .gateway import clean_text
     if value is None:
         value = ""
-    elif not isinstance(value, str):
+    elif isinstance(value, str):
+        # Base str strips hostile subclass truthiness/string method overrides.
+        value = str.__str__(value)
+    else:
         try:
             value = str(value)
         except Exception:
@@ -210,7 +225,7 @@ class Bridge:
                  node_id: str = "local", limit: int | None = None):
         self.run_id = bridge_run_id(run_id)
         self.codex = codex
-        self.node_id = _utf8_text(node_id or "local")[:80]
+        self.node_id = _utf8_text(node_id)[:80] or "local"
         try:
             requested_limit = int(limit) if limit else max_posts()
         except (TypeError, ValueError, OverflowError):
@@ -484,7 +499,7 @@ class Bridge:
     # ------------------------------------------------------------ writes
     def post(self, agent: str, kind: str, text: str, refs: Iterable[str] | None = None,
              role: str = "", require_refs: bool = False) -> dict[str, Any]:
-        kind = _utf8_text(kind or "finding").strip().lower()
+        kind = (_utf8_text(kind) or "finding").strip().lower()
         if kind not in KINDS:
             raise BridgeError(f"kind must be one of {', '.join(KINDS)}")
         body = _clip(text)
@@ -516,8 +531,8 @@ class Bridge:
                     break
             if post_id is None:
                 raise BridgeError("could not allocate a unique post id")
-            rec = {"id": post_id, "run_id": self.run_id, "agent": _utf8_text(agent or "agent")[:80],
-                   "role": _utf8_text(role or "")[:60], "kind": kind, "text": body, "refs": refs_l,
+            rec = {"id": post_id, "run_id": self.run_id, "agent": _utf8_text(agent)[:80] or "agent",
+                   "role": _utf8_text(role)[:60], "kind": kind, "text": body, "refs": refs_l,
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec
             self._trim()
@@ -541,7 +556,7 @@ class Bridge:
         """Take posts relayed from another node. Dedupe by id; a local post is never overwritten;
         a post's own origin_node is kept (else `origin_node`). Refs may point at posts we lack."""
         stats = {"merged": 0, "skipped": 0, "rejected": 0}
-        origin = _utf8_text(origin_node or "remote")[:80]
+        origin = _utf8_text(origin_node)[:80] or "remote"
         fresh: list[dict[str, Any]] = []
         with self._lock, self._write_transaction() as file_lock_held:
             # Bound both parsing work and the write-ahead batch on direct API
@@ -750,7 +765,7 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     """
     if not isinstance(data, dict):
         return None, "body must be JSON"
-    kind = _utf8_text(data.get("kind") or "finding").strip().lower()
+    kind = (_utf8_text(data.get("kind")) or "finding").strip().lower()
     if kind not in KINDS:
         return None, f"kind must be one of {', '.join(KINDS)}"
     text = _clip(data.get("text"))
@@ -769,14 +784,14 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     try:
         sealed = seal_blackboard_post({
             "id": pid,
-            "run_id": data.get("run_id") or "run",
-            "agent": _utf8_text(data.get("agent") or "agent")[:80],
-            "role": _utf8_text(data.get("role") or "")[:60],
+            "run_id": data.get("run_id"),
+            "agent": _utf8_text(data.get("agent"))[:80] or "agent",
+            "role": _utf8_text(data.get("role"))[:60],
             "kind": kind,
             "text": text,
             "refs": _refs(data.get("refs")),
             "ts": _remote_ts(data.get("ts")),
-            "origin_node": _utf8_text(data.get("origin_node") or "local")[:80],
+            "origin_node": _utf8_text(data.get("origin_node"))[:80] or "local",
         })
     except BridgeError as exc:
         return None, str(exc)
@@ -1062,10 +1077,12 @@ def _blackboard_run_id(value: Any) -> str:
     First apply the Bridge's own Unicode and wave alias normalization, then
     digest any remaining excess length without losing the original identity.
     """
-    clean = _utf8_text(value or "run")
+    if value is None or (type(value) in (bool, int, float) and not value):
+        return "run"
+    clean = _utf8_text(value)
     if not clean.strip():
         return "run"
-    logical = bridge_run_id(value if isinstance(value, str) else clean)
+    logical = bridge_run_id(str.__str__(value) if isinstance(value, str) else clean)
     if len(logical) > 80:
         digest = hashlib.sha256(logical.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
         return f"{logical[:59]}-{digest}"
@@ -1078,7 +1095,7 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     Empty text after that (a body that was only NULs) is refused.
     """
     out = dict(post)
-    out["run_id"] = _blackboard_run_id(out.get("run_id") or "run")
+    out["run_id"] = _blackboard_run_id(out.get("run_id"))
     for key in ("agent", "role", "text", "origin_node"):
         if key in out:
             out[key] = _utf8_text(out[key])

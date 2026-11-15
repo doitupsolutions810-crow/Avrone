@@ -381,7 +381,7 @@ class HTTPTransport(_Transport):
         if headers is not None and not isinstance(headers, dict):
             raise MCPError("MCP HTTP headers must be an object")
         reserved = {
-            "accept", "content-type", "content-length", "host", "connection",
+            "accept", "accept-encoding", "content-type", "content-length", "host", "connection",
             "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
             "trailer", "transfer-encoding", "upgrade", "mcp-session-id",
             "mcp-protocol-version",
@@ -416,8 +416,12 @@ class HTTPTransport(_Transport):
                                          follow_redirects=False)
 
     def _hdrs(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-             **self.headers}
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Accept-Encoding": "identity",
+            **self.headers,
+        }
         if self.session_id:
             h["Mcp-Session-Id"] = self.session_id
         if self.protocol_version:
@@ -503,6 +507,9 @@ class HTTPTransport(_Transport):
                                        timeout=timeout) as r:
             if 300 <= r.status_code < 400:
                 raise MCPError("HTTP redirect refused for MCP endpoint", code=r.status_code)
+            content_encoding = r.headers.get("content-encoding", "identity").strip().lower()
+            if content_encoding not in ("", "identity"):
+                raise MCPError("compressed MCP HTTP responses are not accepted")
             sid = r.headers.get("mcp-session-id")
             if sid:
                 method = body.get("method")

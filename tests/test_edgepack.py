@@ -2847,3 +2847,16 @@ def test_pool_run_argv_accepts_only_the_validated_agent_home(tmp_path):
     assert argv.count("-v") == 1
     assert argv[argv.index("-v") + 1] == f"{home}:/agent"
     assert argv[-3] == "sha256:" + "b" * 64
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission semantics required")
+def test_pool_run_argv_reapplies_private_home_permissions(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = agentfs.agent_dir(workspace, "permission-worker")
+    os.chmod(home, 0o755)
+    pool = ac.AgentContainerPool(
+        FakeDocker(), "img", False, node="edge", workspace=workspace
+    )
+
+    pool.run_argv(home)
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700

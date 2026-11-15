@@ -320,3 +320,15 @@ def test_live_identity_suffix_collision_and_completed_id_reuse(tmp_path):
     replacement, _ = _reserve_test_identity(core, "run-1", "Delta-1", "worker")
     assert replacement == "worker"
     assert len({literal_suffix, duplicate, replacement}) == 3
+
+
+def test_live_identity_claims_disambiguate_memory_namespace_collisions(tmp_path):
+    core, _ = _core(tmp_path, [])
+
+    first, first_ns = _reserve_test_identity(core, "run-1", "Worker-1", "builder")
+    second, second_ns = _reserve_test_identity(core, "run-1", "Worker-2", "researcher")
+
+    assert first == "builder" and first_ns is None
+    assert second == "researcher-2"
+    assert second_ns == "worker-2"
+    assert core.active["Worker-1"]["memory_ns"] != core.active["Worker-2"]["memory_ns"]

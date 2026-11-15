@@ -161,7 +161,11 @@ class Bridge:
         self.run_id = bridge_run_id(run_id)
         self.codex = codex
         self.node_id = str(node_id or "local")
-        self.limit = int(limit) if limit else max_posts()
+        try:
+            requested_limit = int(limit) if limit else max_posts()
+        except (TypeError, ValueError, OverflowError):
+            requested_limit = max_posts()
+        self.limit = max(1, min(HARD_MAX_POSTS, requested_limit))
         self.path: Path | None = None
         if data_dir is not None:
             d = Path(data_dir) / "bridge"

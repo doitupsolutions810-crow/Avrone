@@ -750,7 +750,7 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     try:
         sealed = seal_blackboard_post({
             "id": pid,
-            "run_id": str(data.get("run_id") or "run")[:80],
+            "run_id": data.get("run_id") or "run",
             "agent": str(data.get("agent") or "agent")[:80],
             "role": str(data.get("role") or "")[:60],
             "kind": kind,
@@ -1005,22 +1005,37 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str
     return order
 
 
+def _blackboard_run_id(value: Any) -> str:
+    """Stable <=80-character run identity for public blackboard ingestion.
+
+    Plain truncation aliases distinct long runs sharing an 80-character prefix.
+    First apply the Bridge's own Unicode and wave alias normalization, then
+    digest any remaining excess length without losing the original identity.
+    """
+    clean = _utf8_text(value or "run")
+    if not clean.strip():
+        return "run"
+    logical = bridge_run_id(value if isinstance(value, str) else clean)
+    if len(logical) > 80:
+        digest = hashlib.sha256(logical.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
+        return f"{logical[:59]}-{digest}"
+    return logical
+
+
 def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     """Copy ``post`` with every string safe to store and to encode as UTF-8.
 
     Empty text after that (a body that was only NULs) is refused.
     """
     out = dict(post)
-    for key in ("run_id", "agent", "role", "text", "origin_node"):
+    out["run_id"] = _blackboard_run_id(out.get("run_id") or "run")
+    for key in ("agent", "role", "text", "origin_node"):
         if key in out:
             out[key] = _utf8_text(out[key])
-    if not str(out.get("run_id") or "").strip():
-        out["run_id"] = "run"
     if not str(out.get("agent") or "").strip():
         out["agent"] = "agent"
     if not str(out.get("origin_node") or "").strip():
         out["origin_node"] = "local"
-    out["run_id"] = str(out["run_id"])[:80]
     out["agent"] = str(out["agent"])[:80]
     out["role"] = str(out.get("role") or "")[:60]
     out["origin_node"] = str(out["origin_node"])[:80]

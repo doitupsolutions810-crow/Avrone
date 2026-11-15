@@ -2861,6 +2861,7 @@ def test_pool_run_argv_requires_workspace_binding(tmp_path):
     "ubuntu:latest",
     "sha256:" + "a" * 63,
     "sha256:" + "A" * 64,
+    "sha256:" + "b" * 64,
     "",
     True,
 ])
@@ -2879,10 +2880,13 @@ def test_pool_run_argv_accepts_configured_digest_without_override(tmp_path):
     workspace = tmp_path / "workspace"
     home = agentfs.agent_dir(workspace, "digest-worker")
     image_id = "sha256:" + "f" * 64
+    fake = FakeDocker()
+    fake.image_id = image_id
     pool = ac.AgentContainerPool(
-        FakeDocker(), image_id, False, node="edge", workspace=workspace
+        fake, image_id, False, node="edge", workspace=workspace
     )
 
+    assert run(pool._resolve_image_id()) == image_id
     argv = pool.run_argv(home)
     assert argv[-3] == image_id
 
@@ -2960,7 +2964,8 @@ def test_pool_run_argv_accepts_only_the_validated_agent_home(tmp_path):
         FakeDocker(), "img", False, node="edge", workspace=workspace
     )
 
-    argv = pool.run_argv(home, image_ref="sha256:" + "b" * 64)
+    image_id = run(pool._resolve_image_id())
+    argv = pool.run_argv(home, image_ref=image_id)
     assert argv[argv.index("--name") + 1] == "avrone-agent-edge-validated-worker"
     assert argv.count("-v") == 1
     assert argv[argv.index("-v") + 1] == f"{home}:/agent"
@@ -2976,7 +2981,8 @@ def test_pool_run_argv_reapplies_private_home_permissions(tmp_path):
         FakeDocker(), "img", False, node="edge", workspace=workspace
     )
 
-    pool.run_argv(home, image_ref="sha256:" + "a" * 64)
+    image_id = run(pool._resolve_image_id())
+    pool.run_argv(home, image_ref=image_id)
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
 
 

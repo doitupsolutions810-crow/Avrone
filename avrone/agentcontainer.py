@@ -482,6 +482,7 @@ class AgentContainerPool:
             raise ValueError("allow_network must be a boolean")
         self._exec = exec_fn
         self.image = image
+        self._resolved_image_ids: set[str] = set()
         self.allow_network = allow_network
         self.workspace = Path(workspace).resolve() if workspace is not None else None
         self.node = node or local_node_id()
@@ -541,6 +542,8 @@ class AgentContainerPool:
             or re.fullmatch(r"sha256:[0-9a-f]{64}", selected_image) is None
         ):
             raise ValueError("run_argv requires a resolved immutable sha256 image ID")
+        if selected_image not in self._resolved_image_ids:
+            raise ValueError("run_argv image ID was not resolved from this pool's configured image")
         return persistent_run_argv(
             container_name(self.node, d.name), d, selected_image, self.allow_network,
             agent_id=d.name, creation_token=creation_token,
@@ -559,7 +562,9 @@ class AgentContainerPool:
         image_id = str(getattr(result, "stdout", "") or "").strip()
         if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", image_id) is None:
             raise RuntimeError("Docker returned an invalid immutable image ID")
-        return image_id.lower()
+        resolved = image_id.lower()
+        self._resolved_image_ids.add(resolved)
+        return resolved
 
 
     async def _cleanup_failed_home_start(

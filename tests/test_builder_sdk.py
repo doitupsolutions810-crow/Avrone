@@ -235,6 +235,52 @@ def test_builder_policy_rejects_invalid_limits_and_types(override):
         BuilderPolicy(**override)
 
 
+@pytest.mark.parametrize("field", ["require_ollama", "require_git_sha_for_verified"])
+@pytest.mark.parametrize("invalid", [0, 1, "false", None, [], {}])
+def test_builder_policy_rejects_non_boolean_security_flags(field, invalid):
+    with pytest.raises(ValueError, match=field):
+        BuilderPolicy(**{field: invalid})
+
+
+def test_builder_policy_accepts_explicit_boolean_security_flags():
+    policy = BuilderPolicy(require_ollama=False, require_git_sha_for_verified=False)
+    assert policy.require_ollama is False
+    assert policy.require_git_sha_for_verified is False
+
+
+@pytest.mark.asyncio
+async def test_verify_timeout_fails_even_when_runner_reports_zero_exit_code():
+    sha = "a" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="partial output", timed_out=True),
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.commands[0]["exit_code"] == 0
+    assert evidence.commands[0]["timed_out"] is True
+    assert "1 of 1 checks failed" in evidence.reason
+
+
+@pytest.mark.asyncio
+async def test_empty_verification_allowlist_is_not_run_and_executes_nothing():
+    runner = FakeRunner([])
+    sdk = BuilderAgentSDK(FakeCore(runner=runner), policy=BuilderPolicy(verification_commands=()))
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "NOT_RUN" and result.status == "NOT_RUN"
+    assert evidence.commands == []
+    assert runner.commands == []
+
+
 @pytest.mark.asyncio
 async def test_verify_fails_when_workspace_sha_changes_during_checks():
     original_sha = "a" * 40
@@ -443,4 +489,3 @@ async def test_verify_requires_final_worktree_status_to_be_readable():
     assert evidence.status == "FAIL" and result.status == "FAIL"
     assert evidence.workspace_clean is None
     assert "Could not confirm the worktree remained clean" in evidence.reason
-\n

@@ -444,6 +444,40 @@ def test_outbound_rpc_encoder_rejects_non_json_values(invalid):
         mc._encode_rpc_request({"jsonrpc": "2.0", "id": 1, "params": invalid})
 
 
+@pytest.mark.parametrize("invalid", [
+    {1: "numeric key"},
+    {True: "boolean key"},
+    {None: "null key"},
+])
+def test_outbound_rpc_encoder_rejects_non_string_object_keys(invalid):
+    with pytest.raises(MCPError, match="object keys must be strings"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "params": invalid})
+
+
+def test_outbound_rpc_encoder_rejects_circular_references():
+    circular = []
+    circular.append(circular)
+    with pytest.raises(MCPError, match="circular reference"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "params": circular})
+
+
+def test_outbound_rpc_encoder_rejects_nesting_before_json_serialization(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_DEPTH", 8)
+    nested = {}
+    current = nested
+    for _ in range(12):
+        current["next"] = {}
+        current = current["next"]
+    with pytest.raises(MCPError, match="nesting limit"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "params": nested})
+
+
+def test_outbound_rpc_encoder_rejects_excessive_node_count(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_NODES", 12)
+    with pytest.raises(MCPError, match="node limit"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "params": list(range(100))})
+
+
 def test_outbound_rpc_encoder_rejects_deeply_nested_values():
     nested = {}
     current = nested

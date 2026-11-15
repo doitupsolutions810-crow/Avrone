@@ -785,7 +785,15 @@ class MCPManager:
             log.error("could not read MCP config: %s", e)
             self._status["_config"] = {"connected": False, "error": f"config: {e}", "tools": 0}
             return self.status()
-        await asyncio.gather(*(self._start_one(n, c, registry) for n, c in servers.items()))
+        try:
+            await asyncio.gather(*(self._start_one(n, c, registry) for n, c in servers.items()))
+        except asyncio.CancelledError:
+            # A sibling may already have connected and registered tools. Drain every partial
+            # success, in addition to the per-client cleanup in _start_one, before propagating.
+            cleanup = asyncio.create_task(self._stop_locked())
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(cleanup)
+            raise
         self._started = True
         return self.status()
 
@@ -795,6 +803,11 @@ class MCPManager:
             client = MCPClient(name, cfg)
             await asyncio.wait_for(client.connect(), client.timeout)
             tools = await client.list_tools()
+        except asyncio.CancelledError:
+            if client:
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(client.close())
+            raise
         except Exception as e:
             msg = f"{type(e).__name__}: {e}" or type(e).__name__
             log.warning("MCP server '%s' failed to start: %s", name, msg)
@@ -840,18 +853,21 @@ class MCPManager:
                 return f"ERROR: MCP {client.name}/{remote}: {e}"
         return fn
 
+    async def _stop_locked(self) -> None:
+        if self.registry is not None:
+            for name in self._registered:
+                self.registry.unregister(name)
+        self._registered.clear()
+        await asyncio.gather(*(c.close() for c in self.clients.values()), return_exceptions=True)
+        for name in self.clients:
+            if name in self._status:
+                self._status[name]["connected"] = False
+        self.clients.clear()
+        self._started = False
+
     async def stop(self) -> None:
         async with self._lifecycle_lock:
-            if self.registry is not None:
-                for n in self._registered:
-                    self.registry.unregister(n)
-            self._registered.clear()
-            await asyncio.gather(*(c.close() for c in self.clients.values()), return_exceptions=True)
-            for name in self.clients:
-                if name in self._status:
-                    self._status[name]["connected"] = False
-            self.clients.clear()
-            self._started = False
+            await self._stop_locked()
 
     def status(self) -> dict[str, dict[str, Any]]:
         return {k: dict(v) for k, v in self._status.items()}

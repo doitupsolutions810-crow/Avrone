@@ -520,6 +520,20 @@ def test_outbound_rpc_encoder_emits_valid_utf8_and_exact_json():
     assert encoded.decode("utf-8") == '{"jsonrpc":"2.0","id":1,"params":{"text":"λ"}}'
 
 
+def test_stdio_send_accounts_for_delimiter_in_frame_limit(monkeypatch):
+    async def go():
+        monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", 128)
+        monkeypatch.setattr(mc, "MAX_STDIO_LINE_BYTES", 16)
+        proc = FakeProc(lambda _msg: []).streams()
+        transport = StdioTransport("fake-mcp")
+        transport.proc = proc
+        with pytest.raises(MCPError, match="stdio frame exceeded configured limit"):
+            await transport._send({"jsonrpc": "2.0", "method": "x"})
+        assert proc.stdin.sent == []
+        await transport.close()
+    run(go())
+
+
 def test_stdio_send_enforces_outbound_request_limit(monkeypatch):
     async def go():
         monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", 16)

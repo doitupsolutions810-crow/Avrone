@@ -2305,14 +2305,12 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 65536}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 2048}, {"Name": "memlock", "Soft": 1, "Hard": 1}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": True, "Hard": 2048}]), "open-file descriptor limit"),
-    (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind", False),
+    (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind"),
     (lambda p: p["Mounts"].append({"Type": "bind", "Destination": "/host", "RW": True}), "private /agent bind"),
     (lambda p: p["Mounts"][0].update(RW=False), "private /agent bind"),
     (lambda p: p["HostConfig"]["Tmpfs"].update({"/tmp": "rw,size=8g"}), "bounded /tmp"),
 ])
-def test_existing_container_policy_validator_rejects_each_escape(
-    mutate, reason, tmp_path, monkeypatch, expected_owned=True
-):
+def test_existing_container_policy_validator_rejects_each_escape(mutate, reason, tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     agent_dir = agentfs.agent_dir(tmp_path / "ws", "builder")
@@ -2324,12 +2322,27 @@ def test_existing_container_policy_validator_rejects_each_escape(
     ok, owned, detail = ac._inspect_matches_policy(
         json.dumps(payload), agent_dir, "img", allow_network=False
     )
-    assert owned is expected_owned
+    assert owned is True
     assert ok is False
-    if expected_owned:
-        assert reason in detail
-    else:
-        assert "not owned by this agent home" in detail
+    assert reason in detail
+
+
+
+
+
+def test_policy_inspector_marks_foreign_bind_source_unowned(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    home = agentfs.agent_dir(tmp_path / "trusted-workspace", "same-agent")
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-same-agent", home, "img", False, agent_id="same-agent"
+    )
+    payload = _fake_inspect_from_run(argv, "a" * 64)
+    payload["HostConfig"]["Binds"] = ["/tmp/foreign-workspace/agents/same-agent:/agent"]
+
+    ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", False)
+    assert ok is False and owned is False
+    assert "not owned by this agent home" in detail
 
 
 def test_existing_container_policy_validator_accepts_only_a_valid_json_object(tmp_path, monkeypatch):

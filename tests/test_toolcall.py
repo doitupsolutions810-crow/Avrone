@@ -383,6 +383,30 @@ def test_required_action_contract_executes_before_first_llm_turn_and_blocks_foll
     assert any(e["kind"] == "action.contract.blocked" for e in events)
 
 
+def test_required_action_counts_toward_repeat_call_limit(tmp_path):
+    log = []
+    repeated = '{"tool":"echo","args":{"text":"repeat-me"}}'
+    llm = ScriptLLM([
+        repeated,
+        repeated,
+        '{"final":"stopped repeating after warning"}',
+    ])
+    core = _core(tmp_path, llm, tools=_reg(log), steps=5)
+    contract = {
+        "first_action": {"tool": "echo", "args": {"text": "repeat-me"}},
+        "allow_followup_calls": True,
+    }
+    task = "Run the required action.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+
+    result = run(core.run_agent("contract-repeat", "Verifier", task))
+
+    assert result == "stopped repeating after warning"
+    assert log == [("echo", "repeat-me"), ("echo", "repeat-me"), ("echo", "repeat-me")]
+    repeats = [e for e in core.codex.replay("contract-repeat") if e["kind"] == "tool.repeat"]
+    assert len(repeats) == 1
+    assert repeats[0]["data"]["count"] == 3
+
+
 def test_required_action_contract_allows_configured_followup_calls(tmp_path):
     log = []
     llm = ScriptLLM([

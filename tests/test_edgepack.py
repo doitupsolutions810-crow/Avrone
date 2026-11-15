@@ -55,8 +55,11 @@ def _fake_inspect_from_run(argv, container_id, running=True):
     source = bind.split(":", 1)[0]
     memory = int(option("--memory", "512m").removesuffix("m")) * 1024 * 1024
     swap = int(option("--memory-swap", "512m").removesuffix("m")) * 1024 * 1024
+    container_name_value = argv[argv.index("--name") + 1]
+    destination = bind.split(":")[1] if ":" in bind else ""
     return {
         "Id": container_id,
+        "Name": f"/{container_name_value}",
         "State": {"Running": running},
         "Image": argv[-3],
         "Config": {"User": option("--user"), "Image": argv[-3], "WorkingDir": option("-w"),
@@ -72,7 +75,7 @@ def _fake_inspect_from_run(argv, container_id, running=True):
             "NanoCpus": int(float(option("--cpus", "1.0")) * 1_000_000_000),
             "PidsLimit": int(option("--pids-limit", "512")),
         },
-        "Mounts": [{"Type": "bind", "Source": source, "Destination": "/agent", "RW": True}],
+        "Mounts": [{"Type": "bind", "Source": source, "Destination": destination, "RW": True}],
     }
 
 
@@ -802,18 +805,24 @@ def test_docker_runner_persistent_mode(tmp_path, monkeypatch):
         seen.append(argv)
         return await fake(argv, timeout)
     monkeypatch.setattr(r, "_exec", fake_exec)
+    run(r.start())
+    outer_id = r.container_id
+    assert outer_id is not None and len(outer_id) == 64
     d = agentfs.agent_dir(s.workspace, "Researcher")
     run(r.run("ls", cwd=d))
     run(r.run("pwd", cwd=d))
     runs = [a for a in seen if a[1] == "run"]
-    assert len(runs) == 1 and "avrone-agent-edge1-researcher" in runs[0]
+    agent_runs = [a for a in runs if "avrone-agent-edge1-researcher" in a]
+    assert len(agent_runs) == 1
     execs = [a for a in seen if a[1] == "exec"]
     worker_id = fake.container_ids["avrone-agent-edge1-researcher"]
     assert [a[-1] for a in execs] == ["ls", "pwd"] and all(worker_id in a for a in execs)
     run(r.run("echo hi"))                                         # non-agent command: shared container
-    assert seen[-1] == ["docker", "exec", r.container, "bash", "-lc", "echo hi"]
+    assert seen[-1] == ["docker", "exec", outer_id, "bash", "-lc", "echo hi"]
     run(r.stop())
     assert ["docker", "rm", "-f", worker_id] in seen
+    assert ["docker", "rm", "-f", outer_id] in seen
+    assert r.container_id is None
 
 
 
@@ -827,6 +836,8 @@ def test_docker_runner_stop_removes_outer_container_even_when_agent_pool_close_f
             raise RuntimeError("agent pool could not remove one home")
 
     runner.agent_pool = BrokenPool()
+    runner.container_id = "e" * 64
+    expected_runner_id = runner.container_id
 
     async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
         seen.append(argv)
@@ -835,11 +846,12 @@ def test_docker_runner_stop_removes_outer_container_even_when_agent_pool_close_f
     monkeypatch.setattr(runner, "_exec", fake_exec)
     with pytest.raises(RuntimeError, match="agent pool could not remove"):
         run(runner.stop())
-    assert seen == [["docker", "rm", "-f", runner.container]]
+    assert seen == [["docker", "rm", "-f", expected_runner_id]]
 
 
 def test_docker_runner_stop_reports_outer_container_removal_failure(tmp_path, monkeypatch):
     runner = DockerRunner(_settings(tmp_path))
+    runner.container_id = "f" * 64
     async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
         return CommandResult(cmd, 125, "", "permission denied")
 
@@ -850,8 +862,9 @@ def test_docker_runner_stop_reports_outer_container_removal_failure(tmp_path, mo
 
 def test_docker_runner_stop_treats_an_already_missing_outer_container_as_success(tmp_path, monkeypatch):
     runner = DockerRunner(_settings(tmp_path))
+    runner.container_id = "a" * 64
     async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
-        return CommandResult(cmd, 1, "", "No such container: " + runner.container)
+        return CommandResult(cmd, 1, "", "No such container: " + (runner.container_id or ""))
 
     monkeypatch.setattr(runner, "_exec", fake_exec)
     run(runner.stop())
@@ -862,6 +875,8 @@ def test_docker_runner_stop_still_removes_outer_container_when_pool_close_waiter
 ):
     async def go():
         runner = DockerRunner(_settings(tmp_path))
+        runner.container_id = "b" * 64
+        expected_runner_id = runner.container_id
         entered = asyncio.Event()
         release = asyncio.Event()
         seen = []
@@ -883,10 +898,94 @@ def test_docker_runner_stop_still_removes_outer_container_when_pool_close_waiter
         stop_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stop_task
-        assert seen == [["docker", "rm", "-f", runner.container]]
+        assert seen == [["docker", "rm", "-f", expected_runner_id]]
         release.set()
 
     run(go())
+
+
+
+def test_docker_runner_pins_outer_container_id_for_exec_and_never_deletes_name_replacement(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    seen = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(argv)
+        return await fake(argv, timeout)
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    run(runner.start())
+    original_id = runner.container_id
+    assert original_id is not None
+    original_argv = next(call for call in seen if call[1] == "run")
+
+    fake.running.discard(runner.container)
+    fake.inspect_payloads.pop(runner.container, None)
+    replacement_id = fake.seed(original_argv)
+    assert replacement_id != original_id
+
+    result = run(runner.run("whoami"))
+    exec_call = next(call for call in seen if call[1] == "exec")
+    assert original_id in exec_call
+    assert replacement_id not in exec_call
+    assert result.exit_code != 0
+
+    run(runner.stop())
+    assert fake.running == {runner.container}
+    assert ["docker", "rm", "-f", original_id] in seen
+    assert ["docker", "rm", "-f", replacement_id] not in seen
+    assert runner.container_id is None
+
+
+def test_docker_runner_recovers_bad_run_stdout_only_from_matching_owner_label(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    original = fake.__call__
+
+    async def malformed_stdout(argv, timeout):
+        result = await original(argv, timeout)
+        if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+            return CommandResult(result.cmd, 0, "short-id", "")
+        return result
+
+    monkeypatch.setattr(runner, "_exec", malformed_stdout)
+    run(runner.start())
+    expected = fake.container_ids[runner.container]
+    assert runner.container_id == expected
+
+
+def test_docker_runner_refuses_unowned_runner_name_after_bad_run_stdout(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    original = fake.__call__
+
+    async def malformed_and_reassigned(argv, timeout):
+        result = await original(argv, timeout)
+        if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+            fake.inspect_payloads[runner.container]["Config"]["Labels"]["avrone.runner"] = "attacker"
+            return CommandResult(result.cmd, 0, "short-id", "")
+        return result
+
+    monkeypatch.setattr(runner, "_exec", malformed_and_reassigned)
+    with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
+        run(runner.start())
+    assert runner.container_id is None
+    assert runner.container in fake.running
+    assert not any(call[1] == "rm" for call in fake.calls)
+
+
+def test_docker_runner_stop_without_verified_identity_never_removes_by_friendly_name(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    seen = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(argv)
+        return CommandResult(cmd, 0, "", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    run(runner.stop())
+    assert seen == []
 
 
 def test_docker_runner_off_by_default_unchanged(tmp_path, monkeypatch):
@@ -896,10 +995,12 @@ def test_docker_runner_off_by_default_unchanged(tmp_path, monkeypatch):
 
     async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
         seen.append(argv)
-        return CommandResult(cmd, 0, "", "")
+        output = "c" * 64 if len(argv) > 1 and argv[1] == "run" else ""
+        return CommandResult(cmd, 0, output, "")
     monkeypatch.setattr(r, "_exec", fake_exec)
+    run(r.start())
     run(r.run("ls", cwd=agentfs.agent_dir(s.workspace, "Researcher")))
-    assert seen[0][:2] == ["docker", "exec"] and r.container in seen[0] and r.agent_pool is None
+    assert seen[1][:2] == ["docker", "exec"] and "c" * 64 in seen[1] and r.agent_pool is None
 
 
 # ------------------------------------------------------------------ 2. agent packs

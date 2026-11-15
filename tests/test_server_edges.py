@@ -409,7 +409,10 @@ def test_docker_runner_argv_and_failure(tmp_path, monkeypatch):
 
     async def fake_exec(self, argv, cmd, timeout, cwd=None):
         calls.append(argv)
-        return results.pop(0) if results else CommandResult(cmd, 0, "ok", "")
+        if results:
+            return results.pop(0)
+        output = "d" * 64 if len(argv) > 1 and argv[1] == "run" else "ok"
+        return CommandResult(cmd, 0, output, "")
     monkeypatch.setattr(DockerRunner, "_exec", fake_exec)
     d = DockerRunner(rsettings(tmp_path))
     with pytest.raises(RuntimeError, match="no daemon"):
@@ -418,9 +421,11 @@ def test_docker_runner_argv_and_failure(tmp_path, monkeypatch):
     d2 = DockerRunner(rsettings(tmp_path, allow_network=True))
     run(d2.start())
     assert "--network" not in calls[-1]
-    assert run(d2.run("ls")).stdout == "ok" and calls[-1][:3] == ["docker", "exec", d2.container]
+    runner_id = d2.container_id
+    assert runner_id == "d" * 64
+    assert run(d2.run("ls")).stdout == "ok" and runner_id in calls[-1]
     run(d2.stop())
-    assert calls[-1][:3] == ["docker", "rm", "-f"]
+    assert calls[-1] == ["docker", "rm", "-f", runner_id]
 
 
 def test_establish_auto_falls_back_to_local(tmp_path, monkeypatch):

@@ -8,7 +8,9 @@ otherwise in a local subprocess confined to the workspace directory.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -116,6 +118,8 @@ class DockerRunner(Runner):
     def __init__(self, settings: Settings):
         super().__init__(settings)
         self.container = f"avrone-env-{uuid.uuid4().hex[:8]}"
+        self.container_id: str | None = None
+        self._owner_token = uuid.uuid4().hex
         self.agent_pool: agentcontainer.AgentContainerPool | None = None  # AVRONE_AGENT_CONTAINER=persistent
 
     def _pool(self) -> agentcontainer.AgentContainerPool:
@@ -125,9 +129,71 @@ class DockerRunner(Runner):
             self.agent_pool = agentcontainer.AgentContainerPool(_run, self.s.docker_image, self.s.allow_network)
         return self.agent_pool
 
+    @staticmethod
+    def _full_container_id(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        candidate = value.strip().lower()
+        return candidate if re.fullmatch(r"[0-9a-f]{64}", candidate) else None
+
+    def _inspect_started_container_id(self, stdout: str) -> str | None:
+        try:
+            payload = json.loads(stdout)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(payload, list) and len(payload) == 1:
+            payload = payload[0]
+        if not isinstance(payload, dict):
+            return None
+        container_id = self._full_container_id(payload.get("Id"))
+        config = payload.get("Config")
+        host = payload.get("HostConfig")
+        state = payload.get("State")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        binds = host.get("Binds") if isinstance(host, dict) else None
+        mounts = payload.get("Mounts")
+        if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(state, dict):
+            return None
+        if not isinstance(labels, dict) or labels.get("avrone.runner") != self._owner_token:
+            return None
+        if payload.get("Name") != f"/{self.container}" or state.get("Running") is not True:
+            return None
+        if config.get("Image") != self.s.docker_image or config.get("WorkingDir") != "/workspace":
+            return None
+        expected_source = str(self.workspace.resolve())
+        if not isinstance(binds, list) or len(binds) != 1 or not isinstance(binds[0], str):
+            return None
+        bind_parts = binds[0].split(":")
+        if (
+            len(bind_parts) not in (2, 3)
+            or os.path.normpath(bind_parts[0]) != os.path.normpath(expected_source)
+            or bind_parts[1] != "/workspace"
+            or bind_parts[2:] not in ([], ["rw"])
+        ):
+            return None
+        if (
+            not isinstance(mounts, list) or len(mounts) != 1
+            or not isinstance(mounts[0], dict)
+            or mounts[0].get("Type") != "bind"
+            or mounts[0].get("Destination") != "/workspace"
+            or mounts[0].get("RW") is not True
+        ):
+            return None
+        network_mode = host.get("NetworkMode")
+        if not isinstance(network_mode, str):
+            return None
+        if not self.s.allow_network and network_mode != "none":
+            return None
+        if self.s.allow_network and network_mode.lower() in {"host", "container", "service"}:
+            return None
+        return container_id
+
     async def start(self) -> None:
+        if self.container_id is not None:
+            return
         self.workspace.mkdir(parents=True, exist_ok=True)
         argv = ["docker", "run", "-d", "--rm", "--name", self.container,
+                "--label", f"avrone.runner={self._owner_token}",
                 "-v", f"{self.workspace}:/workspace", "-w", "/workspace"]
         if not self.s.allow_network:
             argv += ["--network", "none"]
@@ -135,6 +201,23 @@ class DockerRunner(Runner):
         res = await self._exec(argv, " ".join(argv), 300)
         if res.exit_code != 0:
             raise RuntimeError(f"Could not start environment container: {res.stderr}")
+        container_id = self._full_container_id(res.stdout)
+        if container_id is None:
+            # docker run may have succeeded while a wrapper returned truncated/invalid
+            # output. Recover only from a full inspect object carrying this instance's
+            # owner label and exact workspace/runtime configuration.
+            inspected = await self._exec(
+                ["docker", "inspect", "-f", "{{json .}}", self.container],
+                "docker inspect runner", 30,
+            )
+            if inspected.exit_code == 0:
+                container_id = self._inspect_started_container_id(inspected.stdout)
+        if container_id is None:
+            raise RuntimeError(
+                "Docker did not return a valid environment container ID and a matching owned container "
+                "could not be verified"
+            )
+        self.container_id = container_id
 
     async def stop(self) -> None:
         pool_error: Exception | None = None
@@ -150,16 +233,23 @@ class DockerRunner(Runner):
                 pool_error = exc
 
         async def remove_runner_container() -> None:
+            container_id = self.container_id
+            if container_id is None:
+                # Never use the friendly name as a cleanup target when this runner instance
+                # has no verified Docker identity.
+                return
             result = await self._exec(
-                ["docker", "rm", "-f", self.container], "docker rm", 30
+                ["docker", "rm", "-f", container_id], "docker rm", 30
             )
             if (result.exit_code != 0
                     and "no such container" not in str(result.stderr or "").lower()
                     and "no such object" not in str(result.stderr or "").lower()):
                 raise RuntimeError(
-                    f"Could not remove environment container {self.container}: "
+                    f"Could not remove environment container {container_id}: "
                     f"{str(result.stderr or 'unknown Docker error')[:300]}"
                 )
+            if self.container_id == container_id:
+                self.container_id = None
 
         # Shield the independent outer-container cleanup from caller cancellation. The
         # cancellation is re-raised only after the removal attempt has completed.
@@ -182,14 +272,17 @@ class DockerRunner(Runner):
         if pool_error is not None:
             raise pool_error
 
-    def exec_argv(self, cmd: str, agent_cwd: Path | None = None) -> list[str]:
+    def exec_argv(
+        self, cmd: str, agent_cwd: Path | None = None, *, container_ref: str | None = None
+    ) -> list[str]:
         """argv for one command. Agent commands run in their own dir.
 
         Default: `docker exec -w /workspace/agents/<id>` in the shared container (the agent dir
         is the same host dir via the /workspace bind mount). With AVRONE_AGENT_DOCKER_ISOLATE=1:
         a throwaway `docker run --rm` that mounts ONLY that agent dir, as `-v <dir>:/agent`."""
+        target = container_ref or self.container_id or self.container
         if agent_cwd is None:
-            return ["docker", "exec", self.container, "bash", "-lc", cmd]
+            return ["docker", "exec", target, "bash", "-lc", cmd]
         if agentfs.docker_isolate():
             mnt = agentfs.CONTAINER_AGENT_MOUNT
             argv = ["docker", "run", "--rm", *agentfs.agent_volume_args(agent_cwd), "-w", mnt,
@@ -202,7 +295,7 @@ class DockerRunner(Runner):
         argv = ["docker", "exec", "-w", inner]
         for k, v in self.agent_env(agent_cwd, in_container=inner).items():
             argv += ["-e", f"{k}={v}"]
-        return argv + [self.container, "bash", "-lc", cmd]
+        return argv + [target, "bash", "-lc", cmd]
 
     async def run(self, cmd: str, timeout: int | None = None, cwd: Path | None = None) -> CommandResult:
         agent_cwd = self._agent_cwd(cwd)
@@ -216,7 +309,13 @@ class DockerRunner(Runner):
                 return await self._exec(
                     agentcontainer.exec_argv(container_id, cmd), cmd, timeout or self.s.command_timeout
                 )
-        return await self._exec(self.exec_argv(cmd, agent_cwd), cmd, timeout or self.s.command_timeout)
+        target = self.container_id
+        if target is None:
+            raise RuntimeError("Docker runner must be started and have a verified container ID before shared commands")
+        return await self._exec(
+            self.exec_argv(cmd, agent_cwd, container_ref=target),
+            cmd, timeout or self.s.command_timeout,
+        )
 
 
 async def establish(settings: Settings) -> Runner:

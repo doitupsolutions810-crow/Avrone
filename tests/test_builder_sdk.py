@@ -661,3 +661,100 @@ async def test_verify_requires_final_worktree_status_to_be_readable():
     assert evidence.status == "FAIL" and result.status == "FAIL"
     assert evidence.workspace_clean is None
     assert "Could not confirm the worktree remained clean" in evidence.reason
+
+
+@pytest.mark.asyncio
+async def test_verify_does_not_accept_initial_sha_with_timeout_metadata():
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="a" * 40, timed_out=True),
+        FakeCommand(exit_code=0, stdout="checks passed"),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "PASS"
+    assert evidence.target_sha is None
+    assert result.status == "UNVERIFIED"
+    assert "timed out" in evidence.reason
+    assert runner.commands == ["git rev-parse --verify HEAD", "python -m pytest -q"]
+
+
+@pytest.mark.parametrize("timeout_metadata", [True, None, "false", 0])
+@pytest.mark.asyncio
+async def test_verify_rejects_untrustworthy_initial_git_status_timeout_metadata(timeout_metadata):
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout="a" * 40),
+        FakeCommand(exit_code=0, stdout="", timed_out=timeout_metadata),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.workspace_clean is None
+    assert evidence.commands == []
+    assert "Could not inspect the worktree" in evidence.reason
+    assert runner.commands == [
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+    ]
+
+
+@pytest.mark.parametrize("timeout_metadata", [True, None, "false", 0])
+@pytest.mark.asyncio
+async def test_verify_rejects_untrustworthy_final_sha_timeout_metadata(timeout_metadata):
+    sha = "b" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="checks passed"),
+        FakeCommand(exit_code=0, stdout=sha, timed_out=timeout_metadata),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert "Could not confirm the workspace SHA remained stable" in evidence.reason
+    assert runner.commands == [
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+        "python -m pytest -q",
+        "git rev-parse --verify HEAD",
+    ]
+
+
+@pytest.mark.parametrize("timeout_metadata", [True, None, "false", 0])
+@pytest.mark.asyncio
+async def test_verify_rejects_untrustworthy_final_git_status_timeout_metadata(timeout_metadata):
+    sha = "c" * 40
+    runner = FakeRunner([
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout=""),
+        FakeCommand(exit_code=0, stdout="checks passed"),
+        FakeCommand(exit_code=0, stdout=sha),
+        FakeCommand(exit_code=0, stdout="", timed_out=timeout_metadata),
+    ])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    evidence = await sdk.verify(result)
+    assert evidence.status == "FAIL" and result.status == "FAIL"
+    assert evidence.workspace_clean is None
+    assert "Could not confirm the worktree remained clean" in evidence.reason
+    assert runner.commands == [
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+        "python -m pytest -q",
+        "git rev-parse --verify HEAD",
+        "git status --porcelain=v1 --untracked-files=all",
+    ]

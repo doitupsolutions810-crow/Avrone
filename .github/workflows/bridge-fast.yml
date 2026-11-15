@@ -1,0 +1,55 @@
+name: Bridge fast regressions
+
+on:
+  push:
+    branches:
+      - "integration/swarm-edge-*"
+    paths:
+      - "avrone/bridge.py"
+      - "tests/test_bridge*.py"
+      - "tests/test_platform_bridge*.py"
+      - "tests/test_robust_v023_bridge.py"
+      - ".github/workflows/bridge-fast.yml"
+  pull_request:
+    paths:
+      - "avrone/bridge.py"
+      - "tests/test_bridge*.py"
+      - "tests/test_platform_bridge*.py"
+      - "tests/test_robust_v023_bridge.py"
+      - ".github/workflows/bridge-fast.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridge-fast-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Fast Bridge regression suite
+        env:
+          AVRONE_LLM_MODE: mock
+          AVRONE_RUNNER: local
+          PYTHONPATH: .
+        run: |
+          python -m pytest -q --disable-warnings --tb=short \
+            tests/test_bridge.py \
+            tests/test_bridge_*.py \
+            tests/test_platform_bridge*.py \
+            tests/test_robust_v023_bridge.py

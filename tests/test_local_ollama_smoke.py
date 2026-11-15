@@ -65,6 +65,7 @@ def _container(agent_id: str, content: str, cid: str) -> dict:
             "MemorySwap": container_policy.mem_mb() * 1024 * 1024,
             "NanoCpus": int(round(container_policy.cpus() * 1_000_000_000)),
             "PidsLimit": container_policy.PIDS_LIMIT,
+            "Ulimits": [{"Name": "nofile", "Soft": 1024, "Hard": 2048}],
             "Binds": [f"{source}:/agent"],
         },
         "Mounts": [{
@@ -237,6 +238,11 @@ def test_smoke_verifier_rejects_malformed_docker_inspect_shape(monkeypatch):
     ("wrong_memory", "memory_limit_exact"),
     ("wrong_cpu", "cpu_limit_exact"),
     ("wrong_pids", "pids_limit_exact"),
+    ("missing_ulimit", "open_file_limit_exact"),
+    ("widened_ulimit", "open_file_limit_exact"),
+    ("duplicate_ulimit", "open_file_limit_exact"),
+    ("boolean_ulimit", "open_file_limit_exact"),
+    ("extra_ulimit", "open_file_limit_exact"),
     ("duplicate_home_env", "required_environment_exact"),
     ("wrong_bind", "one_private_mount"),
     ("wrong_bind_readonly", "one_private_mount"),
@@ -268,6 +274,16 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
         host["NanoCpus"] = 1
     elif mutation == "wrong_pids":
         host["PidsLimit"] = 1
+    elif mutation == "missing_ulimit":
+        host.pop("Ulimits", None)
+    elif mutation == "widened_ulimit":
+        host["Ulimits"][0]["Hard"] = 65536
+    elif mutation == "duplicate_ulimit":
+        host["Ulimits"].append({"Name": "nofile", "Soft": 1, "Hard": 1})
+    elif mutation == "boolean_ulimit":
+        host["Ulimits"][0]["Soft"] = True
+    elif mutation == "extra_ulimit":
+        host["Ulimits"][0]["Extra"] = "unexpected"
     elif mutation == "duplicate_home_env":
         cfg["Env"].append("HOME=/tmp")
     elif mutation == "wrong_bind":

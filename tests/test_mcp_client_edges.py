@@ -1088,6 +1088,43 @@ def test_manager_start_is_idempotent_and_restart_after_stop(monkeypatch):
     run(go())
 
 
+def test_manager_start_cancellation_closes_partial_clients_and_unregisters_tools(monkeypatch):
+    async def go():
+        entered = asyncio.Event()
+        blocked = asyncio.Event()
+        instances = []
+
+        class MixedClient(FakeClient):
+            def __init__(self, name, cfg, timeout=30):
+                super().__init__(name, cfg, timeout)
+                instances.append(self)
+
+            async def connect(self):
+                if self.name == "slow":
+                    entered.set()
+                    await blocked.wait()
+
+        monkeypatch.setattr(mc, "MCPClient", MixedClient)
+        manager = MCPManager(servers={
+            "ready": {"command": "ready"},
+            "slow": {"command": "slow"},
+        })
+        registry = ToolRegistry()
+        task = asyncio.create_task(manager.start(registry))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(instances) == 2
+        assert all(client.closed for client in instances)
+        assert manager.clients == {}
+        assert manager._registered == []
+        assert registry.names() == []
+        assert manager._started is False
+
+    run(go())
+
+
 def test_manager_cannot_switch_registries_without_stopping(monkeypatch):
     FakeClient.behaviour = {"one": {"tools": [{"name": "echo"}]}}
     monkeypatch.setattr(mc, "MCPClient", FakeClient)

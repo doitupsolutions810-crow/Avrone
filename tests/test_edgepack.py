@@ -695,6 +695,42 @@ def test_pool_close_treats_an_externally_removed_container_as_cleaned(tmp_path):
 
 
 
+
+def test_pool_rejects_inspect_payload_without_a_full_container_id(tmp_path):
+    fake = FakeDocker()
+    home = agentfs.agent_dir(tmp_path / "ws", "malformed-id")
+    name = ac.container_name("edge", home.name)
+    argv = ac.persistent_run_argv(name, home, fake.image_id, False, agent_id=home.name)
+    fake.seed(argv)
+    fake.inspect_payloads[name]["Id"] = "short-id"
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+
+    with pytest.raises(RuntimeError, match="no valid full Docker identity"):
+        run(pool.ensure(home))
+    assert name in fake.running
+    assert fake.rm_count(name) == 0
+    assert pool.homes == {}
+
+
+def test_pool_idle_reap_removes_pinned_old_id_not_reassigned_name(tmp_path):
+    fake, now = FakeDocker(), [0.0]
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
+    home = agentfs.agent_dir(tmp_path / "ws", "reap-name-reused")
+    name = run(pool.ensure(home))
+    old_id = pool.homes[name].container_id
+    old_argv = pool.run_argv(home, pool.homes[name].image_id)
+
+    fake.running.discard(name)
+    fake.inspect_payloads.pop(name, None)
+    replacement_id = fake.seed(old_argv)
+    now[0] = 10.0
+
+    assert run(pool.reap_idle()) == [name]
+    assert ["docker", "rm", "-f", old_id] in fake.calls
+    assert ["docker", "rm", "-f", replacement_id] not in fake.calls
+    assert fake.running == {name}
+    assert name not in pool.homes
+
 def test_pool_idle_reap_preserves_failed_home_and_retries(tmp_path):
     fake, now = FakeDocker(), [0.0]
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
@@ -1627,7 +1663,7 @@ def test_existing_container_policy_validator_rejects_each_escape(mutate, reason,
     argv = ac.persistent_run_argv(
         "avrone-agent-edge-builder", agent_dir, "img", allow_network=False, agent_id="builder"
     )
-    payload = _fake_inspect_from_run(argv)
+    payload = _fake_inspect_from_run(argv, "a" * 64)
     mutate(payload)
     ok, owned, detail = ac._inspect_matches_policy(
         json.dumps(payload), agent_dir, "img", allow_network=False
@@ -1644,7 +1680,7 @@ def test_existing_container_policy_validator_accepts_only_a_valid_json_object(tm
     argv = ac.persistent_run_argv(
         "avrone-agent-edge-builder", agent_dir, "img", allow_network=False, agent_id="builder"
     )
-    payload = _fake_inspect_from_run(argv)
+    payload = _fake_inspect_from_run(argv, "a" * 64)
     ok, owned, detail = ac._inspect_matches_policy(
         json.dumps(payload), agent_dir, "img", allow_network=False
     )
@@ -1684,7 +1720,7 @@ def test_network_opt_in_never_allows_shared_host_or_container_network_namespace(
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
     argv = ac.persistent_run_argv("avrone-agent-edge-builder", d, "img", True, agent_id="builder")
     for mode in ("host", "container:abc123"):
-        payload = _fake_inspect_from_run(argv)
+        payload = _fake_inspect_from_run(argv, "a" * 64)
         payload["HostConfig"]["NetworkMode"] = mode
         ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), d, "img", allow_network=True)
         assert owned and not ok and "network namespace" in detail
@@ -1756,7 +1792,7 @@ def test_policy_inspector_rejects_malformed_or_lookalike_fields(mutate, reason, 
     home = agentfs.agent_dir(tmp_path / "ws", "strict-worker")
     argv = ac.persistent_run_argv("avrone-agent-edge-strict-worker", home, "img",
                                   False, agent_id="strict-worker")
-    payload = _fake_inspect_from_run(argv)
+    payload = _fake_inspect_from_run(argv, "a" * 64)
     mutate(payload)
     ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", False)
     assert owned is True and ok is False

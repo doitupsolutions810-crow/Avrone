@@ -275,7 +275,7 @@ class HTTPTransport(_Transport):
         normalized: dict[str, str] = {}
         seen: set[str] = set()
         for raw_name, raw_value in (headers or {}).items():
-            if not isinstance(raw_name, str) or not re.fullmatch(r"[!#$%&'*+.^_\`|~0-9A-Za-z-]+", raw_name):
+            if not isinstance(raw_name, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", raw_name):
                 raise MCPError("MCP HTTP header name is invalid")
             name = raw_name.lower()
             if name in reserved:

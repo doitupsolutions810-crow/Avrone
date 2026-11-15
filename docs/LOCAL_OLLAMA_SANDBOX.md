@@ -121,3 +121,50 @@ For the connected platform families, keep the boundaries distinct:
 | Replit | A resolved Replit App ID and an app-specific update/inspection path | Resolve the exact app in the intended account; do not guess IDs or publish on the basis of a queued build |
 
 A connected service must be reported as READY only after its configured MCP/API handshake and at least one allowlisted read operation pass. Missing credentials, unresolved app/project/service identity, or an absent runtime must remain BLOCKED or UNCONFIGURED; they are not simulated as live integrations. The existing plugins/platform_bridge.py remains a fixed-resource bridge for the sibling services it explicitly lists—it is not a generic proxy and must not be expanded with guessed endpoints.
+
+
+## Host-only HTTP MCP credentials and provider setup
+
+HTTP MCP configurations may use header_env to refer to a host environment variable rather than storing a bearer token in mcp.json. The variable must be present and non-empty when the host-side MCP manager starts. Header names remain subject to the transport's reserved-header, duplicate-name, and control-character checks.
+
+Example (the environment variable contains the complete Bearer value):
+
+~~~json
+{
+  "mcpServers": {
+    "supabase-readonly": {
+      "url": "https://mcp.supabase.com/mcp?project_ref=YOUR_ACTIVE_PROJECT_REF&read_only=true",
+      "header_env": {
+        "Authorization": "SUPABASE_AUTHORIZATION"
+      }
+    },
+    "github": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "-e", "GITHUB_TOOLSETS",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "env": {
+        "GITHUB_TOOLSETS": "repos,pull_requests,issues,actions"
+      }
+    },
+    "railway": {
+      "command": "railway",
+      "args": ["mcp"]
+    }
+  }
+}
+~~~
+
+Set SUPABASE_AUTHORIZATION to the full Bearer access-token value in the AVRONE host process environment, and resolve the exact Supabase project reference before starting. Keep read_only=true during discovery, and omit inactive or unrelated projects. Do not put the access token in this JSON file or in any agent container. The hosted Supabase MCP supports project scoping and read-only mode; consult the [Supabase MCP security guidance](https://supabase.com/docs/guides/ai-tools/mcp) before enabling additional feature groups.
+
+For GitHub, export a narrowly scoped GITHUB_PERSONAL_ACCESS_TOKEN into the host environment. The GitHub MCP server runs as a host-launched stdio child process; Docker -e GITHUB_PERSONAL_ACCESS_TOKEN passes the already-exported value through without embedding it in the config. Limit GITHUB_TOOLSETS to the repository, pull-request, issue and action capabilities actually required. See the [official GitHub MCP server setup](https://github.com/github/github-mcp-server).
+
+For Railway, install and authenticate the Railway CLI on the host (railway login) and verify it is version 5.44.0 or newer before enabling the stdio railway mcp entry. This delegates authority to the authenticated CLI session, so use a dedicated least-privilege account and verify the target project/environment/service before any write. See [Railway MCP documentation](https://docs.railway.com/ai/mcp-server).
+
+**Not yet supported by this MCP client:** ElevenLabs hosted MCP and Remote Desktop Commander hosted MCP use OAuth authorization flows. AVRONE's current Streamable HTTP transport supports static headers but does not implement OAuth discovery, PKCE/device authorization, token refresh, or dynamic client registration. Do not work around this by placing long-lived credentials in mcp.json or by assuming an API key is equivalent to OAuth. Add a separately tested OAuth transport before treating either service as connected. Remote Desktop Commander also requires a paired, running device agent for computer access; no device is currently connected to the user's Remote Desktop Commander account.
+
+Replit's documented MCP direction allows Replit Agent to consume external MCP servers; that is not a verified Replit-hosted MCP endpoint for a local Ollama runtime. Use an explicitly identified Replit app and its supported deployment workflow instead of inventing a Replit MCP URL. An account with unrelated Replit apps is not sufficient evidence that Crow-OS has been deployed there.
+

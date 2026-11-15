@@ -636,6 +636,47 @@ def _unwrap(resp: dict) -> Any:
 
 
 # --------------------------------------------------------------------------- client
+def _http_headers_from_config(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve optional host environment references for HTTP MCP headers.
+
+    Direct header values remain supported. header_env maps header names to
+    environment-variable names, never to literal secrets. The HTTP transport
+    performs the final reserved-header and control-character validation.
+    """
+    headers = config.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise MCPError("MCP HTTP headers must be an object")
+    resolved = dict(headers or {})
+    seen: set[str] = set()
+    for name in resolved:
+        if not isinstance(name, str):
+            raise MCPError("MCP HTTP header names must be strings")
+        normalized = name.lower()
+        if normalized in seen:
+            raise MCPError(f"MCP HTTP header {name!r} duplicates a case-insensitive name")
+        seen.add(normalized)
+
+    header_env = config.get("header_env", {})
+    if header_env is None:
+        header_env = {}
+    if not isinstance(header_env, dict):
+        raise MCPError("MCP HTTP header_env must be an object mapping header names to environment variable names")
+    for header_name, env_name in header_env.items():
+        if not isinstance(header_name, str) or not header_name:
+            raise MCPError("MCP HTTP header_env keys must be non-empty header names")
+        normalized = header_name.lower()
+        if normalized in seen:
+            raise MCPError(f"MCP HTTP header_env entry {header_name!r} duplicates a configured header")
+        if not isinstance(env_name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name) is None:
+            raise MCPError("MCP HTTP header_env values must be valid environment variable names")
+        value = os.environ.get(env_name)
+        if not isinstance(value, str) or not value.strip():
+            raise MCPError(f"MCP HTTP header {header_name!r} references an unset or empty environment variable {env_name!r}")
+        resolved[header_name] = value
+        seen.add(normalized)
+    return resolved or None
+
+
 class MCPClient:
     """One connection to one MCP server."""
 
@@ -651,7 +692,7 @@ class MCPClient:
             raise MCPError("MCP timeout must be a finite positive number")
         self.timeout = parsed_timeout
         if config.get("url"):
-            self.transport: _Transport = HTTPTransport(str(config["url"]), config.get("headers"))
+            self.transport: _Transport = HTTPTransport(str(config["url"]), _http_headers_from_config(config))
             self.kind = "http"
         elif config.get("command"):
             self.transport = StdioTransport(str(config["command"]), config.get("args"),

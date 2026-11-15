@@ -2001,3 +2001,77 @@ def test_http_close_streams_and_discards_untrusted_session_delete_body():
     assert transport._client is None
     assert body.iterated is False
     assert body.closed is True
+
+
+def test_mcp_http_header_env_resolves_secret_from_host_environment(monkeypatch):
+    monkeypatch.setenv("SUPABASE_AUTHORIZATION", "Bearer host-only-test-token")
+    client = MCPClient("supabase", {
+        "url": "https://mcp.supabase.com/mcp?project_ref=example&read_only=true",
+        "header_env": {"Authorization": "SUPABASE_AUTHORIZATION"},
+    })
+    assert client.kind == "http"
+    assert isinstance(client.transport, HTTPTransport)
+    assert client.transport.headers == {
+        "Authorization": "Bearer host-only-test-token",
+    }
+
+
+def test_mcp_http_header_env_preserves_direct_headers(monkeypatch):
+    monkeypatch.setenv("SUPABASE_AUTHORIZATION", "Bearer host-only-test-token")
+    client = MCPClient("supabase", {
+        "url": "https://mcp.supabase.com/mcp",
+        "headers": {"X-Region": "us-east-1"},
+        "header_env": {"Authorization": "SUPABASE_AUTHORIZATION"},
+    })
+    assert client.transport.headers == {
+        "X-Region": "us-east-1",
+        "Authorization": "Bearer host-only-test-token",
+    }
+
+
+def test_mcp_http_header_env_missing_secret_fails_without_leaking_value(monkeypatch):
+    monkeypatch.delenv("SUPABASE_AUTHORIZATION", raising=False)
+    with pytest.raises(MCPError, match="SUPABASE_AUTHORIZATION") as exc:
+        MCPClient("supabase", {
+            "url": "https://mcp.supabase.com/mcp",
+            "header_env": {"Authorization": "SUPABASE_AUTHORIZATION"},
+        })
+    assert "Bearer" not in str(exc.value)
+    assert "token" not in str(exc.value).lower()
+
+
+@pytest.mark.parametrize("header_env", [
+    [],
+    "SUPABASE_AUTHORIZATION",
+    {"Authorization": 17},
+    {"Authorization": ""},
+    {"Authorization": "NOT A VALID ENV NAME"},
+    {"Authorization": "SUPABASE_AUTHORIZATION", "authorization": "OTHER_AUTH"},
+    {"Content-Type": "SUPABASE_AUTHORIZATION"},
+    {"Mcp-Session-Id": "SUPABASE_AUTHORIZATION"},
+])
+def test_mcp_http_header_env_rejects_invalid_or_reserved_mappings(monkeypatch, header_env):
+    monkeypatch.setenv("SUPABASE_AUTHORIZATION", "Bearer secret")
+    with pytest.raises(MCPError):
+        MCPClient("supabase", {
+            "url": "https://mcp.supabase.com/mcp",
+            "header_env": header_env,
+        })
+
+
+def test_mcp_http_header_env_rejects_collision_with_direct_header(monkeypatch):
+    monkeypatch.setenv("SUPABASE_AUTHORIZATION", "Bearer secret")
+    with pytest.raises(MCPError, match="duplicates"):
+        MCPClient("supabase", {
+            "url": "https://mcp.supabase.com/mcp",
+            "headers": {"authorization": "Bearer direct"},
+            "header_env": {"Authorization": "SUPABASE_AUTHORIZATION"},
+        })
+
+
+def test_mcp_http_header_env_rejects_non_object_direct_headers(monkeypatch):
+    with pytest.raises(MCPError, match="headers must be an object"):
+        MCPClient("supabase", {
+            "url": "https://mcp.supabase.com/mcp",
+            "headers": ["Authorization: Bearer secret"],
+        })

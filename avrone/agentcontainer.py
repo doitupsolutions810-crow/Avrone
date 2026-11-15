@@ -394,7 +394,7 @@ def _docker_not_found(result: Any) -> bool:
     # entire single-line diagnostic avoids treating e.g. permission failures that
     # merely mention a missing container as proof that deletion already succeeded.
     return re.fullmatch(
-        r"(?:error:\\s*|error response from daemon:\\s*)?no such (?:object|container):\\s*\\S[^\\r\\n]*",
+        r"(?:error:\s*|error response from daemon:\s*)?no such (?:object|container):\s*\S[^\r\n]*",
         detail.strip(),
         flags=re.IGNORECASE,
     ) is not None

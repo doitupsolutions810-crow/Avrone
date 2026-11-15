@@ -420,7 +420,16 @@ class Bridge:
                 raise BridgeError(f"unknown post id(s): {', '.join(unknown[:5])}")
             if require_refs and not refs_l:
                 raise BridgeError("refs is required: the id(s) of the post(s) you reply to")
-            rec = {"id": uuid.uuid4().hex[:12], "run_id": self.run_id, "agent": _utf8_text(agent or "agent")[:80],
+            post_id = None
+            for _attempt in range(16):
+                candidate = uuid.uuid4().hex[:12]
+                if (_ID_RE.fullmatch(candidate) and candidate not in self._posts
+                        and candidate not in self._evicted):
+                    post_id = candidate
+                    break
+            if post_id is None:
+                raise BridgeError("could not allocate a unique post id")
+            rec = {"id": post_id, "run_id": self.run_id, "agent": _utf8_text(agent or "agent")[:80],
                    "role": _utf8_text(role or "")[:60], "kind": kind, "text": body, "refs": refs_l,
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec

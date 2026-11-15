@@ -347,21 +347,21 @@ def _validate_worker_tool_events(
 
 
 def build_smoke_task(shell_command: str) -> str:
-    """Build an unambiguous request for one real shell action per isolated worker."""
+    """Build an unambiguous request with a deterministic first shell action."""
+    contract = {
+        "first_action": {"tool": "shell", "args": {"cmd": shell_command}},
+        "allow_followup_calls": False,
+    }
     return (
         "This is a deterministic one-command sandbox verification, not a research or planning task. "
-        "The Lead must spawn exactly two independent workers. "
-        "Each worker's first and only tool call must be shell. "
-        "Do not call think or any preparatory/non-shell tool. "
-        "Do not send a prose preamble or a plan. "
-        "Use the shell tool with args.cmd set to this exact command:\n"
-        f"{shell_command}\n"
+        "The Lead must spawn exactly two independent workers. Each worker must use the shell tool "
+        "exactly as specified by the machine-readable AVRONE action contract below. "
+        "Do not call think or any preparatory/non-shell tool. Do not send a prose preamble or a plan. "
         "After the tool returns, report its actual TOOL RESULT only. Do not claim the command ran or the file "
         "exists unless the shell tool result proves it. Both workers use the same command but run it in their "
-        "own private /agent directories."
+        "own private /agent directories.\\n"
+        "AVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
     )
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base-url", default=os.environ.get("AVRONE_LOCAL_BASE_URL", "http://127.0.0.1:8710"))

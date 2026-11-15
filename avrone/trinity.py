@@ -404,14 +404,17 @@ def parse_action_contract(task: str) -> dict[str, Any] | None:
     The marker is opt-in and is carried through spawned workers via AgentContext.run_task.
     """
     marker = "AVRONE_ACTION_CONTRACT:"
-    matches = [line[len(marker):].strip() for line in str(task or "").splitlines()
+    matches = [line[len(marker):] for line in str(task or "").splitlines()
                if line.startswith(marker)]
     if not matches:
         return None
-    if len(matches) != 1 or not matches[0]:
+    if len(matches) != 1:
         raise ValueError("expected exactly one non-empty AVRONE_ACTION_CONTRACT line")
     if len(matches[0]) > 100_000:
         raise ValueError("AVRONE_ACTION_CONTRACT exceeds the 100000-character limit")
+    payload = matches[0].strip()
+    if not payload:
+        raise ValueError("expected exactly one non-empty AVRONE_ACTION_CONTRACT line")
 
     def unique_object(pairs):
         out = {}
@@ -425,7 +428,7 @@ def parse_action_contract(task: str) -> dict[str, Any] | None:
         raise ValueError(f"non-standard JSON constant in action contract: {value}")
 
     try:
-        value = json.loads(matches[0], object_pairs_hook=unique_object, parse_constant=reject_constant)
+        value = json.loads(payload, object_pairs_hook=unique_object, parse_constant=reject_constant)
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(f"invalid AVRONE_ACTION_CONTRACT JSON: {exc}") from exc
     if type(value) is not dict or set(value) != {"first_action", "allow_followup_calls"}:

@@ -574,11 +574,12 @@ class MCPClient:
             self._closed = True
 
     async def connect(self) -> None:
-        await self.transport.connect()
         try:
+            await self.transport.connect()
             await self.initialize()
         except BaseException:
-            # A failed or cancelled handshake must not leak an HTTP client or stdio server process.
+            # A failed or cancelled transport setup OR protocol handshake must not leak
+            # a partially allocated HTTP client or stdio server process.
             try:
                 await asyncio.shield(self.transport.close())
             except BaseException:

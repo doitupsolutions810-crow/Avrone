@@ -173,6 +173,23 @@ def test_stdio_request_timeout_clears_pending(monkeypatch):
     run(go())
 
 
+def test_stdio_stderr_lines_are_individually_bounded(monkeypatch):
+    async def go():
+        monkeypatch.setattr(mc, "MAX_STDIO_STDERR_LINE_CHARS", 128)
+        proc = FakeProc(lambda _msg: []).streams()
+        transport = StdioTransport("noisy-server")
+        transport.proc = proc
+        proc.stderr.feed_data(b"secret-prefix-" + b"X" * 1000 + b"\n")
+        proc.stderr.feed_eof()
+        await transport._drain_stderr()
+        assert len(transport.stderr_tail) == 1
+        assert len(transport.stderr_tail[0]) <= 128
+        assert transport.stderr_tail[0].startswith("…[stderr line truncated]…")
+        assert transport.stderr_tail[0].endswith("X" * 64)
+
+    run(go())
+
+
 def test_stdio_process_exit_fails_pending_with_stderr_tail(monkeypatch):
     proc = FakeProc(lambda m: [])
     install_proc(monkeypatch, proc)

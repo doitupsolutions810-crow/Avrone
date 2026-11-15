@@ -360,6 +360,7 @@ Exec = Callable[[list[str], int], Awaitable[Any]]  # (argv, timeout) -> CommandR
 class _Home:
     name: str
     agent_dir: Path
+    image_id: str
     last_used: float
     created: float = 0.0
     uses: int = 0
@@ -444,16 +445,52 @@ class AgentContainerPool:
                 raise RuntimeError("agent container pool is closing or closed")
             now = self.clock()
             home = self.homes.get(name)
+            previous_uses = 0
+            image_id: str | None = None
             if home is not None:
-                home.last_used, home.uses = now, home.uses + 1
-                if _active:
-                    home.active += 1
-                    self._lease_drained.clear()
-                return name
+                # A name cached in memory is not proof that Docker still owns a running,
+                # correctly configured container. The daemon may have restarted, an operator
+                # may have removed it, or an external actor may have changed its policy.
+                inspected_home = await self._exec(inspect_argv(name), 30)
+                home_code = getattr(inspected_home, "exit_code", 1)
+                if home_code == 0:
+                    home_ok, home_owned, home_reason = _inspect_matches_policy(
+                        str(getattr(inspected_home, "stdout", "")), d, home.image_id, self.allow_network
+                    )
+                    if not home_owned:
+                        raise RuntimeError(
+                            f"refusing to replace unowned cached agent container {name}: {home_reason}"
+                        )
+                    if home_ok:
+                        home.last_used, home.uses = now, home.uses + 1
+                        if _active:
+                            home.active += 1
+                            self._lease_drained.clear()
+                        return name
+                    if home.active > 0:
+                        raise RuntimeError(
+                            f"cached agent container {name} became non-compliant while leased: {home_reason}"
+                        )
+                    removed = await self._exec(rm_argv(name), 30)
+                    if (getattr(removed, "exit_code", 1) != 0
+                            and not _docker_not_found(removed)):
+                        raise RuntimeError(f"could not remove non-compliant agent container {name}")
+                elif not _docker_not_found(inspected_home):
+                    detail = str(getattr(inspected_home, "stderr", "") or "")[:300]
+                    raise RuntimeError(
+                        f"could not inspect cached agent container {name}: "
+                        f"{detail or 'unknown Docker error'}"
+                    )
+                previous_uses = home.uses
+                image_id = home.image_id
+                # If the object disappeared or was safely removed, drop only the stale
+                # in-memory reference. Its immutable image pin remains available for recreation.
+                self.homes.pop(name, None)
 
-            # Resolve mutable tags before inspecting or creating a worker. All comparisons and
-            # docker run use the immutable digest so a retargeted tag cannot silently change code.
-            image_id = await self._resolve_image_id()
+            # Resolve mutable tags once per pool home. A cached home that must be recreated
+            # keeps its original immutable image ID rather than silently following a retargeted tag.
+            if image_id is None:
+                image_id = await self._resolve_image_id()
             inspected = await self._exec(inspect_argv(name), 30)
             code = getattr(inspected, "exit_code", 1)
             compatible = False
@@ -491,7 +528,10 @@ class AgentContainerPool:
                     raise RuntimeError(f"new agent container {name} failed sandbox verification: {reason}")
                 self.created += 1
 
-            self.homes[name] = _Home(name, d, now, created=now, uses=1, active=1 if _active else 0)
+            self.homes[name] = _Home(
+                name, d, image_id, now, created=now, uses=previous_uses + 1,
+                active=1 if _active else 0,
+            )
             if _active:
                 self._lease_drained.clear()
             return name

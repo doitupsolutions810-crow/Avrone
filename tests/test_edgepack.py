@@ -192,8 +192,84 @@ def test_pool_lazy_create_and_reuse(tmp_path):
     assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"] and pool.created == 1
     now[0] = 130.0
     assert run(pool.ensure(d)) == name
-    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"]               # reused: no new docker calls
+    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect", "inspect"]  # cached home is revalidated
     assert pool.state()["homes"][name]["uses"] == 2
+
+
+
+def test_pool_cached_home_is_recreated_after_external_removal(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "external-gone")
+    name = run(pool.ensure(home))
+    pinned_id = pool.homes[name].image_id
+    fake.running.discard(name)
+    fake.inspect_payloads.pop(name, None)
+
+    assert run(pool.ensure(home)) == name
+    assert name in fake.running
+    assert pool.homes[name].image_id == pinned_id
+    assert pool.created == 2
+    assert [call[1] for call in fake.calls].count("run") == 2
+
+
+def test_pool_cached_home_repairs_policy_drift_when_idle(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "policy-drift")
+    name = run(pool.ensure(home))
+    fake.inspect_payloads[name]["HostConfig"]["Privileged"] = True
+
+    assert run(pool.ensure(home)) == name
+    assert fake.inspect_payloads[name]["HostConfig"]["Privileged"] is False
+    assert fake.calls.count(["docker", "rm", "-f", name]) == 1
+    assert pool.created == 2
+
+
+def test_pool_cached_home_refuses_policy_repair_while_active_lease_exists(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "active-drift")
+        async with pool.lease(home) as name:
+            fake.inspect_payloads[name]["HostConfig"]["Privileged"] = True
+            with pytest.raises(RuntimeError, match="became non-compliant while leased"):
+                await pool.ensure(home)
+            assert name in fake.running
+            assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+        assert pool.homes[name].active == 0
+
+    run(go())
+
+
+def test_pool_cached_home_refuses_unowned_name_collision_without_removal(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "unowned-replacement")
+    name = run(pool.ensure(home))
+    fake.inspect_payloads[name]["Config"]["Labels"]["avrone.agent-home"] = "0"
+
+    with pytest.raises(RuntimeError, match="unowned cached agent container"):
+        run(pool.ensure(home))
+    assert name in fake.running
+    assert fake.calls.count(["docker", "rm", "-f", name]) == 0
+    assert fake.calls.count([*ac.inspect_argv(name)]) == 2
+
+
+def test_pool_cached_home_keeps_immutable_image_pin_after_tag_retarget(tmp_path):
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    home = agentfs.agent_dir(tmp_path / "ws", "stable-pin")
+    name = run(pool.ensure(home))
+    original_id = pool.homes[name].image_id
+    fake.image_id = "sha256:" + "b" * 64
+
+    assert run(pool.ensure(home)) == name
+    assert pool.homes[name].image_id == original_id
+    assert fake.inspect_payloads[name]["Image"] == original_id
+    assert [call for call in fake.calls if len(call) > 1 and call[1] == "image"] == [
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "img:stable"]
+    ]
 
 
 def test_pool_adopts_only_a_policy_compliant_running_leftover(tmp_path):

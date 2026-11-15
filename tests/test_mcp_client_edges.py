@@ -382,6 +382,58 @@ def test_http_status_errors_are_capped():
     assert ei.value.code == 500 and str(ei.value) == "HTTP 500: " + "E" * 300
 
 
+@pytest.mark.parametrize("invalid", [
+    float("nan"), float("inf"), float("-inf"), {"nested": float("nan")},
+    {"not_json": object()}, [{"nested": {1, 2}}],
+])
+def test_outbound_rpc_encoder_rejects_non_json_values(invalid):
+    with pytest.raises(MCPError, match="not valid JSON"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "id": 1, "params": invalid})
+
+
+def test_outbound_rpc_encoder_rejects_deeply_nested_values():
+    nested = {}
+    current = nested
+    for _ in range(1500):
+        current["next"] = {}
+        current = current["next"]
+    with pytest.raises(MCPError, match="not valid JSON"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "id": 1, "params": nested})
+
+
+def test_outbound_rpc_encoder_enforces_utf8_byte_limit(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", 24)
+    with pytest.raises(MCPError, match="exceeded configured limit"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "params": {"text": "界" * 20}})
+
+
+def test_outbound_rpc_encoder_emits_valid_utf8_and_exact_json():
+    encoded = mc._encode_rpc_request({"jsonrpc": "2.0", "id": 1, "params": {"text": "λ"}})
+    assert encoded.decode("utf-8") == '{"jsonrpc":"2.0","id":1,"params":{"text":"λ"}}'
+
+
+def test_stdio_send_enforces_outbound_request_limit(monkeypatch):
+    async def go():
+        monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", 16)
+        proc = FakeProc(lambda _msg: []).streams()
+        transport = StdioTransport("fake-mcp")
+        transport.proc = proc
+        with pytest.raises(MCPError, match="exceeded configured limit"):
+            await transport._send({"jsonrpc": "2.0", "method": "tools/call", "params": {}})
+        assert proc.stdin.sent == []
+        await transport.close()
+    run(go())
+
+
+def test_http_transport_enforces_outbound_request_limit(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", 16)
+    t = http_transport(lambda request: (seen.append(request), httpx.Response(200, json=rpc(1)))[1])
+    with pytest.raises(MCPError, match="exceeded configured limit"):
+        run(t.request("tools/call", {"large": "x" * 100}, 5))
+    assert seen == []
+
+
 def test_http_json_response_body_is_bounded(monkeypatch):
     monkeypatch.setattr(mc, "MAX_HTTP_RESPONSE_BYTES", 64)
     body = json.dumps(rpc(1, {"payload": "x" * 512}))

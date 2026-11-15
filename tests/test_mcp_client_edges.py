@@ -190,6 +190,27 @@ def test_stdio_stderr_lines_are_individually_bounded(monkeypatch):
     run(go())
 
 
+@pytest.mark.parametrize("stream_name", ["stdout", "stderr"])
+def test_stdio_reader_terminates_child_on_oversized_line(stream_name):
+    async def go():
+        proc = FakeProc(lambda _msg: []).streams()
+        stream = asyncio.StreamReader(limit=16)
+        setattr(proc, stream_name, stream)
+        transport = StdioTransport("noisy-child")
+        transport.proc = proc
+        reader = (
+            transport._read_loop() if stream_name == "stdout"
+            else transport._drain_stderr()
+        )
+        task = asyncio.create_task(reader)
+        stream.feed_data(b"X" * 128 + b"\\n")
+        await asyncio.wait_for(task, timeout=1)
+        assert proc.terminated
+        assert proc.returncode == 0
+
+    run(go())
+
+
 def test_stdio_process_exit_fails_pending_with_stderr_tail(monkeypatch):
     proc = FakeProc(lambda m: [])
     install_proc(monkeypatch, proc)

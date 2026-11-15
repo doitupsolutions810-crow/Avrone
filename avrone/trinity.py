@@ -775,6 +775,8 @@ class TrinityCore:
             self.codex.emit(run_id, "action.contract.start", name, tool=required["tool"])
             tool, out = await self._one_call(run_id, name, ctx, checked, 0, budget)
             messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
+            last_key = _call_key(tool, checked.get("args"), out)
+            repeats = 1 if last_key is not None else 0
             first_step = 1
 
         for step in range(first_step, self.settings.max_steps):

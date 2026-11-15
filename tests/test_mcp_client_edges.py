@@ -539,6 +539,58 @@ def test_outbound_rpc_encoder_emits_valid_utf8_and_exact_json():
     assert encoded.decode("utf-8") == '{"jsonrpc":"2.0","id":1,"params":{"text":"λ"}}'
 
 
+
+def test_outbound_rpc_size_preflight_matches_compact_utf8_json_for_adversarial_values():
+    values = [
+        "",
+        '"\\\\/\\b\\t\\n\\f\\r',
+        "\x00\x01\x08\x0b\x0c\x1f",
+        "ASCII + λ + 界 + 😀",
+        "line one\r\nline two\u2028separator\u2029paragraph",
+        None,
+        True,
+        False,
+        0,
+        -1,
+        2**63 - 1,
+        -2**127,
+        0.0,
+        -0.0,
+        1e-7,
+        1.2345678901234567,
+        [],
+        (),
+        [None, True, False, 0, -1, 1e-7, "λ界"],
+        {"quotes\"and\\slashes": "value", "control": "\x00\n\t", "array": (1, 2, 3)},
+        {"nested": {"deeper": [{"unicode": "👩‍🔬"}, {"separator": "\u2028"}]}},
+    ]
+    for value in values:
+        message = {"jsonrpc": "2.0", "id": 7, "params": {"value": value}}
+        expected = json.dumps(
+            message, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+        assert mc._measure_rpc_json_value(message) == len(expected)
+        assert mc._encode_rpc_request(message) == expected
+
+
+def test_outbound_rpc_encoder_accepts_exact_byte_limit_and_rejects_one_byte_over(monkeypatch):
+    message = {"jsonrpc": "2.0", "id": 1, "params": {"text": "é界😀\\n"}}
+    expected = json.dumps(
+        message, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", len(expected))
+    assert mc._encode_rpc_request(message) == expected
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", len(expected) - 1)
+    with pytest.raises(MCPError, match="exceeded configured limit"):
+        mc._encode_rpc_request(message)
+
+
+@pytest.mark.parametrize("invalid", ["\\ud800", "\\udfff", {"bad\\ud800key": "value"}])
+def test_outbound_rpc_encoder_rejects_unpaired_unicode_surrogates(invalid):
+    with pytest.raises(MCPError, match="invalid Unicode"):
+        mc._encode_rpc_request({"jsonrpc": "2.0", "params": invalid})
+
+
 def test_stdio_send_accounts_for_delimiter_in_frame_limit(monkeypatch):
     async def go():
         monkeypatch.setattr(mc, "MAX_RPC_REQUEST_BYTES", 128)

@@ -49,6 +49,8 @@ MAX_TEXT = 4000
 MAX_REFS = 20
 MAX_REF_SCAN = 256
 MAX_REMOTE_BATCH = 5000
+MAX_JOURNAL_LINE_CHARS = 128 * 1024  # bound JSONL replay memory per record
+MAX_RUN_ID_CHARS = 1024  # keep persisted identifiers below the replay line cap
 DEFAULT_MAX_POSTS, HARD_MAX_POSTS = 500, 5000
 DEFAULT_ROUNDS, HARD_MAX_ROUNDS = 1, 3
 _RUN_RE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -80,6 +82,11 @@ def bridge_run_id(run_id: Any) -> str:
     rid = str(run_id or "run")
     if rid.endswith("-wave1") and len(rid) > len("-wave1"):
         rid = rid[: -len("-wave1")]
+    if len(rid) > MAX_RUN_ID_CHARS:
+        # Preserve identity without writing a many-megabyte run id into every
+        # post. Distinct long ids must not alias after truncation.
+        digest = hashlib.sha256(rid.encode("utf-8", errors="surrogatepass")).hexdigest()[:40]
+        return rid[:80] + "-" + digest
     return rid
 
 
@@ -167,6 +174,23 @@ def _regular_fd(path: Path, flags: int) -> int:
     return fd
 
 
+def _journal_lines(stream, max_chars: int = MAX_JOURNAL_LINE_CHARS):
+    """Stream bounded journal records; skip oversized lines without buffering them.
+
+    A malformed/hostile record must not allocate memory proportional to the
+    total size of a persisted journal, including during compaction.
+    """
+    while True:
+        line = stream.readline(max_chars + 1)
+        if not line:
+            return
+        if len(line) > max_chars:
+            while line and not line.endswith("\n"):
+                line = stream.readline(max_chars + 1)
+            continue
+        yield line
+
+
 class BridgeError(ValueError):
     """A post refused (bad kind, empty text, unknown refs)."""
 
@@ -176,7 +200,7 @@ class Bridge:
                  node_id: str = "local", limit: int | None = None):
         self.run_id = bridge_run_id(run_id)
         self.codex = codex
-        self.node_id = str(node_id or "local")
+        self.node_id = str(node_id or "local")[:80]
         try:
             requested_limit = int(limit) if limit else max_posts()
         except (TypeError, ValueError, OverflowError):
@@ -209,16 +233,15 @@ class Bridge:
             try:
                 with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
                                encoding="utf-8", errors="replace") as stream:
-                    text = stream.read()
+                    self._replay(_journal_lines(stream))
             except OSError:
                 return
-            self._replay(text)
 
-    def _replay(self, text: str) -> None:
-        """Rebuild the ring from file text (call with the lock held)."""
+    def _replay(self, text: str | Iterable[str]) -> None:
+        """Rebuild the ring from text or a bounded line iterator under lock."""
         self._posts.clear()
         self._lines = 0
-        for line in text.splitlines():
+        for line in text.splitlines() if isinstance(text, str) else text:
             tomb = self._parse_tombstones(line)
             if tomb is not None:
                 for t in tomb:
@@ -319,7 +342,7 @@ class Bridge:
                 if self._lines > 2 * self.limit:  # replay under process lock before atomic compaction
                     with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
                                    encoding="utf-8", errors="replace") as stream:
-                        self._replay(stream.read())
+                        self._replay(_journal_lines(stream))
                     tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
                     head = json.dumps({"tombstones": list(self._evicted)}) + "\n" if self._evicted else ""
                     try:

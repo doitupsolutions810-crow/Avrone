@@ -768,6 +768,41 @@ def _blackboard_lock(core: Any) -> threading.RLock:
         return guard
 
 
+@contextlib.contextmanager
+def _blackboard_file_lock(core: Any):
+    """Serialize global fan-in admission and cursor state across processes.
+
+    Per-Core RLocks cannot coordinate separate workers. A stable lock sidecar
+    prevents both duplicate-ID acceptance and atomic cursor lost updates.
+    """
+    order_path = _order_path(core)
+    if order_path is None:
+        yield
+        return
+    lock_path = order_path.with_suffix(order_path.suffix + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = _regular_fd(lock_path, os.O_RDWR | os.O_CREAT)
+    except OSError:
+        yield  # preserve in-memory fallback when persistence is unavailable
+        return
+    with os.fdopen(fd, "a+b") as stream:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows without flock
+            yield
+            return
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            yield
+            return
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 def _iter_bridges(core: Any) -> list[Bridge]:
     """Open run bridges, then persisted ones the cache has dropped."""
     guard = getattr(core, "_bridge_guard", None)
@@ -1054,7 +1089,7 @@ def safe_since(since: str | None) -> str | None:
 def blackboard_posts(core: Any, since: str | None = None) -> list[dict[str, Any]]:
     """Fan-in of every run bridge, oldest first. ``since`` matches ``Bridge.export``."""
     since = safe_since(since)
-    with _blackboard_lock(core):
+    with _blackboard_lock(core), _blackboard_file_lock(core):
         by_id = _posts_by_id(core)
         order = _sync_order(core, by_id)
         posts = [public_post(by_id[pid]) for pid in order if pid in by_id]
@@ -1075,7 +1110,7 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     pid = str(post.get("id") or "")
     if not _ID_RE.fullmatch(pid):
         raise BridgeError("bad post id")
-    with _blackboard_lock(core):
+    with _blackboard_lock(core), _blackboard_file_lock(core):
         if _id_state(core, pid) is not None:
             return True, pid
         dest = for_core(core, str(post.get("run_id") or "run"))

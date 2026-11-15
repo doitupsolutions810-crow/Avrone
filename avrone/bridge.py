@@ -309,6 +309,7 @@ class Bridge:
     def _replay(self, text: str | Iterable[str]) -> None:
         """Rebuild a bounded ring without resurrecting old duplicate identifiers."""
         self._posts.clear()
+        self._evicted.clear()  # rebuilding from disk, not an older memory snapshot
         self._lines = 0
 
         # A fixed 4-MiB Bloom filter remembers identities even after the

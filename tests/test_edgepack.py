@@ -213,6 +213,52 @@ def test_pool_cached_home_is_recreated_after_external_removal(tmp_path):
     assert [call[1] for call in fake.calls].count("run") == 2
 
 
+
+def test_pool_does_not_recreate_missing_cached_home_while_old_lease_is_active(tmp_path):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+        home = agentfs.agent_dir(tmp_path / "ws", "lost-during-lease")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def existing_worker():
+            async with pool.lease(home) as name:
+                entered.set()
+                await release.wait()
+                return name
+
+        worker = asyncio.create_task(existing_worker())
+        await entered.wait()
+        name = next(iter(pool.homes))
+        assert pool.homes[name].active == 1
+
+        # Simulate an out-of-band Docker daemon/operator removal while one command still
+        # owns the lease. A second caller must fail closed rather than resetting active=1.
+        fake.running.discard(name)
+        fake.inspect_payloads.pop(name, None)
+        with pytest.raises(RuntimeError, match="disappeared while leased"):
+            async with pool.lease(home):
+                raise AssertionError("a replacement container must not be yielded yet")
+        assert pool.homes[name].active == 1
+        assert name not in fake.running
+        assert [call[1] for call in fake.calls].count("run") == 1
+
+        release.set()
+        assert await worker == name
+        assert pool.homes[name].active == 0
+
+        # Once the old lease has drained, a new lease may safely recreate the home.
+        async with pool.lease(home) as replacement:
+            assert replacement == name
+            assert name in fake.running
+            assert pool.homes[name].active == 1
+        assert pool.homes[name].active == 0
+        assert [call[1] for call in fake.calls].count("run") == 2
+
+    run(go())
+
+
 def test_pool_cached_home_repairs_policy_drift_when_idle(tmp_path):
     fake = FakeDocker()
     pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)

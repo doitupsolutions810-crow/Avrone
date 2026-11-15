@@ -478,7 +478,16 @@ class AgentContainerPool:
                     if (getattr(removed, "exit_code", 1) != 0
                             and not _docker_not_found(removed)):
                         raise RuntimeError(f"could not remove non-compliant agent container {name}")
-                elif not _docker_not_found(inspected_home):
+                elif _docker_not_found(inspected_home):
+                    if home.active > 0:
+                        # Do not replace a disappeared container while callers still hold
+                        # leases against its name. Resetting the _Home would lose those lease
+                        # counts, allowing close() or the reaper to tear down replacement work.
+                        raise RuntimeError(
+                            f"cached agent container {name} disappeared while leased; "
+                            "wait for active commands to drain before recreating it"
+                        )
+                else:
                     detail = str(getattr(inspected_home, "stderr", "") or "")[:300]
                     raise RuntimeError(
                         f"could not inspect cached agent container {name}: "

@@ -17,6 +17,8 @@ from avrone import agentcontainer as container_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "docs" / "local-ollama" / "test-local-ollama-squad.py"
+IMAGE_REF = "python:3.12-slim"
+IMAGE_ID = "sha256:" + "d" * 64
 SPEC = importlib.util.spec_from_file_location("avrone_local_ollama_smoke", SCRIPT)
 assert SPEC and SPEC.loader
 smoke = importlib.util.module_from_spec(SPEC)
@@ -29,11 +31,12 @@ def _container(agent_id: str, content: str, cid: str) -> dict:
     source = f"/workspace/agents/{agent_id}"
     return {
         "Id": cid,
+        "Image": IMAGE_ID,
         "Name": f"/avrone-agent-node-{agent_id}",
         "State": {"Running": True},
         "Config": {
             "Labels": {"avrone.agent-home": "1", "avrone.agent": agent_id},
-            "Image": "python:3.12-slim",
+            "Image": IMAGE_ID,
             "User": "501:20",
             "WorkingDir": "/agent",
             "Env": ["HOME=/agent", "TMPDIR=/tmp", "PYTHONDONTWRITEBYTECODE=1",
@@ -74,12 +77,21 @@ def _container(agent_id: str, content: str, cid: str) -> dict:
 def _install_docker_stub(monkeypatch, containers):
     container_map = {c["Id"]: c for c in containers}
     def fake_run(args, check=False, capture_output=False, text=False, timeout=None):
+        if args[:3] == ["docker", "image", "inspect"]:
+            assert args[3:5] == ["--format", "{{.Id}}"]
+            assert args[5] == os.environ.get("AVRONE_DOCKER_IMAGE", IMAGE_REF)
+            first = next(iter(container_map.values()), {})
+            if first.get("_image_inspect_error"):
+                raise subprocess.CalledProcessError(1, args, stderr="image missing")
+            image_id = first.get("_resolved_image_id", IMAGE_ID)
+            return subprocess.CompletedProcess(args, 0, f"{image_id}\n", "")
         if args[:2] == ["docker", "ps"]:
             return subprocess.CompletedProcess(args, 0, "\n".join(container_map), "")
         if args[:2] == ["docker", "inspect"]:
             payload = []
             for cid in args[2:]:
                 item = dict(container_map[cid])
+                item["Id"] = container_map[cid].get("_reported_inspect_id", item["Id"])
                 item.pop("_proof", None)
                 payload.append(item)
             return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
@@ -199,6 +211,7 @@ def test_smoke_verifier_rejects_malformed_docker_inspect_shape(monkeypatch):
 
 @pytest.mark.parametrize("mutation,expected_error", [
     ("wrong_image", "expected_image"),
+    ("wrong_actual_image", "actual_image_id_matches"),
     ("nnp_false", "no_new_privileges"),
     ("extra_tmpfs", "bounded_tmpfs"),
     ("tmpfs_lookalike", "bounded_tmpfs"),
@@ -219,6 +232,8 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
     host, cfg = containers[0]["HostConfig"], containers[0]["Config"]
     if mutation == "wrong_image":
         cfg["Image"] = "attacker:latest"
+    elif mutation == "wrong_actual_image":
+        containers[0]["Image"] = "sha256:" + "0" * 64
     elif mutation == "nnp_false":
         host["SecurityOpt"] = ["no-new-privileges=false"]
     elif mutation == "extra_tmpfs":
@@ -239,6 +254,52 @@ def test_smoke_verifier_rejects_resource_and_environment_lookalikes(monkeypatch,
         host["Binds"] = ["/etc:/agent"]
     _install_docker_stub(monkeypatch, containers)
     with pytest.raises(RuntimeError, match=expected_error):
+        smoke.inspect_agent_homes("nonce", _expected(containers))
+
+
+
+@pytest.mark.parametrize("bad_id", [
+    "python:3.12-slim",
+    "",
+    "sha256:" + "g" * 64,
+    "sha256:" + "0" * 63,
+])
+def test_smoke_verifier_rejects_non_immutable_or_malformed_image_ids(monkeypatch, bad_id):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    containers = [
+        _container("solver-a", "worker-A proof\\n", "a" * 64),
+        _container("solver-b", "worker-B proof\\n", "b" * 64),
+    ]
+    containers[0]["_resolved_image_id"] = bad_id
+    _install_docker_stub(monkeypatch, containers)
+    with pytest.raises(RuntimeError, match="malformed immutable image ID"):
+        smoke.inspect_agent_homes("nonce", _expected(containers))
+
+
+def test_smoke_verifier_fails_closed_when_image_resolution_fails(monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    containers = [
+        _container("solver-a", "worker-A proof\\n", "a" * 64),
+        _container("solver-b", "worker-B proof\\n", "b" * 64),
+    ]
+    containers[0]["_image_inspect_error"] = True
+    _install_docker_stub(monkeypatch, containers)
+    with pytest.raises(RuntimeError, match="Unable to resolve the configured Docker image"):
+        smoke.inspect_agent_homes("nonce", _expected(containers))
+
+
+def test_smoke_verifier_rejects_inspect_identity_not_in_listed_inventory(monkeypatch):
+    monkeypatch.setenv("AVRONE_AGENT_UID", "501")
+    monkeypatch.setenv("AVRONE_AGENT_GID", "20")
+    containers = [
+        _container("solver-a", "worker-A proof\\n", "a" * 64),
+        _container("solver-b", "worker-B proof\\n", "b" * 64),
+    ]
+    containers[0]["_reported_inspect_id"] = "c" * 64
+    _install_docker_stub(monkeypatch, containers)
+    with pytest.raises(RuntimeError, match="identities do not match"):
         smoke.inspect_agent_homes("nonce", _expected(containers))
 
 

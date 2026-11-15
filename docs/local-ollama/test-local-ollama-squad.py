@@ -105,7 +105,7 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
     """Inspect exactly one fully hardened Docker home for each shell-calling worker."""
     expected_ids = set(expected_artifacts)
     ids_raw = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=avrone.agent-home=1"],
+        ["docker", "ps", "-aq", "--no-trunc", "--filter", "label=avrone.agent-home=1"],
         check=True, capture_output=True, text=True, timeout=20,
     ).stdout
     if not isinstance(ids_raw, str):
@@ -115,8 +115,8 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         raise RuntimeError("No persistent AVRONE agent-home containers exist after the squad run.")
     if len(ids) != len(set(ids)):
         raise RuntimeError("Docker returned duplicate container IDs.")
-    if any(re.fullmatch(r"[0-9a-fA-F]{12,64}", value) is None for value in ids):
-        raise RuntimeError("Docker returned a malformed container ID; refusing to pass it to docker inspect/exec.")
+    if any(re.fullmatch(r"[0-9a-fA-F]{64}", value) is None for value in ids):
+        raise RuntimeError("Docker returned a malformed full-length container ID; refusing to pass it to docker inspect/exec.")
     raw = subprocess.run(
         ["docker", "inspect", *ids], check=True, capture_output=True, text=True, timeout=30,
     ).stdout
@@ -129,13 +129,33 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
     ):
         raise RuntimeError("Docker inspect returned a malformed container inventory.")
 
+    inspected_ids = [container.get("Id") for container in containers]
+    if (
+        any(not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{64}", value) is None
+            for value in inspected_ids)
+        or len({value.lower() for value in inspected_ids if isinstance(value, str)}) != len(ids)
+        or {value.lower() for value in inspected_ids if isinstance(value, str)}
+            != {value.lower() for value in ids}
+    ):
+        raise RuntimeError("Docker inspect container identities do not match the full-length listed inventory.")
+
     output: list[dict[str, Any]] = []
     found_agent_ids: set[str] = set()
     marker = f"sandbox-smoke-{nonce}.txt"
     container_path = f"/agent/{marker}"
     expected_uid = os.environ.get("AVRONE_AGENT_UID", str(os.getuid() if hasattr(os, "getuid") else 1000))
     expected_gid = os.environ.get("AVRONE_AGENT_GID", str(os.getgid() if hasattr(os, "getgid") else 1000))
-    expected_image = os.environ.get("AVRONE_DOCKER_IMAGE", "python:3.12-slim")
+    expected_image_ref = os.environ.get("AVRONE_DOCKER_IMAGE", "python:3.12-slim")
+    try:
+        image_result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", expected_image_ref],
+            check=True, capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Unable to resolve the configured Docker image to an immutable image ID.") from exc
+    expected_image_id = image_result.stdout.strip().lower() if isinstance(image_result.stdout, str) else ""
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", expected_image_id) is None:
+        raise RuntimeError("Docker image inspect returned a malformed immutable image ID.")
     expected_memory = container_policy.mem_mb() * 1024 * 1024
     expected_nano_cpus = int(round(container_policy.cpus() * 1_000_000_000))
 
@@ -176,7 +196,8 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         checks = {
             "container_running": isinstance(container.get("State"), dict)
                 and container["State"].get("Running") is True,
-            "expected_image": cfg.get("Image") == expected_image,
+            "expected_image": cfg.get("Image") == expected_image_id,
+            "actual_image_id_matches": container.get("Image") == expected_image_id,
             "non_root_user": isinstance(user, str) and len(user.split(":")) == 2
                 and all(part.isdigit() for part in user.split(":")) and int(user.split(":")[0]) > 0,
             "user_matches_workspace_owner": user == f"{expected_uid}:{expected_gid}",
@@ -252,6 +273,7 @@ def inspect_agent_homes(nonce: str, expected_artifacts: dict[str, dict[str, str]
         output.append({
             "name": str(container.get("Name") or "").lstrip("/"), "agent_id": agent_id,
             "user": user, "network": host.get("NetworkMode"), "artifact": marker,
+            "image_ref": expected_image_ref, "image_id": expected_image_id,
             "artifact_sha256": digest, "memory_bytes": host.get("Memory"),
             "memory_swap_bytes": host.get("MemorySwap"), "nano_cpus": host.get("NanoCpus"),
             "pids_limit": host.get("PidsLimit"), "mount_destinations": [mount.get("Destination")],

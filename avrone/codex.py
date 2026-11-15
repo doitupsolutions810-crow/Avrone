@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
+import stat
 import threading
 import time
 import uuid
@@ -25,6 +27,34 @@ class Event:
     data: dict[str, Any] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+
+MAX_EVENT_TEXT_CHARS = 65_536
+
+
+def _bounded_text(value: str) -> str:
+    """Preserve a useful excerpt without making unbounded audit strings."""
+    from .gateway import clean_text
+    cleaned = clean_text(value)
+    if len(cleaned) <= MAX_EVENT_TEXT_CHARS:
+        return cleaned
+    return cleaned[:MAX_EVENT_TEXT_CHARS - 15] + "...[truncated]"
+
+
+def _safe_log_fd(path: Path, flags: int) -> int:
+    """Open event logs without following swapped symlinks, hardlinks, or FIFOs."""
+    if path.parent.is_symlink() or path.is_symlink():
+        raise OSError("unsafe Codex log path")
+    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_NONBLOCK", 0), 0o600)
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
+            raise OSError("unsafe Codex log inode")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def _redact_on() -> bool:
@@ -50,12 +80,12 @@ def _json_safe(value: Any, depth: int = 0, seen: set[int] | None = None,
 
     def text(item: Any) -> str:
         try:
-            return clean_text(str(item))
+            return _bounded_text(str(item))
         except Exception:
             return "<unprintable>"
 
     if isinstance(value, str):
-        return clean_text(value)
+        return _bounded_text(value)
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -244,8 +274,29 @@ class Codex:
             data = _scrub(data)
         ev = Event(run_id=run_id, kind=_json_safe(kind), agent=_json_safe(agent), data=data)
         line = json.dumps(asdict(ev), default=str, allow_nan=False) + "\n"
-        with self._write_lock, path.open("a", encoding="utf-8") as f:
-            f.write(line)
+        encoded = line.encode("utf-8")
+        if len(encoded) > MAX_LINE_BYTES:
+            # Replay deliberately skips oversized lines: keep a bounded,
+            # replayable marker rather than silently losing the event.
+            ev.data = {"audit_truncated": True, "original_bytes": len(encoded)}
+            encoded = (json.dumps(asdict(ev), allow_nan=False) + "\n").encode("utf-8")
+        with self._write_lock:
+            with os.fdopen(_safe_log_fd(path, os.O_RDWR | os.O_APPEND | os.O_CREAT), "r+b") as f:
+                try:
+                    import fcntl
+                except ImportError:  # pragma: no cover - non-POSIX
+                    fcntl = None
+                if fcntl is not None:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                f.seek(0, os.SEEK_END)
+                lead = b""
+                if f.tell() > 0:
+                    f.seek(-1, os.SEEK_END)
+                    if f.read(1) != b"\n":
+                        lead = b"\n"
+                f.seek(0, os.SEEK_END)
+                f.write(lead + encoded)
+                f.flush()
         self.emitted += 1
         for q in list(self._subscribers):
             self._deliver(q, ev)
@@ -264,6 +315,10 @@ class Codex:
         return obj if isinstance(obj, dict) else None
 
     def runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            limit = max(1, min(HARD_REPLAY_EVENTS, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            limit = 50
         stamped = []
         for p in self.log_dir.glob("*.jsonl"):
             if self._log_path(p.stem) is None:
@@ -276,7 +331,8 @@ class Codex:
         out = []
         for _, p in stamped[:limit]:
             try:
-                with p.open(encoding="utf-8", errors="replace") as f:
+                with os.fdopen(_safe_log_fd(p, os.O_RDONLY), "r",
+                               encoding="utf-8", errors="replace") as f:
                     first = next(iter_lines(f), None)
                 start = self._parse_line(first) if first else None
             except OSError:
@@ -298,11 +354,15 @@ class Codex:
         if p is None or not p.exists():
             return []
         from collections import deque
-        n = replay_limit() if limit is None else max(1, int(limit))
+        try:
+            n = replay_limit() if limit is None else max(1, min(HARD_REPLAY_EVENTS, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            n = replay_limit()
         keep: deque[dict[str, Any]] = deque(maxlen=n)
         total = 0
         try:
-            with p.open(encoding="utf-8", errors="replace") as f:
+            with os.fdopen(_safe_log_fd(p, os.O_RDONLY), "r",
+                           encoding="utf-8", errors="replace") as f:
                 for line in iter_lines(f):
                     ev = self._parse_line(line) if line is not None else None
                     if ev is not None:

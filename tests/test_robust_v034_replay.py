@@ -48,7 +48,8 @@ def test_replay_unreadable_and_missing(tmp_path, monkeypatch):
 
     def boom(*a, **k):
         raise OSError("gone")
-    monkeypatch.setattr(type(cx.log_dir / "r.jsonl"), "open", boom)
+    # Codex opens validated file descriptors, not Path.open.
+    monkeypatch.setattr(codex_mod, "_safe_log_fd", boom)
     assert cx.replay("r") == []
 
 

@@ -910,12 +910,26 @@ class MCPManager:
             for name in self._registered:
                 self.registry.unregister(name)
         self._registered.clear()
-        await asyncio.gather(*(c.close() for c in self.clients.values()), return_exceptions=True)
-        for name in self.clients:
-            if name in self._status:
-                self._status[name]["connected"] = False
-        self.clients.clear()
-        self._started = False
+        # Shield the close fan-out so cancelling the caller cannot strand some
+        # transports half-closed while the manager forgets their client objects.
+        close_group = asyncio.gather(
+            *(client.close() for client in self.clients.values()), return_exceptions=True
+        )
+        cancelled = False
+        try:
+            await asyncio.shield(close_group)
+        except asyncio.CancelledError:
+            cancelled = True
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(close_group)
+        finally:
+            for name in self.clients:
+                if name in self._status:
+                    self._status[name]["connected"] = False
+            self.clients.clear()
+            self._started = False
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:

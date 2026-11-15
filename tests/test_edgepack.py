@@ -1814,8 +1814,10 @@ async def test_docker_runner_holds_lease_while_exec_is_in_flight(tmp_path, monke
     async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
         if len(argv) > 1 and argv[1] == "exec":
             now[0] = 100.0
-            container_name = argv[6]
-            observed["active"] = pool.state()["homes"][container_name]["active"]
+            agent_name = next(iter(pool.homes))
+            observed["active"] = pool.state()["homes"][agent_name]["active"]
+            observed["container_id"] = argv[6]
+            assert observed["container_id"] == pool.container_id(agent_name)
             observed["reaped"] = await pool.reap_idle(now=now[0])
             return CommandResult(cmd, 0, "completed", "")
         return await fake_docker(argv, timeout)
@@ -1823,7 +1825,9 @@ async def test_docker_runner_holds_lease_while_exec_is_in_flight(tmp_path, monke
     home = agentfs.agent_dir(settings.workspace, "busy-worker")
     result = await runner.run("sleep 90", cwd=home)
     assert result.exit_code == 0
-    assert observed == {"active": 1, "reaped": []}
+    assert observed["active"] == 1
+    assert observed["reaped"] == []
+    assert re.fullmatch(r"[0-9a-f]{64}", observed["container_id"])
     name = next(iter(pool.homes))
     assert pool.homes[name].active == 0
     now[0] = 161.0

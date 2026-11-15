@@ -890,6 +890,28 @@ def test_list_tools_refuses_partial_results_after_page_limit():
 
 
 @pytest.mark.parametrize("response", [None, "junk", [], 7, {"tools": "not-an-array"}])
+def test_list_tools_rejects_oversized_tool_names():
+    class Oversized(mc._Transport):
+        async def request(self, method, params, timeout):
+            return {"tools": [{"name": "x" * (mc.MAX_MCP_TOOL_NAME_CHARS + 1)}]}
+    client = MCPClient("s", {"command": "unused"})
+    transport = Oversized()
+    client.transport = transport
+    with pytest.raises(MCPError, match="tool name exceeded"):
+        run(client.list_tools())
+    assert client.tools == []
+
+
+def test_call_tool_rejects_oversized_name_before_transport_call():
+    class NeverCall(mc._Transport):
+        async def request(self, method, params, timeout):
+            raise AssertionError("transport must not be called")
+    client = MCPClient("s", {"command": "unused"})
+    client.transport = NeverCall()
+    with pytest.raises(MCPError, match="tool name exceeds"):
+        run(client.call_tool("x" * (mc.MAX_MCP_TOOL_NAME_CHARS + 1)))
+
+
 def test_list_tools_rejects_malformed_response_shapes(response):
     class Broken(mc._Transport):
         async def request(self, method, params, timeout):
@@ -966,6 +988,22 @@ def test_args_doc_from_schema_tolerates_hostile_json_shapes():
     schema = {"properties": {f"field-{i}": {"type": "string"} for i in range(1000)}}
     doc = mc.args_doc_from_schema(schema, limit=180)
     assert len(doc) <= 180 and doc.endswith(", ...}")
+
+
+def test_args_doc_bounds_and_filters_enum_values():
+    huge = "x" * (mc.MAX_SCHEMA_ENUM_CHARS * 100)
+    doc = mc.args_doc_from_schema({
+        "properties": {
+            "choice": {
+                "enum": [huge, {"malicious": "object"}, float("nan"), True, 7, None],
+            },
+        },
+    })
+    assert len(doc) < 256
+    assert "malicious" not in doc
+    assert "nan" not in doc
+    assert doc.startswith('{"choice"?: "' + "x" * (mc.MAX_SCHEMA_ENUM_CHARS - 1) + "…")
+    assert "true" in doc and "7" in doc and "null" in doc
 
 
 def test_args_doc_escapes_untrusted_property_names_and_type_names():

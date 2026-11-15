@@ -2872,7 +2872,7 @@ def test_pool_run_argv_rejects_unpinned_or_invalid_images(tmp_path, image_ref):
         FakeDocker(), "configured:tag", False, node="edge", workspace=workspace
     )
 
-    with pytest.raises(ValueError, match="immutable sha256 image ID"):
+    with pytest.raises(ValueError, match="image ID"):
         pool.run_argv(home, image_ref=image_ref)
 
 

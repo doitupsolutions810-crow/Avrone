@@ -117,6 +117,8 @@ class BuilderAgentSDK:
     async def open(cls, settings: Settings | None = None, *,
                    policy: BuilderPolicy | None = None,
                    extras: bool = True) -> "BuilderAgentSDK":
+        if type(extras) is not bool:
+            raise ValueError("extras must be a boolean")
         policy = policy or BuilderPolicy()
         settings = settings or Settings()
         if policy.require_ollama and str(settings.provider).lower() != "ollama":

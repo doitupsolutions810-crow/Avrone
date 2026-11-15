@@ -1277,6 +1277,53 @@ def test_mcp_client_close_waits_for_active_tool_calls_and_rejects_new_calls():
     run(go())
 
 
+def test_mcp_client_drains_many_concurrent_calls_before_close():
+    async def go():
+        total = 32
+        started_count = 0
+        all_started = asyncio.Event()
+        release = asyncio.Event()
+
+        class Fanout(mc._Transport):
+            def __init__(self):
+                self.closed = False
+            async def request(self, method, params, timeout):
+                nonlocal started_count
+                started_count += 1
+                if started_count == total:
+                    all_started.set()
+                await release.wait()
+                return {"content": [{"type": "text", "text": str(params["n"])}]}
+            async def notify(self, method, params=None):
+                return None
+            async def close(self):
+                self.closed = True
+
+        client = MCPClient("fanout", {"command": "unused"})
+        transport = Fanout()
+        client.transport = transport
+        calls = [
+            asyncio.create_task(client.call_tool("echo", {"n": index}))
+            for index in range(total)
+        ]
+        await asyncio.wait_for(all_started.wait(), timeout=1)
+        assert client._active_calls == total
+        closing = asyncio.create_task(client.close())
+        await asyncio.sleep(0)
+        assert not transport.closed
+        with pytest.raises(MCPError, match="closing or closed"):
+            await client.call_tool("late", {})
+        release.set()
+        results = await asyncio.gather(*calls)
+        await closing
+        assert results == [str(index) for index in range(total)]
+        assert client._active_calls == 0
+        assert client._calls_drained.is_set()
+        assert transport.closed and client._closed
+
+    run(go())
+
+
 def test_mcp_client_close_can_retry_after_transport_close_failure():
     class FlakyClose(mc._Transport):
         def __init__(self):

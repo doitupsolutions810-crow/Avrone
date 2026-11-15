@@ -578,3 +578,48 @@ def test_unified_tools_refuse_agent_root_replaced_by_symlink_after_resolution(en
         assert not (outside / "new.txt").exists()
     assert swapped["done"] is True
     assert (outside / "secret.txt").read_text() == "host-secret"
+
+
+
+@pytest.mark.parametrize("tool,path", [
+    ("list_files", "."),
+    ("fs_list", "."),
+])
+def test_directory_listings_reject_agent_root_symlink_swaps(env, monkeypatch, tool, path):
+    (env.dir / "visible.txt").write_text("agent")
+    outside = env.tmp / "outside-listing"
+    outside.mkdir()
+    (outside / "host-secret-name.txt").write_text("host")
+    moved = env.dir.with_name("agent-home-before-listing-swap")
+    swapped = {"done": False}
+
+    if tool == "list_files":
+        original_resolve = fsunify.resolve
+
+        def resolve_then_swap(ctx, raw, name):
+            result = original_resolve(ctx, raw, name)
+            if not swapped["done"]:
+                env.dir.rename(moved)
+                env.dir.symlink_to(outside, target_is_directory=True)
+                swapped["done"] = True
+            return result
+
+        monkeypatch.setattr(fsunify, "resolve", resolve_then_swap)
+        result = call(env, tool, path=path)
+    else:
+        original_agent_root = __import__("avrone.agentfs_tools", fromlist=["_agent_root"])._agent_root
+
+        def agent_root_then_swap(ctx):
+            root = original_agent_root(ctx)
+            if not swapped["done"]:
+                env.dir.rename(moved)
+                env.dir.symlink_to(outside, target_is_directory=True)
+                swapped["done"] = True
+            return root
+
+        monkeypatch.setattr("avrone.agentfs_tools._agent_root", agent_root_then_swap)
+        result = call(env, tool, path=path)
+
+    assert swapped["done"] is True
+    assert result.startswith("ERROR")
+    assert "host-secret-name.txt" not in result

@@ -220,6 +220,31 @@ def _open_confined_parent(root: Path, target: Path, *, create_parents: bool = Fa
         raise
 
 
+def stat_confined(root: Path, target: Path) -> os.stat_result:
+    """Stat a confined target without following its final path component."""
+    parent_fd, leaf = _open_confined_parent(root, target)
+    try:
+        return os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+    finally:
+        os.close(parent_fd)
+
+
+def list_confined_entries(root: Path, directory: Path) -> list[tuple[str, os.stat_result]]:
+    """List one confined directory using a pinned descriptor; never follow child symlinks."""
+    directory_fd = _open_confined_directory(root, directory)
+    try:
+        entries: list[tuple[str, os.stat_result]] = []
+        for name in os.listdir(directory_fd):
+            try:
+                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            entries.append((name, metadata))
+        return entries
+    finally:
+        os.close(directory_fd)
+
+
 def open_confined_file(root: Path, target: Path) -> int:
     """Open one regular file beneath root without following any path-component symlink."""
     parent_fd, leaf = _open_confined_parent(root, target)

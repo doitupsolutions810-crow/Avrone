@@ -217,46 +217,52 @@ async def t_python(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_list_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
     r = fsunify.resolve(ctx, str(args.get("path", "") or "."), "list_files")
-    root, skip = r.path, fsunify.skip_dirs(ctx, r)
-    if not root.exists():
+    root = r.path
+    try:
+        metadata = agentfs.stat_confined(r.root, root)
+    except FileNotFoundError:
         return f"ERROR: {args.get('path')} not found"
-    if root.is_file():
-        return f"{fsunify.display(ctx, root)} ({root.stat().st_size} bytes)"
+    except agentfs.AgentFSError as exc:
+        return f"ERROR: {exc}"
+    head = fsunify.display(ctx, root)
+    if __import__("stat").S_ISREG(metadata.st_mode):
+        return f"{head} ({metadata.st_size} bytes)"
+    if not __import__("stat").S_ISDIR(metadata.st_mode):
+        return f"ERROR: {args.get('path')} is not a file or directory"
+
     depth = _int(args.get("depth"), 3, 1, 10)
     cap = 400
-    head = fsunify.display(ctx, root)
     lines = [head if head.endswith("/") else head + "/"]
     count = 0
     truncated = False
+    skip = fsunify.skip_dirs(ctx, r)
 
-    def walk(d: Path, level: int, prefix: str) -> None:
+    def walk(directory: Path, level: int, prefix: str) -> None:
         nonlocal count, truncated
         try:
-            entries = sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except OSError:
+            entries = agentfs.list_confined_entries(r.root, directory)
+        except (OSError, agentfs.AgentFSError):
             return
-        for e in entries:
-            if e.name in SKIP_DIRS or e in skip:
+        entries.sort(key=lambda item: (not __import__("stat").S_ISDIR(item[1].st_mode), item[0].lower()))
+        for name, item_stat in entries:
+            candidate = directory / name
+            if name in SKIP_DIRS or candidate in skip:
                 continue
             if count >= cap:
                 truncated = True
                 return
             count += 1
-            if e.is_dir() and not e.is_symlink():
-                lines.append(f"{prefix}{e.name}/")
+            if __import__("stat").S_ISDIR(item_stat.st_mode):
+                lines.append(f"{prefix}{name}/")
                 if level < depth:
-                    walk(e, level + 1, prefix + "  ")
+                    walk(candidate, level + 1, prefix + "  ")
             else:
-                try:
-                    size = e.stat().st_size
-                except OSError:
-                    size = 0
-                lines.append(f"{prefix}{e.name} ({size}b)")
+                lines.append(f"{prefix}{name} ({item_stat.st_size}b)")
 
     walk(root, 1, "  ")
     if truncated:
         lines.append(f"...[truncated at {cap} entries]")
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
 async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from .agentfs import (
     AgentFSError, confine, read_confined_bytes, write_confined_file, delete_confined_entry,
+    stat_confined, list_confined_entries,
     agent_dir as create_agent_dir, agents_root, sanitize_agent_id,
 )
 from .tools import Tool
@@ -176,25 +177,51 @@ async def t_fs_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
     return out
 
 async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    root, p = _resolve(ctx, "fs_list", args.get("path", ""))
-    if not p.exists():
+    root = _agent_root(ctx)
+    p = confine(root, args.get("path", "."))
+    try:
+        metadata = stat_confined(root, p)
+    except FileNotFoundError:
         return f"ERROR: {_rel(root, p)} not found"
-    if p.is_file():
-        return f"{_rel(root, p)}  {p.stat().st_size} bytes"
-    recursive = bool(args.get("recursive", False))
-    items = sorted(p.rglob("*") if recursive else p.iterdir())
-    lines = []
-    for q in items[:LIST_MAX_ENTRIES]:
-        if q.is_symlink():
-            lines.append(f"{_rel(root, q)} -> (symlink)")
-        elif q.is_dir():
-            lines.append(f"{_rel(root, q)}/")
-        else:
-            lines.append(f"{_rel(root, q)}  {q.stat().st_size} bytes")
-    if len(items) > LIST_MAX_ENTRIES:
-        lines.append(f"...[{len(items) - LIST_MAX_ENTRIES} more]")
+    except AgentFSError as exc:
+        return f"ERROR: {exc}"
+    if stat.S_ISREG(metadata.st_mode):
+        return f"{_rel(root, p)}  {metadata.st_size} bytes"
+    if not stat.S_ISDIR(metadata.st_mode):
+        return f"ERROR: {_rel(root, p)} is not a file or directory"
+    recursive = args.get("recursive", False)
+    if type(recursive) is not bool:
+        return "ERROR: recursive must be a boolean"
+
+    lines: list[str] = []
+    truncated = False
+
+    def walk(directory: Path, prefix: str) -> None:
+        nonlocal truncated
+        try:
+            entries = list_confined_entries(root, directory)
+        except (OSError, AgentFSError):
+            return
+        entries.sort(key=lambda item: item[0].lower())
+        for name, item_stat in entries:
+            if len(lines) >= LIST_MAX_ENTRIES:
+                truncated = True
+                return
+            rel = (directory / name).relative_to(root).as_posix()
+            if stat.S_ISDIR(item_stat.st_mode):
+                lines.append(f"{prefix}{name}/")
+                if recursive:
+                    walk(directory / name, prefix + "  ")
+            elif stat.S_ISLNK(item_stat.st_mode):
+                lines.append(f"{prefix}{name} -> (symlink)")
+            else:
+                lines.append(f"{prefix}{name}  {item_stat.st_size} bytes")
+
+    walk(p, "")
+    if truncated:
+        lines.append(f"...[{max(0, LIST_MAX_ENTRIES)}+ more]")
     head = f"[agent dir {getattr(ctx, 'agent_id', '') or root.name}: {dir_usage(root)}/{quota_bytes()} bytes used]"
-    return head + "\n" + ("\n".join(lines) if lines else "(empty)")
+    return head + "\\n" + ("\\n".join(lines) if lines else "(empty)")
 
 
 async def t_fs_delete(ctx: "AgentContext", args: dict[str, Any]) -> str:

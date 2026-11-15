@@ -20,7 +20,7 @@ def install_transport(monkeypatch, handler):
     def factory(*args, **kwargs):
         return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
 
-    monkeypatch.setattr(bridge.httpx, "AsyncClient", factory)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
 
 
 def configure(monkeypatch):

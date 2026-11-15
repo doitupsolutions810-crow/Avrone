@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .agentfs import AgentFSError, confine, read_confined_bytes, write_confined_file
+from .agentfs import AgentFSError, confine, read_confined_bytes, write_confined_file, delete_confined_entry
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -193,34 +193,36 @@ async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_fs_delete(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root = _agent_root(ctx)
-    raw = str(args.get("path", "")).strip().rstrip("/\\")
-    # Confine the PARENT (resolved), then act on the leaf un-resolved, so a symlink is
-    # removed itself and never followed to what it points at.
-    head, _, leaf = raw.replace("\\", "/").rpartition("/")
+    raw = str(args.get("path", "")).strip().rstrip("/\\\\")
+    head, _, leaf = raw.replace("\\\\", "/").rpartition("/")
+    recursive = args.get("recursive", False)
     try:
         if not leaf or leaf in {".", ".."}:
             raise AgentFSError("refusing to delete your whole agent dir; name a file or subdir"
                                if raw in {"", "."} else "'..' is not allowed in agent paths")
-        confine(root, raw if not (root / raw).is_symlink() else (head or "."))
+        if type(recursive) is not bool:
+            raise AgentFSError("recursive must be a boolean")
+        # Resolve and validate the parent only. The leaf stays unresolved so a symlink target
+        # is unlinked as an entry rather than followed.
+        if not (root / raw).is_symlink():
+            confine(root, raw)
         parent = confine(root, head or ".")
-    except AgentFSError as e:
-        _audit(ctx, "agentfs.denied", tool="fs_delete", path=raw[:300] or ".", reason=str(e))
+    except AgentFSError as exc:
+        _audit(ctx, "agentfs.denied", tool="fs_delete", path=raw[:300] or ".", reason=str(exc))
         raise
-    target = parent / leaf
-    rel = _rel(root, parent / leaf) if parent.is_relative_to(root) else raw
-    if not target.is_symlink() and not target.exists():
-        return f"ERROR: {rel} not found"
+    rel = (parent / leaf).relative_to(root).as_posix()
     with _lock_for(root):
-        if target.is_symlink() or target.is_file():
-            freed = target.lstat().st_size
-            target.unlink()
-        elif target.is_dir():
-            if not bool(args.get("recursive", False)) and any(target.iterdir()):
+        try:
+            freed = delete_confined_entry(root, parent, leaf, recursive=recursive)
+        except FileNotFoundError:
+            return f"ERROR: {rel} not found"
+        except AgentFSError as exc:
+            if str(exc) == "directory is non-empty":
                 return f"ERROR: {rel} is a non-empty directory; pass recursive: true"
-            freed = dir_usage(target)
-            shutil.rmtree(target)
-        else:
-            return f"ERROR: {rel} is not a file or directory"
+            if str(exc) == "not a file or directory":
+                return f"ERROR: {rel} is not a file or directory"
+            _audit(ctx, "agentfs.denied", tool="fs_delete", path=raw[:300], reason=str(exc))
+            raise
     _audit(ctx, "agentfs.delete", path=rel, bytes=freed)
     return f"deleted {rel} ({freed} bytes freed)"
 

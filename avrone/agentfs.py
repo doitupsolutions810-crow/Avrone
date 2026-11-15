@@ -24,6 +24,7 @@ Options (env, read at call time so config.py needs no change):
 """
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -242,8 +243,13 @@ def write_confined_file(root: Path, target: Path, data: bytes, *, append: bool =
         raise AgentFSError("platform lacks no-follow file support")
     try:
         if append:
-            fd = os.open(leaf, os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow |
-                         getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=parent_fd)
+            try:
+                fd = os.open(leaf, os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow |
+                             getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=parent_fd)
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise AgentFSError("refusing a symlink at the file leaf") from None
+                raise
             try:
                 metadata = os.fstat(fd)
                 if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -279,6 +285,73 @@ def write_confined_file(root: Path, target: Path, data: bytes, *, append: bool =
                 pass
             raise
         return size
+    finally:
+        os.close(parent_fd)
+
+
+def _open_confined_directory(root: Path, target: Path) -> int:
+    """Open a directory beneath root through no-follow descriptor-relative traversal."""
+    base = Path(root).resolve(strict=True)
+    resolved = Path(target).resolve(strict=True)
+    if not resolved.is_relative_to(base):
+        raise AgentFSError("directory escapes its confined filesystem root")
+    relative = resolved.relative_to(base)
+    fd = _open_directory_chain(base)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        for component in relative.parts:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _remove_directory_contents(directory_fd: int) -> int:
+    """Recursively unlink entries relative to pinned directory descriptors."""
+    freed = 0
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(name, flags, dir_fd=directory_fd)
+            try:
+                freed += _remove_directory_contents(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+            freed += metadata.st_size
+    return freed
+
+
+def delete_confined_entry(root: Path, parent: Path, leaf: str, *, recursive: bool = False) -> int:
+    """Delete one entry beneath root without following a swapped parent or leaf symlink."""
+    if type(recursive) is not bool:
+        raise AgentFSError("recursive must be a boolean")
+    if not leaf or leaf in {".", ".."} or "/" in leaf or "\\" in leaf or "\\x00" in leaf:
+        raise AgentFSError("invalid delete entry name")
+    parent_fd = _open_confined_directory(root, parent)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        metadata = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(leaf, flags, dir_fd=parent_fd)
+            try:
+                if not recursive and os.listdir(child_fd):
+                    raise AgentFSError("directory is non-empty")
+                freed = _remove_directory_contents(child_fd) if recursive else 0
+            finally:
+                os.close(child_fd)
+            os.rmdir(leaf, dir_fd=parent_fd)
+            return freed
+        if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+            raise AgentFSError("not a file or directory")
+        os.unlink(leaf, dir_fd=parent_fd)
+        return metadata.st_size
     finally:
         os.close(parent_fd)
 

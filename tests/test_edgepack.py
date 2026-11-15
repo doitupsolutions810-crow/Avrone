@@ -189,10 +189,10 @@ def test_pool_lazy_create_and_reuse(tmp_path):
     assert fake.calls == []                                       # nothing until first use
     name = run(pool.ensure(d))
     assert name == "avrone-agent-edge-builder"
-    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"] and pool.created == 1
+    assert fake.verbs() == ["image", "inspect", "run", "inspect"] and pool.created == 1
     now[0] = 130.0
     assert run(pool.ensure(d)) == name
-    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect", "inspect"]  # cached home is revalidated
+    assert fake.verbs() == ["image", "inspect", "run", "inspect", "inspect"]  # cached home is revalidated
     assert pool.state()["homes"][name]["uses"] == 2
 
 
@@ -1422,7 +1422,9 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
         results = await asyncio.gather(*(pool.ensure(d) for _ in range(32)))
         assert len(set(results)) == 1
         assert fake.verbs().count("run") == 1
-        assert fake.verbs().count("inspect") == 2
+        # one initial inspect + one post-create inspect + one integrity inspect per
+        # subsequent caller; each ensure() verifies the cached container before reuse.
+        assert fake.verbs().count("inspect") == 33
         assert pool.state()["homes"][results[0]]["uses"] == 32
         await pool.close()
     run(main())

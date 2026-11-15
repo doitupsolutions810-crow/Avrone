@@ -1135,13 +1135,14 @@ def public_post(post: dict[str, Any]) -> dict[str, Any]:
 
 
 def safe_since(since: str | None) -> str | None:
-    """A cursor that cannot carry a surrogate or NUL into the read path."""
-    if since is None:
+    """Accept only exact bounded post IDs as cursors, without coercion.
+
+    Removing NULs or replacing invalid Unicode could turn an attacker-supplied
+    cursor into a different real post ID, accidentally skipping events.
+    """
+    if not isinstance(since, str) or len(since) > 80:
         return None
-    if not isinstance(since, str):
-        since = str(since)
-    since = _utf8_text(since)
-    return since or None
+    return since if _ID_RE.fullmatch(since) else None
 
 
 def blackboard_posts(core: Any, since: str | None = None) -> list[dict[str, Any]]:

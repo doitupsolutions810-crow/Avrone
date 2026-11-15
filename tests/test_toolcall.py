@@ -511,7 +511,7 @@ def test_nested_agent_does_not_replay_parent_required_action_contract(tmp_path):
         "first_action": {"tool": "echo", "args": {"text": "must-run-only-in-parent"}},
         "allow_followup_calls": False,
     }
-    parent_task = "Original operator task.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+    parent_task = "Original operator task.\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
 
     result = run(core.run_agent(
         "nested-contract",

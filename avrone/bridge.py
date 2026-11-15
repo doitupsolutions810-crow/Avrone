@@ -232,6 +232,7 @@ class Bridge:
         self._evicted: "OrderedDict[str, None]" = OrderedDict()  # tombstones: ids the ring dropped
         self._lines = 0
         self._journal_version = None
+        self._volatile_dirty = False
         self._load()
 
     # ------------------------------------------------------------ io
@@ -263,8 +264,17 @@ class Bridge:
                 locked = True
             except OSError:
                 pass  # keep the original best-effort in-memory behavior
-            if locked and self._journal_state() != self._journal_version:
-                self._load()
+            if locked:
+                if self._volatile_dirty:
+                    # Earlier best-effort writes were never confirmed on disk.
+                    # Do not let later durable posts reference or compact them.
+                    self._posts.clear()
+                    self._evicted.clear()
+                    self._lines = 0
+                    self._journal_version = None
+                    self._volatile_dirty = False
+                if self._journal_state() != self._journal_version:
+                    self._load()
             yield locked
 
     def _refresh_read(self) -> None:
@@ -292,6 +302,7 @@ class Bridge:
                                encoding="utf-8", errors="replace") as stream:
                     self._replay(_journal_lines(stream))
                     self._journal_version = self._journal_state()
+                    self._volatile_dirty = False
             except OSError:
                 return
 
@@ -417,9 +428,9 @@ class Bridge:
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    def _write(self, recs: list[dict[str, Any]], *, file_lock_held: bool = False) -> None:
+    def _write(self, recs: list[dict[str, Any]], *, file_lock_held: bool = False) -> bool:
         if self.path is None or not recs:
-            return
+            return False
         try:
             with (contextlib.nullcontext() if file_lock_held else self._file_lock()):
                 with os.fdopen(_regular_fd(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND), "r+b") as f:
@@ -448,8 +459,9 @@ class Bridge:
                             tmp.unlink()
                     self._lines = len(self._posts)
                 self._journal_version = self._journal_state()
+                return True
         except OSError:
-            pass  # the in-memory bridge still works; persistence is best effort
+            return False  # best-effort memory state requires a future rebase
 
     def _trim(self) -> None:
         while len(self._posts) > self.limit:
@@ -496,11 +508,10 @@ class Bridge:
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec
             self._trim()
-            if file_lock_held:
-                # Never retry the sidecar after admission proceeded without it:
-                # a later success would persist an unrebased, unsafe decision.
-                # Degraded mode remains explicitly in-memory only.
-                self._write([rec], file_lock_held=True)
+            if not file_lock_held or not self._write([rec], file_lock_held=True):
+                # A successful file lock is not proof that the journal write
+                # succeeded. Remember both lock and I/O failures.
+                self._volatile_dirty = True
         if self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.post", rec["agent"], post_id=rec["id"], post_kind=kind,
@@ -544,8 +555,9 @@ class Bridge:
                 fresh.append(rec)
                 stats["merged"] += 1
             self._trim()
-            if file_lock_held:
-                self._write(fresh, file_lock_held=True)
+            if fresh and (not file_lock_held or
+                          not self._write(fresh, file_lock_held=True)):
+                self._volatile_dirty = True
         if fresh and self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.merge", "Bridge", origin=origin, merged=len(fresh))

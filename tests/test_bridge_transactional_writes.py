@@ -168,3 +168,82 @@ def test_restored_sidecar_lock_persists_later_post_only(tmp_path, monkeypatch):
     assert len(attempts) == 2
     persisted = bm.Bridge("flaky-lock-recover", tmp_path).posts()
     assert [p["id"] for p in persisted] == [durable["id"]]
+
+
+
+def test_lock_recovery_does_not_allow_ref_to_prior_volatile_post(tmp_path, monkeypatch):
+    """After a best-effort write, durable reference validation must rebase."""
+    bridge = bm.Bridge("volatile-refs", tmp_path)
+    real_lock = bridge._file_lock
+    count = 0
+
+    @contextlib.contextmanager
+    def transient():
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise OSError("sidecar unavailable")
+        with real_lock():
+            yield
+
+    monkeypatch.setattr(bridge, "_file_lock", transient)
+    volatile = bridge.post("worker", "finding", "not persisted")
+    assert bridge.get(volatile["id"]) is not None
+    with pytest.raises(bm.BridgeError, match="unknown post id"):
+        bridge.post("worker", "answer", "must not persist dangling ref",
+                    refs=[volatile["id"]])
+    assert bridge.get(volatile["id"]) is None
+    durable = bridge.post("worker", "finding", "persisted")
+    reopened = bm.Bridge("volatile-refs", tmp_path)
+    assert [p["id"] for p in reopened.posts()] == [durable["id"]]
+
+
+def test_remote_merge_lock_recovery_rebases_volatile_records(tmp_path, monkeypatch):
+    bridge = bm.Bridge("volatile-merge", tmp_path)
+    real_lock = bridge._file_lock
+    count = 0
+
+    @contextlib.contextmanager
+    def transient():
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise OSError("sidecar unavailable")
+        with real_lock():
+            yield
+
+    monkeypatch.setattr(bridge, "_file_lock", transient)
+    assert bridge.merge_remote([_post("volatile-id", "temporary")], "peer")["merged"] == 1
+    assert bridge.get("volatile-id") is not None
+    assert bridge.merge_remote([_post("durable-id", "permanent")], "peer")["merged"] == 1
+    assert bridge.get("volatile-id") is None
+    assert [p["id"] for p in bm.Bridge("volatile-merge", tmp_path).posts()] == ["durable-id"]
+
+
+def test_failed_journal_open_after_lock_marks_post_non_durable(tmp_path, monkeypatch):
+    """A lock can work while writing the journal itself fails."""
+    bridge = bm.Bridge("journal-io-failure", tmp_path)
+    real_fd = bm._regular_fd
+    failed = False
+
+    def one_journal_failure(path, flags):
+        nonlocal failed
+        if path == bridge.path and flags & bm.os.O_APPEND and not failed:
+            failed = True
+            raise OSError("simulated full disk")
+        return real_fd(path, flags)
+
+    monkeypatch.setattr(bm, "_regular_fd", one_journal_failure)
+    volatile = bridge.post("worker", "finding", "failed-to-write")
+    assert failed
+    assert bridge.get(volatile["id"]) is not None
+    durable = bridge.post("worker", "finding", "written-later")
+    assert [p["id"] for p in bm.Bridge("journal-io-failure", tmp_path).posts()] == [durable["id"]]
+    assert bridge.get(volatile["id"]) is None
+
+
+def test_in_memory_only_bridge_remains_functional_without_disk():
+    bridge = bm.Bridge("pure-memory", data_dir=None)
+    first = bridge.post("agent", "finding", "memory")
+    second = bridge.post("agent", "answer", "reply", refs=[first["id"]])
+    assert [p["id"] for p in bridge.posts()] == [first["id"], second["id"]]

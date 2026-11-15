@@ -215,7 +215,9 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     if config.get("User") != f"{uid}:{gid}":
         problems.append("container user does not match the non-root agent identity")
     if config.get("Image") != image:
-        problems.append("container image does not match the configured image")
+        problems.append("container image does not match the resolved immutable image ID")
+    if payload.get("Image") != image:
+        problems.append("container actual image ID does not match the resolved immutable image ID")
     if config.get("WorkingDir") != agentfs.CONTAINER_AGENT_MOUNT:
         problems.append("working directory is not /agent")
     env = config.get("Env")
@@ -396,10 +398,27 @@ class AgentContainerPool:
             raise ValueError("idle must be a positive finite number of seconds")
         return max(MIN_IDLE_SECS, min(7 * 86400.0, value))
 
-    def run_argv(self, agent_dir: Path) -> list[str]:
+    def run_argv(self, agent_dir: Path, image_ref: str | None = None) -> list[str]:
         d = Path(agent_dir).resolve()
-        return persistent_run_argv(container_name(self.node, d.name), d, self.image, self.allow_network,
-                                   agent_id=d.name)
+        return persistent_run_argv(
+            container_name(self.node, d.name), d, image_ref or self.image, self.allow_network,
+            agent_id=d.name,
+        )
+
+    async def _resolve_image_id(self) -> str:
+        result = await self._exec(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", self.image], 30
+        )
+        if getattr(result, "exit_code", 1) != 0:
+            detail = str(getattr(result, "stderr", "") or "")[:300]
+            raise RuntimeError(
+                f"could not resolve configured Docker image {self.image!r}: "
+                f"{detail or 'unknown Docker error'}"
+            )
+        image_id = str(getattr(result, "stdout", "") or "").strip()
+        if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", image_id) is None:
+            raise RuntimeError("Docker returned an invalid immutable image ID")
+        return image_id.lower()
 
     async def ensure(self, agent_dir: Path, *, _active: bool = False) -> str:
         """Name of a running, policy-compliant home container for agent_dir.
@@ -418,12 +437,15 @@ class AgentContainerPool:
                     home.active += 1
                 return name
 
+            # Resolve mutable tags before inspecting or creating a worker. All comparisons and
+            # docker run use the immutable digest so a retargeted tag cannot silently change code.
+            image_id = await self._resolve_image_id()
             inspected = await self._exec(inspect_argv(name), 30)
             code = getattr(inspected, "exit_code", 1)
             compatible = False
             if code == 0:
                 compatible, owned, reason = _inspect_matches_policy(
-                    str(getattr(inspected, "stdout", "")), d, self.image, self.allow_network
+                    str(getattr(inspected, "stdout", "")), d, image_id, self.allow_network
                 )
                 if not owned:
                     # A colliding name is not permission to kill or adopt an arbitrary container.
@@ -440,7 +462,7 @@ class AgentContainerPool:
                 raise RuntimeError(f"could not inspect agent container {name}: {detail or 'unknown Docker error'}")
 
             if code != 0 or not compatible:
-                created = await self._exec(self.run_argv(d), 300)
+                created = await self._exec(self.run_argv(d, image_id), 300)
                 if getattr(created, "exit_code", 1) != 0:
                     raise RuntimeError(f"could not start agent container {name}: "
                                        f"{str(getattr(created, 'stderr', ''))[:300]}")
@@ -448,7 +470,7 @@ class AgentContainerPool:
                 # to submit. Custom images can exit immediately and daemons can normalize options.
                 verify = await self._exec(inspect_argv(name), 30)
                 verified, _owned, reason = _inspect_matches_policy(
-                    str(getattr(verify, "stdout", "")), d, self.image, self.allow_network
+                    str(getattr(verify, "stdout", "")), d, image_id, self.allow_network
                 ) if getattr(verify, "exit_code", 1) == 0 else (False, False, "container not found after start")
                 if not verified:
                     await self._exec(rm_argv(name), 30)

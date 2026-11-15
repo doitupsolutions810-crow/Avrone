@@ -44,6 +44,7 @@ DEFAULT_MEM_MB, MIN_MEM_MB, MAX_MEM_MB = 512, 64, 65536
 DEFAULT_CPUS, MIN_CPUS, MAX_CPUS = 1.0, 0.1, 64.0
 DEFAULT_IDLE_SECS, MIN_IDLE_SECS = 600.0, 5.0
 PIDS_LIMIT = 512
+MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS = 15.0
 NAME_PREFIX = "avrone-agent"
 _NAME_BAD = re.compile(r"[^a-z0-9_.-]+")
 
@@ -377,6 +378,12 @@ class AgentContainerPool:
         self._idle = idle
         self.homes: dict[str, _Home] = {}
         self._lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
+        self._lease_drained = asyncio.Event()
+        self._lease_drained.set()
+        self._closing = False
+        self._closed = False
+        self._close_task: asyncio.Task | None = None
         self.created = 0
         self.reaped = 0
 
@@ -425,16 +432,21 @@ class AgentContainerPool:
 
         Internal callers may reserve an active lease atomically with lookup/creation.
         """
+        if self._closing or self._closed:
+            raise RuntimeError("agent container pool is closing or closed")
         d = Path(agent_dir).resolve()
         name = container_name(self.node, d.name)
         await self.reap_idle(skip=name)
         async with self._lock:
+            if self._closing or self._closed:
+                raise RuntimeError("agent container pool is closing or closed")
             now = self.clock()
             home = self.homes.get(name)
             if home is not None:
                 home.last_used, home.uses = now, home.uses + 1
                 if _active:
                     home.active += 1
+                    self._lease_drained.clear()
                 return name
 
             # Resolve mutable tags before inspecting or creating a worker. All comparisons and
@@ -478,6 +490,8 @@ class AgentContainerPool:
                 self.created += 1
 
             self.homes[name] = _Home(name, d, now, created=now, uses=1, active=1 if _active else 0)
+            if _active:
+                self._lease_drained.clear()
             return name
 
     @asynccontextmanager
@@ -492,6 +506,8 @@ class AgentContainerPool:
                 if home is not None and home.active > 0:
                     home.active -= 1
                     home.last_used = self.clock()
+                if not any(item.active > 0 for item in self.homes.values()):
+                    self._lease_drained.set()
 
     async def reap_idle(self, now: float | None = None, skip: str = "") -> list[str]:
         """Remove every home container idle for longer than AVRONE_AGENT_IDLE_SECS."""
@@ -514,15 +530,39 @@ class AgentContainerPool:
                     pass
         return [h.name for h in stale]
 
-    async def close(self) -> None:
-        async with self._lock:  # same as reap_idle: no ensure() can re-adopt a home mid-removal
+    async def _finish_close(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._lease_drained.wait(),
+                timeout=MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            active = sum(home.active for home in self.homes.values())
+            log.warning(
+                "Agent container pool did not drain %d active lease(s) within %.1fs; "
+                "forcing container removal",
+                active, MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS,
+            )
+        async with self._lock:
             names = list(self.homes)
             self.homes.clear()
-            for n in names:
+            for name in names:
                 try:
-                    await self._exec(rm_argv(n), 30)
-                except Exception:  # noqa: BLE001
+                    await self._exec(rm_argv(name), 30)
+                except Exception:  # noqa: BLE001 - continue shutting down every managed container
                     pass
+            self._closed = True
+
+    async def close(self) -> None:
+        async with self._close_lock:
+            if self._closed:
+                return
+            if self._close_task is None:
+                self._closing = True
+                self._close_task = asyncio.create_task(self._finish_close())
+            task = self._close_task
+        # Preserve cleanup if the shutdown caller is cancelled while waiting.
+        await asyncio.shield(task)
 
     def state(self) -> dict[str, Any]:
         now = self.clock()

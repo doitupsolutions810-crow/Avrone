@@ -236,9 +236,23 @@ class StdioTransport(_Transport):
         self._reader = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
+    async def _terminate_after_reader_error(self) -> None:
+        proc = self.proc
+        if proc is None or proc.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), 2)
+        except Exception:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), 2)
+
     async def _drain_stderr(self) -> None:
         assert self.proc and self.proc.stderr
-        with contextlib.suppress(Exception):
+        try:
             async for raw in self.proc.stderr:
                 line = raw.decode(errors="replace").rstrip()
                 if len(line) > MAX_STDIO_STDERR_LINE_CHARS:
@@ -247,6 +261,11 @@ class StdioTransport(_Transport):
                 if line:
                     self.stderr_tail = (self.stderr_tail + [line])[-20:]
                     log.debug("mcp stderr [%s]: %s", self.command, line)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.debug("mcp stderr reader stopped: %s", exc)
+            await self._terminate_after_reader_error()
 
     async def _read_loop(self) -> None:
         assert self.proc and self.proc.stdout
@@ -262,8 +281,11 @@ class StdioTransport(_Transport):
                     continue
                 for m in (msg if isinstance(msg, list) else [msg]):
                     await self._dispatch(m)
-        except Exception as e:  # pragma: no cover
-            log.debug("mcp stdio reader stopped: %s", e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover
+            log.debug("mcp stdio reader stopped: %s", exc)
+            await self._terminate_after_reader_error()
         finally:
             err = MCPError("MCP server process exited" + (
                 f": {self.stderr_tail[-1]}" if self.stderr_tail else ""))

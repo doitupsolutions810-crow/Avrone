@@ -764,8 +764,12 @@ class TrinityCore:
         first_step = 0
         if contract is not None:
             required = contract["first_action"]
-            self.codex.emit(run_id, "action.contract.start", name, tool=required["tool"])
             [checked] = self._prechecked(run_id, name, [required], 0, budget)
+            if checked["error"] is not None:
+                self.codex.emit(run_id, "action.contract.rejected", name,
+                                tool=required["tool"], reason=checked["error"][:500])
+                return f"[{name} failed: required first action was rejected before execution: {checked['error']}]"
+            self.codex.emit(run_id, "action.contract.start", name, tool=required["tool"])
             tool, out = await self._one_call(run_id, name, ctx, checked, 0, budget)
             messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
             first_step = 1

@@ -848,12 +848,30 @@ def _order_path(core: Any) -> Path | None:
     return None if folder.is_symlink() else folder / _ORDER_NAME
 
 
+def _order_signature(path: Path | None) -> tuple:
+    """Detect cross-Core changes, including replacement and removal.
+
+    The cursor file is atomically replaced; inode identity is necessary even
+    when two serialized JSON objects happen to have identical byte lengths.
+    """
+    if path is None:
+        return (None, None)
+    try:
+        info = path.lstat()
+        return (str(path), info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        return (str(path), None)
+
+
 def _load_order(core: Any) -> "OrderedDict[str, None]":
+    path = _order_path(core)
+    revision = _order_signature(path)
     cached = getattr(core, "_blackboard_order", None)
-    if isinstance(cached, OrderedDict):
+    if (isinstance(cached, OrderedDict)
+            and getattr(core, "_blackboard_order_revision", object()) == revision):
         return cached
     order: "OrderedDict[str, None]" = OrderedDict()
-    path = _order_path(core)
     if path is not None:
         try:
             # Validate the opened inode rather than a potentially stale
@@ -875,6 +893,7 @@ def _load_order(core: Any) -> "OrderedDict[str, None]":
                     order[item] = None
     try:
         core._blackboard_order = order
+        core._blackboard_order_revision = revision
     except AttributeError:  # pragma: no cover - slotted core
         pass
     return order
@@ -893,6 +912,10 @@ def _save_order(core: Any, order: "OrderedDict[str, None]") -> None:
             stream.write(json.dumps({"ids": list(order)}))
         os.replace(tmp, path)
         tmp = None
+        try:
+            core._blackboard_order_revision = _order_signature(path)
+        except AttributeError:  # pragma: no cover - slotted core
+            pass
     except OSError:
         if tmp is not None:
             with contextlib.suppress(OSError):

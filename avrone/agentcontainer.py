@@ -349,6 +349,19 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
         problems.append("CPU limit does not match policy")
     if type(host.get("PidsLimit")) is not int or host.get("PidsLimit") != PIDS_LIMIT:
         problems.append("PID limit does not match policy")
+    ulimits = host.get("Ulimits")
+    if (
+        not isinstance(ulimits, list)
+        or len(ulimits) != 1
+        or not isinstance(ulimits[0], dict)
+        or set(ulimits[0]) != {"Name", "Soft", "Hard"}
+        or ulimits[0].get("Name") != "nofile"
+        or type(ulimits[0].get("Soft")) is not int
+        or ulimits[0].get("Soft") != 1024
+        or type(ulimits[0].get("Hard")) is not int
+        or ulimits[0].get("Hard") != 2048
+    ):
+        problems.append("open-file descriptor limit does not match policy")
 
     return not problems, True, "; ".join(problems) if problems else "compatible"
 

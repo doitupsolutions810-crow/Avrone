@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -45,6 +46,7 @@ DEFAULT_CPUS, MIN_CPUS, MAX_CPUS = 1.0, 0.1, 64.0
 DEFAULT_IDLE_SECS, MIN_IDLE_SECS = 600.0, 5.0
 PIDS_LIMIT = 512
 MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS = 15.0
+log = logging.getLogger(__name__)
 NAME_PREFIX = "avrone-agent"
 _NAME_BAD = re.compile(r"[^a-z0-9_.-]+")
 

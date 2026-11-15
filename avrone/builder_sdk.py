@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from .bootstrap import build_core, run_cleanups
+from .bootstrap import build_core
 from .config import Settings
 
 BuildMode = Literal["squad", "chat", "deep"]
@@ -132,11 +133,30 @@ class BuilderAgentSDK:
         return cls(core, cleanups, policy)
 
     async def _finish_close(self) -> None:
-        try:
-            await run_cleanups(self.cleanups)
-        except BaseException:
+        failed: list[Any] = []
+        failures: list[BaseException] = []
+        for cleanup in reversed(self.cleanups):
+            try:
+                result = cleanup()
+                if inspect.isawaitable(result):
+                    await result
+            except (asyncio.CancelledError, Exception) as exc:
+                failed.append(cleanup)
+                failures.append(exc)
+
+        if failures:
+            # Successful callbacks are consumed exactly once; retain only failed callbacks
+            # so a later close() retries unfinished resources without double-closing others.
+            self.cleanups = list(reversed(failed))
             self._closing = False
-            raise
+            first = failures[0]
+            if isinstance(first, asyncio.CancelledError):
+                raise first
+            raise RuntimeError(
+                f"{len(failures)} cleanup callback(s) failed; close may be retried"
+            ) from first
+
+        self.cleanups.clear()
         self.closed = True
         self._closing = False
 

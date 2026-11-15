@@ -54,6 +54,7 @@ MAX_HTTP_SSE_LINE_BYTES = 1024 * 1024
 MAX_HTTP_ERROR_BYTES = 64 * 1024
 MAX_STDIO_LINE_BYTES = 8 * 1024 * 1024
 MAX_STDIO_STDERR_LINE_CHARS = 4096
+MAX_MCP_CLOSE_DRAIN_SECONDS = 10.0
 MAX_RPC_REQUEST_BYTES = 8 * 1024 * 1024
 
 
@@ -493,6 +494,43 @@ class MCPClient:
         self.capabilities: dict[str, Any] = {}
         self.protocol_version: str | None = None
         self.tools: list[dict[str, Any]] = []
+        # Tool calls may outlive the agent task that initiated them. Shutdown first
+        # stops admitting calls, then gives active operations a bounded drain window.
+        self._call_lock = asyncio.Lock()
+        self._active_calls = 0
+        self._calls_drained = asyncio.Event()
+        self._calls_drained.set()
+        self._closing = False
+        self._closed = False
+        self._close_task: asyncio.Task | None = None
+
+    async def _begin_tool_operation(self) -> None:
+        async with self._call_lock:
+            if self._closing or self._closed:
+                raise MCPError("MCP client is closing or closed")
+            self._active_calls += 1
+            self._calls_drained.clear()
+
+    async def _end_tool_operation(self) -> None:
+        async with self._call_lock:
+            self._active_calls = max(0, self._active_calls - 1)
+            if self._active_calls == 0:
+                self._calls_drained.set()
+
+    async def _finish_close(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._calls_drained.wait(), timeout=MAX_MCP_CLOSE_DRAIN_SECONDS
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "MCP client '%s' did not drain %d active tool call(s) within %.1fs; "
+                "forcing transport shutdown",
+                self.name, self._active_calls, MAX_MCP_CLOSE_DRAIN_SECONDS,
+            )
+        await self.transport.close()
+        async with self._call_lock:
+            self._closed = True
 
     async def connect(self) -> None:
         await self.transport.connect()
@@ -582,22 +620,36 @@ class MCPClient:
             raise MCPError("MCP tool name must be a non-empty string")
         if arguments is not None and not isinstance(arguments, dict):
             raise MCPError("MCP tool arguments must be a JSON object")
-        res = await self.transport.request(
-            "tools/call", {"name": tool, "arguments": arguments or {}}, timeout=self.timeout
-        )
-        if not isinstance(res, dict):
-            return "(invalid MCP tool result: expected a JSON object)"
-        text = format_content(res)
-        if res.get("isError"):
-            return f"ERROR (from MCP tool {self.name}/{tool}): {text}"
-        return text
+        await self._begin_tool_operation()
+        try:
+            res = await self.transport.request(
+                "tools/call", {"name": tool, "arguments": arguments or {}}, timeout=self.timeout
+            )
+            if not isinstance(res, dict):
+                return "(invalid MCP tool result: expected a JSON object)"
+            text = format_content(res)
+            if res.get("isError"):
+                return f"ERROR (from MCP tool {self.name}/{tool}): {text}"
+            return text
+        finally:
+            await self._end_tool_operation()
 
     async def ping(self) -> bool:
-        await self.transport.request("ping", None, timeout=10)
-        return True
+        await self._begin_tool_operation()
+        try:
+            await self.transport.request("ping", None, timeout=10)
+            return True
+        finally:
+            await self._end_tool_operation()
 
     async def close(self) -> None:
-        await self.transport.close()
+        async with self._call_lock:
+            self._closing = True
+            if self._close_task is None:
+                self._close_task = asyncio.create_task(self._finish_close())
+            close_task = self._close_task
+        # A caller cancelling its shutdown wait must not cancel the actual cleanup.
+        await asyncio.shield(close_task)
 
 
 def _cap_mcp_output(value: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:

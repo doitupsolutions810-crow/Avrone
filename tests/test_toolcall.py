@@ -420,6 +420,15 @@ def test_parse_action_contract_rejects_oversized_payload_before_json_decode():
         parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
 
 
+def test_parse_action_contract_rejects_whitespace_padding_before_trim():
+    from avrone.trinity import parse_action_contract
+
+    valid = '{"first_action":{"tool":"echo","args":{}},"allow_followup_calls":false}'
+    payload = " " * 100_001 + valid
+    with pytest.raises(ValueError, match="100000-character limit"):
+        parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
+
+
 def test_parse_action_contract_rejects_non_standard_json_constants():
     from avrone.trinity import parse_action_contract
 

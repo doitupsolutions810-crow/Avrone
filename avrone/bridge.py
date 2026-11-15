@@ -742,9 +742,12 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
         return None, "text is required"
     raw_id = data.get("id")
     if raw_id not in (None, ""):
-        pid = str(raw_id)
-        if not _ID_RE.fullmatch(pid):
+        # Do not coerce numbers/bools/objects into IDs: 123 and "123" must
+        # not become the same blackboard identity, and large int conversion
+        # can raise before the request is validated.
+        if not isinstance(raw_id, str) or not _ID_RE.fullmatch(raw_id):
             return None, "bad post id"
+        pid = raw_id
     else:
         pid = uuid.uuid4().hex[:12]
     try:
@@ -1143,8 +1146,8 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     when the bridge refuses the record. Strings are sealed before they are written.
     """
     post = seal_blackboard_post(post)
-    pid = str(post.get("id") or "")
-    if not _ID_RE.fullmatch(pid):
+    pid = post.get("id")
+    if not isinstance(pid, str) or not _ID_RE.fullmatch(pid):
         raise BridgeError("bad post id")
     with _blackboard_lock(core), _blackboard_file_lock(core):
         if _id_state(core, pid) is not None:

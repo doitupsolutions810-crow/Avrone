@@ -1917,7 +1917,6 @@ def test_unsupported_renegotiation_clears_stale_protocol_and_server_metadata():
     assert transport.protocol_version is None
     assert client.server_info == {}
     assert client.capabilities == {}
-\n
 
 def test_connect_closes_transport_when_initialized_notification_fails():
     class BrokenNotify(mc._Transport):
@@ -1939,7 +1938,6 @@ def test_connect_closes_transport_when_initialized_notification_fails():
     with pytest.raises(MCPError, match="initialized notification failed"):
         run(client.connect())
     assert transport.connected and transport.closed
-\n
 
 def test_http_redirect_is_refused_without_forwarding_custom_headers():
     seen = []
@@ -1972,4 +1970,3 @@ def test_http_transport_rejects_unexpected_session_id_rotation():
     assert len(seen) == 1
     assert seen[0].headers["mcp-session-id"] == "S1"
     assert t.session_id == "S1"
-\n

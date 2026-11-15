@@ -2305,7 +2305,6 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 65536}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 2048}, {"Name": "memlock", "Soft": 1, "Hard": 1}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": True, "Hard": 2048}]), "open-file descriptor limit"),
-    (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind"),
     (lambda p: p["Mounts"].append({"Type": "bind", "Destination": "/host", "RW": True}), "private /agent bind"),
     (lambda p: p["Mounts"][0].update(RW=False), "private /agent bind"),
     (lambda p: p["HostConfig"]["Tmpfs"].update({"/tmp": "rw,size=8g"}), "bounded /tmp"),

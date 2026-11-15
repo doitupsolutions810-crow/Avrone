@@ -1,5 +1,16 @@
 name: CI
 on: [push, pull_request]
+
+# New pushes supersede previous CI runs for the same branch/PR.
+# This retains both Python legs (fail-fast: false) on the newest commit,
+# without a backlog of obsolete historical autopilot test matrices.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)

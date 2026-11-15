@@ -288,6 +288,8 @@ class BuilderAgentSDK:
                      commands: tuple[str, ...] | None = None) -> VerificationEvidence:
         if self.closed or self._closing:
             raise RuntimeError("Builder SDK is closed or closing")
+        if not isinstance(result, BuildResult):
+            raise TypeError("result must be a BuildResult")
         if commands is None:
             selected = self.policy.verification_commands
         else:

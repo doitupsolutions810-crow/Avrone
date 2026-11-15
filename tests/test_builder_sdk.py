@@ -103,6 +103,19 @@ async def test_verify_failure_is_not_hidden():
     assert result.status == "FAIL"
 
 
+@pytest.mark.parametrize("invalid_result", [None, {}, object()])
+@pytest.mark.asyncio
+async def test_verify_rejects_non_build_result_before_running_commands(invalid_result):
+    runner = FakeRunner([])
+    sdk = BuilderAgentSDK(
+        FakeCore(runner=runner),
+        policy=BuilderPolicy(verification_commands=("python -m pytest -q",)),
+    )
+    with pytest.raises(TypeError, match="result must be a BuildResult"):
+        await sdk.verify(invalid_result)
+    assert runner.commands == []
+
+
 @pytest.mark.asyncio
 async def test_verify_rejects_model_supplied_command():
     sdk = BuilderAgentSDK(

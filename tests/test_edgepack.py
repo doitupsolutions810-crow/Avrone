@@ -2538,13 +2538,90 @@ async def test_pool_image_resolution_requires_exact_success_metadata(result, val
 
 @pytest.mark.parametrize("result,expected", [
     (CommandResult("inspect", 1, "", "No such object: missing"), True),
+    (CommandResult("inspect", 1, "", "No such container: missing"), True),
+    (CommandResult("inspect", 1, "", "Error: No such object: missing"), True),
+    (CommandResult("inspect", 1, "", "Error response from daemon: No such container: missing"), True),
     (CommandResult("inspect", 0, "", "No such object: missing"), False),
     (CommandResult("inspect", False, "", "No such object: missing"), False),
     (CommandResult("inspect", 1, "", "No such object: missing", timed_out=True), False),
     (CommandResult("inspect", 0, "", "ordinary failure"), False),
+    (CommandResult("inspect", 1, "", "permission denied: No such container: missing"), False),
+    (CommandResult("inspect", 1, "", "daemon transport failed\\nNo such container: missing"), False),
+    (CommandResult("inspect", 1, "", "No such container: missing\\npermission denied"), False),
 ])
-def test_docker_not_found_requires_unambiguous_non_timeout_error(result, expected):
+def test_docker_not_found_requires_exact_single_line_diagnostic(result, expected):
     assert ac._docker_not_found(result) is expected
+
+
+@pytest.mark.parametrize("path_kind", ["outside", "workspace", "nested", "alias", "missing"])
+def test_pool_ensure_rejects_noncanonical_agent_paths_before_docker(tmp_path, path_kind):
+    workspace = tmp_path / "workspace"
+    valid_home = agentfs.agent_dir(workspace, "valid-worker")
+    if path_kind == "outside":
+        candidate = tmp_path / "outside"
+        candidate.mkdir()
+    elif path_kind == "workspace":
+        candidate = workspace
+    elif path_kind == "nested":
+        candidate = valid_home / "nested"
+        candidate.mkdir()
+    elif path_kind == "alias":
+        candidate = valid_home.parent / "alias-worker"
+        candidate.symlink_to(valid_home, target_is_directory=True)
+    else:
+        candidate = valid_home.parent / "missing-worker"
+
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge")
+    with pytest.raises(ValueError, match="canonical workspace/agents"):
+        run(pool.ensure(candidate))
+    assert fake.calls == []
+    assert pool.homes == {}
+
+
+@pytest.mark.parametrize("invalid_active", [0, 1, "true", None])
+def test_pool_ensure_rejects_non_boolean_active_flag_before_docker(tmp_path, invalid_active):
+    fake = FakeDocker()
+    home = agentfs.agent_dir(tmp_path / "workspace", "active-flag")
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge")
+    with pytest.raises(ValueError, match="_active must be a boolean"):
+        run(pool.ensure(home, _active=invalid_active))
+    assert fake.calls == []
+    assert pool.homes == {}
+
+
+@pytest.mark.parametrize("action", ["reap", "close"])
+def test_pool_retains_home_when_rm_error_only_mentions_not_found(tmp_path, action):
+    async def go():
+        fake = FakeDocker()
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, idle=5)
+        name = await pool.ensure(agentfs.agent_dir(tmp_path / "workspace", f"not-found-{action}"))
+        container_id = pool.homes[name].container_id
+
+        class AmbiguousRemove:
+            async def __call__(self, argv, timeout):
+                if len(argv) > 1 and argv[1] == "rm":
+                    return CommandResult(
+                        " ".join(argv), 1, "",
+                        f"permission denied: No such container: {container_id}",
+                    )
+                return await fake(argv, timeout)
+
+        pool._exec = AmbiguousRemove()
+        if action == "reap":
+            assert await pool.reap_idle(now=10.0) == []
+        else:
+            with pytest.raises(RuntimeError, match="could not remove managed agent container"):
+                await pool.close()
+        assert name in pool.homes
+        assert name in fake.running
+        assert pool.reaped == 0
+        assert pool._closed is False
+
+        pool._exec = fake
+        await pool.close()
+
+    run(go())
 
 
 @pytest.mark.parametrize("result,expected", [

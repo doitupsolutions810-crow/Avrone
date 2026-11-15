@@ -379,13 +379,25 @@ def _docker_succeeded(result: Any) -> bool:
 
 
 def _docker_not_found(result: Any) -> bool:
-    """Treat absence as confirmed only for an explicit nonzero, non-timeout Docker response."""
+    """Accept only Docker's complete, canonical not-found diagnostic; never substring-match."""
     exit_code = getattr(result, "exit_code", None)
     timed_out = getattr(result, "timed_out", None)
-    if type(exit_code) is not int or exit_code == 0 or type(timed_out) is not bool or timed_out:
+    detail = getattr(result, "stderr", None)
+    if (
+        type(exit_code) is not int or exit_code == 0
+        or type(timed_out) is not bool or timed_out
+        or not isinstance(detail, str)
+    ):
         return False
-    detail = str(getattr(result, "stderr", "") or "").lower()
-    return "no such object" in detail or "no such container" in detail
+    # Docker CLI versions use either "Error: No such object: ..." (inspect) or
+    # "Error response from daemon: No such container: ..." (rm). Requiring the
+    # entire single-line diagnostic avoids treating e.g. permission failures that
+    # merely mention a missing container as proof that deletion already succeeded.
+    return re.fullmatch(
+        r"(?:error:\\s*|error response from daemon:\\s*)?no such (?:object|container):\\s*\\S[^\\r\\n]*",
+        detail.strip(),
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def _inspect_container_id(stdout: str) -> str | None:
@@ -557,7 +569,17 @@ class AgentContainerPool:
         """
         if self._closing or self._closed:
             raise RuntimeError("agent container pool is closing or closed")
-        d = Path(agent_dir).resolve()
+        if type(_active) is not bool:
+            raise ValueError("_active must be a boolean")
+        raw_dir = Path(agent_dir)
+        workspace = raw_dir.parent.parent.resolve()
+        if not agentfs.is_agent_dir(workspace, raw_dir):
+            raise ValueError("agent_dir must be an existing canonical workspace/agents/<id> directory")
+        # Re-run the filesystem helper to enforce 0700 permissions on pre-existing homes
+        # before any Docker operation can bind-mount the directory.
+        d = agentfs.agent_dir(workspace, raw_dir.name, create=False)
+        if d != raw_dir:
+            raise ValueError("agent_dir must resolve to its canonical workspace/agents/<id> path")
         name = container_name(self.node, d.name)
         await self.reap_idle(skip=name)
         async with self._lock:

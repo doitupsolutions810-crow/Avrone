@@ -42,6 +42,8 @@ CLIENT_INFO = {"name": "avrone", "version": "0.2.0"}
 DEFAULT_TIMEOUT = float(os.getenv("AVRONE_MCP_TIMEOUT", "60"))
 MAX_TOOL_PAGES = 100
 MAX_REGISTERED_TOOLS = 2048
+MAX_MCP_TOOL_NAME_CHARS = 256
+MAX_SCHEMA_ENUM_CHARS = 80
 MAX_MCP_SERVERS = 64
 MAX_MCP_CONFIG_BYTES = 1024 * 1024
 MAX_PAGE_CURSOR_CHARS = 512
@@ -626,6 +628,10 @@ class MCPClient:
                 raise MCPError("MCP tools/list 'tools' field must be an array")
             for item in page_tools:
                 if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip():
+                    if len(item["name"]) > MAX_MCP_TOOL_NAME_CHARS:
+                        raise MCPError(
+                            f"MCP tools/list tool name exceeded {MAX_MCP_TOOL_NAME_CHARS} characters"
+                        )
                     tools.append(item)
                     if len(tools) > MAX_REGISTERED_TOOLS:
                         raise MCPError(
@@ -652,6 +658,8 @@ class MCPClient:
     async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> str:
         if not isinstance(tool, str) or not tool.strip():
             raise MCPError("MCP tool name must be a non-empty string")
+        if len(tool) > MAX_MCP_TOOL_NAME_CHARS:
+            raise MCPError(f"MCP tool name exceeds {MAX_MCP_TOOL_NAME_CHARS} characters")
         if arguments is not None and not isinstance(arguments, dict):
             raise MCPError("MCP tool arguments must be a JSON object")
         await self._begin_tool_operation()
@@ -783,11 +791,20 @@ def args_doc_from_schema(schema: Any, limit: int = 300) -> str:
             ]
             t = "|".join(_TYPE_MAP[value] for value in type_names) or "any"
         elif isinstance(spec.get("enum"), list):
-            enum = spec["enum"]
-            try:
-                t = "|".join(json.dumps(value, ensure_ascii=False, default=str) for value in enum[:6])
-            except (TypeError, ValueError, RecursionError):
-                t = "any"
+            enum_tokens: list[str] = []
+            for value in spec["enum"][:6]:
+                # Never stringify arbitrary schema objects or construct an unbounded enum
+                # token. Keep only JSON scalar values and cap strings before encoding.
+                if type(value) is str:
+                    bounded = value[:MAX_SCHEMA_ENUM_CHARS]
+                    if len(value) > MAX_SCHEMA_ENUM_CHARS:
+                        bounded = bounded[:MAX_SCHEMA_ENUM_CHARS - 1] + "…"
+                    enum_tokens.append(json.dumps(bounded, ensure_ascii=True))
+                elif value is None or type(value) in (bool, int):
+                    enum_tokens.append(json.dumps(value))
+                elif type(value) is float and math.isfinite(value):
+                    enum_tokens.append(json.dumps(value, allow_nan=False))
+            t = "|".join(enum_tokens) or "any"
         elif isinstance(raw_type, str) and raw_type:
             t = _TYPE_MAP.get(raw_type, "any")
         else:

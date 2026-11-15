@@ -632,7 +632,10 @@ def load_posts(data_dir: Path | str, run_id: str) -> list[dict[str, Any]] | None
     p = Path(data_dir) / "bridge" / f"{rid}.jsonl"
     if not p.exists():
         return None
-    return Bridge(rid, data_dir).posts()
+    # The safe filename is not necessarily the original normalized run ID:
+    # opening with the stem would misclassify valid unsafe-name records as
+    # foreign after journal isolation checks.
+    return Bridge(bridge_run_id(run_id), data_dir).posts()
 
 
 # --------------------------------------------------------------------------- fleet blackboard

@@ -624,7 +624,7 @@ class AgentContainerPool:
                 # We already inspected/removed the cached object under its name. Do not inspect
                 # or rm that mutable name again: a different container could claim it between
                 # operations. docker run will fail harmlessly if the name has been reoccupied.
-                code = 1
+                inspect_ok = False
             else:
                 inspected = await self._exec(inspect_argv(name), 30)
                 inspect_ok = _docker_succeeded(inspected)

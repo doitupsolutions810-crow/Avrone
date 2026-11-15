@@ -2505,3 +2505,42 @@ def test_existing_container_inspector_fails_closed_on_non_boolean_network_policy
     ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", invalid)
     assert ok is False and owned is False
     assert "allow_network policy must be a boolean" in detail
+
+@pytest.mark.parametrize("result", [
+    CommandResult("docker image inspect", False, "sha256:" + "a" * 64, ""),
+    CommandResult("docker image inspect", 0, "sha256:" + "a" * 64, "", timed_out=True),
+    CommandResult("docker image inspect", 0, "sha256:" + "a" * 64, ""),
+])
+@pytest.mark.asyncio
+async def test_pool_image_resolution_rejects_ambiguous_success_metadata(tmp_path, result):
+    class AmbiguousDocker:
+        async def __call__(self, argv, timeout):
+            return result
+
+    pool = ac.AgentContainerPool(AmbiguousDocker(), "img", False, node="edge")
+    home = agentfs.agent_dir(tmp_path / "ws", "image-worker")
+    if result.timed_out is False and type(result.exit_code) is int:
+        assert await pool.ensure(home) == ac.container_name("edge", "image-worker")
+    else:
+        with pytest.raises(RuntimeError, match="could not resolve configured Docker image"):
+            await pool.ensure(home)
+
+
+@pytest.mark.parametrize("result,expected", [
+    (CommandResult("inspect", 1, "", "No such object: missing"), True),
+    (CommandResult("inspect", 0, "", "No such object: missing"), False),
+    (CommandResult("inspect", False, "", "No such object: missing"), False),
+    (CommandResult("inspect", 1, "", "No such object: missing", timed_out=True), False),
+    (CommandResult("inspect", 0, "", "ordinary failure"), False),
+])
+def test_docker_not_found_requires_unambiguous_non_timeout_error(result, expected):
+    assert ac._docker_not_found(result) is expected
+
+
+@pytest.mark.parametrize("result,expected", [
+    (CommandResult("docker inspect", False, "{}", ""), False),
+    (CommandResult("docker inspect", 0, "{}", "", timed_out=True), False),
+    (CommandResult("docker inspect", 0, "{}", ""), True),
+])
+def test_docker_success_predicate_requires_exact_zero_and_explicit_no_timeout(result, expected):
+    assert ac._docker_succeeded(result) is expected

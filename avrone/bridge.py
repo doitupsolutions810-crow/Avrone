@@ -484,7 +484,7 @@ class Bridge:
     # ------------------------------------------------------------ writes
     def post(self, agent: str, kind: str, text: str, refs: Iterable[str] | None = None,
              role: str = "", require_refs: bool = False) -> dict[str, Any]:
-        kind = str(kind or "finding").strip().lower()
+        kind = _utf8_text(kind or "finding").strip().lower()
         if kind not in KINDS:
             raise BridgeError(f"kind must be one of {', '.join(KINDS)}")
         body = _clip(text)
@@ -552,7 +552,7 @@ class Bridge:
             for p in rows:
                 try:
                     rec = self._parse(json.dumps(p, default=str)) if isinstance(p, dict) else None
-                except (ValueError, TypeError, RecursionError):  # circular / absurdly nested
+                except Exception:  # hostile in-process mapping/stringifier must not abort the batch
                     rec = None
                 if rec is None:
                     stats["rejected"] += 1
@@ -770,13 +770,13 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
         sealed = seal_blackboard_post({
             "id": pid,
             "run_id": data.get("run_id") or "run",
-            "agent": str(data.get("agent") or "agent")[:80],
-            "role": str(data.get("role") or "")[:60],
+            "agent": _utf8_text(data.get("agent") or "agent")[:80],
+            "role": _utf8_text(data.get("role") or "")[:60],
             "kind": kind,
             "text": text,
             "refs": _refs(data.get("refs")),
             "ts": _remote_ts(data.get("ts")),
-            "origin_node": str(data.get("origin_node") or "local")[:80],
+            "origin_node": _utf8_text(data.get("origin_node") or "local")[:80],
         })
     except BridgeError as exc:
         return None, str(exc)
@@ -909,7 +909,7 @@ def _ts_key(post: dict[str, Any]) -> tuple[float, str]:
     else:
         try:
             number = float(ts)
-        except (ValueError, OverflowError):
+        except (TypeError, ValueError, OverflowError):
             number = 0.0
         if not math.isfinite(number):
             number = 0.0

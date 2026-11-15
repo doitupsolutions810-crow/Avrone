@@ -267,6 +267,22 @@ class Bridge:
                 self._load()
             yield locked
 
+    def _refresh_read(self) -> None:
+        """Refresh a stale reader without reloading an unchanged journal.
+
+        Caller holds self._lock. Readers take the same sidecar lock as writers
+        only after a changed inode/size/time signature is observed.
+        """
+        if self.path is None or self._journal_state() == self._journal_version:
+            return
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(self._file_lock())
+            except OSError:
+                return  # disk unavailable; preserve the in-memory snapshot
+            if self._journal_state() != self._journal_version:
+                self._load()
+
     def _load(self) -> None:
         if self.path is None:
             return
@@ -535,15 +551,19 @@ class Bridge:
     # ------------------------------------------------------------ reads
     def posts(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._refresh_read()
             return [public_post(p) for p in self._posts.values()]
 
     def get(self, post_id: str) -> dict[str, Any] | None:
         with self._lock:
+            self._refresh_read()
             p = self._posts.get(post_id)
             return dict(p) if p else None
 
     def __len__(self) -> int:
-        return len(self._posts)
+        with self._lock:
+            self._refresh_read()
+            return len(self._posts)
 
     def export(self, since: str | None = None) -> list[dict[str, Any]]:
         """Posts after `since` (a post id), oldest first; all when since is None or unknown."""

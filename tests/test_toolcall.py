@@ -415,7 +415,7 @@ def test_parse_action_contract_rejects_pathological_json_nesting(payload):
 def test_parse_action_contract_rejects_oversized_payload_before_json_decode():
     from avrone.trinity import parse_action_contract
 
-    payload = " " * 100_001
+    payload = "x" * 100_001
     with pytest.raises(ValueError, match="100000-character limit"):
         parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
 

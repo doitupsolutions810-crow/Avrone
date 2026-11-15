@@ -282,6 +282,7 @@ def rpc(rid, result=None, error=None):
 @pytest.mark.parametrize("headers", [
     [],
     {"Content-Type": "text/plain"},
+    {"Accept-Encoding": "gzip"},
     {"accept": "*/*"},
     {"MCP-Session-Id": "spoofed"},
     {"mcp-protocol-version": "future"},
@@ -319,6 +320,7 @@ def test_http_transport_accepts_scalar_non_reserved_headers_and_owns_protocol_he
     assert headers["X-Region"] == "3"
     assert headers["Content-Type"] == "application/json"
     assert headers["Accept"] == "application/json, text/event-stream"
+    assert headers["Accept-Encoding"] == "identity"
     assert headers["Mcp-Session-Id"] == "session-1"
     assert headers["MCP-Protocol-Version"] == mc.PROTOCOL_VERSION
 

@@ -325,7 +325,7 @@ def test_parse_action_contract_is_opt_in_and_strict():
         "allow_followup_calls": False,
     }
     line = "AVRONE_ACTION_CONTRACT:" + json.dumps(payload, separators=(",", ":"))
-    assert parse_action_contract("Task context\\n" + line) == payload
+    assert parse_action_contract("Task context\n" + line) == payload
 
 
 @pytest.mark.parametrize("contract", [
@@ -351,7 +351,7 @@ def test_parse_action_contract_rejects_duplicate_contract_lines():
 
     one = 'AVRONE_ACTION_CONTRACT:{"first_action":{"tool":"echo","args":{}},"allow_followup_calls":false}'
     with pytest.raises(ValueError, match="exactly one"):
-        parse_action_contract(one + "\\n" + one)
+        parse_action_contract(one + "\n" + one)
 
 
 def test_required_action_contract_executes_before_first_llm_turn_and_blocks_followups(tmp_path):
@@ -365,13 +365,13 @@ def test_required_action_contract_executes_before_first_llm_turn_and_blocks_foll
         "first_action": {"tool": "echo", "args": {"text": "operator-required"}},
         "allow_followup_calls": False,
     }
-    task = "Run the required action.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+    task = "Run the required action.\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
 
     result = run(core.run_agent("action-contract", "Verifier", task))
 
     assert result == "reported from actual tool result"
     assert log == [("echo", "operator-required")]
-    assert "TOOL RESULT (echo):\\necho:operator-required" in llm.seen[0][-1]["content"]
+    assert "TOOL RESULT (echo):\necho:operator-required" in llm.seen[0][-1]["content"]
     events = core.codex.replay("action-contract")
     calls = [e for e in events if e["kind"] == "tool.call"]
     assert len(calls) == 1 and calls[0]["data"]["tool"] == "echo"
@@ -390,7 +390,7 @@ def test_required_action_contract_allows_configured_followup_calls(tmp_path):
         "first_action": {"tool": "echo", "args": {"text": "required"}},
         "allow_followup_calls": True,
     }
-    task = "Run actions.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+    task = "Run actions.\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
 
     assert run(core.run_agent("action-contract-followup", "Verifier", task)) == "done"
     assert log == [("echo", "required"), ("echo", "followup")]
@@ -402,7 +402,7 @@ def test_invalid_required_action_contract_fails_before_llm_or_tool_execution(tmp
     log = []
     llm = ScriptLLM(['{"final":"must not run"}'])
     core = _core(tmp_path, llm, tools=_reg(log), steps=4)
-    task = 'Run action.\\nAVRONE_ACTION_CONTRACT:{"first_action":{"tool":"echo","args":{}},"allow_followup_calls":"false"}'
+    task = 'Run action.\nAVRONE_ACTION_CONTRACT:{"first_action":{"tool":"echo","args":{}},"allow_followup_calls":"false"}'
 
     result = run(core.run_agent("invalid-action-contract", "Verifier", task))
 

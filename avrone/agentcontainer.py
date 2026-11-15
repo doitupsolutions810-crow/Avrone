@@ -215,7 +215,7 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     if config.get("User") != f"{uid}:{gid}":
         problems.append("container user does not match the non-root agent identity")
     if config.get("Image") != image:
-        problems.append("container image does not match the resolved immutable image ID")
+        problems.append("container image does not match the configured image ID resolved from its immutable tag")
     if payload.get("Image") != image:
         problems.append("container actual image ID does not match the resolved immutable image ID")
     if config.get("WorkingDir") != agentfs.CONTAINER_AGENT_MOUNT:

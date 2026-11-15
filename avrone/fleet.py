@@ -412,8 +412,15 @@ def bridge_merge(core: Any, posts: Any, origin: str, run_id: Any = None) -> int:
     if b is None or not posts:
         return 0
     try:
-        b.merge_remote(posts, origin)
-        return len(posts)
+        stats = b.merge_remote(posts, origin)
+        # The old implementation returned len(posts), claiming that skipped,
+        # duplicate and rejected peer events had been merged successfully.
+        # Trust only the merger's actual admission count, bounded by the
+        # strict relay's own maximum; malformed plugin returns fail closed.
+        merged = stats.get("merged") if isinstance(stats, dict) else None
+        if not isinstance(merged, int) or isinstance(merged, bool):
+            return 0
+        return max(0, min(len(posts), int.__int__(merged)))
     except Exception as e:  # noqa: BLE001
         log.debug("bridge merge from %s failed: %s", origin, e)
         return 0
@@ -465,7 +472,14 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
         out["state"] = st
     aa = raw.get("active_agents")
     if isinstance(aa, int) and not isinstance(aa, bool):
-        out["active_agents"] = max(0, min(aa, 10_000))
+        # int subclasses may override comparison / __int__ to execute code or
+        # raise. Extract the built-in integer directly before clamping.
+        try:
+            count = int.__int__(aa)
+        except Exception:
+            pass
+        else:
+            out["active_agents"] = max(0, min(count, 10_000))
     return out or None
 
 

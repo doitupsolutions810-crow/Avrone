@@ -203,7 +203,7 @@ def test_stdio_reader_terminates_child_on_oversized_line(stream_name):
             else transport._drain_stderr()
         )
         task = asyncio.create_task(reader)
-        stream.feed_data(b"X" * 128 + b"\\n")
+        stream.feed_data(b"X" * 128 + b"\n")
         await asyncio.wait_for(task, timeout=1)
         assert proc.terminated
         assert proc.returncode == 0

@@ -281,11 +281,15 @@ class Bridge:
             rec = self._parse(line)
             if rec is None:
                 continue
-            # A journal belongs to exactly one normalized run. Legacy rows
-            # without a run_id remain readable, but a foreign run must not
-            # inject its records into this run's agent memory.
-            if rec.get("run_id") not in (None, "", self.run_id):
-                continue
+            # A journal belongs to one safe filename, but that filename
+            # may be a hash-suffixed encoding of its logical run ID.
+            # The global blackboard reopens evicted journals by path.stem;
+            # accept a row only when its logical ID maps to that exact file.
+            # Preserve legacy rows without a run_id.
+            record_run = rec.get("run_id")
+            if record_run not in (None, "", self.run_id):
+                if safe_run_id(record_run) != safe_run_id(self.run_id):
+                    continue
             self._lines += 1
             was_seen = seen_or_mark(rec["id"])
             if was_seen or rec["id"] in self._evicted or rec["id"] in self._posts:

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from avrone.bridge import Bridge
 
 
@@ -59,3 +61,40 @@ def test_foreign_journal_record_not_promoted_on_compaction(tmp_path):
     restored = Bridge("compact-run", tmp_path, limit=2)
     assert restored.get("bad-post") is None
     assert [p["text"] for p in restored.posts()] == ["own-7", "own-8"]
+
+
+
+@pytest.mark.parametrize("run_id", ["a/b", "..", "/tmp/evil", "space name", "é"])
+def test_global_blackboard_replays_valid_unsafe_run_filename(tmp_path, run_id):
+    from types import SimpleNamespace
+    from avrone.bridge import blackboard_posts
+    bridge = Bridge(run_id, tmp_path)
+    posted = bridge.post("writer", "finding", "present after cache eviction")
+    # A new core has no cached Bridge object; it must discover the journal
+    # by its sanitized filename and still retain the original run identity.
+    core = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
+    items = blackboard_posts(core)
+    assert [p["id"] for p in items] == [posted["id"]]
+    assert items[0]["text"] == "present after cache eviction"
+
+
+def test_global_blackboard_keeps_colliding_stems_separate(tmp_path):
+    from types import SimpleNamespace
+    from avrone.bridge import blackboard_posts
+    left = Bridge("a/b", tmp_path)
+    right = Bridge("ab", tmp_path)
+    left.post("L", "finding", "one run")
+    right.post("R", "finding", "different run")
+    core = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
+    assert {p["text"] for p in blackboard_posts(core)} == {"one run", "different run"}
+
+
+def test_global_blackboard_rejects_foreign_run_journal_injection(tmp_path):
+    from types import SimpleNamespace
+    from avrone.bridge import blackboard_posts
+    own = Bridge("my/run", tmp_path)
+    own.post("writer", "finding", "mine")
+    with own.path.open("a", encoding="utf-8") as stream:
+        stream.write(_line("foreign-forged", "other/run", "foreign"))
+    core = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
+    assert [p["text"] for p in blackboard_posts(core)] == ["mine"]

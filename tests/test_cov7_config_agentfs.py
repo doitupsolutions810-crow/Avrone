@@ -330,3 +330,13 @@ def test_fs_delete_rejects_non_boolean_recursive_before_mutation(env, bad_recurs
     result = call(env, "fs_delete", path="keep.txt", recursive=bad_recursive)
     assert result.startswith("ERROR")
     assert (env.dir / "keep.txt").read_text() == "keep"
+
+
+
+def test_agent_fs_tools_reject_context_home_outside_runner_workspace(env):
+    outside_home = agentfs.agent_dir(env.tmp / "other-workspace", "forged-agent")
+    forged = SimpleNamespace(**{**vars(env.ctx), "agent_dir": outside_home})
+
+    result = call(env, "fs_write", ctx=forged, path="should-not-exist.txt", content="blocked")
+    assert result.startswith("ERROR")
+    assert not (outside_home / "should-not-exist.txt").exists()

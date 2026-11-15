@@ -25,7 +25,10 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .agentfs import AgentFSError, confine, read_confined_bytes, write_confined_file, delete_confined_entry
+from .agentfs import (
+    AgentFSError, confine, read_confined_bytes, write_confined_file, delete_confined_entry,
+    agent_dir as create_agent_dir, agents_root, sanitize_agent_id,
+)
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -96,9 +99,11 @@ def _agent_root(ctx: "AgentContext") -> Path:
     d = getattr(ctx, "agent_dir", None)
     if d is None:
         raise AgentFSError("you have no agent dir (per-agent fs is disabled: AVRONE_AGENT_FS=0)")
-    d = Path(d).resolve()
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    workspace = Path(ctx.core.runner.workspace).resolve()
+    raw = Path(d)
+    if raw.parent != agents_root(workspace) or raw.name != sanitize_agent_id(raw.name):
+        raise AgentFSError("agent context dir is not a canonical home in the configured workspace")
+    return create_agent_dir(workspace, raw.name, create=True)
 
 
 def _resolve(ctx: "AgentContext", tool: str, raw: Any) -> tuple[Path, Path]:

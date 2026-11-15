@@ -518,3 +518,31 @@ def test_descriptor_write_enforces_file_limit_even_after_concurrent_file_growth(
     with pytest.raises(agentfs.AgentFSError, match="limit"):
         write_confined_file(root, target, b"y" * 8, append=append, max_bytes=12)
     assert target.read_bytes() == b"x" * 8
+
+
+
+def test_unified_file_tools_reject_agent_context_home_outside_configured_workspace(env):
+    outside_workspace = env.tmp / "other-workspace"
+    outside_home = agentfs.agent_dir(outside_workspace, "attacker")
+    (outside_home / "secret.txt").write_text("not for this agent")
+    forged = SimpleNamespace(**{**vars(env.ctx), "agent_dir": outside_home})
+
+    assert call(env, "read_file", ctx=forged, path="secret.txt").startswith("ERROR")
+    assert call(env, "write_file", ctx=forged, path="new.txt", content="blocked").startswith("ERROR")
+    assert not (outside_home / "new.txt").exists()
+
+
+def test_parent_share_rejects_external_or_symlink_aliased_agent_home(env):
+    outside_workspace = env.tmp / "other-workspace"
+    external_home = agentfs.agent_dir(outside_workspace, "external-parent")
+    (external_home / "secret.txt").write_text("private")
+
+    forged_external = SimpleNamespace(**{**vars(env.ctx), "parent_dir": external_home})
+    assert call(env, "read_file", ctx=forged_external, path="parent/secret.txt").startswith("ERROR")
+
+    real_parent = agentfs.agent_dir(env.ws, "real-parent")
+    alias = real_parent.parent / "parent-alias"
+    alias.symlink_to(real_parent, target_is_directory=True)
+    (real_parent / "secret.txt").write_text("private")
+    forged_alias = SimpleNamespace(**{**vars(env.ctx), "parent_dir": alias})
+    assert call(env, "read_file", ctx=forged_alias, path="parent/secret.txt").startswith("ERROR")

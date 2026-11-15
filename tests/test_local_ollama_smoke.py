@@ -727,7 +727,7 @@ def test_request_json_rejects_duplicate_keys_and_nonstandard_json_constants(monk
         smoke.request_json("http://127.0.0.1:8710/api/status")
 
 
-@pytest.mark.parametrize("timeout", [0, -1, True, float("inf"), float("nan"), 10**10000])
+@pytest.mark.parametrize("timeout", [0, -1, True, float("inf"), float("nan"), 10**10000], ids=["zero", "negative", "boolean", "infinity", "nan", "oversized-integer"])
 def test_request_json_rejects_invalid_timeouts_before_network(monkeypatch, timeout):
     monkeypatch.setattr(
         smoke.urllib.request, "build_opener",

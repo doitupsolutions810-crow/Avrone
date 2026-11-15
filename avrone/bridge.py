@@ -347,8 +347,12 @@ class Bridge:
             raise BridgeError("text is required")
         try:
             # A generated/infinite iterable must not be consumed with list(refs).
-            bounded_refs = (refs if isinstance(refs, (str, list, tuple)) or refs is None
-                            else list(itertools.islice(iter(refs), MAX_REF_SCAN)))
+            if isinstance(refs, Mapping):
+                bounded_refs = None
+            elif isinstance(refs, (str, list, tuple)) or refs is None:
+                bounded_refs = refs
+            else:
+                bounded_refs = list(itertools.islice(iter(refs), MAX_REF_SCAN))
         except Exception:
             bounded_refs = None
         refs_l = _refs(bounded_refs)

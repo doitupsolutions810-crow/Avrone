@@ -24,7 +24,12 @@ def test_refs_capped():
 def test_load_oserror_leaves_empty(tmp_path, monkeypatch):
     b = bm.Bridge("r", tmp_path)
     b.post("a", "finding", "x")
-    monkeypatch.setattr(type(b.path), "read_text", lambda *a, **k: (_ for _ in ()).throw(OSError("eio")))
+    original = bm._regular_fd
+    def fail_read(path, flags):
+        if flags == os.O_RDONLY:
+            raise OSError("eio")
+        return original(path, flags)
+    monkeypatch.setattr(bm, "_regular_fd", fail_read)
     assert len(bm.Bridge("r", tmp_path)) == 0
 
 

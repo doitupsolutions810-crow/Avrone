@@ -222,6 +222,9 @@ class Bridge:
             tomb = self._parse_tombstones(line)
             if tomb is not None:
                 for t in tomb:
+                    # Tombstones remain authoritative even if a journal is
+                    # partially rewritten or a peer appends one after a post.
+                    self._posts.pop(t, None)
                     self._tomb(t)
                 continue
             rec = self._parse(line)
@@ -452,7 +455,11 @@ class Bridge:
         if query:
             q = str(query).lower()
             out = [p for p in out if q in p["text"].lower()]
-        limit = max(1, min(int(limit or 50), 200))
+        try:
+            requested = int(limit or 50)
+        except (TypeError, ValueError, OverflowError):
+            requested = 50
+        limit = max(1, min(requested, 200))
         return out[-limit:]
 
     def unresolved(self) -> list[dict[str, Any]]:
@@ -934,7 +941,7 @@ async def t_bridge_read(ctx: Any, args: dict[str, Any]) -> str:
     b = for_core(ctx.core, ctx.run_id)
     try:
         limit = int(args.get("limit") or 30)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         limit = 30
     posts = b.read(kind=args.get("kind"), agent=args.get("agent"), since=args.get("since"),
                    query=args.get("query"), limit=limit)
@@ -1033,6 +1040,8 @@ def _store(data_dir: Path | str):
 def distill_lessons(data_dir: Path | str, bridge: "Bridge", task: str = "", k: int | None = None) -> list[str]:
     """Save up to k of the bridge's conclusions (then corrections) as lessons; returns new keys."""
     k = lessons_k() if k is None else max(0, int(k))
+    if k == 0:
+        return []
     posts = bridge.posts()
     picks: list[str] = []
     seen: set[str] = set()

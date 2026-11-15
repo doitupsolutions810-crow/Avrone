@@ -125,7 +125,9 @@ def _utf8_text(value: Any) -> str:
     elif not isinstance(value, str):
         try:
             value = str(value)
-        except (ValueError, RecursionError, OverflowError):
+        except Exception:
+            # Untrusted in-process objects may raise TypeError/RuntimeError or
+            # return a non-string from __str__. Do not crash the Bridge.
             value = "..."
     return clean_text(value)
 
@@ -157,7 +159,7 @@ def _remote_ts(ts: Any) -> float:
         return time.time()
     try:
         ts = float(ts)
-    except (ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         return time.time()
     return ts if math.isfinite(ts) and ts > 0 else time.time()
 

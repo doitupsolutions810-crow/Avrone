@@ -484,7 +484,7 @@ def test_outbound_rpc_encoder_rejects_deeply_nested_values():
     for _ in range(1500):
         current["next"] = {}
         current = current["next"]
-    with pytest.raises(MCPError, match="not valid JSON"):
+    with pytest.raises(MCPError, match="nesting limit"):
         mc._encode_rpc_request({"jsonrpc": "2.0", "id": 1, "params": nested})
 
 

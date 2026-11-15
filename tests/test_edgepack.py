@@ -419,6 +419,38 @@ def test_pool_close_treats_an_externally_removed_container_as_cleaned(tmp_path):
     run(go())
 
 
+
+def test_pool_idle_reap_preserves_failed_home_and_retries(tmp_path):
+    fake, now = FakeDocker(), [0.0]
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
+    name = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "reap-retry")))
+    fake.fail_rm_names.add(name)
+    now[0] = 10.0
+
+    assert run(pool.reap_idle()) == []
+    assert name in pool.homes
+    assert name in fake.running
+    assert pool.reaped == 0
+
+    assert run(pool.reap_idle()) == [name]
+    assert name not in pool.homes
+    assert name not in fake.running
+    assert pool.reaped == 1
+
+
+def test_pool_idle_reap_accepts_container_already_removed_externally(tmp_path):
+    fake, now = FakeDocker(), [0.0]
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
+    name = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "reap-external")))
+    fake.running.discard(name)
+    fake.inspect_payloads.pop(name, None)
+    now[0] = 10.0
+
+    assert run(pool.reap_idle()) == [name]
+    assert name not in pool.homes
+    assert pool.reaped == 1
+
+
 def test_pool_idle_reap(tmp_path):
     fake, now = FakeDocker(), [0.0]
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)

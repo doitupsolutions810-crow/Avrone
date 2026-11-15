@@ -522,15 +522,23 @@ class AgentContainerPool:
         async with self._lock:
             stale = [h for n, h in self.homes.items()
                      if n != skip and h.active == 0 and now - h.last_used >= limit]
-            for h in stale:
-                del self.homes[h.name]
-            for h in stale:
+            reaped: list[str] = []
+            for home in stale:
                 try:
-                    await self._exec(rm_argv(h.name), 30)
+                    result = await self._exec(rm_argv(home.name), 30)
+                    if (getattr(result, "exit_code", 1) != 0
+                            and not _docker_not_found(result)):
+                        log.warning("Docker refused to reap idle agent container %s", home.name)
+                        continue
+                    # Keep the ownership record until Docker confirms removal (or says the
+                    # container is already absent), so a transient failure is retried later.
+                    self.homes.pop(home.name, None)
                     self.reaped += 1
-                except Exception:  # noqa: BLE001 - a failed rm never breaks a command
-                    pass
-        return [h.name for h in stale]
+                    reaped.append(home.name)
+                except Exception:  # noqa: BLE001 - an idle reap failure must not break a command
+                    log.warning("Docker idle cleanup failed for agent container %s", home.name,
+                                exc_info=True)
+        return reaped
 
     async def _finish_close(self) -> None:
         current = asyncio.current_task()

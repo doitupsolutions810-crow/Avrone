@@ -56,6 +56,7 @@ def _fake_inspect_from_run(argv, running=True):
     swap = int(option("--memory-swap", "512m").removesuffix("m")) * 1024 * 1024
     return {
         "State": {"Running": running},
+        "Image": argv[-3],
         "Config": {"User": option("--user"), "Image": argv[-3], "WorkingDir": option("-w"),
                    "Env": env, "Labels": labels},
         "HostConfig": {
@@ -81,6 +82,8 @@ class FakeDocker:
         self.running = running or set()
         self.fail_run = fail_run
         self.inspect_payloads: dict[str, dict] = {}
+        self.image_id = "sha256:" + "a" * 64
+        self.fail_image_inspect = False
 
     def seed(self, argv):
         name = argv[argv.index("--name") + 1]
@@ -90,6 +93,10 @@ class FakeDocker:
     async def __call__(self, argv, timeout):
         self.calls.append(argv)
         name = argv[-1]
+        if len(argv) > 2 and argv[1:3] == ["image", "inspect"]:
+            if self.fail_image_inspect:
+                return CommandResult(" ".join(argv), 1, "", "image missing")
+            return CommandResult(" ".join(argv), 0, self.image_id, "")
         if argv[1] == "inspect":
             if name in self.running and name in self.inspect_payloads:
                 return CommandResult(" ".join(argv), 0, json.dumps(self.inspect_payloads[name]), "")

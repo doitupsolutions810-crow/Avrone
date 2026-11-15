@@ -193,8 +193,10 @@ class DockerRunner(Runner):
                 )
                 continue
             owned_id = self._inspect_owned_container_id(inspected.stdout)
-            if owned_id is None:
+            target_id = self._full_container_id(target)
+            if owned_id is None or (target_id is not None and owned_id != target_id):
                 # A valid-looking ID or a matching friendly name alone is not authority to rm.
+                # When inspecting by ID, also require the response to identify that exact object.
                 continue
             removed = await self._exec(
                 ["docker", "rm", "-f", owned_id], "docker rm failed runner by verified ID", 30

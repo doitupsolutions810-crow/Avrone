@@ -1002,8 +1002,9 @@ def test_docker_runner_rejects_valid_but_mismatched_run_output_id(tmp_path, monk
     with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
         run(runner.start())
     assert runner.container_id is None
-    assert runner.container in fake.running
+    assert runner.container not in fake.running  # verified owned runner was cleaned by its own ID
     assert "unrelated-container" in fake.running
+    assert fake.rm_count(runner.container) == 1
     assert ["docker", "rm", "-f", unrelated_id] not in fake.calls
 
 
@@ -1024,7 +1025,8 @@ def test_docker_runner_recovery_rejects_shared_network_namespaces(tmp_path, monk
     with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
         run(runner.start())
     assert runner.container_id is None
-    assert runner.container in fake.running
+    assert runner.container not in fake.running  # unsafe owned runner is cleaned by ID
+    assert fake.rm_count(runner.container) == 1
 
 
 def test_docker_runner_start_is_idempotent_and_resolves_image_once(tmp_path, monkeypatch):
@@ -1207,6 +1209,31 @@ def test_docker_runner_stop_retries_failed_outer_remove_without_reopening_admiss
 
     run(go())
 
+
+
+
+def test_failed_start_cleanup_refuses_inspect_response_with_different_id_and_owner_label(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    requested_id = "a" * 64
+    different_id = "b" * 64
+    calls = []
+    spoofed_inspect = {
+        "Id": different_id,
+        "Name": f"/{runner.container}",
+        "Config": {"Labels": {"avrone.runner": runner._owner_token}},
+    }
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        calls.append(argv)
+        if argv[1] == "inspect" and argv[-1] == requested_id:
+            return CommandResult(cmd, 0, json.dumps(spoofed_inspect), "")
+        if argv[1] == "inspect" and argv[-1] == runner.container:
+            return CommandResult(cmd, 1, "", "No such container: " + runner.container)
+        raise AssertionError(f"unexpected cleanup command: {argv}")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    assert run(runner._cleanup_failed_start(requested_id)) is False
+    assert not any(call[1] == "rm" for call in calls)
 
 
 def test_docker_runner_cleans_owned_container_after_policy_verification_failure(tmp_path, monkeypatch):

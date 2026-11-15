@@ -1007,9 +1007,9 @@ class MCPManager:
             return self.status()
         try:
             await asyncio.gather(*(self._start_one(n, c, registry) for n, c in servers.items()))
-        except asyncio.CancelledError:
-            # A sibling may already have connected and registered tools. Drain every partial
-            # success, in addition to the per-client cleanup in _start_one, before propagating.
+        except BaseException:
+            # A sibling may already have connected and registered tools. Treat startup as a
+            # transaction: drain every partial success before propagating any exception.
             cleanup = asyncio.create_task(self._stop_locked())
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.shield(cleanup)

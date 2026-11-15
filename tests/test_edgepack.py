@@ -2506,24 +2506,23 @@ def test_existing_container_inspector_fails_closed_on_non_boolean_network_policy
     assert ok is False and owned is False
     assert "allow_network policy must be a boolean" in detail
 
-@pytest.mark.parametrize("result", [
-    CommandResult("docker image inspect", False, "sha256:" + "a" * 64, ""),
-    CommandResult("docker image inspect", 0, "sha256:" + "a" * 64, "", timed_out=True),
-    CommandResult("docker image inspect", 0, "sha256:" + "a" * 64, ""),
+@pytest.mark.parametrize("result,valid", [
+    (CommandResult("docker image inspect", False, "sha256:" + "a" * 64, ""), False),
+    (CommandResult("docker image inspect", 0, "sha256:" + "a" * 64, "", timed_out=True), False),
+    (CommandResult("docker image inspect", 0, "sha256:" + "a" * 64, ""), True),
 ])
 @pytest.mark.asyncio
-async def test_pool_image_resolution_rejects_ambiguous_success_metadata(tmp_path, result):
+async def test_pool_image_resolution_requires_exact_success_metadata(result, valid):
     class AmbiguousDocker:
         async def __call__(self, argv, timeout):
             return result
 
     pool = ac.AgentContainerPool(AmbiguousDocker(), "img", False, node="edge")
-    home = agentfs.agent_dir(tmp_path / "ws", "image-worker")
-    if result.timed_out is False and type(result.exit_code) is int:
-        assert await pool.ensure(home) == ac.container_name("edge", "image-worker")
+    if valid:
+        assert await pool._resolve_image_id() == "sha256:" + "a" * 64
     else:
         with pytest.raises(RuntimeError, match="could not resolve configured Docker image"):
-            await pool.ensure(home)
+            await pool._resolve_image_id()
 
 
 @pytest.mark.parametrize("result,expected", [

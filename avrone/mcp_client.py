@@ -264,7 +264,32 @@ class HTTPTransport(_Transport):
 
     def __init__(self, url: str, headers: dict[str, str] | None = None):
         self.url = url
-        self.headers = {k: str(v) for k, v in (headers or {}).items()}
+        if headers is not None and not isinstance(headers, dict):
+            raise MCPError("MCP HTTP headers must be an object")
+        reserved = {
+            "accept", "content-type", "content-length", "host", "connection",
+            "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
+            "trailer", "transfer-encoding", "upgrade", "mcp-session-id",
+            "mcp-protocol-version",
+        }
+        normalized: dict[str, str] = {}
+        seen: set[str] = set()
+        for raw_name, raw_value in (headers or {}).items():
+            if not isinstance(raw_name, str) or not re.fullmatch(r"[!#$%&'*+.^_\`|~0-9A-Za-z-]+", raw_name):
+                raise MCPError("MCP HTTP header name is invalid")
+            name = raw_name.lower()
+            if name in reserved:
+                raise MCPError(f"MCP HTTP header {raw_name!r} is reserved by the transport")
+            if name in seen:
+                raise MCPError(f"MCP HTTP header {raw_name!r} duplicates a case-insensitive name")
+            if isinstance(raw_value, bool) or not isinstance(raw_value, (str, int, float)):
+                raise MCPError(f"MCP HTTP header {raw_name!r} must have a scalar value")
+            value = str(raw_value)
+            if any((ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value):
+                raise MCPError(f"MCP HTTP header {raw_name!r} contains control characters")
+            normalized[raw_name] = value
+            seen.add(name)
+        self.headers = normalized
         self.session_id: str | None = None
         self.protocol_version: str | None = None
         self._id = 0

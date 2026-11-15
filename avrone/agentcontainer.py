@@ -123,6 +123,8 @@ def hardening_args(allow_network: bool, mem: int | None = None, cpu: float | Non
     and privilege escalation are disabled, swap is capped at the memory limit, and PIDs,
     CPU and RAM are bounded. Agent networking is opt-in and should normally remain disabled.
     """
+    if type(allow_network) is not bool:
+        raise ValueError("allow_network must be a boolean")
     uid, gid = sandbox_identity()
     if mem is None:
         memory = mem_mb()
@@ -199,6 +201,8 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     preserves the requested bind specification, while Mounts proves only one writable /agent
     bind is actually attached.
     """
+    if type(allow_network) is not bool:
+        return False, False, "allow_network policy must be a boolean"
     try:
         payload = json.loads(str(stdout or ""))
     except (TypeError, ValueError):
@@ -401,6 +405,8 @@ class AgentContainerPool:
 
     def __init__(self, exec_fn: Exec, image: str, allow_network: bool, node: str | None = None,
                  clock: Callable[[], float] = time.monotonic, idle: float | None = None):
+        if type(allow_network) is not bool:
+            raise ValueError("allow_network must be a boolean")
         self._exec = exec_fn
         self.image = image
         self.allow_network = allow_network

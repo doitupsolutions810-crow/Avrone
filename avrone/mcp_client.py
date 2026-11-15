@@ -518,17 +518,26 @@ class MCPClient:
                 self._calls_drained.set()
 
     async def _finish_close(self) -> None:
+        current = asyncio.current_task()
         try:
-            await asyncio.wait_for(
-                self._calls_drained.wait(), timeout=MAX_MCP_CLOSE_DRAIN_SECONDS
-            )
-        except asyncio.TimeoutError:
-            log.warning(
-                "MCP client '%s' did not drain %d active tool call(s) within %.1fs; "
-                "forcing transport shutdown",
-                self.name, self._active_calls, MAX_MCP_CLOSE_DRAIN_SECONDS,
-            )
-        await self.transport.close()
+            try:
+                await asyncio.wait_for(
+                    self._calls_drained.wait(), timeout=MAX_MCP_CLOSE_DRAIN_SECONDS
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "MCP client '%s' did not drain %d active tool call(s) within %.1fs; "
+                    "forcing transport shutdown",
+                    self.name, self._active_calls, MAX_MCP_CLOSE_DRAIN_SECONDS,
+                )
+            await self.transport.close()
+        except BaseException:
+            # Keep admission closed, but permit an operator's subsequent close() to retry
+            # a transport that failed partway through shutdown.
+            async with self._call_lock:
+                if self._close_task is current:
+                    self._close_task = None
+            raise
         async with self._call_lock:
             self._closed = True
 
@@ -632,7 +641,7 @@ class MCPClient:
                 return f"ERROR (from MCP tool {self.name}/{tool}): {text}"
             return text
         finally:
-            await self._end_tool_operation()
+            await asyncio.shield(self._end_tool_operation())
 
     async def ping(self) -> bool:
         await self._begin_tool_operation()

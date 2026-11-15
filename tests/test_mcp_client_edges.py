@@ -5,6 +5,7 @@ subprocesses."""
 import asyncio
 import json
 import logging
+import random
 
 import httpx
 import pytest
@@ -571,6 +572,75 @@ def test_outbound_rpc_size_preflight_matches_compact_utf8_json_for_adversarial_v
         ).encode("utf-8")
         assert mc._measure_rpc_json_value(message) == len(expected)
         assert mc._encode_rpc_request(message) == expected
+
+
+
+def test_outbound_rpc_preflight_matches_standard_json_for_generated_nested_values():
+    rng = random.Random(0xA7_2026)
+    special_chars = ["\\x00", "\\x01", "\\x08", "\\x0b", "\\x1f", "\\u0085",
+                     "\\u2028", "\\u2029", "\\ufeff", "\\ufffd", "é", "界", "😀", "👩‍🔬"]
+
+    def make_string():
+        chars = [rng.choice(special_chars) for _ in range(rng.randrange(0, 8))]
+        for _ in range(rng.randrange(0, 12)):
+            point = rng.randrange(0x110000)
+            while 0xD800 <= point <= 0xDFFF:
+                point = rng.randrange(0x110000)
+            chars.append(chr(point))
+        rng.shuffle(chars)
+        return "".join(chars)
+
+    def make_value(depth=0):
+        scalar_kind = rng.randrange(8 if depth < 5 else 5)
+        if scalar_kind == 0:
+            return None
+        if scalar_kind == 1:
+            return bool(rng.getrandbits(1))
+        if scalar_kind == 2:
+            bits = rng.randrange(1, 512)
+            value = rng.getrandbits(bits)
+            return -value if rng.getrandbits(1) else value
+        if scalar_kind == 3:
+            return rng.choice([-0.0, 0.0, -1e-300, 1e-300, 1e-7, 1e20, 1.7976931348623157e308,
+                               rng.uniform(-1e100, 1e100)])
+        if scalar_kind == 4:
+            return make_string()
+        if depth >= 5 or scalar_kind == 5:
+            return [make_value(depth + 1) for _ in range(rng.randrange(0, 5))]
+        if scalar_kind == 6:
+            return tuple(make_value(depth + 1) for _ in range(rng.randrange(0, 5)))
+        return {make_string(): make_value(depth + 1) for _ in range(rng.randrange(0, 5))}
+
+    for case in range(750):
+        message = {
+            "jsonrpc": "2.0",
+            "id": case,
+            "params": {"payload": make_value(), "case": case},
+        }
+        expected = json.dumps(
+            message, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+        assert mc._measure_rpc_json_value(message) == len(expected), f"size mismatch in case {case}"
+        assert mc._encode_rpc_request(message) == expected, f"wire mismatch in case {case}"
+
+
+def test_outbound_rpc_preflight_node_limit_counts_object_keys_and_exact_boundary(monkeypatch):
+    message = {"a": []}
+    # Root object, the key string, and the empty array are exactly three nodes.
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_NODES", 3)
+    assert mc._encode_rpc_request(message) == b'{"a":[]}'
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_NODES", 2)
+    with pytest.raises(MCPError, match="node limit"):
+        mc._encode_rpc_request(message)
+
+
+def test_outbound_rpc_preflight_accepts_exact_depth_and_rejects_one_level_deeper(monkeypatch):
+    at_limit = {"a": [[]]}
+    too_deep = {"a": [[[]]]}
+    monkeypatch.setattr(mc, "MAX_RPC_REQUEST_DEPTH", 2)
+    assert mc._encode_rpc_request(at_limit) == b'{"a":[[]]}'
+    with pytest.raises(MCPError, match="nesting limit"):
+        mc._encode_rpc_request(too_deep)
 
 
 def test_outbound_rpc_encoder_accepts_exact_byte_limit_and_rejects_one_byte_over(monkeypatch):

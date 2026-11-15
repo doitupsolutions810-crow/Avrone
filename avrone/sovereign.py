@@ -139,7 +139,9 @@ class DockerRunner(Runner):
         if self.agent_pool is None:
             async def _run(argv: list[str], timeout: int) -> CommandResult:
                 return await self._exec(argv, " ".join(argv), timeout)
-            self.agent_pool = agentcontainer.AgentContainerPool(_run, self.s.docker_image, self.s.allow_network)
+            self.agent_pool = agentcontainer.AgentContainerPool(
+                _run, self.s.docker_image, self.s.allow_network, workspace=self.workspace
+            )
         return self.agent_pool
 
     @staticmethod

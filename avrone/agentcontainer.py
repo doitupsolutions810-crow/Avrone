@@ -441,12 +441,14 @@ class AgentContainerPool:
     """Lazily creates, reuses and idle-reaps one container per agent dir."""
 
     def __init__(self, exec_fn: Exec, image: str, allow_network: bool, node: str | None = None,
-                 clock: Callable[[], float] = time.monotonic, idle: float | None = None):
+                 clock: Callable[[], float] = time.monotonic, idle: float | None = None,
+                 workspace: Path | None = None):
         if type(allow_network) is not bool:
             raise ValueError("allow_network must be a boolean")
         self._exec = exec_fn
         self.image = image
         self.allow_network = allow_network
+        self.workspace = Path(workspace).resolve() if workspace is not None else None
         self.node = node or local_node_id()
         self.clock = clock
         self._idle = idle
@@ -571,13 +573,14 @@ class AgentContainerPool:
             raise RuntimeError("agent container pool is closing or closed")
         if type(_active) is not bool:
             raise ValueError("_active must be a boolean")
+        if self.workspace is None:
+            raise RuntimeError("agent container pool must be bound to its configured workspace")
         raw_dir = Path(agent_dir)
-        workspace = raw_dir.parent.parent.resolve()
-        if not agentfs.is_agent_dir(workspace, raw_dir):
-            raise ValueError("agent_dir must be an existing canonical workspace/agents/<id> directory")
+        if not agentfs.is_agent_dir(self.workspace, raw_dir):
+            raise ValueError("agent_dir must be a canonical agent home in the configured workspace")
         # Re-run the filesystem helper to enforce 0700 permissions on pre-existing homes
         # before any Docker operation can bind-mount the directory.
-        d = agentfs.agent_dir(workspace, raw_dir.name, create=False)
+        d = agentfs.agent_dir(self.workspace, raw_dir.name, create=False)
         if d != raw_dir:
             raise ValueError("agent_dir must resolve to its canonical workspace/agents/<id> path")
         name = container_name(self.node, d.name)

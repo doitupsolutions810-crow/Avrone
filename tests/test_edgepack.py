@@ -240,7 +240,7 @@ def test_isolate_path_shares_hardening(tmp_path, monkeypatch):
 # ------------------------------------------------------------------ pool: lazy, reused, reaped
 def test_pool_lazy_create_and_reuse(tmp_path):
     fake, now = FakeDocker(), [100.0]
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60, workspace=tmp_path / "ws")
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
     assert fake.calls == []                                       # nothing until first use
     name = run(pool.ensure(d))
@@ -255,7 +255,7 @@ def test_pool_lazy_create_and_reuse(tmp_path):
 
 def test_pool_cached_home_is_recreated_after_external_removal(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "external-gone")
     name = run(pool.ensure(home))
     pinned_id = pool.homes[name].image_id
@@ -273,7 +273,7 @@ def test_pool_cached_home_is_recreated_after_external_removal(tmp_path):
 def test_pool_does_not_recreate_missing_cached_home_while_old_lease_is_active(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "lost-during-lease")
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -317,7 +317,7 @@ def test_pool_does_not_recreate_missing_cached_home_while_old_lease_is_active(tm
 
 def test_pool_cached_home_repairs_policy_drift_when_idle(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "policy-drift")
     name = run(pool.ensure(home))
     fake.inspect_payloads[name]["HostConfig"]["Privileged"] = True
@@ -331,7 +331,7 @@ def test_pool_cached_home_repairs_policy_drift_when_idle(tmp_path):
 def test_pool_cached_home_refuses_policy_repair_while_active_lease_exists(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "active-drift")
         async with pool.lease(home) as name:
             fake.inspect_payloads[name]["HostConfig"]["Privileged"] = True
@@ -346,7 +346,7 @@ def test_pool_cached_home_refuses_policy_repair_while_active_lease_exists(tmp_pa
 
 def test_pool_cached_home_refuses_unowned_name_collision_without_removal(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "unowned-replacement")
     name = run(pool.ensure(home))
     fake.inspect_payloads[name]["Config"]["Labels"]["avrone.agent-home"] = "0"
@@ -360,7 +360,7 @@ def test_pool_cached_home_refuses_unowned_name_collision_without_removal(tmp_pat
 
 def test_pool_cached_home_keeps_immutable_image_pin_after_tag_retarget(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "stable-pin")
     name = run(pool.ensure(home))
     original_id = pool.homes[name].image_id
@@ -378,7 +378,7 @@ def test_pool_cached_home_keeps_immutable_image_pin_after_tag_retarget(tmp_path)
 @pytest.mark.parametrize("mutation", ["tmpfs_extra_mode", "bind_readonly", "bind_relabel"])
 def test_pool_rejects_unapproved_cached_mount_options(tmp_path, mutation):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", mutation)
     name = run(pool.ensure(home))
     host = fake.inspect_payloads[name]["HostConfig"]
@@ -399,7 +399,7 @@ def test_pool_rejects_unapproved_cached_mount_options(tmp_path, mutation):
 
 def test_pool_accepts_explicit_readwrite_bind_suffix(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "rw-bind")
     name = run(pool.ensure(home))
     bind = fake.inspect_payloads[name]["HostConfig"]["Binds"][0]
@@ -413,7 +413,7 @@ def test_pool_accepts_explicit_readwrite_bind_suffix(tmp_path):
 @pytest.mark.parametrize("mode", ["service:backend", "service", "container:peer", "host"])
 def test_pool_rejects_shared_network_namespaces_with_network_opt_in(tmp_path, mode):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", True, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", True, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "shared-net")
     name = run(pool.ensure(home))
     fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] = mode
@@ -426,7 +426,7 @@ def test_pool_rejects_shared_network_namespaces_with_network_opt_in(tmp_path, mo
 
 def test_pool_allows_user_defined_bridge_network_with_network_opt_in(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", True, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", True, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "custom-net")
     name = run(pool.ensure(home))
     fake.inspect_payloads[name]["HostConfig"]["NetworkMode"] = "avrone-isolated-net"
@@ -444,7 +444,7 @@ def test_pool_adopts_only_a_policy_compliant_running_leftover(tmp_path):
         "avrone-agent-edge-builder", d, fake.image_id, False, agent_id="builder"
     )
     fake.seed(argv)
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     run(pool.ensure(d))
     assert fake.verbs() == ["image", "inspect"] and pool.created == 0
 
@@ -453,7 +453,7 @@ def test_pool_pins_mutable_tag_to_immutable_image_id(tmp_path):
     fake = FakeDocker()
     first_id = fake.image_id
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
-    first_pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0)
+    first_pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     name = run(first_pool.ensure(d))
     first_payload = fake.inspect_payloads[name]
     assert first_payload["Config"]["Image"] == first_id
@@ -463,7 +463,7 @@ def test_pool_pins_mutable_tag_to_immutable_image_id(tmp_path):
 
     second_id = "sha256:" + "b" * 64
     fake.image_id = second_id  # the tag now points at a different local image
-    restarted_pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 1.0)
+    restarted_pool = ac.AgentContainerPool(fake, "img:stable", False, node="edge", clock=lambda: 1.0, workspace=tmp_path / "ws")
     run(restarted_pool.ensure(d))
     run_calls = [call for call in fake.calls if len(call) > 1 and call[1] == "run"]
     assert len(run_calls) == 2
@@ -483,7 +483,7 @@ def test_pool_fails_closed_when_image_identity_cannot_be_resolved(tmp_path, bad_
     fake.image_id = bad_image_id
     fake.fail_image_inspect = fail
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
-    pool = ac.AgentContainerPool(fake, "img:missing", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img:missing", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="resolve configured Docker image|invalid immutable image ID"):
         run(pool.ensure(d))
     assert fake.verbs() == ["image"]  # no inspect, remove, or create without a verified image
@@ -504,7 +504,7 @@ def test_pool_close_fences_inflight_ensure_before_observing_lease_drain(tmp_path
                 await allow_image_inspect.wait()
             return await fake(argv, timeout)
 
-        pool = ac.AgentContainerPool(slow_exec, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(slow_exec, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "ensure-close-race")
 
         async def worker():
@@ -540,7 +540,7 @@ def test_pool_close_fences_inflight_ensure_before_observing_lease_drain(tmp_path
 def test_pool_close_waits_for_active_lease_and_rejects_new_work(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "busy")
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -573,7 +573,7 @@ def test_pool_close_waits_for_active_lease_and_rejects_new_work(tmp_path):
 def test_pool_close_is_idempotent_and_rejects_work_after_close(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "done")
         name = await pool.ensure(home)
         await asyncio.gather(pool.close(), pool.close(), pool.close())
@@ -588,7 +588,7 @@ def test_pool_close_is_idempotent_and_rejects_work_after_close(tmp_path):
 def test_pool_close_waiter_cancellation_does_not_cancel_cleanup(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "cancel-waiter")
         name = await pool.ensure(home)
         original_exec = pool._exec
@@ -622,7 +622,7 @@ def test_pool_close_forces_removal_after_drain_deadline(tmp_path, monkeypatch):
     async def go():
         monkeypatch.setattr(ac, "MAX_AGENT_CONTAINER_CLOSE_DRAIN_SECONDS", 0.01)
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         home = agentfs.agent_dir(tmp_path / "ws", "stuck")
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -649,7 +649,7 @@ def test_pool_close_forces_removal_after_drain_deadline(tmp_path, monkeypatch):
 def test_pool_close_preserves_failed_removals_and_retries_only_remaining_homes(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         first = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "first"))
         second = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "second"))
         fake.fail_rm_names.add(first)
@@ -677,7 +677,7 @@ def test_pool_close_preserves_failed_removals_and_retries_only_remaining_homes(t
 def test_pool_close_retries_after_docker_rm_transport_exception(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         name = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "retry-exception"))
         fake.raise_rm_names.add(name)
 
@@ -696,7 +696,7 @@ def test_pool_close_retries_after_docker_rm_transport_exception(tmp_path):
 def test_pool_close_treats_an_externally_removed_container_as_cleaned(tmp_path):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         name = await pool.ensure(agentfs.agent_dir(tmp_path / "ws", "externally-removed"))
         fake.running.discard(name)
         fake.inspect_payloads.pop(name, None)
@@ -717,7 +717,7 @@ def test_pool_rejects_inspect_payload_without_a_full_container_id(tmp_path):
     argv = ac.persistent_run_argv(name, home, fake.image_id, False, agent_id=home.name)
     fake.seed(argv)
     fake.inspect_payloads[name]["Id"] = "short-id"
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
 
     with pytest.raises(RuntimeError, match="no valid full Docker identity"):
         run(pool.ensure(home))
@@ -728,7 +728,7 @@ def test_pool_rejects_inspect_payload_without_a_full_container_id(tmp_path):
 
 def test_pool_idle_reap_removes_pinned_old_id_not_reassigned_name(tmp_path):
     fake, now = FakeDocker(), [0.0]
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "reap-name-reused")
     name = run(pool.ensure(home))
     old_id = pool.homes[name].container_id
@@ -747,7 +747,7 @@ def test_pool_idle_reap_removes_pinned_old_id_not_reassigned_name(tmp_path):
 
 def test_pool_idle_reap_preserves_failed_home_and_retries(tmp_path):
     fake, now = FakeDocker(), [0.0]
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5, workspace=tmp_path / "ws")
     name = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "reap-retry")))
     fake.fail_rm_names.add(name)
     now[0] = 10.0
@@ -765,7 +765,7 @@ def test_pool_idle_reap_preserves_failed_home_and_retries(tmp_path):
 
 def test_pool_idle_reap_accepts_container_already_removed_externally(tmp_path):
     fake, now = FakeDocker(), [0.0]
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=5, workspace=tmp_path / "ws")
     name = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "reap-external")))
     fake.running.discard(name)
     fake.inspect_payloads.pop(name, None)
@@ -778,7 +778,7 @@ def test_pool_idle_reap_accepts_container_already_removed_externally(tmp_path):
 
 def test_pool_idle_reap(tmp_path):
     fake, now = FakeDocker(), [0.0]
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60, workspace=tmp_path / "ws")
     a = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "alpha")))
     now[0] = 50.0
     b = run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "beta")))
@@ -798,7 +798,7 @@ def test_pool_idle_env(monkeypatch):
 
 
 def test_pool_start_failure_raises(tmp_path):
-    pool = ac.AgentContainerPool(FakeDocker(fail_run=True), "img", False, node="n", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(FakeDocker(fail_run=True), "img", False, node="n", clock=lambda: 0.0, workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="could not start agent container"):
         run(pool.ensure(agentfs.agent_dir(tmp_path / "ws", "x")))
     assert pool.homes == {}
@@ -1937,7 +1937,7 @@ def test_pool_recreates_a_managed_but_unsafe_leftover(tmp_path):
     )
     fake.seed(argv)
     fake.inspect_payloads["avrone-agent-edge-builder"]["HostConfig"]["NetworkMode"] = "bridge"
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     run(pool.ensure(d))
     assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"]
     assert fake.inspect_payloads["avrone-agent-edge-builder"]["HostConfig"]["NetworkMode"] == "none"
@@ -1946,7 +1946,7 @@ def test_pool_recreates_a_managed_but_unsafe_leftover(tmp_path):
 
 def test_pool_refuses_cached_name_reassignment_and_cleanup_never_deletes_replacement(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "name-reused")
     name = run(pool.ensure(home))
     original_id = pool.homes[name].container_id
@@ -1971,7 +1971,7 @@ def test_pool_refuses_cached_name_reassignment_and_cleanup_never_deletes_replace
 
 def test_pool_removal_after_policy_drift_targets_only_inspected_container_id(tmp_path):
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "drift-id")
     name = run(pool.ensure(home))
     old_id = pool.homes[name].container_id
@@ -2011,7 +2011,7 @@ def test_pool_cleans_agent_home_when_run_reports_failure_after_daemon_create(tmp
             return CommandResult(result.cmd, 125, "", "wrapper failed after daemon create")
         return result
     home = agentfs.agent_dir(tmp_path / "ws", "run-error")
-    pool = ac.AgentContainerPool(create_then_error, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(create_then_error, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
 
     with pytest.raises(RuntimeError, match="wrapper failed after daemon create"):
         run(pool.ensure(home))
@@ -2037,7 +2037,7 @@ def test_pool_preserves_same_name_replacement_with_different_creation_token(tmp_
 
     fake = ReplacedNameDocker()
     home = agentfs.agent_dir(tmp_path / "ws", "replacement-token")
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
 
     with pytest.raises(RuntimeError, match="different object than docker run created"):
         run(pool.ensure(home))
@@ -2061,7 +2061,7 @@ def test_pool_cleans_created_home_after_cancellation_during_docker_run(tmp_path)
             return await fake(argv, timeout)
 
         home = agentfs.agent_dir(tmp_path / "ws", "cancel-run")
-        pool = ac.AgentContainerPool(slow_exec, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(slow_exec, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         task = asyncio.create_task(pool.ensure(home))
         await run_entered.wait()
         task.cancel()
@@ -2085,7 +2085,7 @@ def test_pool_rejects_creation_token_mismatch_without_deleting_unverified_contai
         return result
 
     home = agentfs.agent_dir(tmp_path / "ws", "token-mismatch")
-    pool = ac.AgentContainerPool(token_replaced, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(token_replaced, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="unique ownership token"):
         run(pool.ensure(home))
     name = ac.container_name("edge", home.name)
@@ -2112,7 +2112,7 @@ def test_pool_rejects_run_output_id_that_does_not_match_name_inspect(tmp_path):
 
     fake = ReassignedNameDocker()
     home = agentfs.agent_dir(tmp_path / "ws", "run-id-race")
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="different object than docker run created"):
         run(pool.ensure(home))
     name = ac.container_name("edge", home.name)
@@ -2137,7 +2137,7 @@ def test_pool_cleans_malformed_run_id_then_creates_a_fresh_home_on_retry(tmp_pat
             return result
 
     fake = MalformedRunOutputDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "bad-run-id")
     name = ac.container_name("edge", home.name)
 
@@ -2164,7 +2164,7 @@ def test_pool_cleans_malformed_run_ids_using_per_attempt_token(tmp_path, bad_out
             return result
 
     fake = MalformedRunOutputDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "bad-run-id-" + str(len(bad_output)))
     with pytest.raises(RuntimeError, match="valid container ID"):
         run(pool.ensure(home))
@@ -2222,7 +2222,7 @@ def test_pool_refuses_to_adopt_or_delete_an_unowned_name(tmp_path):
     )
     fake.seed(argv)
     fake.inspect_payloads["avrone-agent-edge-builder"]["Config"]["Labels"].pop("avrone.agent-home")
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="unowned"):
         run(pool.ensure(d))
     assert fake.verbs() == ["image", "inspect"]
@@ -2238,7 +2238,7 @@ def test_pool_rejects_container_that_does_not_survive_start(tmp_path):
             return result
     fake = DiesImmediately()
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="failed sandbox verification"):
         run(pool.ensure(d))
     assert pool.homes == {} and "avrone-agent-edge-builder" not in fake.running
@@ -2248,7 +2248,7 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     async def main():
         fake = FakeDocker()
         d = agentfs.agent_dir(tmp_path / "ws", "builder")
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, workspace=tmp_path / "ws")
         results = await asyncio.gather(*(pool.ensure(d) for _ in range(32)))
         assert len(set(results)) == 1
         assert fake.verbs().count("run") == 1
@@ -2382,7 +2382,7 @@ def test_network_opt_in_never_allows_shared_host_or_container_network_namespace(
 async def test_pool_lease_prevents_reap_during_long_running_command(tmp_path):
     now = [0.0]
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60)
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: now[0], idle=60, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "long-worker")
     async with pool.lease(home) as name:
         assert pool.state()["homes"][name]["active"] == 1
@@ -2401,7 +2401,7 @@ async def test_pool_lease_is_released_when_command_task_is_cancelled(tmp_path):
     import asyncio
     now = [0.0]
     pool = ac.AgentContainerPool(FakeDocker(), "img", False, node="edge",
-                                 clock=lambda: now[0], idle=60)
+                                 clock=lambda: now[0], idle=60, workspace=tmp_path / "ws")
     home = agentfs.agent_dir(tmp_path / "ws", "cancel-worker")
     entered, blocked = asyncio.Event(), asyncio.Event()
     async def worker():
@@ -2572,7 +2572,7 @@ def test_pool_ensure_rejects_noncanonical_agent_paths_before_docker(tmp_path, pa
         candidate = valid_home.parent / "missing-worker"
 
     fake = FakeDocker()
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge")
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", workspace=workspace)
     with pytest.raises(ValueError, match="canonical workspace/agents"):
         run(pool.ensure(candidate))
     assert fake.calls == []
@@ -2583,7 +2583,7 @@ def test_pool_ensure_rejects_noncanonical_agent_paths_before_docker(tmp_path, pa
 def test_pool_ensure_rejects_non_boolean_active_flag_before_docker(tmp_path, invalid_active):
     fake = FakeDocker()
     home = agentfs.agent_dir(tmp_path / "workspace", "active-flag")
-    pool = ac.AgentContainerPool(fake, "img", False, node="edge")
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge", workspace=tmp_path / "workspace")
     with pytest.raises(ValueError, match="_active must be a boolean"):
         run(pool.ensure(home, _active=invalid_active))
     assert fake.calls == []
@@ -2594,7 +2594,7 @@ def test_pool_ensure_rejects_non_boolean_active_flag_before_docker(tmp_path, inv
 def test_pool_retains_home_when_rm_error_only_mentions_not_found(tmp_path, action):
     async def go():
         fake = FakeDocker()
-        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, idle=5)
+        pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0, idle=5, workspace=tmp_path / "workspace")
         name = await pool.ensure(agentfs.agent_dir(tmp_path / "workspace", f"not-found-{action}"))
         container_id = pool.homes[name].container_id
 
@@ -2657,7 +2657,7 @@ def test_pool_ensure_does_not_adopt_or_recreate_after_ambiguous_inspect(tmp_path
                 return ambiguous
             return await fake(argv, timeout)
 
-    pool = ac.AgentContainerPool(InspectFault(), "img", False, node="edge")
+    pool = ac.AgentContainerPool(InspectFault(), "img", False, node="edge", workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="could not inspect agent container"):
         run(pool.ensure(home))
     assert not any(call[1] == "run" for call in fake.calls if len(call) > 1)
@@ -2677,7 +2677,7 @@ def test_pool_cleans_created_container_when_docker_run_reports_timeout_after_cre
                 return CommandResult(result.cmd, result.exit_code, result.stdout, result.stderr, timed_out=True)
             return result
 
-    pool = ac.AgentContainerPool(CreateTimeout(), "img", False, node="edge")
+    pool = ac.AgentContainerPool(CreateTimeout(), "img", False, node="edge", workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="could not start agent container"):
         run(pool.ensure(home))
     name = ac.container_name("edge", home.name)
@@ -2693,7 +2693,7 @@ def test_pool_idle_reap_retains_home_until_timeout_removal_is_confirmed(tmp_path
     fake = FakeDocker()
     home = agentfs.agent_dir(tmp_path / "ws", "reap-timeout")
     pool = ac.AgentContainerPool(fake, "img", False, node="edge",
-                                 clock=lambda: now[0], idle=5)
+                                 clock=lambda: now[0], idle=5, workspace=tmp_path / "ws")
     name = run(pool.ensure(home))
     container_id = pool.homes[name].container_id
     now[0] = 6.0
@@ -2744,7 +2744,7 @@ def test_pool_does_not_adopt_valid_container_when_inspect_timeout_metadata_is_am
                 return AmbiguousInspectResult(timeout_metadata)
             return await fake(command, timeout)
 
-    pool = ac.AgentContainerPool(InspectFault(), "img", False, node="edge")
+    pool = ac.AgentContainerPool(InspectFault(), "img", False, node="edge", workspace=tmp_path / "ws")
     with pytest.raises(RuntimeError, match="could not inspect agent container"):
         run(pool.ensure(home))
     assert fake.container_ids[name] == container_id
@@ -2773,3 +2773,30 @@ def test_existing_container_policy_rejects_missing_or_malformed_ulimit_metadata(
     ok, owned, detail = ac._inspect_matches_policy(json.dumps(payload), home, "img", False)
     assert owned is True and ok is False
     assert "open-file descriptor limit" in detail
+
+
+
+def test_pool_rejects_agent_home_from_another_workspace_before_docker(tmp_path):
+    configured_workspace = tmp_path / "configured-workspace"
+    foreign_workspace = tmp_path / "foreign-workspace"
+    foreign_home = agentfs.agent_dir(foreign_workspace, "attacker-home")
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(
+        fake, "img", False, node="edge", workspace=configured_workspace
+    )
+
+    with pytest.raises(ValueError, match="configured workspace"):
+        run(pool.ensure(foreign_home))
+    assert fake.calls == []
+    assert pool.homes == {}
+
+
+def test_pool_requires_workspace_binding_before_any_docker_operation(tmp_path):
+    home = agentfs.agent_dir(tmp_path / "ws", "unbound")
+    fake = FakeDocker()
+    pool = ac.AgentContainerPool(fake, "img", False, node="edge")
+
+    with pytest.raises(RuntimeError, match="bound to its configured workspace"):
+        run(pool.ensure(home))
+    assert fake.calls == []
+    assert pool.homes == {}

@@ -1,9 +1,9 @@
 {
-  "schema": "great-scale-evidence/v44",
-  "finding": "The script treats an empty lock and a non-numeric pid as stale. An empty lock is removed ('pid unknown is gone'). A non-numeric pid is removed ('pid abc is gone'). Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
+  "schema": "great-scale-evidence/v143",
+  "finding": "The script treats an empty or non-live PID as stale, removes the lock, and re-acquires (or exits 2 if it loses the race). The check is present. Probed as uid 0 with ALLOW_ROOT=1 and every earlier check passing. Pure. Heat is zero.",
   "cone": 0.3819660112501052,
-  "emptyLock": "removed, pid unknown",
-  "nonNumeric": "removed, pid abc",
+  "empty": "stale",
+  "lostRace": "exit 2",
   "orientation": "pass",
   "S": 0.0,
   "psi": 0.3819660112501052,

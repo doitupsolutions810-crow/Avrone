@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from avrone.builder_sdk import BuilderAgentSDK, BuilderPolicy, BuildResult
@@ -122,6 +124,42 @@ async def test_close_is_idempotent():
     await sdk.close()
     await sdk.close()
     assert calls == ["closed"]
+
+
+@pytest.mark.asyncio
+async def test_close_shields_cleanup_from_caller_cancellation_and_shares_task():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def cleanup():
+        calls.append("started")
+        entered.set()
+        await release.wait()
+        calls.append("finished")
+
+    sdk = BuilderAgentSDK(FakeCore(), cleanups=[cleanup])
+    first = asyncio.create_task(sdk.close())
+    await entered.wait()
+    second = asyncio.create_task(sdk.close())
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert sdk._closing is True
+    assert sdk.closed is False
+    with pytest.raises(RuntimeError, match="closed or closing"):
+        await sdk.build("must not race cleanup")
+    result = BuildResult(run_id="r", mode="squad", status="UNVERIFIED", answer="draft")
+    with pytest.raises(RuntimeError, match="closed or closing"):
+        await sdk.verify(result)
+
+    release.set()
+    await second
+    assert sdk.closed is True
+    assert sdk._closing is False
+    assert calls == ["started", "finished"]
 
 
 @pytest.mark.asyncio

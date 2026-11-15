@@ -53,6 +53,7 @@ MAX_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_HTTP_SSE_LINE_BYTES = 1024 * 1024
 MAX_HTTP_ERROR_BYTES = 64 * 1024
 MAX_STDIO_LINE_BYTES = 8 * 1024 * 1024
+MAX_STDIO_STDERR_LINE_CHARS = 4096
 MAX_RPC_REQUEST_BYTES = 8 * 1024 * 1024
 
 
@@ -151,6 +152,9 @@ class StdioTransport(_Transport):
         with contextlib.suppress(Exception):
             async for raw in self.proc.stderr:
                 line = raw.decode(errors="replace").rstrip()
+                if len(line) > MAX_STDIO_STDERR_LINE_CHARS:
+                    marker = "…[stderr line truncated]…"
+                    line = marker + line[-(MAX_STDIO_STDERR_LINE_CHARS - len(marker)):]
                 if line:
                     self.stderr_tail = (self.stderr_tail + [line])[-20:]
                     log.debug("mcp stderr [%s]: %s", self.command, line)

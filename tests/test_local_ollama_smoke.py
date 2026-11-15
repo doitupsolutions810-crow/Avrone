@@ -440,14 +440,19 @@ def test_smoke_verifier_rejects_malformed_docker_ids(monkeypatch):
         smoke.inspect_agent_homes("nonce", {"solver-a": {"content": "x\\n", "sha256": "0" * 64}})
 
 
-def test_live_smoke_prompt_unambiguously_requires_only_shell():
+def test_live_smoke_prompt_uses_machine_enforced_shell_contract():
     cmd = "printf proof > marker.txt && pwd && sha256sum -- marker.txt"
     task = smoke.build_smoke_task(cmd)
     assert "exactly two independent workers" in task
-    assert "first and only tool call must be shell" in task
+    assert "machine-readable AVRONE action contract" in task
     assert "Do not call think or any preparatory/non-shell tool" in task
     assert task.count(cmd) == 1
-    assert f"exact command:\n{cmd}\n" in task
+    contract_line = next(line for line in task.splitlines() if line.startswith("AVRONE_ACTION_CONTRACT:"))
+    contract = json.loads(contract_line.split(":", 1)[1])
+    assert contract == {
+        "first_action": {"tool": "shell", "args": {"cmd": cmd}},
+        "allow_followup_calls": False,
+    }
 
 
 def test_worker_prompt_gives_explicit_tool_actions_priority_over_setup_habits():

@@ -181,3 +181,93 @@ def test_model_context_walk_reports_truncation(monkeypatch):
     found, truncated = modelcaps._context_lengths(value)
     assert found == []
     assert truncated is True
+
+
+@pytest.mark.parametrize("payload", [
+    [],
+    None,
+    "not-an-object",
+    {},
+    {"models": {}},
+    {"models": [None]},
+    {"models": [1]},
+    {"models": [{"name": {"nested": "bad"}}]},
+])
+def test_modelcaps_malformed_installed_inventory_stays_unknown(payload):
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"details": {}})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=payload)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, json={"version": "0.13.0"})
+
+    result = run(modelcaps.describe_ollama_model(
+        "http://127.0.0.1:11434/v1", "qwen2.5:3b", transport=httpx.MockTransport(handler)
+    ))
+    assert result["installed"] is None
+    assert result["runtime"]["loaded"] is False
+    assert "installed model inventory unavailable" in result["issues"]
+
+
+@pytest.mark.parametrize("payload", [
+    [],
+    None,
+    "not-an-object",
+    {},
+    {"models": {}},
+    {"models": [False]},
+    {"models": [{"model": ["bad", "name"]}]},
+])
+def test_modelcaps_malformed_running_inventory_stays_unknown(payload):
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"details": {}})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json=payload)
+        return httpx.Response(200, json={"version": "0.13.0"})
+
+    result = run(modelcaps.describe_ollama_model(
+        "http://127.0.0.1:11434/v1", "qwen2.5:3b", transport=httpx.MockTransport(handler)
+    ))
+    assert result["installed"] is False
+    assert result["runtime"]["loaded"] is None
+    assert "loaded model runtime inventory unavailable" in result["issues"]
+
+
+def test_modelcaps_does_not_follow_metadata_redirects():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(302, headers={"location": "https://attacker.invalid/steal"})
+
+    with pytest.raises(modelcaps.OllamaCapabilityError, match="metadata unavailable"):
+        run(modelcaps.describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "qwen2.5:3b", transport=httpx.MockTransport(handler)
+        ))
+    assert [request.url.host for request in requests] == ["127.0.0.1"]
+
+
+def test_modelcaps_does_not_coerce_malformed_capability_objects_to_strings():
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"capabilities": ["completion", {"tools": True}]})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, json={"version": 17})
+
+    result = run(modelcaps.describe_ollama_model(
+        "http://127.0.0.1:11434/v1", "qwen2.5:3b", transport=httpx.MockTransport(handler)
+    ))
+    assert result["capabilities"] == {
+        "completion": None, "tools": None, "vision": None, "thinking": None,
+    }
+    assert result["ollama_version"] is None
+    assert "model capability metadata malformed" in result["issues"]
+    assert "Ollama version metadata malformed" in result["issues"]

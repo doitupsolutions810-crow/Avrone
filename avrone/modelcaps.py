@@ -85,8 +85,24 @@ def _native_base(base_url: str) -> str:
 
 
 def _tag_key(value: Any) -> str:
-    name = str(value or "").strip()
+    if not isinstance(value, str):
+        return ""
+    name = value.strip()
     return name[:-7] if name.endswith(":latest") else name
+
+
+def _model_inventory(payload: Any, endpoint: str) -> list[dict[str, Any]]:
+    """Validate native Ollama model-list responses before inferring presence/absence."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise ValueError(f"invalid {endpoint} model inventory")
+    models = payload["models"]
+    for entry in models:
+        if not isinstance(entry, dict):
+            raise ValueError(f"invalid {endpoint} model inventory entry")
+        name = entry.get("name") or entry.get("model")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"invalid {endpoint} model inventory name")
+    return models
 
 
 def _context_lengths(value: Any) -> tuple[list[int], bool]:
@@ -179,9 +195,7 @@ async def describe_ollama_model(
         tags: dict[str, Any] | None = None
         try:
             tags_payload = await _request_json(client, "GET", f"{base}/api/tags")
-            tags_list = tags_payload.get("models", []) if isinstance(tags_payload, dict) else []
-            if not isinstance(tags_list, list):
-                raise ValueError("invalid model inventory")
+            tags_list = _model_inventory(tags_payload, "installed")
             tags_known = True
             tags = next((entry for entry in tags_list
                          if isinstance(entry, dict) and _tag_key(entry.get("name") or entry.get("model")) == _tag_key(model)), None)
@@ -192,9 +206,7 @@ async def describe_ollama_model(
         loaded: dict[str, Any] | None = None
         try:
             ps_payload = await _request_json(client, "GET", f"{base}/api/ps")
-            ps_list = ps_payload.get("models", []) if isinstance(ps_payload, dict) else []
-            if not isinstance(ps_list, list):
-                raise ValueError("invalid running model inventory")
+            ps_list = _model_inventory(ps_payload, "running")
             runtime_known = True
             loaded = next((entry for entry in ps_list
                            if isinstance(entry, dict) and _tag_key(entry.get("name") or entry.get("model")) == _tag_key(model)), None)
@@ -204,13 +216,24 @@ async def describe_ollama_model(
         ollama_version: str | None = None
         try:
             version_payload = await _request_json(client, "GET", f"{base}/api/version")
-            if isinstance(version_payload, dict) and version_payload.get("version"):
-                ollama_version = str(version_payload["version"])
+            if (isinstance(version_payload, dict)
+                    and isinstance(version_payload.get("version"), str)
+                    and 0 < len(version_payload["version"]) <= 128):
+                ollama_version = version_payload["version"]
+            else:
+                issues.append("Ollama version metadata malformed")
         except (httpx.HTTPError, ValueError, TypeError, RecursionError):
             issues.append("Ollama version unavailable")
 
     capabilities_raw = show.get("capabilities")
-    capabilities = {str(item).lower() for item in capabilities_raw} if isinstance(capabilities_raw, list) else None
+    if isinstance(capabilities_raw, list) and all(
+        isinstance(item, str) and len(item) <= 80 for item in capabilities_raw
+    ):
+        capabilities = {item.lower() for item in capabilities_raw}
+    else:
+        capabilities = None
+        if capabilities_raw is not None:
+            issues.append("model capability metadata malformed")
     thinking_meta = show.get("thinking")
     thinking_values = thinking_meta.get("values") if isinstance(thinking_meta, dict) else None
     if capabilities is not None:

@@ -177,3 +177,73 @@ def test_long_run_identifiers_with_common_prefix_remain_isolated(tmp_path):
     assert {p["text"] for p in bm.Bridge(shared + "-b", tmp_path).posts()} == {"only-b"}
     assert a_post["id"] != b_post["id"]
 
+
+
+
+def test_replay_never_accumulates_more_than_ring_limit(monkeypatch):
+    """Streaming input must not grow the in-memory ring with journal length."""
+    limit = 5
+    bridge = bm.Bridge("bounded-ring", limit=limit)
+    original = bm.Bridge._parse
+    largest = [0]
+    def observed(line):
+        largest[0] = max(largest[0], len(bridge._posts))
+        assert len(bridge._posts) <= limit, "replay accumulated unbounded posts"
+        return original(line)
+    monkeypatch.setattr(bm.Bridge, "_parse", staticmethod(observed))
+    def records():
+        for index in range(1500):
+            yield json.dumps({"id": f"r-{index}", "run_id": "bounded-ring",
+                              "agent": "writer", "kind": "finding",
+                              "text": str(index), "refs": [], "ts": index + 1}) + "\n"
+    bridge._replay(records())
+    assert largest[0] == limit
+    assert [p["text"] for p in bridge.posts()] == [str(i) for i in range(1495, 1500)]
+
+
+def test_late_tombstones_do_not_leave_removed_records_in_ring():
+    bridge = bm.Bridge("stream-tomb", limit=4)
+    original = [
+        {"id": f"entry-{i}", "run_id": "stream-tomb", "agent": "agent",
+         "kind": "finding", "text": f"post-{i}", "refs": [], "ts": i+1}
+        for i in range(12)
+    ]
+    lines = [json.dumps(p) + "\n" for p in original]
+    lines += [json.dumps({"tombstones": [original[-1]["id"]]}) + "\n"]
+    lines += [json.dumps(dict(original[-1], text="resurrection")) + "\n"]
+    bridge._replay(iter(lines))
+    assert bridge.get(original[-1]["id"]) is None
+    assert len(bridge.posts()) <= 4
+
+
+
+
+def test_ancient_duplicate_id_cannot_resurrect_after_tombstone_window_rollover():
+    bridge = bm.Bridge("ancient-duplicate", limit=2)
+    records = [
+        {"id":"original", "run_id":"ancient-duplicate", "agent":"trusted",
+         "kind":"finding", "text":"original-trusted", "refs":[], "ts":1}
+    ]
+    records.extend({
+        "id":f"filler-{i}", "run_id":"ancient-duplicate", "agent":"peer",
+        "kind":"finding", "text":f"filler-{i}", "refs":[], "ts":i+2,
+    } for i in range(220))
+    records.append(dict(records[0], text="forged-resurrection", agent="intruder"))
+    bridge._replay(json.dumps(rec) + "\n" for rec in records)
+    assert bridge.get("original") is None
+    assert [p["id"] for p in bridge.posts()] == ["filler-218", "filler-219"]
+
+
+def test_old_tombstoned_id_cannot_return_after_eviction_cache_rollover():
+    bridge = bm.Bridge("tomb-ancient", limit=3)
+    lines = [json.dumps({"tombstones":["blocked-id"]}) + "\n"]
+    for i in range(220):
+        lines.append(json.dumps({
+            "id":f"entry-{i}","run_id":"tomb-ancient","agent":"writer",
+            "kind":"finding","text":str(i),"refs":[],"ts":i+1}) + "\n")
+    lines.append(json.dumps({"id":"blocked-id","run_id":"tomb-ancient",
+                             "agent":"untrusted","kind":"finding",
+                             "text":"forged","refs":[],"ts":500}) + "\n")
+    bridge._replay(iter(lines))
+    assert bridge.get("blocked-id") is None
+

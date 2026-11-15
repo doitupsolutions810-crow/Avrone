@@ -238,9 +238,29 @@ class Bridge:
                 return
 
     def _replay(self, text: str | Iterable[str]) -> None:
-        """Rebuild the ring from text or a bounded line iterator under lock."""
+        """Rebuild a bounded ring without resurrecting old duplicate identifiers."""
         self._posts.clear()
         self._lines = 0
+
+        # A fixed 4-MiB Bloom filter remembers identities even after the
+        # bounded post/tombstone rings expire. For malformed, enormous logs
+        # it fails closed on rare false positives (drops a post), rather than
+        # accepting a forged repeat of an ancient/tombstoned identity.
+        seen_bits = bytearray(4 * 1024 * 1024)
+        mask = len(seen_bits) * 8 - 1
+        def seen_or_mark(post_id: str) -> bool:
+            digest = hashlib.sha256(post_id.encode("utf-8", errors="surrogatepass")).digest()
+            first = int.from_bytes(digest[:8], "little")
+            step = int.from_bytes(digest[8:16], "little") | 1
+            already = True
+            for i in range(5):
+                position = (first + i * step) & mask
+                byte_index, bit = position >> 3, 1 << (position & 7)
+                if not (seen_bits[byte_index] & bit):
+                    already = False
+                seen_bits[byte_index] |= bit
+            return already
+
         for line in text.splitlines() if isinstance(text, str) else text:
             tomb = self._parse_tombstones(line)
             if tomb is not None:
@@ -249,16 +269,22 @@ class Bridge:
                     # partially rewritten or a peer appends one after a post.
                     self._posts.pop(t, None)
                     self._tomb(t)
+                    seen_or_mark(t)
                 continue
             rec = self._parse(line)
             if rec is None:
                 continue
             self._lines += 1
-            if rec["id"] in self._evicted or rec["id"] in self._posts:
+            was_seen = seen_or_mark(rec["id"])
+            if was_seen or rec["id"] in self._evicted or rec["id"] in self._posts:
                 # A poisoned or duplicate journal line must not revise the
                 # first accepted record on restart. Tombstones stay final.
                 continue
             self._posts[rec["id"]] = rec
+            # Bound memory *during* replay, not only at EOF: a crafted journal
+            # with millions of individually valid records must not keep all
+            # parsed post dictionaries resident before the final trim.
+            self._trim()
         self._trim()
 
     @staticmethod

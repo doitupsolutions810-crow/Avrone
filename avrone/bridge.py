@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import math
 import contextlib
+import hashlib
 import os
 import re
 import stat
@@ -79,8 +80,18 @@ def bridge_run_id(run_id: Any) -> str:
 
 
 def safe_run_id(run_id: Any) -> str:
-    rid = _RUN_RE.sub("", str(run_id or ""))[:80].lstrip(".")
-    return rid or "run"
+    """Journal name that cannot collide with an unsafe/sanitized run id.
+
+    Keep already-safe legacy names unchanged. For every changed or truncated
+    name, bind a deterministic digest of the original value to the safe stem,
+    so "a/b" cannot read the journal belonging to the real run "ab".
+    """
+    raw = str(run_id or "")
+    stem = _RUN_RE.sub("", raw)[:80].lstrip(".") or "run"
+    if raw == stem:
+        return stem
+    suffix = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
+    return f"{stem[:59].rstrip('.') or 'run'}-{suffix}"
 
 
 def _utf8_text(value: Any) -> str:
@@ -212,9 +223,10 @@ class Bridge:
             if rec is None:
                 continue
             self._lines += 1
-            if rec["id"] in self._evicted:
+            if rec["id"] in self._evicted or rec["id"] in self._posts:
+                # A poisoned or duplicate journal line must not revise the
+                # first accepted record on restart. Tombstones stay final.
                 continue
-            self._posts.pop(rec["id"], None)
             self._posts[rec["id"]] = rec
         self._trim()
 

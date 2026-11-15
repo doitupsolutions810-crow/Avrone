@@ -1201,7 +1201,14 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     with _blackboard_lock(core), _blackboard_file_lock(core) as locked:
         if not locked:
             raise BridgeError("global blackboard lock unavailable")
-        if _id_state(core, pid) is not None:
+        existing = _id_state(core, pid)
+        if existing is not None:
+            if existing == "stored":
+                # A previous attempt can durably append the journal record
+                # then fail to save the global cursor. A retry must repair
+                # that cursor (or fail again), not silently acknowledge an
+                # untracked event merely because its post ID is familiar.
+                _sync_order(core, _posts_by_id(core))
             return True, pid
         dest = for_core(core, str(post.get("run_id") or "run"))
         stats = dest.merge_remote([post], str(post.get("origin_node") or "local"))

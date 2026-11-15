@@ -31,6 +31,7 @@ import math
 import contextlib
 import os
 import re
+import stat
 import threading
 import time
 import uuid
@@ -130,6 +131,26 @@ def _remote_ts(ts: Any) -> float:
     return ts if math.isfinite(ts) and ts > 0 else time.time()
 
 
+def _regular_fd(path: Path, flags: int) -> int:
+    """Open only a regular, single-link bridge file, never a symlink or FIFO.
+
+    NONBLOCK avoids hanging if a hostile writer replaces a journal with a pipe
+    between the path check and open; NOFOLLOW closes the final-component race.
+    """
+    if path.is_symlink() or path.parent.is_symlink():
+        raise OSError("unsafe bridge file path")
+    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_NONBLOCK", 0), 0o600)
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
+            raise OSError("unsafe bridge file type")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 class BridgeError(ValueError):
     """A post refused (bad kind, empty text, unknown refs)."""
 
@@ -145,7 +166,8 @@ class Bridge:
         if data_dir is not None:
             d = Path(data_dir) / "bridge"
             d.mkdir(parents=True, exist_ok=True)
-            self.path = d / f"{safe_run_id(self.run_id)}.jsonl"
+            if not d.is_symlink():
+                self.path = d / f"{safe_run_id(self.run_id)}.jsonl"
         key = str(self.path.resolve()) if self.path else f"mem:{id(self)}"
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(key, threading.RLock())
@@ -156,11 +178,13 @@ class Bridge:
 
     # ------------------------------------------------------------ io
     def _load(self) -> None:
-        if self.path is None or not self.path.exists():
+        if self.path is None:
             return
         with self._lock:
             try:
-                text = self.path.read_text(encoding="utf-8", errors="replace")
+                with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
+                               encoding="utf-8", errors="replace") as stream:
+                    text = stream.read()
             except OSError:
                 return
             self._replay(text)
@@ -236,7 +260,7 @@ class Bridge:
             yield
             return
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        with lock_path.open("a+b") as lock_file:
+        with os.fdopen(_regular_fd(lock_path, os.O_RDWR | os.O_CREAT), "a+b") as lock_file:
             try:
                 import fcntl  # POSIX: Linux and macOS
             except ImportError:  # pragma: no cover - non-POSIX fallback
@@ -253,7 +277,7 @@ class Bridge:
             return
         try:
             with self._file_lock():
-                with self.path.open("a+b") as f:
+                with os.fdopen(_regular_fd(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND), "r+b") as f:
                     f.seek(0, os.SEEK_END)
                     lead = b""
                     if f.tell() > 0:  # a torn last line (crash mid-write) must not swallow this post
@@ -264,12 +288,19 @@ class Bridge:
                     f.write(lead + "".join(json.dumps(r, default=str) + "\n" for r in recs).encode("utf-8"))
                 self._lines += len(recs)
                 if self._lines > 2 * self.limit:  # replay under process lock before atomic compaction
-                    self._replay(self.path.read_text(encoding="utf-8", errors="replace"))
+                    with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
+                                   encoding="utf-8", errors="replace") as stream:
+                        self._replay(stream.read())
                     tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
                     head = json.dumps({"tombstones": list(self._evicted)}) + "\n" if self._evicted else ""
-                    with tmp.open("w", encoding="utf-8") as f:
-                        f.write(head + "".join(json.dumps(r, default=str) + "\n" for r in self._posts.values()))
-                    os.replace(tmp, self.path)
+                    try:
+                        with os.fdopen(_regular_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+                                       "w", encoding="utf-8") as f:
+                            f.write(head + "".join(json.dumps(r, default=str) + "\n" for r in self._posts.values()))
+                        os.replace(tmp, self.path)
+                    finally:
+                        with contextlib.suppress(OSError):
+                            tmp.unlink()
                     self._lines = len(self._posts)
         except OSError:
             pass  # the in-memory bridge still works; persistence is best effort
@@ -565,14 +596,14 @@ def _iter_bridges(core: Any) -> list[Bridge]:
     if data_dir is None:
         return out
     folder = data_dir / "bridge"
-    if not folder.is_dir():
+    if not folder.is_dir() or folder.is_symlink():
         return out
     for path in sorted(folder.glob("*.jsonl")):
         try:
             resolved = str(path.resolve())
         except OSError:
             continue
-        if resolved in seen or not path.is_file():
+        if resolved in seen or not path.is_file() or path.is_symlink():
             continue
         out.append(Bridge(path.stem, data_dir))
         seen.add(resolved)
@@ -617,7 +648,8 @@ def _order_path(core: Any) -> Path | None:
     data_dir = _data_dir(core)
     if data_dir is None:
         return None
-    return data_dir / "bridge" / _ORDER_NAME
+    folder = data_dir / "bridge"
+    return None if folder.is_symlink() else folder / _ORDER_NAME
 
 
 def _load_order(core: Any) -> "OrderedDict[str, None]":
@@ -626,7 +658,7 @@ def _load_order(core: Any) -> "OrderedDict[str, None]":
         return cached
     order: "OrderedDict[str, None]" = OrderedDict()
     path = _order_path(core)
-    if path is not None and path.is_file():
+    if path is not None and path.is_file() and not path.is_symlink():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, RecursionError, TypeError, ValueError):
@@ -651,7 +683,9 @@ def _save_order(core: Any, order: "OrderedDict[str, None]") -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps({"ids": list(order)}), encoding="utf-8")
+        with os.fdopen(_regular_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+                       "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"ids": list(order)}))
         os.replace(tmp, path)
         tmp = None
     except OSError:

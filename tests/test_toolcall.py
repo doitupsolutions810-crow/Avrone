@@ -488,7 +488,7 @@ def test_squad_propagates_original_action_contract_to_both_workers(tmp_path, mon
         "first_action": {"tool": "echo", "args": {"text": "squad-contract-proof"}},
         "allow_followup_calls": False,
     }
-    task = "Run the two-worker verification.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+    task = "Run the two-worker verification.\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
 
     result = run(core.squad(task, n=2, run_id="squad-action-contract", dispatch="local"))
 

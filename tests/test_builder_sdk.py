@@ -230,22 +230,33 @@ async def test_build_rejects_unsafe_run_identifiers_before_trinity_dispatch(run_
 
 
 @pytest.mark.asyncio
-async def test_close_continues_remaining_cleanup_callbacks_after_one_fails():
+async def test_close_continues_cleanup_and_retries_only_failed_callbacks():
     calls = []
+    fail = {"enabled": True}
 
     def first():
         calls.append("first")
 
     def broken():
         calls.append("broken")
-        raise RuntimeError("cleanup transport failed")
+        if fail["enabled"]:
+            raise RuntimeError("cleanup transport failed")
 
     async def last():
         calls.append("last")
 
     sdk = BuilderAgentSDK(FakeCore(), cleanups=[first, broken, last])
-    await sdk.close()
+    with pytest.raises(RuntimeError, match="cleanup callback"):
+        await sdk.close()
     assert calls == ["last", "broken", "first"]
+    assert sdk.closed is False
+    assert sdk._closing is False
+    assert sdk.cleanups == [broken]
+
+    fail["enabled"] = False
+    await sdk.close()
+    assert calls == ["last", "broken", "first", "broken"]
+    assert sdk.cleanups == []
     assert sdk.closed is True
 
 

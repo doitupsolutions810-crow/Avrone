@@ -975,10 +975,10 @@ def _load_order(core: Any) -> "OrderedDict[str, None]":
     return order
 
 
-def _save_order(core: Any, order: "OrderedDict[str, None]") -> None:
+def _save_order(core: Any, order: "OrderedDict[str, None]") -> bool:
     path = _order_path(core)
     if path is None:
-        return
+        return True  # explicitly memory-only: no durable cursor is required
     tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -992,10 +992,19 @@ def _save_order(core: Any, order: "OrderedDict[str, None]") -> None:
             core._blackboard_order_revision = _order_signature(path)
         except AttributeError:  # pragma: no cover - slotted core
             pass
+        return True
     except OSError:
+        # A failed atomic replacement must invalidate the caller's mutated
+        # in-memory order. Otherwise a later read sees the same cached IDs,
+        # skips the retry, and silently serves an unpersisted cursor.
+        try:
+            core._blackboard_order_revision = None
+        except AttributeError:  # pragma: no cover - slotted core
+            pass
         if tmp is not None:
             with contextlib.suppress(OSError):
                 tmp.unlink()
+        return False
 
 
 def _sync_order(core: Any, by_id: dict[str, dict[str, Any]], *,
@@ -1023,8 +1032,11 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]], *,
         for pid in fresh:
             order[pid] = None
         changed = True
-    if changed and persist:
-        _save_order(core, order)
+    if changed and persist and not _save_order(core, order):
+        # A client must not checkpoint an order we failed to persist.
+        # Read-only fallback when the global lock is unavailable uses
+        # persist=False and remains available.
+        raise BridgeError("global cursor not persisted")
     return order
 
 

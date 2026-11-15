@@ -179,21 +179,23 @@ def test_pool_lazy_create_and_reuse(tmp_path):
     assert fake.calls == []                                       # nothing until first use
     name = run(pool.ensure(d))
     assert name == "avrone-agent-edge-builder"
-    assert fake.verbs() == ["inspect", "rm", "run", "inspect"] and pool.created == 1
+    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"] and pool.created == 1
     now[0] = 130.0
     assert run(pool.ensure(d)) == name
-    assert fake.verbs() == ["inspect", "rm", "run", "inspect"]               # reused: no new docker calls
+    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"]               # reused: no new docker calls
     assert pool.state()["homes"][name]["uses"] == 2
 
 
 def test_pool_adopts_only_a_policy_compliant_running_leftover(tmp_path):
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
-    argv = ac.persistent_run_argv("avrone-agent-edge-builder", d, "img", False, agent_id="builder")
     fake = FakeDocker()
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-builder", d, fake.image_id, False, agent_id="builder"
+    )
     fake.seed(argv)
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
     run(pool.ensure(d))
-    assert fake.verbs() == ["inspect"] and pool.created == 0
+    assert fake.verbs() == ["image", "inspect"] and pool.created == 0
 
 
 def test_pool_idle_reap(tmp_path):
@@ -811,26 +813,30 @@ def test_pool_rejects_invalid_explicit_idle_limits(invalid):
 
 def test_pool_recreates_a_managed_but_unsafe_leftover(tmp_path):
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
-    argv = ac.persistent_run_argv("avrone-agent-edge-builder", d, "img", False, agent_id="builder")
     fake = FakeDocker()
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-builder", d, fake.image_id, False, agent_id="builder"
+    )
     fake.seed(argv)
     fake.inspect_payloads["avrone-agent-edge-builder"]["HostConfig"]["NetworkMode"] = "bridge"
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
     run(pool.ensure(d))
-    assert fake.verbs() == ["inspect", "rm", "run", "inspect"]
+    assert fake.verbs() == ["image", "inspect", "rm", "run", "inspect"]
     assert fake.inspect_payloads["avrone-agent-edge-builder"]["HostConfig"]["NetworkMode"] == "none"
 
 
 def test_pool_refuses_to_adopt_or_delete_an_unowned_name(tmp_path):
     d = agentfs.agent_dir(tmp_path / "ws", "builder")
-    argv = ac.persistent_run_argv("avrone-agent-edge-builder", d, "img", False, agent_id="builder")
     fake = FakeDocker()
+    argv = ac.persistent_run_argv(
+        "avrone-agent-edge-builder", d, fake.image_id, False, agent_id="builder"
+    )
     fake.seed(argv)
     fake.inspect_payloads["avrone-agent-edge-builder"]["Config"]["Labels"].pop("avrone.agent-home")
     pool = ac.AgentContainerPool(fake, "img", False, node="edge", clock=lambda: 0.0)
     with pytest.raises(RuntimeError, match="unowned"):
         run(pool.ensure(d))
-    assert fake.verbs() == ["inspect"]
+    assert fake.verbs() == ["image", "inspect"]
     assert "avrone-agent-edge-builder" in fake.running
 
 

@@ -396,6 +396,48 @@ def normalize_call(registry: Any, call: Any) -> Any:
     return out
 
 
+def parse_action_contract(task: str) -> dict[str, Any] | None:
+    """Read one explicit operator action contract embedded in the original run task.
+
+    Format: one line beginning with AVRONE_ACTION_CONTRACT: followed by strict JSON:
+    {"first_action":{"tool":"shell","args":{"cmd":"..."}}, "allow_followup_calls":false}
+    The marker is opt-in and is carried through spawned workers via AgentContext.run_task.
+    """
+    marker = "AVRONE_ACTION_CONTRACT:"
+    matches = [line[len(marker):].strip() for line in str(task or "").splitlines()
+               if line.startswith(marker)]
+    if not matches:
+        return None
+    if len(matches) != 1 or not matches[0]:
+        raise ValueError("expected exactly one non-empty AVRONE_ACTION_CONTRACT line")
+
+    def unique_object(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError(f"duplicate action-contract key: {key!r}")
+            out[key] = value
+        return out
+
+    def reject_constant(value):
+        raise ValueError(f"non-standard JSON constant in action contract: {value}")
+
+    try:
+        value = json.loads(matches[0], object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid AVRONE_ACTION_CONTRACT JSON: {exc}") from exc
+    if type(value) is not dict or set(value) != {"first_action", "allow_followup_calls"}:
+        raise ValueError("action contract must contain exactly first_action and allow_followup_calls")
+    action = value.get("first_action")
+    if (type(action) is not dict or set(action) != {"tool", "args"}
+            or not isinstance(action.get("tool"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", action["tool"])
+            or type(action.get("args")) is not dict):
+        raise ValueError("first_action must contain a valid tool name and an args object")
+    if type(value.get("allow_followup_calls")) is not bool:
+        raise ValueError("allow_followup_calls must be a boolean")
+    return {"first_action": action, "allow_followup_calls": value["allow_followup_calls"]}
+
 def normalize_action(registry: Any, action: dict[str, Any]) -> dict[str, Any]:
     """Repair a parsed action before it runs (see normalize_call).
 
@@ -710,7 +752,22 @@ class TrinityCore:
         nudges = 0
         repeats, last_key = 0, None
         budget = {"arg_errors": 0, "spent": 0}  # consecutive ARG ERRORs; spent = stop validating
-        for step in range(self.settings.max_steps):
+        try:
+            contract = parse_action_contract(ctx.run_task or "")
+        except ValueError as exc:
+            self.codex.emit(run_id, "action.contract.invalid", name, message=str(exc)[:500])
+            return f"[{name} failed: invalid action contract: {exc}]"
+
+        first_step = 0
+        if contract is not None:
+            required = contract["first_action"]
+            self.codex.emit(run_id, "action.contract.start", name, tool=required["tool"])
+            [checked] = self._prechecked(run_id, name, [required], 0, budget)
+            tool, out = await self._one_call(run_id, name, ctx, checked, 0, budget)
+            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\\n{out}"})
+            first_step = 1
+
+        for step in range(first_step, self.settings.max_steps):
             for note in self.inbox.pop(name, []):
                 messages.append({"role": "user", "content": reply_text(note) + "\nAct on this now, inside your own environment."})
             elided = compact_messages(messages, context_chars())
@@ -754,6 +811,15 @@ class TrinityCore:
                 result = reply.strip()
                 break
             action = normalize_action(self.tools, action)
+            if (contract is not None and not contract["allow_followup_calls"]
+                    and ("tool" in action or "tools" in action)):
+                self.codex.emit(run_id, "action.contract.blocked", name, step=step,
+                                requested=action.get("tool", "batch"))
+                messages.append({"role": "user", "content": (
+                    "The action contract has already executed its required first action and "
+                    "forbids additional tool calls. Do not call another tool; provide your final "
+                    "result using only the actual TOOL RESULT already supplied.")})
+                continue
             if "final" in action:
                 result = "" if action["final"] is None else str(action["final"])
                 break

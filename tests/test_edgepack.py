@@ -2543,3 +2543,12 @@ def test_docker_not_found_requires_unambiguous_non_timeout_error(result, expecte
 ])
 def test_docker_success_predicate_requires_exact_zero_and_explicit_no_timeout(result, expected):
     assert ac._docker_succeeded(result) is expected
+
+def test_docker_result_predicates_reject_missing_timeout_metadata():
+    class IncompleteResult:
+        exit_code = 0
+        stderr = "No such container: maybe"
+
+    result = IncompleteResult()
+    assert ac._docker_succeeded(result) is False
+    assert ac._docker_not_found(result) is False

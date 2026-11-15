@@ -411,16 +411,38 @@ def test_docker_runner_argv_and_failure(tmp_path, monkeypatch):
         calls.append(argv)
         if results:
             return results.pop(0)
-        output = "d" * 64 if len(argv) > 1 and argv[1] == "run" else "ok"
-        return CommandResult(cmd, 0, output, "")
+        if argv[1:3] == ["image", "inspect"]:
+            return CommandResult(cmd, 0, "sha256:" + "a" * 64, "")
+        if len(argv) > 1 and argv[1] == "run":
+            return CommandResult(cmd, 0, "d" * 64, "")
+        if len(argv) > 1 and argv[1] == "inspect":
+            payload = {
+                "Id": "d" * 64, "Name": f"/{d2.container}", "Image": "sha256:" + "a" * 64,
+                "State": {"Running": True},
+                "Config": {
+                    "Image": "sha256:" + "a" * 64, "WorkingDir": "/workspace",
+                    "Labels": {"avrone.runner": d2._owner_token},
+                },
+                "HostConfig": {
+                    "Binds": [f"{d2.workspace.resolve()}:/workspace"],
+                    "NetworkMode": "bridge",
+                },
+                "Mounts": [{
+                    "Type": "bind", "Source": str(d2.workspace.resolve()),
+                    "Destination": "/workspace", "RW": True,
+                }],
+            }
+            return CommandResult(cmd, 0, json.dumps(payload), "")
+        return CommandResult(cmd, 0, "ok", "")
     monkeypatch.setattr(DockerRunner, "_exec", fake_exec)
     d = DockerRunner(rsettings(tmp_path))
     with pytest.raises(RuntimeError, match="no daemon"):
         run(d.start())
-    assert "--network" in calls[0] and calls[0][-3:] == ["img", "sleep", "infinity"]
+    assert calls[0][1:3] == ["image", "inspect"]
     d2 = DockerRunner(rsettings(tmp_path, allow_network=True))
     run(d2.start())
-    assert "--network" not in calls[-1]
+    assert calls[2][-3:] == ["sha256:" + "a" * 64, "sleep", "infinity"]
+    assert "--network" not in calls[2]
     runner_id = d2.container_id
     assert runner_id == "d" * 64
     assert run(d2.run("ls")).stdout == "ok" and runner_id in calls[-1]

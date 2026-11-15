@@ -119,6 +119,7 @@ class DockerRunner(Runner):
         super().__init__(settings)
         self.container = f"avrone-env-{uuid.uuid4().hex[:8]}"
         self.container_id: str | None = None
+        self.image_id: str | None = None
         self._owner_token = uuid.uuid4().hex
         self.agent_pool: agentcontainer.AgentContainerPool | None = None  # AVRONE_AGENT_CONTAINER=persistent
 
@@ -136,7 +137,9 @@ class DockerRunner(Runner):
         candidate = value.strip().lower()
         return candidate if re.fullmatch(r"[0-9a-f]{64}", candidate) else None
 
-    def _inspect_started_container_id(self, stdout: str) -> str | None:
+    def _inspect_started_container_id(
+        self, stdout: str, *, expected_image_id: str, expected_container_id: str | None = None
+    ) -> str | None:
         try:
             payload = json.loads(stdout)
         except (TypeError, ValueError):
@@ -158,7 +161,13 @@ class DockerRunner(Runner):
             return None
         if payload.get("Name") != f"/{self.container}" or state.get("Running") is not True:
             return None
-        if config.get("Image") != self.s.docker_image or config.get("WorkingDir") != "/workspace":
+        if (
+            config.get("Image") != expected_image_id
+            or payload.get("Image") != expected_image_id
+            or config.get("WorkingDir") != "/workspace"
+        ):
+            return None
+        if expected_container_id is not None and container_id != expected_container_id:
             return None
         expected_source = str(self.workspace.resolve())
         if not isinstance(binds, list) or len(binds) != 1 or not isinstance(binds[0], str):
@@ -184,7 +193,11 @@ class DockerRunner(Runner):
             return None
         if not self.s.allow_network and network_mode != "none":
             return None
-        if self.s.allow_network and network_mode.lower() in {"host", "container", "service"}:
+        normalized_network = network_mode.lower()
+        if self.s.allow_network and (
+            normalized_network in {"host", "container", "service"}
+            or normalized_network.startswith(("container:", "service:"))
+        ):
             return None
         return container_id
 
@@ -192,31 +205,59 @@ class DockerRunner(Runner):
         if self.container_id is not None:
             return
         self.workspace.mkdir(parents=True, exist_ok=True)
+        image_result = await self._exec(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", self.s.docker_image],
+            "docker image inspect runner", 30,
+        )
+        image_id = str(image_result.stdout or "").strip().lower()
+        if image_result.exit_code != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            detail = str(image_result.stderr or "")[:300]
+            raise RuntimeError(
+                "Could not resolve the Docker runner image to a valid immutable ID"
+                + (f": {detail}" if detail else "")
+            )
         argv = ["docker", "run", "-d", "--rm", "--name", self.container,
                 "--label", f"avrone.runner={self._owner_token}",
                 "-v", f"{self.workspace}:/workspace", "-w", "/workspace"]
         if not self.s.allow_network:
             argv += ["--network", "none"]
-        argv += [self.s.docker_image, "sleep", "infinity"]
+        argv += [image_id, "sleep", "infinity"]
         res = await self._exec(argv, " ".join(argv), 300)
         if res.exit_code != 0:
             raise RuntimeError(f"Could not start environment container: {res.stderr}")
-        container_id = self._full_container_id(res.stdout)
-        if container_id is None:
-            # docker run may have succeeded while a wrapper returned truncated/invalid
-            # output. Recover only from a full inspect object carrying this instance's
-            # owner label and exact workspace/runtime configuration.
+
+        returned_id = self._full_container_id(res.stdout)
+        if returned_id is not None:
+            # Always inspect the exact object ID Docker returned, even when stdout looks
+            # syntactically valid. This prevents a wrapper from redirecting the runner to
+            # a different container with a valid but unrelated ID.
+            inspected = await self._exec(
+                ["docker", "inspect", "-f", "{{json .}}", returned_id],
+                "docker inspect runner by ID", 30,
+            )
+            container_id = (
+                self._inspect_started_container_id(
+                    inspected.stdout, expected_image_id=image_id, expected_container_id=returned_id
+                )
+                if inspected.exit_code == 0 else None
+            )
+        else:
+            # stdout was truncated or malformed. Recover only from the unique friendly name
+            # when inspect proves the unguessable owner label and the exact runner policy.
             inspected = await self._exec(
                 ["docker", "inspect", "-f", "{{json .}}", self.container],
-                "docker inspect runner", 30,
+                "docker inspect runner by owned name", 30,
             )
-            if inspected.exit_code == 0:
-                container_id = self._inspect_started_container_id(inspected.stdout)
+            container_id = (
+                self._inspect_started_container_id(inspected.stdout, expected_image_id=image_id)
+                if inspected.exit_code == 0 else None
+            )
         if container_id is None:
             raise RuntimeError(
                 "Docker did not return a valid environment container ID and a matching owned container "
                 "could not be verified"
             )
+        self.image_id = image_id
         self.container_id = container_id
 
     async def stop(self) -> None:

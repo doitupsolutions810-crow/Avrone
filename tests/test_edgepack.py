@@ -125,8 +125,12 @@ class FakeDocker:
                 return CommandResult(" ".join(argv), 1, "", "image missing")
             return CommandResult(" ".join(argv), 0, self.image_id, "")
         if argv[1] == "inspect":
-            if target in self.running and target in self.inspect_payloads:
-                return CommandResult(" ".join(argv), 0, json.dumps(self.inspect_payloads[target]), "")
+            inspect_name = target if target in self.running else self._id_to_name.get(target)
+            if (
+                inspect_name in self.running and inspect_name in self.inspect_payloads
+                and (target == inspect_name or self.container_ids.get(inspect_name) == target)
+            ):
+                return CommandResult(" ".join(argv), 0, json.dumps(self.inspect_payloads[inspect_name]), "")
             return CommandResult(" ".join(argv), 1, "", f"No such object: {target}")
         if argv[1] == "run":
             if self.fail_run:
@@ -973,6 +977,85 @@ def test_docker_runner_refuses_unowned_runner_name_after_bad_run_stdout(tmp_path
     assert runner.container_id is None
     assert runner.container in fake.running
     assert not any(call[1] == "rm" for call in fake.calls)
+
+
+
+def test_docker_runner_rejects_valid_but_mismatched_run_output_id(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path, allow_network=False))
+    fake = FakeDocker()
+    other_home = agentfs.agent_dir(tmp_path / "other", "other")
+    other_argv = ac.persistent_run_argv(
+        "unrelated-container", other_home, fake.image_id, False, agent_id="other"
+    )
+    unrelated_id = fake.seed(other_argv)
+    original = fake.__call__
+
+    async def spoof_run_id(argv, timeout):
+        result = await original(argv, timeout)
+        if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+            return CommandResult(result.cmd, 0, unrelated_id, "")
+        return result
+
+    monkeypatch.setattr(runner, "_exec", spoof_run_id)
+    with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
+        run(runner.start())
+    assert runner.container_id is None
+    assert runner.container in fake.running
+    assert "unrelated-container" in fake.running
+    assert ["docker", "rm", "-f", unrelated_id] not in fake.calls
+
+
+@pytest.mark.parametrize("network_mode", ["host", "container:peer-id", "service:backend"])
+def test_docker_runner_recovery_rejects_shared_network_namespaces(tmp_path, monkeypatch, network_mode):
+    runner = DockerRunner(_settings(tmp_path, allow_network=True))
+    fake = FakeDocker()
+    original = fake.__call__
+
+    async def tampered_network(argv, timeout):
+        result = await original(argv, timeout)
+        if len(argv) > 1 and argv[1] == "run" and result.exit_code == 0:
+            fake.inspect_payloads[runner.container]["HostConfig"]["NetworkMode"] = network_mode
+            return CommandResult(result.cmd, 0, "short-id", "")
+        return result
+
+    monkeypatch.setattr(runner, "_exec", tampered_network)
+    with pytest.raises(RuntimeError, match="matching owned container could not be verified"):
+        run(runner.start())
+    assert runner.container_id is None
+    assert runner.container in fake.running
+
+
+def test_docker_runner_start_is_idempotent_and_resolves_image_once(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    fake = FakeDocker()
+    seen = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(argv)
+        return await fake(argv, timeout)
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    run(runner.start())
+    original_id = runner.container_id
+    run(runner.start())
+    assert runner.container_id == original_id
+    assert sum(call[1:3] == ["image", "inspect"] for call in seen) == 1
+    assert sum(call[1] == "run" for call in seen) == 1
+
+
+def test_docker_runner_fails_closed_if_image_resolution_is_invalid(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    seen = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        seen.append(argv)
+        return CommandResult(cmd, 0, "not-an-image-id", "")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="immutable ID"):
+        run(runner.start())
+    assert len(seen) == 1
+    assert seen[0][1:3] == ["image", "inspect"]
 
 
 def test_docker_runner_stop_without_verified_identity_never_removes_by_friendly_name(tmp_path, monkeypatch):

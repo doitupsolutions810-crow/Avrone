@@ -2305,12 +2305,14 @@ def test_pool_parallel_ensure_same_agent_creates_one_container(tmp_path):
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 65536}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": 1024, "Hard": 2048}, {"Name": "memlock", "Soft": 1, "Hard": 1}]), "open-file descriptor limit"),
     (lambda p: p["HostConfig"].update(Ulimits=[{"Name": "nofile", "Soft": True, "Hard": 2048}]), "open-file descriptor limit"),
-    (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind"),
+    (lambda p: p["HostConfig"].update(Binds=["/tmp:/agent"]), "private /agent bind", False),
     (lambda p: p["Mounts"].append({"Type": "bind", "Destination": "/host", "RW": True}), "private /agent bind"),
     (lambda p: p["Mounts"][0].update(RW=False), "private /agent bind"),
     (lambda p: p["HostConfig"]["Tmpfs"].update({"/tmp": "rw,size=8g"}), "bounded /tmp"),
 ])
-def test_existing_container_policy_validator_rejects_each_escape(mutate, reason, tmp_path, monkeypatch):
+def test_existing_container_policy_validator_rejects_each_escape(
+    mutate, reason, tmp_path, monkeypatch, expected_owned=True
+):
     monkeypatch.setenv("AVRONE_AGENT_UID", "501")
     monkeypatch.setenv("AVRONE_AGENT_GID", "20")
     agent_dir = agentfs.agent_dir(tmp_path / "ws", "builder")
@@ -2322,9 +2324,12 @@ def test_existing_container_policy_validator_rejects_each_escape(mutate, reason,
     ok, owned, detail = ac._inspect_matches_policy(
         json.dumps(payload), agent_dir, "img", allow_network=False
     )
-    assert owned is True
+    assert owned is expected_owned
     assert ok is False
-    assert reason in detail
+    if expected_owned:
+        assert reason in detail
+    else:
+        assert "not owned by this agent home" in detail
 
 
 def test_existing_container_policy_validator_accepts_only_a_valid_json_object(tmp_path, monkeypatch):
@@ -2959,7 +2964,7 @@ def test_pool_run_argv_reapplies_private_home_permissions(tmp_path):
         FakeDocker(), "img", False, node="edge", workspace=workspace
     )
 
-    pool.run_argv(home)
+    pool.run_argv(home, image_ref="sha256:" + "a" * 64)
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
 
 

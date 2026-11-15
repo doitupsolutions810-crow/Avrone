@@ -223,27 +223,40 @@ def _inspect_matches_policy(stdout: str, agent_dir: Path, image: str,
     # requested bind source and actual /agent mount both identify this exact private home.
     expected_source = str(Path(agent_dir).resolve())
     binds = host.get("Binds") or []
-    good_bind = False
-    if isinstance(binds, list) and len(binds) == 1 and isinstance(binds[0], str):
-        parts = binds[0].split(":")
-        good_bind = (
-            len(parts) in (2, 3)
-            and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
-            and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
-            and parts[2:] in ([], ["rw"])
-        )
+    matching_binds: list[str] = []
+    if isinstance(binds, list):
+        for bind in binds:
+            if not isinstance(bind, str):
+                continue
+            parts = bind.split(":")
+            if (
+                len(parts) in (2, 3)
+                and os.path.normpath(parts[0]) == os.path.normpath(expected_source)
+                and parts[1] == agentfs.CONTAINER_AGENT_MOUNT
+                and parts[2:] in ([], ["rw"])
+            ):
+                matching_binds.append(bind)
+    good_bind = isinstance(binds, list) and len(binds) == 1 and len(matching_binds) == 1
+
     mounts = payload.get("Mounts") or []
+    agent_mounts = [
+        mount for mount in mounts
+        if isinstance(mount, dict)
+        and mount.get("Type") == "bind"
+        and mount.get("Destination") == agentfs.CONTAINER_AGENT_MOUNT
+    ] if isinstance(mounts, list) else []
+    # Use the requested host bind plus an actual /agent bind to establish identity.
+    # Extra mounts or read-only drift remain policy failures, but do not erase evidence
+    # that this container belongs to this exact agent home and can be safely replaced.
     good_mount = (
         isinstance(mounts, list) and len(mounts) == 1
-        and isinstance(mounts[0], dict)
-        and mounts[0].get("Type") == "bind"
-        and mounts[0].get("Destination") == agentfs.CONTAINER_AGENT_MOUNT
-        and mounts[0].get("RW") is True
+        and len(agent_mounts) == 1
+        and agent_mounts[0].get("RW") is True
     )
     owned = (
         labels.get("avrone.agent-home") == "1"
         and labels.get("avrone.agent") == expected_agent
-        and good_bind and good_mount
+        and bool(matching_binds) and bool(agent_mounts)
     )
     if not owned:
         return False, False, "container name is occupied by a container not owned by this agent home"

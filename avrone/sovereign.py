@@ -186,9 +186,8 @@ class DockerRunner(Runner):
                 ["docker", "inspect", "-f", "{{json .}}", target],
                 "docker inspect failed runner for safe cleanup", 30,
             )
-            if inspected.exit_code != 0:
-                detail = str(inspected.stderr or "").lower()
-                if "no such container" in detail or "no such object" in detail:
+            if not agentcontainer.docker_succeeded(inspected):
+                if agentcontainer.docker_not_found(inspected):
                     continue
                 inspection_errors.append(
                     str(inspected.stderr or "unknown Docker inspection error")[:200]
@@ -203,9 +202,8 @@ class DockerRunner(Runner):
             removed = await self._exec(
                 ["docker", "rm", "-f", owned_id], "docker rm failed runner by verified ID", 30
             )
-            if removed.exit_code != 0:
-                detail = str(removed.stderr or "").lower()
-                if "no such container" in detail or "no such object" in detail:
+            if not agentcontainer.docker_succeeded(removed):
+                if agentcontainer.docker_not_found(removed):
                     return True
                 raise RuntimeError(
                     f"could not clean up verified runner container {owned_id}: "
@@ -301,7 +299,7 @@ class DockerRunner(Runner):
             "docker image inspect runner", 30,
         )
         image_id = str(image_result.stdout or "").strip().lower()
-        if image_result.exit_code != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        if not agentcontainer.docker_succeeded(image_result) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
             detail = str(image_result.stderr or "")[:300]
             raise RuntimeError(
                 "Could not resolve the Docker runner image to a valid immutable ID"
@@ -317,8 +315,8 @@ class DockerRunner(Runner):
         try:
             res = await self._exec(argv, " ".join(argv), 300)
             returned_id = self._full_container_id(res.stdout)
-            if res.exit_code != 0:
-                raise RuntimeError(f"Could not start environment container: {res.stderr}")
+            if not agentcontainer.docker_succeeded(res):
+                raise RuntimeError(f"Could not start environment container: {res.stderr or 'Docker run did not complete successfully'}")
 
             if returned_id is not None:
                 # Always inspect the exact object ID Docker returned, even when stdout looks
@@ -332,7 +330,7 @@ class DockerRunner(Runner):
                     self._inspect_started_container_id(
                         inspected.stdout, expected_image_id=image_id, expected_container_id=returned_id
                     )
-                    if inspected.exit_code == 0 else None
+                    if agentcontainer.docker_succeeded(inspected) else None
                 )
             else:
                 # stdout was truncated or malformed. Recover only from the unique friendly name
@@ -343,7 +341,7 @@ class DockerRunner(Runner):
                 )
                 container_id = (
                     self._inspect_started_container_id(inspected.stdout, expected_image_id=image_id)
-                    if inspected.exit_code == 0 else None
+                    if agentcontainer.docker_succeeded(inspected) else None
                 )
             if container_id is None:
                 raise RuntimeError(
@@ -398,9 +396,7 @@ class DockerRunner(Runner):
                     result = await self._exec(
                         ["docker", "rm", "-f", container_id], "docker rm", 30
                     )
-                    if (result.exit_code != 0
-                            and "no such container" not in str(result.stderr or "").lower()
-                            and "no such object" not in str(result.stderr or "").lower()):
+                    if not (agentcontainer.docker_succeeded(result) or agentcontainer.docker_not_found(result)):
                         raise RuntimeError(
                             f"Could not remove environment container {container_id}: "
                             f"{str(result.stderr or 'unknown Docker error')[:300]}"

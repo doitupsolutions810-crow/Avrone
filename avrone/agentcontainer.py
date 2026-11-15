@@ -400,6 +400,16 @@ def _docker_not_found(result: Any) -> bool:
     ) is not None
 
 
+def docker_succeeded(result: Any) -> bool:
+    """Public shared predicate for an unambiguous successful Docker CLI result."""
+    return _docker_succeeded(result)
+
+
+def docker_not_found(result: Any) -> bool:
+    """Public shared predicate for Docker's exact, non-timeout not-found diagnostic."""
+    return _docker_not_found(result)
+
+
 def _inspect_container_id(stdout: str) -> str | None:
     """Return the full immutable Docker container ID from one inspect JSON object."""
     try:

@@ -2860,3 +2860,110 @@ def test_pool_run_argv_reapplies_private_home_permissions(tmp_path):
 
     pool.run_argv(home)
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("result,expected_success,expected_missing", [
+    (CommandResult("docker", 0, "", "", timed_out=False), True, False),
+    (CommandResult("docker", 0, "", "", timed_out=True), False, False),
+    (CommandResult("docker", False, "", "", timed_out=False), False, False),
+    (CommandResult("docker", 1, "", "No such container: abc", timed_out=False), False, True),
+    (CommandResult("docker", 1, "", "permission denied: No such container: abc", timed_out=False), False, False),
+    (CommandResult("docker", 1, "", "transport error\\nNo such container: abc", timed_out=False), False, False),
+    (CommandResult("docker", 1, "", "No such container: abc", timed_out=True), False, False),
+])
+def test_outer_runner_uses_strict_docker_result_predicates(result, expected_success, expected_missing):
+    assert ac.docker_succeeded(result) is expected_success
+    assert ac.docker_not_found(result) is expected_missing
+
+
+@pytest.mark.parametrize("result", [
+    CommandResult("docker inspect", 1, "", "permission denied: No such container: runner", timed_out=False),
+    CommandResult("docker inspect", 1, "", "No such container: runner", timed_out=True),
+])
+def test_failed_runner_cleanup_does_not_mistake_ambiguous_inspect_for_missing(tmp_path, monkeypatch, result):
+    runner = DockerRunner(_settings(tmp_path))
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        return result
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="could not safely inspect failed runner container"):
+        run(runner._cleanup_failed_start(None))
+
+
+def test_failed_runner_cleanup_does_not_mistake_ambiguous_rm_for_success(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    fake = FakeDocker()
+    run_argv = [
+        "docker", "run", "-d", "--name", runner.container,
+        "--label", f"avrone.runner={runner._owner_token}",
+    ]
+    container_id = fake.seed(run_argv)
+    fake.inspect_payloads[runner.container]["Config"]["Labels"] = {
+        "avrone.runner": runner._owner_token
+    }
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        if len(argv) > 1 and argv[1] == "rm":
+            return CommandResult(cmd, 1, "", f"permission denied: No such container: {container_id}")
+        return await fake(argv, timeout)
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="could not clean up verified runner container"):
+        run(runner._cleanup_failed_start(container_id))
+    assert runner.container in fake.running
+
+
+@pytest.mark.parametrize("result", [
+    CommandResult("docker rm", 1, "", "permission denied: No such container: runner", timed_out=False),
+    CommandResult("docker rm", 0, "", "", timed_out=True),
+    CommandResult("docker rm", False, "", "No such container: runner", timed_out=False),
+])
+def test_runner_stop_rejects_ambiguous_docker_removal_results(tmp_path, monkeypatch, result):
+    runner = DockerRunner(_settings(tmp_path))
+    runner.container_id = "a" * 64
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        return result
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="Could not remove environment container"):
+        run(runner.stop())
+    assert runner.container_id == "a" * 64
+    assert runner._closed is False
+
+
+def test_runner_start_rejects_success_shaped_image_inspect_timeout(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    calls = []
+    image_id = "sha256:" + "c" * 64
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        calls.append(argv)
+        return CommandResult(cmd, 0, image_id, "", timed_out=True)
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="Could not resolve the Docker runner image"):
+        run(runner.start())
+    assert len(calls) == 1 and calls[0][1:3] == ["image", "inspect"]
+    assert runner.container_id is None
+
+
+def test_runner_start_cleans_up_after_success_shaped_docker_run_timeout(tmp_path, monkeypatch):
+    runner = DockerRunner(_settings(tmp_path))
+    image_id = "sha256:" + "d" * 64
+    returned_id = "e" * 64
+    calls = []
+
+    async def fake_exec(argv, cmd, timeout, cwd=None, env=None):
+        calls.append(argv)
+        if argv[1:3] == ["image", "inspect"]:
+            return CommandResult(cmd, 0, image_id, "")
+        if argv[1] == "run":
+            return CommandResult(cmd, 0, returned_id, "", timed_out=True)
+        return CommandResult(cmd, 1, "", f"No such container: {argv[-1]}")
+
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="Could not start environment container"):
+        run(runner.start())
+    assert runner.container_id is None
+    assert not any(call[1] == "exec" for call in calls)

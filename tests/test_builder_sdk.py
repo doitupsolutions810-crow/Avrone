@@ -857,3 +857,35 @@ async def test_close_waits_for_inflight_build_and_verify_before_cleanup():
     assert sdk._active_operations == 0
     assert sdk.closed is True
     assert cleanup_calls == ["cleanup"]
+
+@pytest.mark.asyncio
+async def test_close_drains_cancelled_inflight_build_before_cleanup():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    cleanup_calls = []
+
+    class BlockingCore(FakeCore):
+        async def squad(self, task, **kwargs):
+            entered.set()
+            await release.wait()
+            return self.raw
+
+    async def cleanup():
+        cleanup_calls.append("closed")
+
+    sdk = BuilderAgentSDK(BlockingCore(), cleanups=[cleanup])
+    build_task = asyncio.create_task(sdk.build("cancel during shutdown"))
+    await entered.wait()
+    close_task = asyncio.create_task(sdk.close())
+    await asyncio.sleep(0)
+    assert sdk._closing is True
+    assert sdk._active_operations == 1
+    assert cleanup_calls == []
+
+    build_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await build_task
+    await close_task
+    assert sdk._active_operations == 0
+    assert sdk.closed is True
+    assert cleanup_calls == ["closed"]

@@ -428,6 +428,30 @@ def test_parse_action_contract_rejects_non_standard_json_constants():
         parse_action_contract("AVRONE_ACTION_CONTRACT:" + payload)
 
 
+@pytest.mark.parametrize("tool,args", [
+    ("missing-tool", {}),
+    ("echo", {}),
+])
+def test_required_action_contract_fails_closed_when_precheck_rejects_tool_or_args(tmp_path, tool, args):
+    log = []
+    llm = ScriptLLM(['{"final":"must not run"}'])
+    core = _core(tmp_path, llm, tools=_reg(log), steps=4)
+    contract = {
+        "first_action": {"tool": tool, "args": args},
+        "allow_followup_calls": False,
+    }
+    task = "Perform the required action.\\nAVRONE_ACTION_CONTRACT:" + json.dumps(contract, separators=(",", ":"))
+
+    result = run(core.run_agent("rejected-action-contract", "Verifier", task))
+
+    assert result.startswith("[Verifier failed: required first action was rejected before execution:")
+    assert log == []
+    assert llm.seen == []
+    events = core.codex.replay("rejected-action-contract")
+    assert any(e["kind"] == "action.contract.rejected" for e in events)
+    assert not any(e["kind"] == "tool.call" for e in events)
+
+
 def test_invalid_required_action_contract_fails_before_llm_or_tool_execution(tmp_path):
     log = []
     llm = ScriptLLM(['{"final":"must not run"}'])

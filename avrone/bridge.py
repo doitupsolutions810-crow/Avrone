@@ -488,13 +488,25 @@ class Bridge:
         if not parts:
             parts.append(f"{len(posts)} finding(s) posted; no conclusions or corrections.")
         text = "\n\n".join(parts)
-        return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+        try:
+            budget = max(0, int(max_chars))
+        except (TypeError, ValueError, OverflowError):
+            budget = 6000
+        if len(text) <= budget:
+            return text
+        if budget <= 3:
+            return text[:budget]
+        return text[:budget - 3] + "..."
 
 
 def compact(posts: list[dict[str, Any]], width: int = 300) -> str:
     """One line per post for agents: [id] kind agent (refs): text."""
     if not posts:
         return "(no posts)"
+    try:
+        width = max(0, min(MAX_TEXT, int(width)))
+    except (TypeError, ValueError, OverflowError):
+        width = 300
     lines = []
     for p in posts:
         refs = f" re {','.join(p['refs'])}" if p.get("refs") else ""

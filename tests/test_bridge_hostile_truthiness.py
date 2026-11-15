@@ -117,3 +117,27 @@ def test_300_randomized_hostile_blackboard_values_preserve_utf8():
         assert post["run_id"] == "tenant"
         assert post["agent"] == "worker"
         json.dumps(post, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+class HostileSurrogateRunId:
+    def __str__(self):
+        return "tenant\ud800"
+
+    def __bool__(self):
+        raise RuntimeError("cannot evaluate run-id truthiness")
+
+
+def test_nonstr_surrogate_run_id_cannot_alias_normalized_unicode():
+    poison = HostileSurrogateRunId()
+    clean = "tenant\ufffd"
+    assert bm.bridge_run_id(poison) != bm.bridge_run_id(clean)
+    assert bm.safe_run_id(poison) != bm.safe_run_id(clean)
+    assert bm._blackboard_run_id(poison) != bm._blackboard_run_id(clean)
+    x, xe = bm.normalize_blackboard_post({
+        "id": "nonstr-unsafe", "kind": "finding", "text": "hello", "run_id": poison
+    })
+    y, ye = bm.normalize_blackboard_post({
+        "id": "nonstr-clean", "kind": "finding", "text": "hello", "run_id": clean
+    })
+    assert xe is None and ye is None
+    assert x["run_id"] != y["run_id"]

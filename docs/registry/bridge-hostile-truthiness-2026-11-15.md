@@ -17,3 +17,19 @@ Baseline head: 0961bdd396e5f380e82bbb90e314d69455fe7de8
 A standalone reproduction of the proposed normalization helpers passed **18/18 local checks**, including 300 seeded inputs. Source regression module was separately syntax-compiled; the complete AVRONE Python package was not locally cloned or tested due unavailable github.com DNS. Do not interpret isolated passes as package, swarm, or deployment certification.
 
 Release decision: **HOLD**, no merge or deployment.
+
+
+## Additional identity collision regression
+
+A non-string object whose __str__ returns a lone surrogate previously had its
+spelling normalized before the digest was computed. This could alias a valid
+Unicode run ID after sanitization. The follow-up patch preserves the raw
+unsanitized spelling until the collision-resistant hash is produced, while
+still forbidding hostile __bool__ and overridden str subclass methods.
+
+- [New regression](../../tests/test_bridge_hostile_truthiness.py):
+  test_nonstr_surrogate_run_id_cannot_alias_normalized_unicode.
+- [Bridge identity normalization](../../avrone/bridge.py): bridge_run_id,
+  safe_run_id and _blackboard_run_id.
+- Isolated helper check: 19/19 passing including this additional case.
+- Hosted full-package CI remains required and unverified.

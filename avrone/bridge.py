@@ -88,7 +88,12 @@ def bridge_run_id(run_id: Any) -> str:
     elif isinstance(run_id, str):
         raw = str.__str__(run_id) or "run"
     else:
-        raw = _utf8_text(run_id) or "run"
+        # Keep the original unsanitized spelling until the digest is formed.
+        # Pre-cleaning a non-string object can collapse distinct surrogate IDs.
+        try:
+            raw = str.__str__(str(run_id)) or "run"
+        except Exception:
+            raw = "..."
     if raw.endswith("-wave1") and len(raw) > len("-wave1"):
         raw = raw[: -len("-wave1")]
     rid = _utf8_text(raw)
@@ -117,7 +122,10 @@ def safe_run_id(run_id: Any) -> str:
     elif isinstance(run_id, str):
         raw = str.__str__(run_id)
     else:
-        raw = _utf8_text(run_id)
+        try:
+            raw = str.__str__(str(run_id))
+        except Exception:
+            raw = "..."
     stem = _RUN_RE.sub("", raw)[:80].lstrip(".") or "run"
     if raw == stem:
         return stem
@@ -1082,7 +1090,7 @@ def _blackboard_run_id(value: Any) -> str:
     clean = _utf8_text(value)
     if not clean.strip():
         return "run"
-    logical = bridge_run_id(str.__str__(value) if isinstance(value, str) else clean)
+    logical = bridge_run_id(value)
     if len(logical) > 80:
         digest = hashlib.sha256(logical.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
         return f"{logical[:59]}-{digest}"

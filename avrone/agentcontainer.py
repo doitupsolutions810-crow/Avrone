@@ -450,6 +450,7 @@ class AgentContainerPool:
             home = self.homes.get(name)
             previous_uses = 0
             image_id: str | None = None
+            cached_home_removed_or_missing = False
             if home is not None:
                 # A name cached in memory is not proof that Docker still owns a running,
                 # correctly configured container. The daemon may have restarted, an operator
@@ -478,6 +479,7 @@ class AgentContainerPool:
                     if (getattr(removed, "exit_code", 1) != 0
                             and not _docker_not_found(removed)):
                         raise RuntimeError(f"could not remove non-compliant agent container {name}")
+                    cached_home_removed_or_missing = True
                 elif _docker_not_found(inspected_home):
                     if home.active > 0:
                         # Do not replace a disappeared container while callers still hold
@@ -487,6 +489,7 @@ class AgentContainerPool:
                             f"cached agent container {name} disappeared while leased; "
                             "wait for active commands to drain before recreating it"
                         )
+                    cached_home_removed_or_missing = True
                 else:
                     detail = str(getattr(inspected_home, "stderr", "") or "")[:300]
                     raise RuntimeError(
@@ -503,26 +506,30 @@ class AgentContainerPool:
             # keeps its original immutable image ID rather than silently following a retargeted tag.
             if image_id is None:
                 image_id = await self._resolve_image_id()
-            inspected = await self._exec(inspect_argv(name), 30)
-            code = getattr(inspected, "exit_code", 1)
             compatible = False
-            if code == 0:
-                compatible, owned, reason = _inspect_matches_policy(
-                    str(getattr(inspected, "stdout", "")), d, image_id, self.allow_network
-                )
-                if not owned:
-                    # A colliding name is not permission to kill or adopt an arbitrary container.
-                    raise RuntimeError(f"refusing to adopt unowned agent container {name}: {reason}")
-                if not compatible:
-                    removed = await self._exec(rm_argv(name), 30)
-                    if getattr(removed, "exit_code", 1) != 0:
-                        raise RuntimeError(f"could not remove non-compliant agent container {name}")
-            elif _docker_not_found(inspected):
-                # Keep stale-container cleanup; rm on an absent name is harmless.
-                await self._exec(rm_argv(name), 30)
+            if cached_home_removed_or_missing:
+                # We already inspected/removed the cached object under its name. Do not inspect
+                # or rm that mutable name again: a different container could claim it between
+                # operations. docker run will fail harmlessly if the name has been reoccupied.
+                code = 1
             else:
-                detail = str(getattr(inspected, "stderr", "") or "")[:300]
-                raise RuntimeError(f"could not inspect agent container {name}: {detail or 'unknown Docker error'}")
+                inspected = await self._exec(inspect_argv(name), 30)
+                code = getattr(inspected, "exit_code", 1)
+                if code == 0:
+                    compatible, owned, reason = _inspect_matches_policy(
+                        str(getattr(inspected, "stdout", "")), d, image_id, self.allow_network
+                    )
+                    if not owned:
+                        # A colliding name is not permission to kill or adopt an arbitrary container.
+                        raise RuntimeError(f"refusing to adopt unowned agent container {name}: {reason}")
+                    if not compatible:
+                        removed = await self._exec(rm_argv(name), 30)
+                        if (getattr(removed, "exit_code", 1) != 0
+                                and not _docker_not_found(removed)):
+                            raise RuntimeError(f"could not remove non-compliant agent container {name}")
+                elif not _docker_not_found(inspected):
+                    detail = str(getattr(inspected, "stderr", "") or "")[:300]
+                    raise RuntimeError(f"could not inspect agent container {name}: {detail or 'unknown Docker error'}")
 
             if code != 0 or not compatible:
                 created = await self._exec(self.run_argv(d, image_id), 300)

@@ -516,3 +516,24 @@ async def test_run_cleanups_continues_after_a_callback_cancels_itself():
     with pytest.raises(asyncio.CancelledError):
         await bs.run_cleanups([later, cancelled])
     assert order == ["cancelled", "later"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_manager_receives_exact_configured_data_directory(settings, log, monkeypatch):
+    import avrone.fleet as fl
+
+    observed = []
+
+    class FakeFleet:
+        enabled = False
+
+        def __init__(self, core, data_dir):
+            observed.append((core, data_dir))
+
+        def info(self):
+            return {"enabled": False}
+
+    monkeypatch.setattr(fl, "FleetManager", FakeFleet)
+    core, cleanups = await bs.build_core(settings)
+    assert observed == [(core, settings.data_dir)]
+    await bs.run_cleanups(cleanups)

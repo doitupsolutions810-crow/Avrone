@@ -127,13 +127,15 @@ A connected service must be reported as READY only after its configured MCP/API 
 
 HTTP MCP configurations may use header_env to refer to a host environment variable rather than storing a bearer token in mcp.json. The variable must be present and non-empty when the host-side MCP manager starts. Header names remain subject to the transport's reserved-header, duplicate-name, and control-character checks.
 
-Example (the environment variable contains the complete Bearer value):
+**Supabase authentication distinction:** the hosted Supabase MCP now uses OAuth with dynamic client registration by default. AVRONE's current HTTP transport does not implement OAuth/DCR, so the static Authorization header below is only the documented manual-PAT compatibility path for CI or clients that cannot perform dynamic registration. It is not the preferred interactive sign-in path. A local Ollama operator should use a DCR-capable MCP client for normal browser OAuth, or deliberately configure a dedicated project-scoped PAT for this host process. Do not reuse a broad personal token.
+
+Example (manual-token fallback only; the environment variable contains the complete Bearer value):
 
 ~~~json
 {
   "mcpServers": {
     "supabase-readonly": {
-      "url": "https://mcp.supabase.com/mcp?project_ref=YOUR_ACTIVE_PROJECT_REF&read_only=true",
+      "url": "https://mcp.supabase.com/mcp?project_ref=YOUR_ACTIVE_PROJECT_REF&read_only=true&features=database,docs,debugging",
       "header_env": {
         "Authorization": "SUPABASE_AUTHORIZATION"
       }
@@ -158,7 +160,7 @@ Example (the environment variable contains the complete Bearer value):
 }
 ~~~
 
-Set SUPABASE_AUTHORIZATION to the full Bearer access-token value in the AVRONE host process environment, and resolve the exact Supabase project reference before starting. Keep read_only=true during discovery, and omit inactive or unrelated projects. Do not put the access token in this JSON file or in any agent container. The hosted Supabase MCP supports project scoping and read-only mode; consult the [Supabase MCP security guidance](https://supabase.com/docs/guides/ai-tools/mcp) before enabling additional feature groups.
+Only for the manual-PAT fallback, set SUPABASE_AUTHORIZATION to the full Bearer token in the AVRONE host process environment, and resolve an ACTIVE project reference before starting. The example scopes access to one project, enables read-only database access, and limits the exposed feature groups to database, docs, and debugging. Add groups only after reviewing their tool permissions. Do not put the token in this JSON file or in any agent container. Supabase recommends this manual PAT path for CI or MCP clients without dynamic client registration; its normal hosted flow is OAuth/DCR. See the [current Supabase MCP authentication and security guidance](https://supabase.com/docs/guides/ai-tools/mcp).
 
 For GitHub, export a narrowly scoped GITHUB_PERSONAL_ACCESS_TOKEN into the host environment. The GitHub MCP server runs as a host-launched stdio child process; Docker -e GITHUB_PERSONAL_ACCESS_TOKEN passes the already-exported value through without embedding it in the config. Limit GITHUB_TOOLSETS to the repository, pull-request, issue and action capabilities actually required. See the [official GitHub MCP server setup](https://github.com/github/github-mcp-server).
 

@@ -160,6 +160,14 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
         try:
             mgr = await _call(MCPManager, env)
             core.mcp = mgr  # type: ignore[attr-defined]
+            # Register teardown immediately after construction. A future manager may
+            # allocate a process/session in its constructor or partially initialize in
+            # start(); its cleanup must remain reachable on every later failure path.
+            for meth in ("stop", "aclose", "close", "shutdown"):
+                fn = getattr(mgr, meth, None)
+                if callable(fn):
+                    cleanups.append(fn)
+                    break
             for meth in ("start", "connect_all", "load", "connect"):
                 fn = getattr(mgr, meth, None)
                 if callable(fn):
@@ -168,11 +176,6 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
             reg_fn = getattr(mgr, "register_tools", None) or getattr(mgr, "register_all", None)
             if callable(reg_fn):
                 await _call(reg_fn, env)
-            for meth in ("stop", "aclose", "close", "shutdown"):
-                fn = getattr(mgr, meth, None)
-                if callable(fn):
-                    cleanups.append(fn)
-                    break
             status = getattr(mgr, "status", None)
             status = status() if callable(status) else (status or getattr(mgr, "servers", None))
             if inspect.isawaitable(status):
@@ -190,10 +193,12 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
         fleet = FleetManager(core, settings.data_dir)
         core.fleet = fleet  # type: ignore[attr-defined]
         if fleet.enabled:
+            # Teardown must be registered before opening SQLite or starting any
+            # background tasks; either operation can fail after partial allocation.
+            cleanups.append(fleet.stop)
             register_fleet_tools(registry)
             fleet.start_queue(settings.data_dir)
             fleet.start()
-            cleanups.append(fleet.stop)
         ext["fleet"] = fleet.info()
     except Exception as e:
         ext["fleet"] = {"error": f"{type(e).__name__}: {e}"}
@@ -206,14 +211,47 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
 
 
 async def run_cleanups(cleanups: list[Cleanup]) -> None:
-    """Run cleanups in reverse order; one failing does not stop the rest."""
-    for fn in reversed(cleanups):
-        try:
-            res = fn()
-            if inspect.isawaitable(res):
-                await res
-        except Exception:
-            log.exception("cleanup failed")
+    """Run every cleanup in reverse order, even if a waiter is cancelled.
+
+    Shutdown is a resource boundary: cancellation of the server lifespan task must
+    not strand MCP child processes, provider sessions, fleet workers, or the runner.
+    The caller still receives cancellation, but only after the protected cleanup task
+    has drained. A cleanup callback that cancels itself is recorded and does not skip
+    the callbacks that follow it.
+    """
+    async def _run_all() -> None:
+        callback_cancelled = False
+        for fn in reversed(cleanups):
+            try:
+                res = fn()
+                if inspect.isawaitable(res):
+                    await res
+            except asyncio.CancelledError:
+                callback_cancelled = True
+                log.warning("cleanup callback was cancelled; continuing teardown")
+            except Exception:
+                log.exception("cleanup failed")
+        if callback_cancelled:
+            raise asyncio.CancelledError
+
+    task = asyncio.create_task(_run_all(), name="avrone-run-cleanups")
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Distinguish a callback's own CancelledError (task is done) from
+        # cancellation of this waiter (the shielded teardown is still running).
+        if task.done():
+            raise
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if task.done():
+                    break
+                # A second cancellation request also cannot abandon teardown.
+                continue
+        # Do not suppress cancellation of the original lifespan/CLI task.
+        raise
 
 
 

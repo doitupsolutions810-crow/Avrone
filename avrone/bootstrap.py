@@ -15,6 +15,7 @@ unnamed required parameters, in that order.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Any, Callable

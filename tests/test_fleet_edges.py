@@ -527,3 +527,90 @@ def test_register_fleet_tools():
     fleet_mod.register_fleet_tools(r)
     assert {"fleet_nodes", "remote_spawn", "remote_broadcast", "agent_message",
             "queue_submit", "queue_status", "fleet_agents"} <= set(r.names())
+
+
+# ---------------------------------------------------- shutdown / teardown failures
+
+def test_stop_closes_queue_and_awaits_background_tasks_when_worker_stop_fails(fm):
+    events = []
+
+    class BrokenWorker:
+        async def stop(self):
+            events.append("worker.stop")
+            raise RuntimeError("worker failed to stop")
+
+    class Queue:
+        async def close(self):
+            events.append("queue.close")
+
+    async def background():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("background.finished")
+
+    async def go():
+        fm.worker = BrokenWorker()
+        fm.queue = Queue()
+        task = asyncio.create_task(background())
+        fm._bg.add(task)
+        with pytest.raises(RuntimeError, match="shutdown had 1 failure"):
+            await fm.stop()
+        assert task.done() and task.cancelled() is False
+        assert events.index("background.finished") < events.index("worker.stop")
+        assert events.index("worker.stop") < events.index("queue.close")
+        assert fm.worker is not None  # failed worker close remains retryable
+        assert fm.queue is None       # successful queue close is consumed once
+
+    run(go())
+
+
+def test_stop_waits_for_resource_close_after_caller_cancellation(fm):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    events = []
+
+    class Worker:
+        async def stop(self):
+            started.set()
+            await release.wait()
+            events.append("worker.stop")
+
+    class Queue:
+        async def close(self):
+            events.append("queue.close")
+
+    async def go():
+        fm.worker, fm.queue = Worker(), Queue()
+        caller = asyncio.create_task(fm.stop())
+        await started.wait()
+        caller.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert events == ["worker.stop", "queue.close"]
+        assert fm.worker is None and fm.queue is None
+
+    run(go())
+
+
+def test_concurrent_stop_callers_share_one_teardown(fm):
+    events = []
+
+    class Worker:
+        async def stop(self):
+            events.append("worker.stop")
+            await asyncio.sleep(0)
+
+    class Queue:
+        async def close(self):
+            events.append("queue.close")
+
+    async def go():
+        fm.worker, fm.queue = Worker(), Queue()
+        await asyncio.gather(fm.stop(), fm.stop())
+        assert events == ["worker.stop", "queue.close"]
+        assert fm.worker is None and fm.queue is None
+
+    run(go())

@@ -537,3 +537,50 @@ async def test_fleet_manager_receives_exact_configured_data_directory(settings, 
     core, cleanups = await bs.build_core(settings)
     assert observed == [(core, settings.data_dir)]
     await bs.run_cleanups(cleanups)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_mcp_start_drains_manager_and_runner(settings, log, monkeypatch):
+    import avrone.mcp_client as mc
+
+    class Mgr:
+        async def start(self):
+            log.append("mgr.start")
+            raise asyncio.CancelledError
+
+        async def stop(self):
+            log.append("mgr.stop")
+
+    monkeypatch.setattr(mc, "MCPManager", Mgr)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-3:] == ["mgr.start", "mgr.stop", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_fleet_start_drains_fleet_and_runner(settings, log, monkeypatch):
+    import avrone.fleet as fl
+
+    class FakeFleet:
+        enabled = True
+
+        def __init__(self, core, data_dir):
+            log.append("fleet.init")
+
+        def start_queue(self, data_dir):
+            log.append("fleet.queue")
+
+        def start(self):
+            log.append("fleet.start")
+            raise asyncio.CancelledError
+
+        async def stop(self):
+            log.append("fleet.stop")
+
+    monkeypatch.setattr(fl, "FleetManager", FakeFleet)
+    monkeypatch.setattr(fl, "register_fleet_tools", lambda registry: None)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-5:] == [
+        "fleet.init", "fleet.queue", "fleet.start", "fleet.stop", "runner.stop"
+    ]

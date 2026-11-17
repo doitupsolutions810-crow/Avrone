@@ -1456,19 +1456,83 @@ class FleetManager:
         self.worker = Worker(self.queue, self.run_job)
         self.worker.start()
 
+    async def _stop_resources(self) -> None:
+        """Drain every fleet-owned task/resource, even when an earlier close fails."""
+        failures: list[Exception] = []
+        current = asyncio.current_task()
+        tasks = {
+            task for task in (self._task, self._thermal_task, *tuple(self._bg))
+            if task is not None and task is not current
+        }
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, Exception) and not isinstance(outcome, asyncio.CancelledError):
+                    failures.append(outcome)
+
+        self._task = None
+        self._thermal_task = None
+        self._bg.difference_update(tasks)
+
+        worker = self.worker
+        if worker is not None:
+            try:
+                await worker.stop()
+            except asyncio.CancelledError:
+                failures.append(RuntimeError("fleet worker shutdown was cancelled"))
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                self.worker = None
+
+        queue = self.queue
+        if queue is not None:
+            try:
+                await queue.close()
+            except asyncio.CancelledError:
+                failures.append(RuntimeError("fleet job-queue close was cancelled"))
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                self.queue = None
+
+        if failures:
+            log.error(
+                "fleet shutdown completed with %d failure(s): %s",
+                len(failures),
+                "; ".join(f"{type(exc).__name__}: {exc}" for exc in failures)[:1000],
+            )
+            raise RuntimeError(f"fleet shutdown had {len(failures)} failure(s)") from failures[0]
+
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            self._task = None
-        if self._thermal_task:
-            self._thermal_task.cancel()
-            self._thermal_task = None
-        if self.worker:
-            await self.worker.stop()
-        if self.queue:
-            await self.queue.close()
-        for t in list(self._bg):
-            t.cancel()
+        """Idempotent, cancellation-resilient shutdown shared by concurrent callers."""
+        task = self.__dict__.get("_stop_task")
+        if task is None or task.done():
+            task = asyncio.create_task(self._stop_resources(), name=f"fleet-stop-{self.node_id}")
+            self._stop_task = task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                raise
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if task.done():
+                        break
+                    continue
+            # Retrieve/log a teardown error without replacing the caller's cancellation.
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("fleet teardown failed while caller cancellation was pending")
+            raise
 
     def pick(self, target: str) -> dict[str, Any]:
         if target in ("", "auto"):

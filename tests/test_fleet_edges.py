@@ -556,7 +556,7 @@ def test_stop_closes_queue_and_awaits_background_tasks_when_worker_stop_fails(fm
         fm._bg.add(task)
         with pytest.raises(RuntimeError, match="shutdown had 1 failure"):
             await fm.stop()
-        assert task.done() and task.cancelled() is False
+        assert task.done() and task.cancelled()
         assert events.index("background.finished") < events.index("worker.stop")
         assert events.index("worker.stop") < events.index("queue.close")
         assert fm.worker is not None  # failed worker close remains retryable

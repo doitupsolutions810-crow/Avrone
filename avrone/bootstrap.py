@@ -133,6 +133,9 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
             ext["extra_tools"] = {"installed": True, "error": f"{type(e).__name__}: {e}"}
             ext["errors"].append(f"tools_extra: {type(e).__name__}: {e}")
             log.exception("register_extra_tools failed")
+        except asyncio.CancelledError:
+            await run_cleanups(cleanups)
+            raise
 
     # 2. plugins
     try:
@@ -149,6 +152,9 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
             ext["plugins"] = {"installed": True, "error": f"{type(e).__name__}: {e}"}
             ext["errors"].append(f"plugins: {type(e).__name__}: {e}")
             log.exception("load_plugins failed")
+        except asyncio.CancelledError:
+            await run_cleanups(cleanups)
+            raise
 
     # 3. MCP servers
     try:
@@ -187,6 +193,9 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
             ext["mcp"] = {"installed": True, "error": f"{type(e).__name__}: {e}"}
             ext["errors"].append(f"mcp: {type(e).__name__}: {e}")
             log.exception("MCPManager failed")
+        except asyncio.CancelledError:
+            await run_cleanups(cleanups)
+            raise
 
     # 4. fleet: link to other AVRONE nodes (needs AVRONE_FLEET_TOKEN)
     try:
@@ -205,6 +214,9 @@ async def build_core(settings: Settings, *, extras: bool = True) -> tuple[Trinit
         ext["fleet"] = {"error": f"{type(e).__name__}: {e}"}
         ext["errors"].append(f"fleet: {type(e).__name__}: {e}")
         log.exception("fleet failed")
+    except asyncio.CancelledError:
+        await run_cleanups(cleanups)
+        raise
 
     ext["tool_sources"] = _sources(registry)
     apply_tool_focus(registry)

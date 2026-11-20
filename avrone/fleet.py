@@ -478,6 +478,14 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value}")
 
 
+def _parse_finite_json_float(value: str) -> float:
+    """Reject valid JSON exponent syntax that overflows the IEEE-754 float range."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number {value}")
+    return parsed
+
+
 def _strict_fleet_json_loads(payload: bytes | str) -> Any:
     """Parse signed fleet JSON with duplicate-key and non-finite-number rejection."""
     try:
@@ -485,6 +493,7 @@ def _strict_fleet_json_loads(payload: bytes | str) -> Any:
             payload,
             object_pairs_hook=_reject_duplicate_json_keys,
             parse_constant=_reject_json_constant,
+            parse_float=_parse_finite_json_float,
         )
     except RecursionError as exc:
         raise ValueError("fleet JSON exceeds the parser nesting limit") from exc

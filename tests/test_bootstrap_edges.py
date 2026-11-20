@@ -584,3 +584,57 @@ async def test_bootstrap_cancellation_during_fleet_start_drains_fleet_and_runner
     assert log[-5:] == [
         "fleet.init", "fleet.queue", "fleet.start", "fleet.stop", "runner.stop"
     ]
+
+
+# ------------------------------------------------------- extension cancellation cleanup
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_extra_tools_drains_runner(settings, log, monkeypatch):
+    import avrone.tools_extra as te
+
+    async def cancel_after_partial_registration(registry):
+        log.append("extra_tools.partial")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(te, "register_extra_tools", cancel_after_partial_registration)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-2:] == ["extra_tools.partial", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_plugins_drains_runner(settings, log, monkeypatch):
+    import avrone.plugins as pl
+    import avrone.tools_extra as te
+
+    monkeypatch.setattr(te, "register_extra_tools", lambda registry: None)
+
+    async def cancel_after_partial_load(registry, settings):
+        log.append("plugins.partial")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(pl, "load_plugins", cancel_after_partial_load)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-2:] == ["plugins.partial", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_mcp_tool_registration_closes_manager(settings, log, monkeypatch):
+    import avrone.mcp_client as mc
+
+    class Mgr:
+        async def start(self):
+            log.append("mgr.start")
+
+        async def register_tools(self, registry):
+            log.append("mgr.register_tools")
+            raise asyncio.CancelledError
+
+        async def stop(self):
+            log.append("mgr.stop")
+
+    monkeypatch.setattr(mc, "MCPManager", Mgr)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-4:] == ["mgr.start", "mgr.register_tools", "mgr.stop", "runner.stop"]

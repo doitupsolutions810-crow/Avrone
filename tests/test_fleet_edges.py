@@ -614,3 +614,130 @@ def test_concurrent_stop_callers_share_one_teardown(fm):
         assert fm.worker is None and fm.queue is None
 
     run(go())
+
+
+# ---------------------------------------------------------------- strict signed payload and handler input boundaries
+
+@pytest.mark.parametrize("raw", [
+    b'{"from":"peer","from":"other","hops":1,"mode":"chat","prompt":"x"}',
+    b'{"from":"peer","hops":1,"mode":"chat","prompt":NaN}',
+    b'{"from":"peer","hops":1,"mode":"chat","prompt":Infinity}',
+    b'{"from":"peer","hops":1,"mode":"chat","prompt":1e999}',
+    b'{"from":"peer","hops":1,"mode":"chat","prompt":"x","nested":{"v":1,"v":2}}',
+])
+def test_dispatch_gateway_rejects_ambiguous_or_nonfinite_signed_json(fm, raw):
+    headers = sign("tok", "POST", "/api/fleet/run", raw)
+    with pytest.raises(fleet_mod.GatewayRefused, match="body must be JSON") as exc:
+        fm.dispatch_gateway("run", "POST", "/api/fleet/run", raw, headers)
+    assert exc.value.code == "bad_body"
+
+
+@pytest.mark.parametrize("route", [
+    "kid",
+    {"next": "kid"},
+    7,
+    False,
+    ["kid/../root"],
+    ["kid", "kid"],
+    ["ROOT"],
+    ["kid", None],
+    ["kid", True],
+    ["root"],
+])
+def test_handle_run_rejects_malformed_or_cyclic_routes_before_dispatch(fm, core, route):
+    with pytest.raises(ValueError, match="route"):
+        run(fm.handle_run({"route": route, "hops": 0, "mode": "chat", "prompt": "p"}))
+    core.chat.assert_not_called()
+
+
+@pytest.mark.parametrize("hops", [
+    True, False, 1.5, float("nan"), float("inf"), -1, " 1", "١", {"count": 1},
+])
+def test_handle_run_rejects_non_integral_or_ambiguous_hop_counts(fm, core, hops):
+    with pytest.raises(ValueError, match="hop count"):
+        run(fm.handle_run({"hops": hops, "mode": "chat", "prompt": "p"}))
+    core.chat.assert_not_called()
+
+
+def test_handle_run_preflights_total_remaining_route_budget(fm, core):
+    with pytest.raises(PermissionError, match="max fleet hops exceeded"):
+        run(fm.handle_run({"route": ["one", "two", "three", "four"], "hops": 0,
+                           "mode": "chat", "prompt": "p"}))
+    core.chat.assert_not_called()
+
+
+@pytest.mark.parametrize("payload", [
+    {"route": "kid", "agent": "A-1", "message": "hello"},
+    {"route": {"node": "kid"}, "agent": "A-1", "message": "hello"},
+    {"route": ["bad/id"], "agent": "A-1", "message": "hello"},
+    {"route": ["root"], "agent": "A-1", "message": "hello"},
+    {"agent": "A-1", "message": "hello", "wait": "false"},
+    {"agent": "A-1", "message": "hello", "hops": True},
+])
+def test_handle_message_rejects_malformed_route_wait_and_hops(fm, core, payload):
+    with pytest.raises((ValueError, PermissionError)):
+        run(fm.handle_message(payload))
+    core.message_agent.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [("n", True), ("n", 1.5), ("budget", False), ("budget", "3")])
+def test_netsquad_rejects_boolean_or_coerced_size_fields(fm, core, field, value):
+    ns = {"path": ["parent"], "budget": 2}
+    payload = {
+        "route": [], "hops": 1, "from": "parent", "mode": "squad", "prompt": "subtask",
+        "capability": fleet_mod.NETSQUAD_CAP, "netsquad": ns, "n": 2,
+    }
+    if field == "budget":
+        ns["budget"] = value
+    else:
+        payload[field] = value
+    with pytest.raises(PermissionError, match="netsquad"):
+        run(fm.handle_run(payload))
+    core.squad.assert_not_called()
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"nonce-1":NaN}',
+    b'{"nonce-1":Infinity}',
+    b'{"nonce-1":1e999}',
+    b'{"nonce-1":true}',
+    b'{"nonce-1":1,"nonce-1":2}',
+    b'{"bad nonce":9999999999}',
+    b'{"nonce-1":' + (b"9" * 400) + b'}',
+])
+def test_malformed_or_nonfinite_replay_cache_fails_closed(fm, core, tmp_path, raw):
+    fm._nonce_path.write_bytes(raw)
+    restored = FleetManager(core, tmp_path)
+    assert restored._nonces == {}
+    assert restored._boot_guard is not None
+    old = sign("tok", "POST", "/api/fleet/run", b"{}", ts=str(int(time.time()) - 1), nonce="old-request")
+    with pytest.raises(fleet_mod.GatewayRefused, match="replay cache was lost") as exc:
+        restored.verify("POST", "/api/fleet/run", b"{}", old)
+    assert exc.value.code == "replay"
+
+
+def test_replay_cache_file_read_is_bounded(fm, core, tmp_path, monkeypatch):
+    monkeypatch.setattr(fleet_mod, "MAX_NONCE_FILE_BYTES", 8)
+    fm._nonce_path.write_bytes(b'{"nonce":123}')
+    restored = FleetManager(core, tmp_path)
+    assert restored._nonces == {} and restored._boot_guard is not None
+
+
+def test_replay_cache_entry_count_is_bounded(fm, core, tmp_path, monkeypatch):
+    monkeypatch.setattr(fleet_mod, "NONCE_CACHE_MAX", 1)
+    fm._nonce_path.write_text(json.dumps({"first": time.time() + 120, "second": time.time() + 120}))
+    restored = FleetManager(core, tmp_path)
+    assert restored._nonces == {} and restored._boot_guard is not None
+
+
+def test_replay_cache_loads_only_valid_unexpired_entries(fm, core, tmp_path):
+    now = time.time()
+    fm._nonce_path.write_text(json.dumps({"fresh": now + 180, "expired": now - 1}))
+    restored = FleetManager(core, tmp_path)
+    assert set(restored._nonces) == {"fresh"}
+    assert restored._boot_guard is None
+
+
+def test_register_rejects_non_string_node_id(fm):
+    with pytest.raises(ValueError, match="node_id"):
+        fm.register({"node_id": 1, "url": "http://peer.test"})

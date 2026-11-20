@@ -457,11 +457,11 @@ async def _verified(request: Request) -> dict:
         f.verify(request.method, request.url.path, body, {k.lower(): v for k, v in request.headers.items()})
     except PermissionError as e:
         raise HTTPException(401, str(e)) from None
-    import json as _json
+    from .fleet import _strict_fleet_json_loads
     try:
-        payload = _json.loads(body or b"{}")
-    except ValueError:
-        raise HTTPException(400, "body must be JSON") from None
+        payload = _strict_fleet_json_loads(body or b"{}")
+    except (TypeError, ValueError, RecursionError):
+        raise HTTPException(400, "body must be valid unambiguous JSON") from None
     if not isinstance(payload, dict):
         raise HTTPException(400, "body must be a JSON object")
     return payload
@@ -576,6 +576,8 @@ async def fleet_run(request: Request):
         raise HTTPException(409, str(e)) from None
     except CheckpointError as e:
         raise HTTPException(400, str(e)) from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)[:300]) from None
     except RuntimeError as e:
         raise HTTPException(502, str(e)) from None
 

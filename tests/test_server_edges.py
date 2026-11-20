@@ -695,3 +695,23 @@ def test_model_capability_discovery_rejects_non_string_model_tags(bad_model):
 def test_model_capability_discovery_ignores_pathological_num_ctx_integer():
     from avrone.modelcaps import _num_ctx
     assert _num_ctx("num_ctx " + ("9" * 10000)) is None
+
+
+def test_fleet_run_malformed_route_is_a_client_error(fclient, monkeypatch):
+    from avrone import server
+    core = server.core()
+    monkeypatch.setattr(core, "chat", AsyncMock(side_effect=AssertionError("must not run")))
+    response = signed_post(
+        fclient, "/api/fleet/run",
+        {"route": "child", "hops": 1, "mode": "chat", "prompt": "must be rejected"},
+    )
+    assert response.status_code == 400
+    assert "route" in response.json()["detail"]
+    core.chat.assert_not_called()
+
+
+def test_fleet_registration_rejects_duplicate_json_keys(fclient):
+    raw = b'{"node_id":"edge-a","node_id":"edge-b","url":"http://edge.test"}'
+    response = signed_post(fclient, "/api/fleet/register", raw=raw)
+    assert response.status_code == 400
+    assert "unambiguous JSON" in response.json()["detail"]

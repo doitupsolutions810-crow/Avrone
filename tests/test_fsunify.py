@@ -1,6 +1,7 @@
 """Generic file tools unified with the per-agent filesystem (fsunify lane)."""
 import asyncio
 import os
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -347,6 +348,8 @@ def test_python_docker_paths(env, monkeypatch, isolate):
         return SimpleNamespace(text=lambda: "docker ok")
 
     env_dir = env.dir
+    # Both the shared-exec and isolated-run paths are part of a started Docker runner.
+    r.container_id = "f" * 64
     monkeypatch.setattr(r, "_exec", fake_exec)
     core = SimpleNamespace(settings=env.s, runner=r, codex=env.codex)
     ctx = SimpleNamespace(**{**vars(env.ctx), "core": core})
@@ -383,3 +386,240 @@ def test_tool_docs_mention_shared():
         line = next(ln for ln in docs.splitlines() if ln.startswith(f"- {name} "))
         assert "shared/" in line, name
     assert "agent dir" in next(ln for ln in docs.splitlines() if ln.startswith("- python "))
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission semantics required")
+@pytest.mark.parametrize("create", [True, False])
+def test_agent_dir_enforces_owner_only_permissions_on_existing_directories(tmp_path, create):
+    workspace = tmp_path / "workspace"
+    root = workspace / agentfs.AGENTS_SUBDIR
+    home = root / "alpha"
+    home.mkdir(parents=True)
+    os.chmod(root, 0o777)
+    os.chmod(home, 0o777)
+
+    resolved = agentfs.agent_dir(workspace, "alpha", create=create)
+    assert resolved == home.resolve()
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
+def test_agent_dir_rejects_a_regular_file_in_place_of_agent_home(tmp_path):
+    workspace = tmp_path / "workspace"
+    root = workspace / agentfs.AGENTS_SUBDIR
+    root.mkdir(parents=True)
+    (root / "alpha").write_text("not a directory")
+    with pytest.raises(agentfs.AgentFSError, match="safe, accessible directory|not a directory"):
+        agentfs.agent_dir(workspace, "alpha")
+
+
+def test_agent_dir_rejects_symlinked_agent_root(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace.mkdir()
+    (workspace / agentfs.AGENTS_SUBDIR).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(agentfs.AgentFSError, match="agents root must not be a symlink"):
+        agentfs.agent_dir(workspace, "alpha")
+
+def test_is_agent_dir_rejects_symlink_alias_to_sibling_agent_home(tmp_path):
+    workspace = tmp_path / "workspace"
+    target = agentfs.agent_dir(workspace, "target-worker")
+    alias = target.parent / "alias-worker"
+    alias.symlink_to(target, target_is_directory=True)
+
+    assert agentfs.is_agent_dir(workspace, target)
+    assert not agentfs.is_agent_dir(workspace, alias)
+
+
+def test_is_agent_dir_rejects_symlinked_agents_root_and_noncanonical_parent(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "worker").mkdir()
+    workspace.mkdir()
+    (workspace / agentfs.AGENTS_SUBDIR).symlink_to(outside, target_is_directory=True)
+    assert not agentfs.is_agent_dir(workspace, outside / "worker")
+
+    normal_workspace = tmp_path / "normal-workspace"
+    home = agentfs.agent_dir(normal_workspace, "worker")
+    alias_root = normal_workspace / "agents-alias"
+    alias_root.symlink_to(home.parent, target_is_directory=True)
+    assert not agentfs.is_agent_dir(normal_workspace, alias_root / "worker")
+
+
+@pytest.mark.parametrize("tool,path", [
+    ("read_file", "nested/secret.txt"),
+    ("fs_read", "nested/secret.txt"),
+])
+def test_confined_reads_do_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monkeypatch, tool, path):
+    nested = env.dir / "nested"
+    nested.mkdir()
+    (nested / "secret.txt").write_text("agent-private")
+    outside = env.tmp / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("host-private")
+    moved = env.dir / "nested-original"
+
+    original_open_parent = agentfs._open_confined_parent
+    swapped = {"done": False}
+
+    def swap_after_pin(root, target, *, create_parents=False):
+        parent_fd, leaf = original_open_parent(root, target, create_parents=create_parents)
+        if not swapped["done"] and Path(target).name == "secret.txt":
+            nested.rename(moved)
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return parent_fd, leaf
+
+    monkeypatch.setattr(agentfs, "_open_confined_parent", swap_after_pin)
+    result = call(env, tool, path=path)
+    assert swapped["done"] is True
+    assert result == "agent-private"
+    assert (outside / "secret.txt").read_text() == "host-private"
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_confined_writes_do_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monkeypatch, shared):
+    root = env.ws if shared else env.dir
+    nested = root / "nested"
+    nested.mkdir()
+    outside = env.tmp / ("outside-shared" if shared else "outside-agent")
+    outside.mkdir()
+    (outside / "result.txt").write_text("host-original")
+    moved = root / "nested-original"
+    requested = "shared/nested/result.txt" if shared else "nested/result.txt"
+
+    original_open_parent = agentfs._open_confined_parent
+    swapped = {"done": False}
+
+    def swap_after_pin(root_arg, target, *, create_parents=False):
+        parent_fd, leaf = original_open_parent(root_arg, target, create_parents=create_parents)
+        if not swapped["done"] and Path(target).name == "result.txt":
+            nested.rename(moved)
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return parent_fd, leaf
+
+    monkeypatch.setattr(agentfs, "_open_confined_parent", swap_after_pin)
+    result = call(env, "write_file", path=requested, content="safe-agent-write")
+    assert swapped["done"] is True
+    assert result.startswith("wrote")
+    assert (moved / "result.txt").read_text() == "safe-agent-write"
+    assert (outside / "result.txt").read_text() == "host-original"
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_descriptor_write_enforces_file_limit_even_after_concurrent_file_growth(tmp_path, append):
+    from avrone.agentfs import write_confined_file
+
+    root = agentfs.agent_dir(tmp_path / "ws", "quota-race")
+    target = root / "limited.bin"
+    target.write_bytes(b"x" * 8)
+    with pytest.raises(agentfs.AgentFSError, match="limit"):
+        write_confined_file(root, target, b"y" * 8, append=append, max_bytes=12)
+    assert target.read_bytes() == b"x" * 8
+
+
+
+def test_unified_file_tools_reject_agent_context_home_outside_configured_workspace(env):
+    outside_workspace = env.tmp / "other-workspace"
+    outside_home = agentfs.agent_dir(outside_workspace, "attacker")
+    (outside_home / "secret.txt").write_text("not for this agent")
+    forged = SimpleNamespace(**{**vars(env.ctx), "agent_dir": outside_home})
+
+    assert call(env, "read_file", ctx=forged, path="secret.txt").startswith("ERROR")
+    assert call(env, "write_file", ctx=forged, path="new.txt", content="blocked").startswith("ERROR")
+    assert not (outside_home / "new.txt").exists()
+
+
+def test_parent_share_rejects_external_or_symlink_aliased_agent_home(env):
+    outside_workspace = env.tmp / "other-workspace"
+    external_home = agentfs.agent_dir(outside_workspace, "external-parent")
+    (external_home / "secret.txt").write_text("private")
+
+    forged_external = SimpleNamespace(**{**vars(env.ctx), "parent_dir": external_home})
+    assert call(env, "read_file", ctx=forged_external, path="parent/secret.txt").startswith("ERROR")
+
+    real_parent = agentfs.agent_dir(env.ws, "real-parent")
+    alias = real_parent.parent / "parent-alias"
+    alias.symlink_to(real_parent, target_is_directory=True)
+    (real_parent / "secret.txt").write_text("private")
+    forged_alias = SimpleNamespace(**{**vars(env.ctx), "parent_dir": alias})
+    assert call(env, "read_file", ctx=forged_alias, path="parent/secret.txt").startswith("ERROR")
+
+
+
+@pytest.mark.parametrize("tool", ["read_file", "write_file"])
+def test_unified_tools_refuse_agent_root_replaced_by_symlink_after_resolution(env, monkeypatch, tool):
+    (env.dir / "secret.txt").write_text("agent-secret")
+    outside = env.tmp / "outside-root-swap"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("host-secret")
+    moved = env.dir.with_name("agent-home-original")
+    original_resolve = fsunify.resolve
+    swapped = {"done": False}
+
+    def resolve_then_swap(ctx, raw, name):
+        result = original_resolve(ctx, raw, name)
+        if not swapped["done"]:
+            env.dir.rename(moved)
+            env.dir.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return result
+
+    monkeypatch.setattr(fsunify, "resolve", resolve_then_swap)
+    if tool == "read_file":
+        result = call(env, tool, path="secret.txt")
+        assert result.startswith("ERROR")
+        assert "host-secret" not in result
+    else:
+        result = call(env, tool, path="new.txt", content="must-not-escape")
+        assert result.startswith("ERROR")
+        assert not (outside / "new.txt").exists()
+    assert swapped["done"] is True
+    assert (outside / "secret.txt").read_text() == "host-secret"
+
+
+
+@pytest.mark.parametrize("tool,path", [
+    ("list_files", "."),
+    ("fs_list", "."),
+])
+def test_directory_listings_reject_agent_root_symlink_swaps(env, monkeypatch, tool, path):
+    (env.dir / "visible.txt").write_text("agent")
+    outside = env.tmp / "outside-listing"
+    outside.mkdir()
+    (outside / "host-secret-name.txt").write_text("host")
+    moved = env.dir.with_name("agent-home-before-listing-swap")
+    swapped = {"done": False}
+
+    if tool == "list_files":
+        original_resolve = fsunify.resolve
+
+        def resolve_then_swap(ctx, raw, name):
+            result = original_resolve(ctx, raw, name)
+            if not swapped["done"]:
+                env.dir.rename(moved)
+                env.dir.symlink_to(outside, target_is_directory=True)
+                swapped["done"] = True
+            return result
+
+        monkeypatch.setattr(fsunify, "resolve", resolve_then_swap)
+        result = call(env, tool, path=path)
+    else:
+        original_agent_root = __import__("avrone.agentfs_tools", fromlist=["_agent_root"])._agent_root
+
+        def agent_root_then_swap(ctx):
+            root = original_agent_root(ctx)
+            if not swapped["done"]:
+                env.dir.rename(moved)
+                env.dir.symlink_to(outside, target_is_directory=True)
+                swapped["done"] = True
+            return root
+
+        monkeypatch.setattr("avrone.agentfs_tools._agent_root", agent_root_then_swap)
+        result = call(env, tool, path=path)
+
+    assert swapped["done"] is True
+    assert result.startswith("ERROR")
+    assert "host-secret-name.txt" not in result

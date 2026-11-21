@@ -7,3 +7,7 @@ data/
 *.egg-info/
 avrone.egg-info/
 .coverage
+
+# Host-only integration credentials and local Ollama profile.
+mcp.json
+docs/local-ollama/local-ollama-sandbox.env

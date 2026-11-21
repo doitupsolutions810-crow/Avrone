@@ -159,9 +159,55 @@ def test_container_state_without_docker(env, monkeypatch):
 def test_container_hosted_live_record_own_only(env, monkeypatch):
     monkeypatch.setenv("AVRONE_AGENT_CONTAINER", "persistent")
     monkeypatch.setattr(ah.shutil, "which", lambda name: "/usr/bin/docker")
+    inspected = {}
+
+    def inspect_payload(argv):
+        def option(flag, default=None):
+            try:
+                return argv[argv.index(flag) + 1]
+            except (ValueError, IndexError):
+                return default
+        labels, envs = {}, []
+        for i, value in enumerate(argv[:-1]):
+            if value == "--label":
+                key, val = argv[i + 1].split("=", 1)
+                labels[key] = val
+            elif value in ("--env", "-e"):
+                envs.append(argv[i + 1])
+        bind = option("-v")
+        source = bind.split(":", 1)[0]
+        memory = int(option("--memory", "512m").removesuffix("m")) * 1024 * 1024
+        swap = int(option("--memory-swap", "512m").removesuffix("m")) * 1024 * 1024
+        return {
+            "State": {"Running": True},
+            "Config": {"User": option("--user"), "Image": argv[-3], "WorkingDir": option("-w"),
+                       "Env": envs, "Labels": labels},
+            "HostConfig": {
+                "Binds": [bind], "ReadonlyRootfs": "--read-only" in argv,
+                "Tmpfs": {"/tmp": option("--tmpfs", "")}, "CapDrop": ["ALL"], "CapAdd": [],
+                "SecurityOpt": [option("--security-opt", "")],
+                "NetworkMode": option("--network", "bridge"), "Privileged": False,
+                "PortBindings": None, "Devices": [], "DeviceRequests": [],
+                "PidMode": "", "IpcMode": "", "AutoRemove": False,
+                "Memory": memory, "MemorySwap": swap,
+                "NanoCpus": int(float(option("--cpus", "1.0")) * 1_000_000_000),
+                "PidsLimit": int(option("--pids-limit", "512")),
+            },
+            "Mounts": [{"Type": "bind", "Source": source, "Destination": "/agent", "RW": True}],
+        }
 
     async def fake_exec(argv, timeout):
-        return SimpleNamespace(exit_code=0, stdout="true", stderr="")
+        name = argv[-1]
+        if argv[1] == "inspect":
+            if name in inspected:
+                return SimpleNamespace(exit_code=0, stdout=json.dumps(inspected[name]), stderr="")
+            return SimpleNamespace(exit_code=1, stdout="", stderr=f"No such object: {name}")
+        if argv[1] == "run":
+            name = argv[argv.index("--name") + 1]
+            inspected[name] = inspect_payload(argv)
+        if argv[1] == "rm":
+            inspected.pop(name, None)
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
     t = [100.0]
     pool = agentcontainer.AgentContainerPool(fake_exec, "img", False, node="node-a", clock=lambda: t[0])
     run(pool.ensure(env.home))

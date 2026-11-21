@@ -1,6 +1,7 @@
 """Round-7 coverage: config._load_dotenv parsing and agentfs_tools error/edge branches."""
 import errno
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -147,13 +148,13 @@ def test_audit_failure_never_breaks_tool(env):
         def emit(self, *a, **kw):
             raise RuntimeError("codex down")
 
-    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace(codex=Boom())})
+    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace(runner=env.ctx.core.runner, codex=Boom())})
     assert call(env, "fs_write", ctx=ctx, path="a.txt", content="hi").startswith("wrote a.txt")
     assert call(env, "fs_read", ctx=ctx, path="/etc/passwd").startswith("ERROR")
 
 
 def test_audit_without_codex_is_silent(env):
-    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace()})
+    ctx = SimpleNamespace(**{**vars(env.ctx), "core": SimpleNamespace(runner=env.ctx.core.runner)})
     assert call(env, "fs_write", ctx=ctx, path="b.txt", content="ok").startswith("wrote b.txt")
 
 
@@ -173,7 +174,7 @@ def test_quota_write_rechecks_parent_after_mkdir(env):
 
 
 def test_quota_write_cleans_tmp_when_replace_fails(env, monkeypatch):
-    def bad_replace(src, dst):
+    def bad_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
         raise OSError(errno.EIO, "disk on fire")
 
     monkeypatch.setattr(aft.os, "replace", bad_replace)
@@ -184,8 +185,8 @@ def test_quota_write_cleans_tmp_when_replace_fails(env, monkeypatch):
 
 
 def test_quota_write_tmp_cleanup_tolerates_missing_tmp(env, monkeypatch):
-    def replace_and_unlink(src, dst):
-        os.unlink(src)
+    def replace_and_unlink(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        os.unlink(src, dir_fd=src_dir_fd)
         raise OSError(errno.EIO, "boom")
 
     monkeypatch.setattr(aft.os, "replace", replace_and_unlink)
@@ -197,14 +198,15 @@ def test_quota_write_tmp_cleanup_tolerates_missing_tmp(env, monkeypatch):
 def test_quota_write_symlink_planted_at_leaf_is_refused(env, monkeypatch):
     outside = env.tmp / "o.txt"
     outside.write_text("secret")
-    real_open = os.open
+    original_open_parent = agentfs._open_confined_parent
 
-    def plant_then_open(path, flags, *a):
-        if str(path) == str(env.dir / "leaf.txt") and not os.path.lexists(path):
-            os.symlink(outside, path)
-        return real_open(path, flags, *a)
+    def plant_then_open(root, target, *, create_parents=False):
+        parent_fd, leaf = original_open_parent(root, target, create_parents=create_parents)
+        if leaf == "leaf.txt" and not os.path.lexists(env.dir / leaf):
+            os.symlink(outside, leaf, dir_fd=parent_fd)
+        return parent_fd, leaf
 
-    monkeypatch.setattr(aft.os, "open", plant_then_open)
+    monkeypatch.setattr(agentfs, "_open_confined_parent", plant_then_open)
     with pytest.raises(AgentFSError, match="symlink"):
         aft.quota_write(env.ctx, env.dir, env.dir / "leaf.txt", b"pwn", append=True)
     assert outside.read_text() == "secret"
@@ -291,3 +293,50 @@ def test_delete_frees_bytes_and_audits(env):
     call(env, "fs_write", path="d/b", content="bb")
     assert call(env, "fs_delete", path="d", recursive=True) == "deleted d (6 bytes freed)"
     assert events(env, "agentfs.delete")[-1]["data"] == {"agent_id": "alpha", "path": "d", "bytes": 6}
+
+
+
+def test_delete_does_not_follow_parent_symlink_swapped_after_dirfd_pin(env, monkeypatch):
+    nested = env.dir / "nested"
+    nested.mkdir()
+    (nested / "victim.txt").write_text("agent-owned")
+    outside = env.tmp / "outside-delete"
+    outside.mkdir()
+    (outside / "victim.txt").write_text("host-owned")
+    moved = env.dir / "nested-original"
+
+    original_open_directory = agentfs._open_confined_directory
+    swapped = {"done": False}
+
+    def swap_after_pin(root, parent):
+        fd = original_open_directory(root, parent)
+        if not swapped["done"] and Path(parent) == nested:
+            nested.rename(moved)
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped["done"] = True
+        return fd
+
+    monkeypatch.setattr(agentfs, "_open_confined_directory", swap_after_pin)
+    result = call(env, "fs_delete", path="nested/victim.txt")
+    assert swapped["done"] is True
+    assert result == "deleted nested/victim.txt (11 bytes freed)"
+    assert not (moved / "victim.txt").exists()
+    assert (outside / "victim.txt").read_text() == "host-owned"
+
+
+@pytest.mark.parametrize("bad_recursive", [0, 1, "true", None, []])
+def test_fs_delete_rejects_non_boolean_recursive_before_mutation(env, bad_recursive):
+    (env.dir / "keep.txt").write_text("keep")
+    result = call(env, "fs_delete", path="keep.txt", recursive=bad_recursive)
+    assert result.startswith("ERROR")
+    assert (env.dir / "keep.txt").read_text() == "keep"
+
+
+
+def test_agent_fs_tools_reject_context_home_outside_runner_workspace(env):
+    outside_home = agentfs.agent_dir(env.tmp / "other-workspace", "forged-agent")
+    forged = SimpleNamespace(**{**vars(env.ctx), "agent_dir": outside_home})
+
+    result = call(env, "fs_write", ctx=forged, path="should-not-exist.txt", content="blocked")
+    assert result.startswith("ERROR")
+    assert not (outside_home / "should-not-exist.txt").exists()

@@ -116,7 +116,7 @@ class Gateway:
         return {"upstreams": [u.status() for u in self.upstreams], "last_route": self.last_route}
 
     async def _request(self, up: Upstream, messages: list[dict[str, str]], model: str | None,
-                       temperature: float, session: str | None) -> str:
+                       temperature: float, session: str | None, json_mode: bool = False) -> str:
         headers = {"Content-Type": "application/json"}
         if up.api_key:
             headers["Authorization"] = f"Bearer {up.api_key}"
@@ -126,6 +126,11 @@ class Gateway:
             headers["X-Title"] = "AVRONE"
         body = {"model": model or up.model, "messages": sanitize_messages(messages),
                 "temperature": safe_temperature(temperature)}
+        # Ollama's OpenAI-compatible Chat Completions path supports JSON mode. Apply it only
+        # when the caller explicitly requests machine-readable actions; other providers keep
+        # their existing response contract.
+        if json_mode and up.provider == "ollama":
+            body["response_format"] = {"type": "json_object"}
         url = up.base_url.rstrip("/") + "/chat/completions"
         kw: dict[str, Any] = {"timeout": self.s.llm_timeout}
         if HTTP_TRANSPORT is not None:
@@ -172,7 +177,8 @@ class Gateway:
         return content
 
     async def chat(self, messages: list[dict[str, str]], model: str | None = None,
-                   temperature: float = 0.7, session: str | None = None, lead: bool = False) -> str:
+                   temperature: float = 0.7, session: str | None = None, lead: bool = False,
+                   json_mode: bool = False) -> str:
         if getattr(self.s, "llm_mode", "live") == "mock":
             from .llm import _mock_reply
             self.last_route = ["mock"]
@@ -187,7 +193,7 @@ class Gateway:
             for attempt in range(per_up_tries):
                 try:
                     msgs = with_plain_text_nudge(messages) if nudge else messages
-                    out = await self._request(up, msgs, use_model, temperature, session)
+                    out = await self._request(up, msgs, use_model, temperature, session, json_mode=json_mode)
                     up.record(True, self.threshold, self.cooldown)
                     route.append(f"{up.provider}:ok")
                     self.last_route = route

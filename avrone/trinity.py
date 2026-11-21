@@ -52,7 +52,9 @@ PLANNER_PROMPT = """You are the PLANNER in AVRONE, a multi-agent system.
 Split the user's task into {n} independent angles that different agents can work
 on IN PARALLEL (e.g. research, implementation, verification, devil's advocate).
 Every angle must be useful alone; do not make one depend on another.
-Reply with JSON only: {{"subtasks": [{{"role": "<short role name>", "focus": "<what this agent should do>"}}]}}"""
+When the task requires concrete commands, tool calls, or file operations, preserve those exact execution
+requirements in the relevant worker focus; do not turn a required action into generic research or planning.
+Reply with one JSON object only: {{"subtasks": [{{"role": "<short role name>", "focus": "<what this agent should do>"}}]}}"""
 
 WORKER_PROMPT = """You are {name}, the {role} agent in AVRONE, working inside a real Linux
 environment with a workspace directory. Overall task from the user:
@@ -61,22 +63,23 @@ environment with a workspace directory. Overall task from the user:
 Your focus: {focus}
 
 {tools}
-Reply with ONE fenced JSON block per turn, either a tool call:
-```json
+Return exactly ONE JSON object and no prose or Markdown fences on each turn. It must be one of:
 {{"tool": "<name>", "args": {{...}}}}
-```
-or, for independent calls that can run at the same time (up to {max_calls}), a batch:
-```json
 {{"tools": [{{"tool": "<name>", "args": {{...}}}}, {{"tool": "<name>", "args": {{...}}}}]}}
-```
-or, when you are done, your final result:
-```json
 {{"final": "<your complete findings, including any code, commands run and results>"}}
-```
-Be concrete. Verify claims with tools when you can. You have at most {steps} turns.
-Working habits: if a skill fits your job, skill_load it first; for multi-part work, put
-subtasks on task_board and update them; if a tool or package is missing, install it with
-env_install (self-changes are allowed and logged) and carry on; never invent tool output."""
+
+A batch may contain multiple independent calls (up to {max_calls}); never exceed that cap.
+If the task or focus explicitly requires an action through a tool, your first reply must be the tool-call object for that action. Do not announce intent, write a plan, or claim work is complete before calling the tool. Wait for the actual TOOL RESULT before reporting the result. Never invent command output,
+file contents, hashes, or state changes. If a tool is unavailable or fails, say it was not completed.
+You have at most {steps} turns.
+
+General workflow habits apply only when the task does not prescribe a more immediate action.
+Priority: an explicit first-action or exact-tool requirement in the task or focus overrides every
+general workflow habit. When such a requirement exists, perform that action first. Do not call
+skill_list, skill_load, task_board, self_scan, or another preparatory tool before it.
+When no immediate action is required, load a relevant skill before multi-part work; use task_board
+to coordinate genuine multi-part tasks; install missing tools or packages only when needed and
+allowed. Never invent tool output."""
 
 LEAD_PROMPT = """You are the LEAD agent in AVRONE. Several agents worked the same task in
 parallel from different angles. Compare their work like a study group:
@@ -393,6 +396,54 @@ def normalize_call(registry: Any, call: Any) -> Any:
     return out
 
 
+def parse_action_contract(task: str) -> dict[str, Any] | None:
+    """Read one explicit operator action contract embedded in the original run task.
+
+    Format: one line beginning with AVRONE_ACTION_CONTRACT: followed by strict JSON:
+    {"first_action":{"tool":"shell","args":{"cmd":"..."}}, "allow_followup_calls":false}
+    The marker is opt-in and is carried through spawned workers via AgentContext.run_task.
+    """
+    marker = "AVRONE_ACTION_CONTRACT:"
+    matches = [line[len(marker):] for line in str(task or "").splitlines()
+               if line.startswith(marker)]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError("expected exactly one non-empty AVRONE_ACTION_CONTRACT line")
+    if len(matches[0]) > 100_000:
+        raise ValueError("AVRONE_ACTION_CONTRACT exceeds the 100000-character limit")
+    payload = matches[0].strip()
+    if not payload:
+        raise ValueError("expected exactly one non-empty AVRONE_ACTION_CONTRACT line")
+
+    def unique_object(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError(f"duplicate action-contract key: {key!r}")
+            out[key] = value
+        return out
+
+    def reject_constant(value):
+        raise ValueError(f"non-standard JSON constant in action contract: {value}")
+
+    try:
+        value = json.loads(payload, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(f"invalid AVRONE_ACTION_CONTRACT JSON: {exc}") from exc
+    if type(value) is not dict or set(value) != {"first_action", "allow_followup_calls"}:
+        raise ValueError("action contract must contain exactly first_action and allow_followup_calls")
+    action = value.get("first_action")
+    if (type(action) is not dict or set(action) != {"tool", "args"}
+            or not isinstance(action.get("tool"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", action["tool"])
+            or type(action.get("args")) is not dict):
+        raise ValueError("first_action must contain a valid tool name and an args object")
+    if type(value.get("allow_followup_calls")) is not bool:
+        raise ValueError("allow_followup_calls must be a boolean")
+    return {"first_action": action, "allow_followup_calls": value["allow_followup_calls"]}
+
+
 def normalize_action(registry: Any, action: dict[str, Any]) -> dict[str, Any]:
     """Repair a parsed action before it runs (see normalize_call).
 
@@ -658,7 +709,8 @@ class TrinityCore:
                              "task": (focus or task)[:300], "depth": depth, "started": time.time(),
                              "agent_id": claimed,
                              "memory_ns": ctx.memory_namespace or memstore.agent_namespace(name)}
-        self.codex.emit(run_id, "agent.spawn", name, role=role, focus=focus or task, parent=parent, depth=depth,
+        self.codex.emit(run_id, "agent.spawn", name, role=role, agent_id=claimed,
+                        focus=focus or task, parent=parent, depth=depth,
                         context_mode=context_mode, context_chars=len(context_pack or ""),
                         lineage=ctx.lineage, share_dir=ctx.parent_dir is not None)
         prompt = (system or WORKER_PROMPT).format(
@@ -706,13 +758,36 @@ class TrinityCore:
         nudges = 0
         repeats, last_key = 0, None
         budget = {"arg_errors": 0, "spent": 0}  # consecutive ARG ERRORs; spent = stop validating
-        for step in range(self.settings.max_steps):
+        try:
+            contract = parse_action_contract(ctx.run_task or "") if ctx.depth == 0 else None
+        except ValueError as exc:
+            self.codex.emit(run_id, "action.contract.invalid", name, message=str(exc)[:500])
+            return f"[{name} failed: invalid action contract: {exc}]"
+
+        first_step = 0
+        if contract is not None:
+            required = contract["first_action"]
+            [checked] = self._prechecked(run_id, name, [required], 0, budget)
+            if checked["error"] is not None:
+                self.codex.emit(run_id, "action.contract.rejected", name,
+                                tool=required["tool"], reason=checked["error"][:500])
+                return f"[{name} failed: required first action was rejected before execution: {checked['error']}]"
+            self.codex.emit(run_id, "action.contract.start", name, tool=required["tool"])
+            tool, out = await self._one_call(run_id, name, ctx, checked, 0, budget)
+            messages.append({"role": "user", "content": f"TOOL RESULT ({tool}):\n{out}"})
+            last_key = _call_key(tool, checked.get("args"), out)
+            repeats = 1 if last_key is not None else 0
+            first_step = 1
+
+        for step in range(first_step, self.settings.max_steps):
             for note in self.inbox.pop(name, []):
                 messages.append({"role": "user", "content": reply_text(note) + "\nAct on this now, inside your own environment."})
             elided = compact_messages(messages, context_chars())
             if elided:
                 self.codex.emit(run_id, "context.compact", name, elided=elided, step=step)
-            reply = reply_text(await self._chat(messages, session=f"avrone:{run_id}:{name}"))
+            reply = reply_text(await self._chat(
+                messages, session=f"avrone:{run_id}:{name}", json_mode=True
+            ))
             messages.append({"role": "assistant", "content": reply})
             if not reply.strip():
                 # An empty turn (gpt-oss does this after a long tool result, or when all its
@@ -748,6 +823,15 @@ class TrinityCore:
                 result = reply.strip()
                 break
             action = normalize_action(self.tools, action)
+            if (contract is not None and not contract["allow_followup_calls"]
+                    and ("tool" in action or "tools" in action)):
+                self.codex.emit(run_id, "action.contract.blocked", name, step=step,
+                                requested=action.get("tool", "batch"))
+                messages.append({"role": "user", "content": (
+                    "The action contract has already executed its required first action and "
+                    "forbids additional tool calls. Do not call another tool; provide your final "
+                    "result using only the actual TOOL RESULT already supplied.")})
+                continue
             if "final" in action:
                 result = "" if action["final"] is None else str(action["final"])
                 break
@@ -1002,7 +1086,7 @@ class TrinityCore:
         reply = await self._chat([
             {"role": "system", "content": PLANNER_PROMPT.format(n=n)},
             {"role": "user", "content": f"TASK: {task}"},
-        ], temperature=0.4, session=f"avrone:{run_id}:planner")
+        ], temperature=0.4, session=f"avrone:{run_id}:planner", json_mode=True)
         subtasks = _normalize_subtasks(reply, n)
         self.codex.emit(run_id, "lead.planned", "Planner", subtasks=subtasks)
         return subtasks

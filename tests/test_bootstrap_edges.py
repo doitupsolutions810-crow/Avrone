@@ -2,6 +2,7 @@
 hook failures, cleanup ordering. Offline; the runner is faked so nothing is spawned."""
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import pytest
@@ -424,3 +425,216 @@ async def test_run_cleanups_reverse_order_and_failure_isolation():
 @pytest.mark.asyncio
 async def test_run_cleanups_empty():
     await bs.run_cleanups([])
+
+
+# ------------------------------------------------------- teardown hardening regressions
+
+@pytest.mark.asyncio
+async def test_mcp_cleanup_is_registered_before_start_can_fail(settings, log, monkeypatch):
+    import avrone.mcp_client as mc
+
+    class Mgr:
+        async def start(self):
+            log.append("mgr.start")
+            raise RuntimeError("provider handshake failed after allocation")
+
+        async def stop(self):
+            log.append("mgr.stop")
+
+    monkeypatch.setattr(mc, "MCPManager", Mgr)
+    core, cleanups = await bs.build_core(settings)
+    assert core.extensions["mcp"]["error"] == "RuntimeError: provider handshake failed after allocation"
+    await bs.run_cleanups(cleanups)
+    assert log[-3:] == ["mgr.start", "mgr.stop", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_cleanup_is_registered_before_queue_start_can_fail(settings, log, monkeypatch):
+    import avrone.fleet as fl
+
+    class FakeFleet:
+        enabled = True
+
+        def __init__(self, core, data_dir):
+            log.append("fleet.init")
+
+        def start_queue(self, data_dir):
+            log.append("fleet.queue")
+            raise OSError("sqlite worker failed after queue allocation")
+
+        def start(self):
+            log.append("fleet.start (must not run)")
+
+        async def stop(self):
+            log.append("fleet.stop")
+
+    monkeypatch.setattr(fl, "FleetManager", FakeFleet)
+    monkeypatch.setattr(fl, "register_fleet_tools", lambda registry: None)
+    core, cleanups = await bs.build_core(settings)
+    assert "sqlite worker failed after queue allocation" in core.extensions["fleet"]["error"]
+    assert "fleet.stop" not in log
+    await bs.run_cleanups(cleanups)
+    assert log[-2:] == ["fleet.stop", "runner.stop"]
+    assert "fleet.start (must not run)" not in log
+
+
+@pytest.mark.asyncio
+async def test_run_cleanups_defers_caller_cancellation_until_all_callbacks_finish():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    order = []
+
+    async def slow():
+        started.set()
+        await release.wait()
+        order.append("slow")
+
+    def later():
+        order.append("later")
+
+    waiter = asyncio.create_task(bs.run_cleanups([later, slow]))
+    await started.wait()
+    waiter.cancel()
+    await asyncio.sleep(0)  # let the cancellation reach the shielded waiter
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert order == ["slow", "later"]
+
+
+@pytest.mark.asyncio
+async def test_run_cleanups_continues_after_a_callback_cancels_itself():
+    order = []
+
+    async def cancelled():
+        order.append("cancelled")
+        raise asyncio.CancelledError
+
+    def later():
+        order.append("later")
+
+    with pytest.raises(asyncio.CancelledError):
+        await bs.run_cleanups([later, cancelled])
+    assert order == ["cancelled", "later"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_manager_receives_exact_configured_data_directory(settings, log, monkeypatch):
+    import avrone.fleet as fl
+
+    observed = []
+
+    class FakeFleet:
+        enabled = False
+
+        def __init__(self, core, data_dir):
+            observed.append((core, data_dir))
+
+        def info(self):
+            return {"enabled": False}
+
+    monkeypatch.setattr(fl, "FleetManager", FakeFleet)
+    core, cleanups = await bs.build_core(settings)
+    assert observed == [(core, settings.data_dir)]
+    await bs.run_cleanups(cleanups)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_mcp_start_drains_manager_and_runner(settings, log, monkeypatch):
+    import avrone.mcp_client as mc
+
+    class Mgr:
+        async def start(self):
+            log.append("mgr.start")
+            raise asyncio.CancelledError
+
+        async def stop(self):
+            log.append("mgr.stop")
+
+    monkeypatch.setattr(mc, "MCPManager", Mgr)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-3:] == ["mgr.start", "mgr.stop", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_fleet_start_drains_fleet_and_runner(settings, log, monkeypatch):
+    import avrone.fleet as fl
+
+    class FakeFleet:
+        enabled = True
+
+        def __init__(self, core, data_dir):
+            log.append("fleet.init")
+
+        def start_queue(self, data_dir):
+            log.append("fleet.queue")
+
+        def start(self):
+            log.append("fleet.start")
+            raise asyncio.CancelledError
+
+        async def stop(self):
+            log.append("fleet.stop")
+
+    monkeypatch.setattr(fl, "FleetManager", FakeFleet)
+    monkeypatch.setattr(fl, "register_fleet_tools", lambda registry: None)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-5:] == [
+        "fleet.init", "fleet.queue", "fleet.start", "fleet.stop", "runner.stop"
+    ]
+
+
+# ------------------------------------------------------- extension cancellation cleanup
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_extra_tools_drains_runner(settings, log, monkeypatch):
+    import avrone.tools_extra as te
+
+    async def cancel_after_partial_registration(registry):
+        log.append("extra_tools.partial")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(te, "register_extra_tools", cancel_after_partial_registration)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-2:] == ["extra_tools.partial", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_plugins_drains_runner(settings, log, monkeypatch):
+    import avrone.plugins as pl
+    import avrone.tools_extra as te
+
+    monkeypatch.setattr(te, "register_extra_tools", lambda registry: None)
+
+    async def cancel_after_partial_load(registry, settings):
+        log.append("plugins.partial")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(pl, "load_plugins", cancel_after_partial_load)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-2:] == ["plugins.partial", "runner.stop"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_cancellation_during_mcp_tool_registration_closes_manager(settings, log, monkeypatch):
+    import avrone.mcp_client as mc
+
+    class Mgr:
+        async def start(self):
+            log.append("mgr.start")
+
+        async def register_tools(self, registry):
+            log.append("mgr.register_tools")
+            raise asyncio.CancelledError
+
+        async def stop(self):
+            log.append("mgr.stop")
+
+    monkeypatch.setattr(mc, "MCPManager", Mgr)
+    with pytest.raises(asyncio.CancelledError):
+        await bs.build_core(settings)
+    assert log[-4:] == ["mgr.start", "mgr.register_tools", "mgr.stop", "runner.stop"]

@@ -409,18 +409,45 @@ def test_docker_runner_argv_and_failure(tmp_path, monkeypatch):
 
     async def fake_exec(self, argv, cmd, timeout, cwd=None):
         calls.append(argv)
-        return results.pop(0) if results else CommandResult(cmd, 0, "ok", "")
+        if results:
+            return results.pop(0)
+        if argv[1:3] == ["image", "inspect"]:
+            return CommandResult(cmd, 0, "sha256:" + "a" * 64, "")
+        if len(argv) > 1 and argv[1] == "run":
+            return CommandResult(cmd, 0, "d" * 64, "")
+        if len(argv) > 1 and argv[1] == "inspect":
+            payload = {
+                "Id": "d" * 64, "Name": f"/{d2.container}", "Image": "sha256:" + "a" * 64,
+                "State": {"Running": True},
+                "Config": {
+                    "Image": "sha256:" + "a" * 64, "WorkingDir": "/workspace",
+                    "Labels": {"avrone.runner": d2._owner_token},
+                },
+                "HostConfig": {
+                    "Binds": [f"{d2.workspace.resolve()}:/workspace"],
+                    "NetworkMode": "bridge",
+                },
+                "Mounts": [{
+                    "Type": "bind", "Source": str(d2.workspace.resolve()),
+                    "Destination": "/workspace", "RW": True,
+                }],
+            }
+            return CommandResult(cmd, 0, json.dumps(payload), "")
+        return CommandResult(cmd, 0, "ok", "")
     monkeypatch.setattr(DockerRunner, "_exec", fake_exec)
     d = DockerRunner(rsettings(tmp_path))
     with pytest.raises(RuntimeError, match="no daemon"):
         run(d.start())
-    assert "--network" in calls[0] and calls[0][-3:] == ["img", "sleep", "infinity"]
+    assert calls[0][1:3] == ["image", "inspect"]
     d2 = DockerRunner(rsettings(tmp_path, allow_network=True))
     run(d2.start())
-    assert "--network" not in calls[-1]
-    assert run(d2.run("ls")).stdout == "ok" and calls[-1][:3] == ["docker", "exec", d2.container]
+    assert calls[2][-3:] == ["sha256:" + "a" * 64, "sleep", "infinity"]
+    assert "--network" not in calls[2]
+    runner_id = d2.container_id
+    assert runner_id == "d" * 64
+    assert run(d2.run("ls")).stdout == "ok" and runner_id in calls[-1]
     run(d2.stop())
-    assert calls[-1][:3] == ["docker", "rm", "-f"]
+    assert calls[-1] == ["docker", "rm", "-f", runner_id]
 
 
 def test_establish_auto_falls_back_to_local(tmp_path, monkeypatch):
@@ -448,3 +475,243 @@ def test_establish_health_check_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(sovereign.LocalRunner, "run", failing)
     with pytest.raises(RuntimeError, match="health check failed"):
         run(sovereign.establish(rsettings(tmp_path)))
+
+
+
+def test_model_capability_discovery_reports_only_explicit_capabilities():
+    from avrone.modelcaps import describe_ollama_model
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={
+                "capabilities": ["completion", "tools", "thinking"],
+                "thinking": {"values": [False, True], "default": True},
+                "details": {"family": "qwen3", "parameter_size": "9B",
+                            "quantization_level": "Q4_K_M"},
+                "model_info": {"qwen3.context_length": 131072},
+                "parameters": "num_ctx 32768\ntemperature 0.7",
+            }, request=request)
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{
+                "name": "mimo-v2.6:9b", "digest": "abc123", "size": 7_000_000_000,
+                "details": {"family": "qwen3", "parameter_size": "9B",
+                            "quantization_level": "Q4_K_M"},
+            }]}, request=request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": [{
+                "name": "mimo-v2.6:9b", "model": "mimo-v2.6:9b",
+                "size": 6_500_000_000, "size_vram": 6_000_000_000,
+                "context_length": 65536,
+            }]}, request=request)
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.13.0"}, request=request)
+        return httpx.Response(404, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "mimo-v2.6:9b",
+            transport=httpx.MockTransport(handler),
+        )
+
+    result = asyncio.run(run())
+    assert result["model"] == "mimo-v2.6:9b"
+    assert result["installed"] is True and result["digest"] == "abc123"
+    assert result["capabilities"] == {
+        "completion": True, "tools": True, "vision": False, "thinking": True,
+    }
+    assert result["context"]["model_info_tokens"] == 131072
+    assert result["context"]["configured_num_ctx"] == 32768
+    assert result["runtime"]["loaded"] is True
+    assert result["runtime"]["context_tokens"] == 65536
+    assert result["runtime"]["vram_bytes"] == 6_000_000_000
+    assert result["details"]["quantization_level"] == "Q4_K_M"
+
+
+def test_model_capability_discovery_keeps_unknowns_unknown():
+    from avrone.modelcaps import describe_ollama_model
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"details": {"family": "unknown"}}, request=request)
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []}, request=request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": []}, request=request)
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.0.0"}, request=request)
+        return httpx.Response(404, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "mystery-model",
+            transport=httpx.MockTransport(handler),
+        )
+
+    result = asyncio.run(run())
+    assert result["installed"] is False
+    assert result["capabilities"] == {
+        "completion": None, "tools": None, "vision": None, "thinking": None,
+    }
+    assert result["context"]["model_info_tokens"] is None
+    assert result["context"]["configured_num_ctx"] is None
+    assert result["runtime"]["loaded"] is False
+
+
+def test_model_capability_endpoint_requires_ollama(client, monkeypatch):
+    from avrone import server
+    monkeypatch.setattr(server.settings, "provider", "openai")
+    r = client.get("/api/model/capabilities")
+    assert r.status_code == 409
+
+
+def test_model_capability_endpoint_validates_model_name(client, monkeypatch):
+    from avrone import server
+    monkeypatch.setattr(server.settings, "provider", "ollama")
+    r = client.get("/api/model/capabilities?model=../../etc/passwd")
+    assert r.status_code == 400
+
+
+
+def test_model_capability_discovery_tolerates_partial_inventory_and_bad_numeric_metadata():
+    from avrone.modelcaps import describe_ollama_model
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            import json as jsonlib
+            payload = {
+                "capabilities": ["completion", "tools"],
+                "thinking": {"values": ["", False], "default": False},
+                "details": {"family": "qwen3"},
+                "model_info": {
+                    "model.context_length": 131072,
+                    "bad.boolean_context_length": True,
+                    "bad.nan_context_length": float("nan"),
+                    "bad.fraction_context_length": 12.5,
+                },
+                "parameters": "num_ctx 0\\ntemperature 0.7",
+            }
+            # Encode NaN as an Ollama-compatible JSON extension so the defensive
+            # numeric filter is exercised instead of the response constructor failing.
+            return httpx.Response(
+                200, content=jsonlib.dumps(payload, allow_nan=True),
+                headers={"Content-Type": "application/json"}, request=request,
+            )
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": None}, request=request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": {"unexpected": "shape"}}, request=request)
+        if request.url.path == "/api/version":
+            return httpx.Response(503, text="temporarily unavailable", request=request)
+        return httpx.Response(404, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "qwen3.8:27b",
+            transport=httpx.MockTransport(handler),
+        )
+
+    result = asyncio.run(run())
+    assert result["capabilities"] == {
+        "completion": True, "tools": True, "vision": False, "thinking": False,
+    }
+    assert result["context"]["model_info_tokens"] == 131072
+    assert result["context"]["configured_num_ctx"] is None
+    assert result["installed"] is None and result["digest"] is None and result["size_bytes"] is None
+    assert result["runtime"] == {
+        "loaded": None, "context_tokens": None, "size_bytes": None, "vram_bytes": None,
+    }
+    assert result["issues"] == [
+        "installed model inventory unavailable",
+        "loaded model runtime inventory unavailable",
+        "Ollama version unavailable",
+    ]
+
+
+def test_model_capability_discovery_fails_closed_when_show_request_fails():
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+
+    def handler(request):
+        return httpx.Response(404, json={"error": "model not found"}, request=request)
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", "missing-model",
+            transport=httpx.MockTransport(handler),
+        )
+
+    with pytest.raises(OllamaCapabilityError, match="metadata unavailable"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("base_url", [
+    "file:///etc/passwd",
+    "http://user:secret@127.0.0.1:11434/v1",
+    "not-a-url",
+])
+def test_model_capability_discovery_rejects_unsafe_base_urls_before_network(base_url):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+
+    async def run():
+        return await describe_ollama_model(base_url, "qwen3.8:27b")
+
+    with pytest.raises(OllamaCapabilityError, match="base URL is invalid"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad_model", ["", "../etc/passwd", "model name", "x" * 129, "bad\nmodel"])
+def test_model_capability_discovery_rejects_invalid_model_tags(bad_model):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", bad_model,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}, request=request)),
+        )
+
+    with pytest.raises(OllamaCapabilityError, match="model tag is invalid"):
+        asyncio.run(run())
+
+@pytest.mark.parametrize("base_url", ["http://[::1", "http://127.0.0.1:99999/v1"])
+def test_model_capability_discovery_normalizes_malformed_authority_errors(base_url):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+    async def run():
+        return await describe_ollama_model(base_url, "qwen3.8:27b")
+    with pytest.raises(OllamaCapabilityError, match="base URL is invalid"):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize("bad_model", [None, 17, [], {}])
+def test_model_capability_discovery_rejects_non_string_model_tags(bad_model):
+    from avrone.modelcaps import OllamaCapabilityError, describe_ollama_model
+    async def run():
+        return await describe_ollama_model(
+            "http://127.0.0.1:11434/v1", bad_model,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}, request=request)),
+        )
+    with pytest.raises(OllamaCapabilityError, match="model tag is invalid"):
+        asyncio.run(run())
+
+
+def test_model_capability_discovery_ignores_pathological_num_ctx_integer():
+    from avrone.modelcaps import _num_ctx
+    assert _num_ctx("num_ctx " + ("9" * 10000)) is None
+
+
+def test_fleet_run_malformed_route_is_a_client_error(fclient, monkeypatch):
+    from avrone import server
+    core = server.core()
+    monkeypatch.setattr(core, "chat", AsyncMock(side_effect=AssertionError("must not run")))
+    response = signed_post(
+        fclient, "/api/fleet/run",
+        {"route": "child", "hops": 1, "mode": "chat", "prompt": "must be rejected"},
+    )
+    assert response.status_code == 400
+    assert "route" in response.json()["detail"]
+    core.chat.assert_not_called()
+
+
+def test_fleet_registration_rejects_duplicate_json_keys(fclient):
+    raw = b'{"node_id":"edge-a","node_id":"edge-b","url":"http://edge.test"}'
+    response = signed_post(fclient, "/api/fleet/register", raw=raw)
+    assert response.status_code == 400
+    assert "unambiguous JSON" in response.json()["detail"]

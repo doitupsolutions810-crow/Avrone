@@ -21,11 +21,16 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .agentfs import AgentFSError, confine
+from .agentfs import (
+    AgentFSError, confine, read_confined_bytes, write_confined_file, delete_confined_entry,
+    stat_confined, list_confined_entries, dir_usage_confined,
+    agent_dir as create_agent_dir, agents_root, sanitize_agent_id,
+)
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -96,9 +101,11 @@ def _agent_root(ctx: "AgentContext") -> Path:
     d = getattr(ctx, "agent_dir", None)
     if d is None:
         raise AgentFSError("you have no agent dir (per-agent fs is disabled: AVRONE_AGENT_FS=0)")
-    d = Path(d).resolve()
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    workspace = Path(ctx.core.runner.workspace).resolve()
+    raw = Path(d)
+    if raw.parent != agents_root(workspace) or raw.name != sanitize_agent_id(raw.name):
+        raise AgentFSError("agent context dir is not a canonical home in the configured workspace")
+    return create_agent_dir(workspace, raw.name, create=True)
 
 
 def _resolve(ctx: "AgentContext", tool: str, raw: Any) -> tuple[Path, Path]:
@@ -116,10 +123,7 @@ def _rel(root: Path, p: Path) -> str:
 
 def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: bool = False,
                 tool: str = "fs_write") -> tuple[int, int, int]:
-    """Write `data` to `p` inside agent dir `root`, enforcing the per-file cap and dir quota.
-
-    Shared by fs_write and the unified write_file/edit_file. Returns (file bytes, dir usage,
-    quota); raises AgentFSError (audited as agentfs.denied) on any refusal."""
+    """Write through a pinned directory descriptor while enforcing per-file and dir quotas."""
     if p == root:
         raise AgentFSError("path must name a file")
     cap, quota = max_file_bytes(), quota_bytes()
@@ -128,52 +132,23 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="not a regular file")
             raise AgentFSError(f"{_rel(root, p)} is not a regular file")
         old = p.stat().st_size if p.exists() else 0
-        new_size = (old + len(data)) if append else len(data)
-        if new_size > cap:
-            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="file_cap",
-                   bytes=new_size, cap=cap)
-            raise AgentFSError(f"file would be {new_size} bytes; per-file cap is {cap} bytes")
-        usage = dir_usage(root)
-        projected = usage - old + new_size
+        projected = dir_usage_confined(root, root) - old + (old + len(data) if append else len(data))
         if projected > quota:
             _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="quota",
-                   bytes=new_size, usage=usage, quota=quota)
+                   bytes=len(data), usage=projected, quota=quota)
             raise AgentFSError(f"agent dir quota exceeded: {projected} > {quota} bytes "
-                               f"(using {usage}); delete files with fs_delete first")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        # re-check after mkdir: an intermediate symlinked dir must not lead out
-        if not p.parent.resolve().is_relative_to(root):
-            raise AgentFSError("path escapes your agent dir")
-        # Never follow a symlink at the leaf: one planted (e.g. by the agent's own shell) between
-        # the checks above and the write, or at the predictable temp name, used to redirect the
-        # write outside the agent dir. O_NOFOLLOW refuses a symlinked leaf; O_EXCL a planted tmp.
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
+                               f"(using {projected - len(data)}); delete files with fs_delete first")
         try:
-            if append:
-                fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT | nofollow, 0o600)
-                with os.fdopen(fd, "ab") as f:
-                    f.write(data)
-            else:
-                tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{threading.get_ident()}-{os.urandom(4).hex()}")
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
-                try:
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(data)
-                    os.replace(tmp, p)
-                except BaseException:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-                    raise
-        except OSError as e:
-            if p.is_symlink() or e.errno == errno.ELOOP:
-                _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason="symlink")
-                raise AgentFSError(f"{_rel(root, p)} is not a regular file (symlink)") from None
+            new_size = write_confined_file(root, p, data, append=append, max_bytes=cap)
+        except AgentFSError as exc:
+            reason = "symlink" if "symlink" in str(exc).lower() else "confined_write"
+            _audit(ctx, "agentfs.denied", tool=tool, path=_rel(root, p), reason=reason,
+                   bytes=len(data), reason_detail=str(exc)[:200])
             raise
+        usage = dir_usage_confined(root, root)
     _audit(ctx, "agentfs.write", path=_rel(root, p), bytes=new_size, append=append,
-           usage=projected, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
-    return new_size, projected, quota
+           usage=usage, quota=quota, **({} if tool == "fs_write" else {"tool": tool}))
+    return new_size, usage, quota
 
 
 async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -185,77 +160,101 @@ async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_fs_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root, p = _resolve(ctx, "fs_read", args.get("path", ""))
-    if not p.exists():
-        return f"ERROR: {_rel(root, p)} not found"
-    if not p.is_file():
-        return f"ERROR: {_rel(root, p)} is a directory; use fs_list"
     try:
         limit = int(args.get("max_chars", READ_DEFAULT_CHARS))
     except (TypeError, ValueError):
         limit = READ_DEFAULT_CHARS
     limit = max(1, min(limit, READ_MAX_CHARS))
-    with p.open("rb") as f:
-        raw = f.read(limit * 4 + 4)
+    try:
+        raw = read_confined_bytes(root, p, max_bytes=limit * 4 + 4)
+    except FileNotFoundError:
+        return f"ERROR: {_rel(root, p)} not found"
+    except (IsADirectoryError, AgentFSError):
+        return f"ERROR: {_rel(root, p)} is not a regular file"
     text = raw.decode("utf-8", errors="replace")
-    size = p.stat().st_size
     out = text[:limit]
-    if len(text) > limit or size > len(raw):
-        out += f"\n...[truncated; file is {size} bytes]"
+    if len(text) > limit or len(raw) > limit * 4 + 4:
+        out += f"\\n...[truncated; file exceeds the read window]"
     return out
 
-
 async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
-    root, p = _resolve(ctx, "fs_list", args.get("path", ""))
-    if not p.exists():
+    root = _agent_root(ctx)
+    p = confine(root, args.get("path", "."))
+    try:
+        metadata = stat_confined(root, p)
+    except FileNotFoundError:
         return f"ERROR: {_rel(root, p)} not found"
-    if p.is_file():
-        return f"{_rel(root, p)}  {p.stat().st_size} bytes"
-    recursive = bool(args.get("recursive", False))
-    items = sorted(p.rglob("*") if recursive else p.iterdir())
-    lines = []
-    for q in items[:LIST_MAX_ENTRIES]:
-        if q.is_symlink():
-            lines.append(f"{_rel(root, q)} -> (symlink)")
-        elif q.is_dir():
-            lines.append(f"{_rel(root, q)}/")
-        else:
-            lines.append(f"{_rel(root, q)}  {q.stat().st_size} bytes")
-    if len(items) > LIST_MAX_ENTRIES:
-        lines.append(f"...[{len(items) - LIST_MAX_ENTRIES} more]")
-    head = f"[agent dir {getattr(ctx, 'agent_id', '') or root.name}: {dir_usage(root)}/{quota_bytes()} bytes used]"
-    return head + "\n" + ("\n".join(lines) if lines else "(empty)")
+    except AgentFSError as exc:
+        return f"ERROR: {exc}"
+    if stat.S_ISREG(metadata.st_mode):
+        return f"{_rel(root, p)}  {metadata.st_size} bytes"
+    if not stat.S_ISDIR(metadata.st_mode):
+        return f"ERROR: {_rel(root, p)} is not a file or directory"
+    recursive = args.get("recursive", False)
+    if type(recursive) is not bool:
+        return "ERROR: recursive must be a boolean"
+
+    lines: list[str] = []
+    total_entries = 0
+
+    def walk(directory: Path, prefix: str) -> None:
+        nonlocal total_entries
+        try:
+            entries = list_confined_entries(root, directory)
+        except (OSError, AgentFSError):
+            return
+        entries.sort(key=lambda item: item[0].lower())
+        for name, item_stat in entries:
+            total_entries += 1
+            if len(lines) < LIST_MAX_ENTRIES:
+                if stat.S_ISDIR(item_stat.st_mode):
+                    lines.append(f"{prefix}{name}/")
+                elif stat.S_ISLNK(item_stat.st_mode):
+                    lines.append(f"{prefix}{name} -> (symlink)")
+                else:
+                    lines.append(f"{prefix}{name}  {item_stat.st_size} bytes")
+            if recursive and stat.S_ISDIR(item_stat.st_mode):
+                walk(directory / name, prefix + "  ")
+
+    walk(p, "")
+    if total_entries > LIST_MAX_ENTRIES:
+        lines.append(f"...[{total_entries - LIST_MAX_ENTRIES} more]")
+    head = f"[agent dir {getattr(ctx, 'agent_id', '') or root.name}: {dir_usage_confined(root, root)}/{quota_bytes()} bytes used]"
+    return head + "\\n" + ("\\n".join(lines) if lines else "(empty)")
 
 
 async def t_fs_delete(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root = _agent_root(ctx)
     raw = str(args.get("path", "")).strip().rstrip("/\\")
-    # Confine the PARENT (resolved), then act on the leaf un-resolved, so a symlink is
-    # removed itself and never followed to what it points at.
     head, _, leaf = raw.replace("\\", "/").rpartition("/")
+    recursive = args.get("recursive", False)
     try:
         if not leaf or leaf in {".", ".."}:
             raise AgentFSError("refusing to delete your whole agent dir; name a file or subdir"
                                if raw in {"", "."} else "'..' is not allowed in agent paths")
-        confine(root, raw if not (root / raw).is_symlink() else (head or "."))
+        if type(recursive) is not bool:
+            raise AgentFSError("recursive must be a boolean")
+        # Resolve and validate the parent only. The leaf stays unresolved so a symlink target
+        # is unlinked as an entry rather than followed.
+        if not (root / raw).is_symlink():
+            confine(root, raw)
         parent = confine(root, head or ".")
-    except AgentFSError as e:
-        _audit(ctx, "agentfs.denied", tool="fs_delete", path=raw[:300] or ".", reason=str(e))
+    except AgentFSError as exc:
+        _audit(ctx, "agentfs.denied", tool="fs_delete", path=raw[:300] or ".", reason=str(exc))
         raise
-    target = parent / leaf
-    rel = _rel(root, parent / leaf) if parent.is_relative_to(root) else raw
-    if not target.is_symlink() and not target.exists():
-        return f"ERROR: {rel} not found"
+    rel = (parent / leaf).relative_to(root).as_posix()
     with _lock_for(root):
-        if target.is_symlink() or target.is_file():
-            freed = target.lstat().st_size
-            target.unlink()
-        elif target.is_dir():
-            if not bool(args.get("recursive", False)) and any(target.iterdir()):
+        try:
+            freed = delete_confined_entry(root, parent, leaf, recursive=recursive)
+        except FileNotFoundError:
+            return f"ERROR: {rel} not found"
+        except AgentFSError as exc:
+            if str(exc) == "directory is non-empty":
                 return f"ERROR: {rel} is a non-empty directory; pass recursive: true"
-            freed = dir_usage(target)
-            shutil.rmtree(target)
-        else:
-            return f"ERROR: {rel} is not a file or directory"
+            if str(exc) == "not a file or directory":
+                return f"ERROR: {rel} is not a file or directory"
+            _audit(ctx, "agentfs.denied", tool="fs_delete", path=raw[:300], reason=str(exc))
+            raise
     _audit(ctx, "agentfs.delete", path=rel, bytes=freed)
     return f"deleted {rel} ({freed} bytes freed)"
 

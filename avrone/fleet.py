@@ -127,6 +127,8 @@ NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 # Replay-cache bound: past this many live nonces new requests are refused (fail closed) rather than
 # evicting a live nonce, which would re-open replay of that request.
 NONCE_CACHE_MAX = 100_000
+MAX_NONCE_FILE_BYTES = 20 * 1024 * 1024
+MAX_FLEET_ROUTE_NODES = 256
 # Peer registry bounds: a token holder (or allow-all fleet) could register unlimited node ids, each
 # rewriting fleet.json (quadratic), with megabytes of capabilities/presence per record.
 DEFAULT_MAX_NODES, HARD_MAX_NODES = 256, 4096
@@ -460,6 +462,74 @@ def _parse_hops(raw: Any) -> int | None:
     return None
 
 
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous signed JSON objects instead of silently taking the last duplicate key."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    """Reject the non-standard NaN/Infinity tokens accepted by Python's JSON decoder."""
+    raise ValueError(f"non-standard JSON constant {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    """Reject valid JSON exponent syntax that overflows the IEEE-754 float range."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number {value}")
+    return parsed
+
+
+def _strict_fleet_json_loads(payload: bytes | str) -> Any:
+    """Parse signed fleet JSON with duplicate-key and non-finite-number rejection."""
+    try:
+        return json.loads(
+            payload,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("fleet JSON exceeds the parser nesting limit") from exc
+
+
+def _validated_fleet_route(raw: Any, node_id: str) -> list[str]:
+    """Validate a JSON route as unique, exact node IDs; never coerce scalars into path segments."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("'route' must be a list of node ids")
+    if len(raw) > MAX_FLEET_ROUTE_NODES:
+        raise ValueError(f"route exceeds the {MAX_FLEET_ROUTE_NODES}-node hard limit")
+    route: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str) or not ID_RE.fullmatch(item):
+            raise ValueError("'route' entries must be valid node ids")
+        if item == node_id:
+            raise ValueError("route must not contain this node (cycle)")
+        if item in seen:
+            raise ValueError(f"route must not repeat node {item!r}")
+        seen.add(item)
+        route.append(item)
+    return route
+
+
+def _validated_fleet_hops(raw: Any, max_hops: int, route_length: int = 0) -> int:
+    """Parse a hop count without bool/float truncation and preflight the remaining route budget."""
+    hops = _parse_hops(raw)
+    if hops is None or hops < 0:
+        raise ValueError("bad hop count")
+    if hops > max_hops or hops + route_length > max_hops:
+        raise PermissionError("max fleet hops exceeded")
+    return hops
+
 def request_capability(kind: str, payload: dict[str, Any]) -> str:
     if payload.get("capability") not in (None, ""):
         return str(payload["capability"])
@@ -700,19 +770,38 @@ class FleetManager:
 
     # ------------------------------------------------------------ replay cache persistence
     def _load_nonces(self) -> dict[str, float]:
+        """Load a bounded replay cache; any malformed/truncated cache activates the boot guard."""
         p = self._nonce_path
         if not p.exists():
             return {}
         now = time.time()
         try:
-            raw = json.loads(p.read_text())
+            # Bound the read itself, not just the parsed object: the file may be corrupt or replaced.
+            with p.open("rb") as stream:
+                raw_bytes = stream.read(MAX_NONCE_FILE_BYTES + 1)
+            if len(raw_bytes) > MAX_NONCE_FILE_BYTES:
+                raise ValueError("replay cache exceeds the configured file-size limit")
+            raw = _strict_fleet_json_loads(raw_bytes)
             if not isinstance(raw, dict):
-                raise ValueError("not an object")
-            out = {k: float(v) for k, v in raw.items()
-                   if isinstance(k, str) and NONCE_RE.fullmatch(k) and isinstance(v, (int, float))
-                   and not isinstance(v, bool) and float(v) >= now}
-            return dict(list(out.items())[:NONCE_CACHE_MAX])
-        except (OSError, ValueError, TypeError, RecursionError):
+                raise ValueError("replay cache is not an object")
+            if len(raw) > NONCE_CACHE_MAX:
+                raise ValueError("replay cache exceeds the configured entry limit")
+            out: dict[str, float] = {}
+            for nonce, expiry_raw in raw.items():
+                if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
+                    raise ValueError("replay cache contains an invalid nonce")
+                if type(expiry_raw) not in (int, float):
+                    raise ValueError("replay cache contains a non-numeric expiry")
+                try:
+                    expiry = float(expiry_raw)
+                except (OverflowError, TypeError, ValueError):
+                    raise ValueError("replay cache contains an invalid expiry") from None
+                if not math.isfinite(expiry):
+                    raise ValueError("replay cache contains a non-finite expiry")
+                if expiry >= now:
+                    out[nonce] = expiry
+            return out
+        except (OSError, ValueError, TypeError, RecursionError, OverflowError):
             self._boot_guard = now
             log.warning("fleet_nonces.json unreadable; refusing requests signed before this boot")
             return {}
@@ -864,8 +953,8 @@ class FleetManager:
             self._audit("fleet.privileged.refused", code="privileged_unsigned", reason=msg, kind=kind)
             raise self._refuse("privileged_unsigned", msg, kind=kind, privileged=True)
         try:
-            payload = json.loads(body or b"{}")
-        except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON (was a 500)
+            payload = _strict_fleet_json_loads(body or b"{}")
+        except (ValueError, TypeError, RecursionError):
             raise self._refuse("bad_body", "body must be JSON", kind=kind) from None
         if not isinstance(payload, dict):
             raise self._refuse("bad_body", "body must be a JSON object", kind=kind)
@@ -1063,16 +1152,25 @@ class FleetManager:
         if sender and path[-1] != sender:
             raise self._netsquad_refuse("bad_netsquad", "netsquad route does not end at the signed sender",
                                         sender=sender)
-        mode = str(payload.get("mode", "squad"))
-        if mode not in NET_WORKER_MODES:
+        mode = payload.get("mode", "squad")
+        if not isinstance(mode, str) or mode not in NET_WORKER_MODES:
             raise self._netsquad_refuse("bad_netsquad", f"netsquad mode must be squad or chat, got {mode!r}",
                                         sender=sender)
-        try:
-            n = max(1, min(int(payload.get("n") or 2), NET_SUBSQUAD_MAX))
-            budget = max(1, min(int(ns.get("budget") or n), net_max_remote_agents()))
-        except (TypeError, ValueError):
-            raise self._netsquad_refuse("bad_netsquad", "bad netsquad size/budget", sender=sender) from None
-        prompt = str(payload.get("prompt", ""))
+        raw_prompt = payload.get("prompt", "")
+        if not isinstance(raw_prompt, str):
+            raise self._netsquad_refuse("bad_netsquad", "netsquad prompt must be a string", sender=sender)
+
+        raw_n = payload.get("n")
+        if raw_n is None or (type(raw_n) is int and raw_n == 0):
+            raw_n = 2
+        raw_budget = ns.get("budget")
+        if raw_budget is None or (type(raw_budget) is int and raw_budget == 0):
+            raw_budget = raw_n
+        if type(raw_n) is not int or type(raw_budget) is not int:
+            raise self._netsquad_refuse("bad_netsquad", "netsquad size and budget must be integers", sender=sender)
+        n = max(1, min(raw_n, NET_SUBSQUAD_MAX))
+        budget = max(1, min(raw_budget, net_max_remote_agents()))
+        prompt = raw_prompt
         c = self.core
         self._audit("fleet.run", mode=mode, frm=payload.get("from"), hops=hops, netsquad=True, size=n, route=path)
         # One bridge per (sender, origin run): the sender's posts are merged in first, the remote
@@ -1095,9 +1193,11 @@ class FleetManager:
 
     # ------------------------------------------------------------ registry (server side)
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
-        nid = str(payload.get("node_id", ""))
+        if not isinstance(payload, dict):
+            raise ValueError("registration payload must be a JSON object")
+        nid = payload.get("node_id", "")
         url_raw = payload.get("url", "")
-        if not ID_RE.match(nid):
+        if not isinstance(nid, str) or not ID_RE.fullmatch(nid):
             raise ValueError("invalid node_id")
         if nid == self.node_id:
             raise ValueError("node_id collides with this server")
@@ -1456,19 +1556,83 @@ class FleetManager:
         self.worker = Worker(self.queue, self.run_job)
         self.worker.start()
 
+    async def _stop_resources(self) -> None:
+        """Drain every fleet-owned task/resource, even when an earlier close fails."""
+        failures: list[Exception] = []
+        current = asyncio.current_task()
+        tasks = {
+            task for task in (self._task, self._thermal_task, *tuple(self._bg))
+            if task is not None and task is not current
+        }
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, Exception) and not isinstance(outcome, asyncio.CancelledError):
+                    failures.append(outcome)
+
+        self._task = None
+        self._thermal_task = None
+        self._bg.difference_update(tasks)
+
+        worker = self.worker
+        if worker is not None:
+            try:
+                await worker.stop()
+            except asyncio.CancelledError:
+                failures.append(RuntimeError("fleet worker shutdown was cancelled"))
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                self.worker = None
+
+        queue = self.queue
+        if queue is not None:
+            try:
+                await queue.close()
+            except asyncio.CancelledError:
+                failures.append(RuntimeError("fleet job-queue close was cancelled"))
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                self.queue = None
+
+        if failures:
+            log.error(
+                "fleet shutdown completed with %d failure(s): %s",
+                len(failures),
+                "; ".join(f"{type(exc).__name__}: {exc}" for exc in failures)[:1000],
+            )
+            raise RuntimeError(f"fleet shutdown had {len(failures)} failure(s)") from failures[0]
+
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            self._task = None
-        if self._thermal_task:
-            self._thermal_task.cancel()
-            self._thermal_task = None
-        if self.worker:
-            await self.worker.stop()
-        if self.queue:
-            await self.queue.close()
-        for t in list(self._bg):
-            t.cancel()
+        """Idempotent, cancellation-resilient shutdown shared by concurrent callers."""
+        task = self.__dict__.get("_stop_task")
+        if task is None or task.done():
+            task = asyncio.create_task(self._stop_resources(), name=f"fleet-stop-{self.node_id}")
+            self._stop_task = task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                raise
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if task.done():
+                        break
+                    continue
+            # Retrieve/log a teardown error without replacing the caller's cancellation.
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("fleet teardown failed while caller cancellation was pending")
+            raise
 
     def pick(self, target: str) -> dict[str, Any]:
         if target in ("", "auto"):
@@ -1554,19 +1718,20 @@ class FleetManager:
     async def handle_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("message payload must be a JSON object")
-        hops = int(payload.get("hops", 1))
-        if hops > self.max_hops:
-            raise PermissionError("max fleet hops exceeded")
+        route = _validated_fleet_route(payload.get("route", []), self.node_id)
+        hops = _validated_fleet_hops(payload.get("hops", 1), self.max_hops, len(route))
         agent, message = payload.get("agent"), payload.get("message")
-        if not isinstance(agent, str) or not agent.strip():
-            raise ValueError("'agent' must be a non-empty string")
+        if not isinstance(agent, str) or not agent.strip() or len(agent) > 128:
+            raise ValueError("'agent' must be a non-empty string of at most 128 characters")
         if not isinstance(message, str):
             raise ValueError("'message' must be a string")
-        route = payload.get("route") or []
-        if not isinstance(route, list):
-            raise ValueError("'route' must be a list of node ids")
-        return await self.send_message([str(x) for x in route], agent, message,
-                                       str(payload.get("from", "?")), hops, payload.get("wait") is True)
+        sender = payload.get("from", "?")
+        if not isinstance(sender, str) or not sender.strip() or len(sender) > 128:
+            raise ValueError("'from' must be a non-empty string of at most 128 characters")
+        wait = payload.get("wait", False)
+        if type(wait) is not bool:
+            raise ValueError("'wait' must be a JSON boolean")
+        return await self.send_message(route, agent, message, sender, hops, wait)
 
     async def run_job(self, kind: str, p: dict[str, Any]) -> dict[str, Any]:
         """Queue handler: retried by the JobQueue if the target node is down."""
@@ -1580,11 +1745,25 @@ class FleetManager:
 
     async def handle_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Server side of /api/fleet/run: forward if routed further, else run locally."""
-        route = [str(x) for x in payload.get("route") or []]
-        hops = int(payload.get("hops", 1))
-        mode, prompt = str(payload.get("mode", "squad")), str(payload.get("prompt", ""))
-        if hops > self.max_hops:
-            raise PermissionError("max fleet hops exceeded")
+        if not isinstance(payload, dict):
+            raise ValueError("run payload must be a JSON object")
+        route = _validated_fleet_route(payload.get("route", []), self.node_id)
+        hops = _validated_fleet_hops(payload.get("hops", 1), self.max_hops, len(route))
+        raw_mode = payload.get("mode", "squad")
+        if not isinstance(raw_mode, str) or len(raw_mode) > 32:
+            raise ValueError("'mode' must be a string of at most 32 characters")
+        mode = raw_mode if raw_mode in SPAWN_MODES else "squad"
+        prompt = payload.get("prompt", "")
+        if not isinstance(prompt, str):
+            raise ValueError("'prompt' must be a string")
+        origin_run = payload.get("origin_run", "")
+        if origin_run is None:
+            origin_run = ""
+        if not isinstance(origin_run, str) or len(origin_run) > 128:
+            raise ValueError("'origin_run' must be a string of at most 128 characters")
+        sender_raw = payload.get("from", "?")
+        if not isinstance(sender_raw, str) or not sender_raw.strip() or len(sender_raw) > 128:
+            raise ValueError("'from' must be a non-empty string of at most 128 characters")
         if payload.get("capability") == NETSQUAD_CAP or payload.get("netsquad") is not None:
             return await self._handle_netsquad(payload, hops)
         priv = ""
@@ -1602,18 +1781,18 @@ class FleetManager:
             kw = {"rounds": r} if (r := clamp_deep_rounds(payload.get("rounds"))) is not None else {}
             if ck_id:
                 kw["checkpoint_id"] = ck_id
-            res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), payload.get("origin_run", ""),
+            res = await self.dispatch(route, mode, prompt, hops, payload.get("n"), origin_run,
                                       privileged=priv, **kw)
             return {**res, "path": [self.node_id] + res.get("path", [])}
         c = self.core
-        self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=payload.get("from"), hops=hops,
+        self.core.codex.emit("fleet", "fleet.run", self.node_id, mode=mode, frm=sender_raw, hops=hops,
                              **({"privileged": priv} if priv else {}), **({"checkpoint_id": ck_id} if ck_id else {}))
         ck: dict[str, Any] = {}
         release = None
         if ck_id:
             # keyed by the (signed) immediate sender and stamped with it: senders can't collide or
             # resume each other's checkpoints; a retried job from the same sender resumes
-            sender = sender_node(payload.get("from"))
+            sender = sender_node(sender_raw)
             ck_path = managed_path(self.data_dir, fleet_key(sender, ck_id))
             check_compatible(ck_path, prompt, mode, owner=f"fleet:{sender}")  # CheckpointConflict -> 409
             release = ckpt_claim(ck_path)

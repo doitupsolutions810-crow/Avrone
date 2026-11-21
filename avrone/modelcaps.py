@@ -1,0 +1,284 @@
+"""Read-only Ollama model capability and runtime discovery for AVRONE."""
+from __future__ import annotations
+
+import json
+import math
+import re
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+import httpx
+
+
+class OllamaCapabilityError(RuntimeError):
+    """The configured Ollama server could not provide model metadata."""
+
+
+# Native model metadata should be small; do not buffer arbitrarily large responses.
+MAX_OLLAMA_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_MODEL_INFO_NODES = 50_000
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Ollama metadata contains duplicate JSON object keys")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Ollama metadata contains non-standard JSON constant {value}")
+
+
+async def _request_json(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    """Fetch bounded, uncompressed JSON from an Ollama native endpoint."""
+    kwargs: dict[str, Any] = {"headers": {"Accept-Encoding": "identity"}}
+    if payload is not None:
+        kwargs["json"] = payload
+    async with client.stream(method, url, **kwargs) as response:
+        response.raise_for_status()
+        encoding = response.headers.get("content-encoding", "identity").strip().lower()
+        if encoding not in ("", "identity"):
+            raise ValueError("compressed Ollama metadata responses are not accepted")
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            if not re.fullmatch(r"[0-9]+", content_length.strip()):
+                raise ValueError("Ollama metadata has an invalid Content-Length")
+            if int(content_length) > MAX_OLLAMA_METADATA_RESPONSE_BYTES:
+                raise ValueError("Ollama metadata response exceeded the configured byte limit")
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            if len(body) + len(chunk) > MAX_OLLAMA_METADATA_RESPONSE_BYTES:
+                raise ValueError("Ollama metadata response exceeded the configured byte limit")
+            body.extend(chunk)
+    try:
+        return json.loads(
+            bytes(body),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError("Ollama metadata response is not valid bounded JSON") from exc
+
+
+def _native_base(base_url: str) -> str:
+    try:
+        parsed = urlsplit(str(base_url or "").strip())
+        hostname, _port = parsed.hostname, parsed.port
+    except ValueError:
+        raise OllamaCapabilityError("configured Ollama base URL is invalid") from None
+    if (parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise OllamaCapabilityError("configured Ollama base URL is invalid")
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3].rstrip("/")
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _tag_key(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    name = value.strip()
+    return name[:-7] if name.endswith(":latest") else name
+
+
+def _model_inventory(payload: Any, endpoint: str) -> list[dict[str, Any]]:
+    """Validate native Ollama model-list responses before inferring presence/absence."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise ValueError(f"invalid {endpoint} model inventory")
+    models = payload["models"]
+    for entry in models:
+        if not isinstance(entry, dict):
+            raise ValueError(f"invalid {endpoint} model inventory entry")
+        name = entry.get("name") or entry.get("model")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"invalid {endpoint} model inventory name")
+    return models
+
+
+def _context_lengths(value: Any) -> tuple[list[int], bool]:
+    """Walk untrusted model metadata iteratively with a hard node ceiling."""
+    found: list[int] = []
+    if not isinstance(value, dict):
+        return found, False
+    pending = [value]
+    visited = 0
+    while pending:
+        current = pending.pop()
+        visited += 1
+        if visited > MAX_MODEL_INFO_NODES:
+            return found, True
+        for key, item in current.items():
+            if isinstance(key, str) and "context_length" in key.lower():
+                number = _context_number(item)
+                if number is not None:
+                    found.append(number)
+            if isinstance(item, dict):
+                pending.append(item)
+    return found, False
+
+
+def _positive_int(value: Any) -> int | None:
+    """Accept a positive integral number; reject booleans, NaN, infinities and fractions."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value > 0 and value.is_integer() else None
+    return None
+
+
+def _context_number(value: Any) -> int | None:
+    number = _positive_int(value)
+    if number is not None:
+        return number
+    if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value.strip()):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _num_ctx(parameters: Any) -> int | None:
+    if not isinstance(parameters, str):
+        return None
+    match = re.search(r"(?im)^\s*num_ctx\s+(\d+)\s*$", parameters)
+    if not match:
+        return None
+    try:
+        return _positive_int(int(match.group(1)))
+    except ValueError:  # Python's integer digit limit protects against pathological metadata.
+        return None
+
+
+async def describe_ollama_model(
+    openai_base_url: str,
+    model: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    """Read model metadata, installed tag and loaded runtime from Ollama native endpoints.
+
+    Capability flags come only from the explicit show-model capabilities field.
+    Missing metadata is None, not an inferred false. Tags and running-model inventory
+    are best-effort so partially compatible servers still return usable metadata.
+    """
+    base = _native_base(openai_base_url)
+    if (not isinstance(model, str) or not model or len(model) > 128
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", model)):
+        raise OllamaCapabilityError("model tag is invalid")
+
+    issues: list[str] = []
+    timeout = httpx.Timeout(12.0, connect=3.0)
+    async with httpx.AsyncClient(timeout=timeout, transport=transport, trust_env=False) as client:
+        try:
+            show = await _request_json(client, "POST", f"{base}/api/show", payload={"model": model})
+            if not isinstance(show, dict):
+                raise ValueError("invalid show response")
+        except (httpx.HTTPError, ValueError, RecursionError) as exc:
+            raise OllamaCapabilityError(
+                f"Ollama model metadata unavailable for {model} ({type(exc).__name__})"
+            ) from None
+
+        tags_known = False
+        tags: dict[str, Any] | None = None
+        try:
+            tags_payload = await _request_json(client, "GET", f"{base}/api/tags")
+            tags_list = _model_inventory(tags_payload, "installed")
+            tags_known = True
+            tags = next((entry for entry in tags_list
+                         if isinstance(entry, dict) and _tag_key(entry.get("name") or entry.get("model")) == _tag_key(model)), None)
+        except (httpx.HTTPError, ValueError, TypeError, RecursionError):
+            issues.append("installed model inventory unavailable")
+
+        runtime_known = False
+        loaded: dict[str, Any] | None = None
+        try:
+            ps_payload = await _request_json(client, "GET", f"{base}/api/ps")
+            ps_list = _model_inventory(ps_payload, "running")
+            runtime_known = True
+            loaded = next((entry for entry in ps_list
+                           if isinstance(entry, dict) and _tag_key(entry.get("name") or entry.get("model")) == _tag_key(model)), None)
+        except (httpx.HTTPError, ValueError, TypeError, RecursionError):
+            issues.append("loaded model runtime inventory unavailable")
+
+        ollama_version: str | None = None
+        try:
+            version_payload = await _request_json(client, "GET", f"{base}/api/version")
+            if (isinstance(version_payload, dict)
+                    and isinstance(version_payload.get("version"), str)
+                    and 0 < len(version_payload["version"]) <= 128):
+                ollama_version = version_payload["version"]
+            else:
+                issues.append("Ollama version metadata malformed")
+        except (httpx.HTTPError, ValueError, TypeError, RecursionError):
+            issues.append("Ollama version unavailable")
+
+    capabilities_raw = show.get("capabilities")
+    if isinstance(capabilities_raw, list) and all(
+        isinstance(item, str) and len(item) <= 80 for item in capabilities_raw
+    ):
+        capabilities = {item.lower() for item in capabilities_raw}
+    else:
+        capabilities = None
+        if capabilities_raw is not None:
+            issues.append("model capability metadata malformed")
+    thinking_meta = show.get("thinking")
+    thinking_values = thinking_meta.get("values") if isinstance(thinking_meta, dict) else None
+    if capabilities is not None:
+        thinking_supported = "thinking" in capabilities
+    elif isinstance(thinking_values, list):
+        thinking_supported = any(
+            value is True or (isinstance(value, str) and bool(value.strip()))
+            for value in thinking_values
+        )
+    else:
+        thinking_supported = None
+
+    details = show.get("details") if isinstance(show.get("details"), dict) else {}
+    model_info = show.get("model_info") if isinstance(show.get("model_info"), dict) else {}
+    contexts, context_metadata_truncated = _context_lengths(model_info)
+    if context_metadata_truncated:
+        issues.append("model context metadata traversal limit reached")
+    return {
+        "provider": "ollama",
+        "model": model,
+        "ollama_version": ollama_version,
+        "installed": bool(tags) if tags_known else None,
+        "digest": str(tags.get("digest")) if tags and tags.get("digest") else None,
+        "size_bytes": _positive_int(tags.get("size")) if tags else None,
+        "details": {
+            "family": details.get("family"),
+            "parameter_size": details.get("parameter_size"),
+            "quantization_level": details.get("quantization_level"),
+            "format": details.get("format"),
+        },
+        "capabilities": {
+            "completion": ("completion" in capabilities) if capabilities is not None else None,
+            "tools": ("tools" in capabilities) if capabilities is not None else None,
+            "vision": ("vision" in capabilities) if capabilities is not None else None,
+            "thinking": thinking_supported,
+        },
+        "context": {
+            "model_info_tokens": max(contexts) if contexts else None,
+            "configured_num_ctx": _num_ctx(show.get("parameters")),
+        },
+        "runtime": {
+            "loaded": bool(loaded) if runtime_known else None,
+            "context_tokens": _positive_int(loaded.get("context_length")) if loaded else None,
+            "size_bytes": _positive_int(loaded.get("size")) if loaded else None,
+            "vram_bytes": _positive_int(loaded.get("size_vram")) if loaded else None,
+        },
+        "issues": issues,
+    }

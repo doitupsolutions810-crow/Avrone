@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import fsunify, memstore
+from . import agentfs, fsunify, memstore
 from .tools import Tool, _safe_path, runner_accepts_cwd
 
 if TYPE_CHECKING:
@@ -217,46 +217,52 @@ async def t_python(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 async def t_list_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
     r = fsunify.resolve(ctx, str(args.get("path", "") or "."), "list_files")
-    root, skip = r.path, fsunify.skip_dirs(ctx, r)
-    if not root.exists():
+    root = r.path
+    try:
+        metadata = agentfs.stat_confined(r.root, root)
+    except FileNotFoundError:
         return f"ERROR: {args.get('path')} not found"
-    if root.is_file():
-        return f"{fsunify.display(ctx, root)} ({root.stat().st_size} bytes)"
+    except agentfs.AgentFSError as exc:
+        return f"ERROR: {exc}"
+    head = fsunify.display(ctx, root)
+    if __import__("stat").S_ISREG(metadata.st_mode):
+        return f"{head} ({metadata.st_size} bytes)"
+    if not __import__("stat").S_ISDIR(metadata.st_mode):
+        return f"ERROR: {args.get('path')} is not a file or directory"
+
     depth = _int(args.get("depth"), 3, 1, 10)
     cap = 400
-    head = fsunify.display(ctx, root)
     lines = [head if head.endswith("/") else head + "/"]
     count = 0
     truncated = False
+    skip = fsunify.skip_dirs(ctx, r)
 
-    def walk(d: Path, level: int, prefix: str) -> None:
+    def walk(directory: Path, level: int, prefix: str) -> None:
         nonlocal count, truncated
         try:
-            entries = sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except OSError:
+            entries = agentfs.list_confined_entries(r.root, directory)
+        except (OSError, agentfs.AgentFSError):
             return
-        for e in entries:
-            if e.name in SKIP_DIRS or e in skip:
+        entries.sort(key=lambda item: (not __import__("stat").S_ISDIR(item[1].st_mode), item[0].lower()))
+        for name, item_stat in entries:
+            candidate = directory / name
+            if name in SKIP_DIRS or candidate in skip:
                 continue
             if count >= cap:
                 truncated = True
                 return
             count += 1
-            if e.is_dir() and not e.is_symlink():
-                lines.append(f"{prefix}{e.name}/")
+            if __import__("stat").S_ISDIR(item_stat.st_mode):
+                lines.append(f"{prefix}{name}/")
                 if level < depth:
-                    walk(e, level + 1, prefix + "  ")
+                    walk(candidate, level + 1, prefix + "  ")
             else:
-                try:
-                    size = e.stat().st_size
-                except OSError:
-                    size = 0
-                lines.append(f"{prefix}{e.name} ({size}b)")
+                lines.append(f"{prefix}{name} ({item_stat.st_size}b)")
 
     walk(root, 1, "  ")
     if truncated:
         lines.append(f"...[truncated at {cap} entries]")
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
 async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
@@ -278,9 +284,9 @@ async def t_search_files(ctx: "AgentContext", args: dict[str, Any]) -> str:
             break
         scanned += 1
         try:
-            if f.stat().st_size > 1_000_000:
+            data = agentfs.read_confined_bytes(r.root, f, max_bytes=1_000_000)
+            if len(data) > 1_000_000:
                 continue
-            data = f.read_bytes()
         except OSError:
             continue
         if b"\0" in data[:4096]:
@@ -311,12 +317,15 @@ def _iter_files(root: Path, skip: set[Path] | None = None):
 async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
     r = fsunify.resolve(ctx, str(args.get("path", "")), "edit_file")
     p = r.path
-    if not p.is_file():
-        return f"ERROR: {args.get('path')} not found"
     old, new = str(args.get("old", "")), str(args.get("new", ""))
     if not old:
         return "ERROR: 'old' must be a non-empty string"
-    text = p.read_text(errors="replace")
+    try:
+        text = agentfs.read_confined_bytes(r.root, p).decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return f"ERROR: {args.get('path')} not found"
+    except (IsADirectoryError, agentfs.AgentFSError):
+        return f"ERROR: {args.get('path')} is not a regular confined file"
     n = text.count(old)
     name = fsunify.display(ctx, p)
     if n == 0:
@@ -327,7 +336,10 @@ async def t_edit_file(ctx: "AgentContext", args: dict[str, Any]) -> str:
         from .agentfs_tools import quota_write
         quota_write(ctx, r.root, p, text.replace(old, new, 1).encode("utf-8"), tool="edit_file")
     else:
-        p.write_text(text.replace(old, new, 1))
+        try:
+            agentfs.write_confined_file(r.root, p, text.replace(old, new, 1).encode("utf-8"))
+        except agentfs.AgentFSError as exc:
+            return f"ERROR: {exc}"
     return f"edited {name} (1 replacement)"
 
 
@@ -592,14 +604,16 @@ def _read_text_for_diff(ctx: "AgentContext", raw: Any, label: str) -> tuple[str 
     rel = str(raw or "").strip()
     if not rel:
         return None, f"ERROR: {label} is required"
-    p = fsunify.resolve(ctx, rel, "diff_files").path
-    if not p.exists():
+    resolved = fsunify.resolve(ctx, rel, "diff_files")
+    p = resolved.path
+    try:
+        data = agentfs.read_confined_bytes(resolved.root, p, max_bytes=DIFF_MAX_FILE_BYTES)
+    except FileNotFoundError:
         return None, f"ERROR: {rel} not found"
-    if not p.is_file():
-        return None, f"ERROR: {rel} is not a file"
-    if p.stat().st_size > DIFF_MAX_FILE_BYTES:
+    except (IsADirectoryError, agentfs.AgentFSError):
+        return None, f"ERROR: {rel} is not a regular confined file"
+    if len(data) > DIFF_MAX_FILE_BYTES:
         return None, f"ERROR: {rel} is larger than {DIFF_MAX_FILE_BYTES} bytes"
-    data = p.read_bytes()
     if b"\0" in data[:8192]:
         return None, f"ERROR: {rel} looks like a binary file"
     return data.decode(errors="replace"), fsunify.display(ctx, p)

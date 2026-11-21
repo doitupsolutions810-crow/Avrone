@@ -61,9 +61,12 @@ def agent_root(ctx: "AgentContext") -> Path | None:
     d = getattr(ctx, "agent_dir", None)
     if d is None:
         return None
-    root = Path(d).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    raw = Path(d)
+    ws = workspace(ctx)
+    expected_root = agentfs.agents_root(ws)
+    if raw.parent != expected_root or raw.name != agentfs.sanitize_agent_id(raw.name):
+        raise AgentFSError("agent context dir is not a canonical home in the configured workspace")
+    return agentfs.agent_dir(ws, raw.name, create=True)
 
 
 def _audit_denied(ctx: "AgentContext", tool: str, raw: str, reason: str) -> None:
@@ -90,7 +93,12 @@ def split_shared(raw: str, prefix: str = SHARED_PREFIX) -> str | None:
 def parent_root(ctx: "AgentContext") -> Path | None:
     """The parent's agent dir when this child was spawned with share_dir=true, else None."""
     d = getattr(ctx, "parent_dir", None)
-    return Path(d).resolve() if d is not None else None
+    if d is None:
+        return None
+    raw = Path(d)
+    if not agentfs.is_agent_dir(workspace(ctx), raw):
+        raise AgentFSError("shared parent dir is not a canonical agent home in the configured workspace")
+    return raw
 
 
 def resolve(ctx: "AgentContext", raw: Any, tool: str) -> Resolved:

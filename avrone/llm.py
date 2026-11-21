@@ -35,7 +35,14 @@ class LLM:
         return self.gateway.status()
 
     async def chat(self, messages: list[dict[str, str]], model: str | None = None,
-                   temperature: float = 0.7, session: str | None = None, lead: bool = False) -> str:
+                   temperature: float = 0.7, session: str | None = None, lead: bool = False,
+                   json_mode: bool = False) -> str:
+        if json_mode:
+            return await self.gateway.chat(
+                messages, model, temperature, session, lead, json_mode=True
+            )
+        # Keep the legacy call shape for embedders/tests that wrap Gateway.chat with the
+        # original five-argument signature. Workers opt in explicitly above.
         return await self.gateway.chat(messages, model, temperature, session, lead)
 
     async def _legacy_chat(self, messages: list[dict[str, str]], model: str | None = None,

@@ -1,0 +1,18 @@
+# Optional container for Crow-OS. The host port is bound to localhost.
+# The process inside the container listens on 0.0.0.0 so the published port works.
+# Ollama on the host is reached at host.docker.internal:11434.
+services:
+  crow-os:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      CROW_HOST: 0.0.0.0
+      CROW_PORT: "8765"
+      CROW_OPEN_BROWSER: "0"
+      CROW_REPO: /repo
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ..:/repo

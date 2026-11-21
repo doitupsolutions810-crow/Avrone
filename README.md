@@ -11,6 +11,11 @@ their work like a study group, resolves disagreements, and writes one answer.
 The model brain is your **OpenClaw** Gateway by default (any OpenAI-compatible
 backend works too: xAI Grok, OpenAI, Ollama, LM Studio, vLLM).
 
+## Crow-OS AVRONE Workspace
+
+Longer edge-case rounds are coordinated in [`crow-os-workspace/`](crow-os-workspace/README.md).
+From the repo root: `python crow-os-workspace/run.py`, then open http://127.0.0.1:8765.
+
 ## Architecture (from the sketch)
 
 ```

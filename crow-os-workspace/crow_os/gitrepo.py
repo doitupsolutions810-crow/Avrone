@@ -189,6 +189,18 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return completed.returncode == 0
 
 
+def add_worktree_branch(repo: Path, path: Path, sha: str, branch: str) -> None:
+    """Create a new branch and worktree. Does not move the main checkout."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch.startswith(("/", ".")) or ".." in branch.split("/"):
+        raise GitError("branch name is not allowed")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        remove_worktree(repo, path)
+    git(repo, "worktree", "add", "-b", branch, str(path), sha)
+
+
 def add_worktree(repo: Path, path: Path, sha: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():

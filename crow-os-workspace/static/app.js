@@ -1,18 +1,21 @@
 const VIEWS = [
+  ["chat", "Chat"],
   ["overview", "Overview"],
   ["branches", "Branches"],
   ["pulls", "Pull requests"],
   ["commits", "Commits"],
   ["rounds", "Test runs"],
   ["suites", "Edge suites"],
-  ["agents", "Agents"],
+  ["agents", "Assignments"],
   ["checkpoints", "Checkpoints"],
   ["propagation", "Failures"],
   ["artifacts", "Artifacts"],
   ["changes", "Gates"],
+  ["settings", "Settings"],
+  ["system", "System"],
 ];
 
-const state = { view: "overview", overview: null, roundId: null, log: "" };
+const state = { view: "chat", overview: null, roundId: null, log: "", threadId: null, agentId: null, chatLog: "" };
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -541,6 +544,9 @@ async function showChanges() {
 }
 
 const RENDER = {
+  chat: showChat,
+  settings: showSettings,
+  system: showSystem,
   overview: showOverview,
   branches: showBranches,
   pulls: showPulls,

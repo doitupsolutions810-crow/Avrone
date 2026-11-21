@@ -203,6 +203,43 @@ CREATE TABLE IF NOT EXISTS anomalies (
     message TEXT,
     trace TEXT
 );
+
+CREATE TABLE IF NOT EXISTS chat_agents (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    backend TEXT,
+    model TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_threads (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT,
+    title TEXT,
+    branch TEXT,
+    base_sha TEXT,
+    worktree TEXT,
+    change_id TEXT,
+    status TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT,
+    role TEXT,
+    content TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT,
+    ts TEXT,
+    kind TEXT,
+    summary TEXT,
+    detail TEXT
+);
 """
 
 SNAPSHOT_TABLES = ("branches", "commits", "pulls", "checks", "test_files", "artifacts")

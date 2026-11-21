@@ -51,6 +51,7 @@ def create_app(
         if app.state.ingest_on_startup:
             await asyncio.to_thread(app.state.workspace.ingest)
         await asyncio.to_thread(app.state.workspace.recover)
+        await asyncio.to_thread(app.state.workspace.system_config, refresh=True)
         yield
 
     app = FastAPI(title="Crow-OS AVRONE Workspace", lifespan=lifespan)
@@ -242,6 +243,106 @@ def create_app(
     @app.get("/api/events")
     def events(limit: int = 200):
         return {"events": workspace.events(min(limit, 500))}
+
+    @app.get("/api/system")
+    def system():
+        return workspace.system_config()
+
+    @app.post("/api/system/refresh")
+    def system_refresh():
+        return workspace.system_config(refresh=True)
+
+    @app.get("/api/ollama")
+    def ollama():
+        return workspace.chat.connectors()["ollama"]
+
+    @app.post("/api/ollama/pull")
+    async def ollama_pull(request: Request):
+        from .ollama_client import iter_pull, ollama_host, probe_ollama
+
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValueError("model name is required")
+        probe = probe_ollama()
+        if probe["state"] != "reachable":
+            return JSONResponse(status_code=503, content=probe)
+
+        def generate():
+            try:
+                for item in iter_pull(ollama_host(), name):
+                    yield _sse(item)
+                    if item.get("error"):
+                        return
+            except Exception as exc:
+                yield _sse({"error": f"{type(exc).__name__}: {exc}"})
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    @app.get("/api/connectors")
+    def connectors():
+        return workspace.chat.connectors()
+
+    @app.get("/api/chat/agents")
+    def chat_agents():
+        return {"agents": workspace.chat.list_agents()}
+
+    @app.post("/api/chat/agents")
+    async def create_chat_agent(request: Request):
+        body = await request.json()
+        return workspace.chat.create_agent(
+            name=body.get("name") or "",
+            backend=body.get("backend") or "",
+            model=body.get("model") or "",
+        )
+
+    @app.post("/api/chat/agents/{agent_id}/model")
+    async def set_agent_model(agent_id: str, request: Request):
+        body = await request.json()
+        return workspace.chat.set_model(agent_id, body.get("model") or "")
+
+    @app.get("/api/chat/threads")
+    def chat_threads(agent_id: str | None = None):
+        return {"threads": workspace.chat.list_threads(agent_id)}
+
+    @app.post("/api/chat/threads")
+    async def create_thread(request: Request):
+        body = await request.json()
+        return workspace.chat.create_thread(body.get("agent_id") or "", body.get("title") or "")
+
+    @app.get("/api/chat/threads/{thread_id}")
+    def chat_thread(thread_id: str):
+        return workspace.chat.thread_detail(thread_id)
+
+    @app.post("/api/chat/threads/{thread_id}/messages")
+    async def chat_message(thread_id: str, request: Request):
+        body = await request.json()
+        return workspace.chat.post_message(thread_id, body.get("text") or "", background=True)
+
+    @app.post("/api/chat/threads/{thread_id}/cancel")
+    def chat_cancel(thread_id: str):
+        return workspace.chat.cancel(thread_id)
+
+    @app.get("/api/chat/threads/{thread_id}/stream")
+    def chat_stream(thread_id: str):
+        workspace.chat.thread_detail(thread_id)
+        subscriber = workspace.subscribe(thread_id)
+
+        async def generate():
+            try:
+                current = workspace.chat.thread_detail(thread_id)
+                yield _sse({"type": "status", "status": current["status"], "replay": True})
+                if current["status"] in {"idle", "failed", "cancelled"}:
+                    return
+                while True:
+                    event = await asyncio.to_thread(_get, subscriber)
+                    yield _sse(event)
+                    if event.get("type") == "status" and event.get("status") in {"idle", "failed", "cancelled"}:
+                        return
+            finally:
+                workspace.unsubscribe(thread_id, subscriber)
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
 
     @app.get("/")
     def index():

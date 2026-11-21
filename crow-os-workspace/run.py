@@ -19,12 +19,18 @@ os.environ.setdefault("CROW_HOME", str(ROOT))
 
 
 def main() -> None:
+    import threading
+    import webbrowser
+
     import uvicorn
 
     from crow_os.api import create_app
 
     host = os.environ.get("CROW_HOST", "127.0.0.1")
     port = int(os.environ.get("CROW_PORT", "8765"))
+    if os.environ.get("CROW_OPEN_BROWSER", "1") not in {"0", "false", "no"}:
+        shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://{shown}:{port}")).start()
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
 
 

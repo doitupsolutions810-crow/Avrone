@@ -25,7 +25,7 @@ from .status import (
     propagation_graph,
     verification_decision,
 )
-from .util import is_relative_test_path, sha256_bytes, utc_now
+from .util import is_relative_test_path, sha256_bytes, sha256_text, utc_now
 
 LANES = {
     "coverage": "coverage/tests",
@@ -51,6 +51,9 @@ class Workspace:
         self.store = store
         self.repo = Path(repo)
         self.runner = Runner(store, self.repo, worktree_root, publish=self._publish)
+        from .chat_agent import ChatWorkspace
+
+        self.chat = ChatWorkspace(self, publish=self._publish)
         self._threads: dict[str, threading.Thread] = {}
         self._subs: dict[str, list[Any]] = {}
         self._sub_lock = threading.Lock()
@@ -274,6 +277,179 @@ class Workspace:
         self.store.event("change_created", {"id": change_id, "ref": ref, "sha": sha, "files": files})
         return self.evaluation(change_id)
 
+    def register_agent_change(
+        self,
+        *,
+        change_id: str,
+        title: str,
+        ref: str,
+        sha: str,
+        required_files: list[str],
+    ) -> dict[str, Any]:
+        """Record an agent patch. It is unmerged and unverified until the gates pass."""
+        files = [path for path in dict.fromkeys(required_files) if is_relative_test_path(path)]
+        existing = self.store.query_one("SELECT id FROM changes WHERE id=?", (change_id,))
+        payload = json.dumps(files)
+        if existing is None:
+            self.store.execute(
+                """
+                INSERT INTO changes
+                    (id, title, ref, sha, pr_number, source, required_source, required_files, contained_in_main, created_at)
+                VALUES (?, ?, ?, ?, NULL, 'agent', 'manual', ?, 0, ?)
+                """,
+                (change_id, title, ref, sha, payload, utc_now()),
+            )
+            self.store.execute(
+                """
+                INSERT INTO gates (change_id, gate_id, name, kind, passed, detail)
+                VALUES (?, ?, ?, 'human', 0, ?)
+                """,
+                (
+                    change_id,
+                    HUMAN_GATE_ID,
+                    HUMAN_GATE_NAME,
+                    "Waiting for an operator to accept the recorded evidence.",
+                ),
+            )
+        else:
+            self.store.execute(
+                """
+                UPDATE changes
+                   SET title=?, ref=?, sha=?, required_files=?, contained_in_main=0
+                 WHERE id=?
+                """,
+                (title, ref, sha, payload, change_id),
+            )
+        try:
+            self.index_ref(ref)
+        except gitrepo.GitError as exc:
+            self.store.event("index_ref_failed", {"ref": ref, "error": str(exc)})
+        self.store.event("agent_change", {"id": change_id, "ref": ref, "sha": sha, "files": files})
+        return self.evaluation(change_id)
+
+    def index_ref(self, ref: str) -> None:
+        from .ingest import scan_commit
+
+        sha = gitrepo.rev_parse(self.repo, ref)
+        tests, _artifacts, error = scan_commit(self.repo, sha)
+        if error:
+            raise gitrepo.GitError(error)
+        self.store.execute("DELETE FROM test_files WHERE ref=?", (ref,))
+        if not tests:
+            return
+        self.store.executemany(
+            """
+            INSERT INTO test_files
+                (ref, path, sha256, size, case_count, syntax_ok, syntax_error, suite, components)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    ref,
+                    item["path"],
+                    item["sha256"],
+                    item["size"],
+                    item["case_count"],
+                    item["syntax_ok"],
+                    item["syntax_error"],
+                    item["suite"],
+                    item["components"],
+                )
+                for item in tests
+            ],
+        )
+
+    def record_observed_round(
+        self,
+        *,
+        title: str,
+        ref: str,
+        sha: str,
+        change_id: str,
+        files: list[dict[str, Any]],
+        log_text: str,
+        acceptance: bool,
+    ) -> str:
+        round_id = "r" + utc_now().replace("-", "").replace(":", "") + uuid.uuid4().hex[:6]
+        digest = sha256_bytes(log_text.encode("utf-8"))
+        log_dir = self.runner.worktree_root.parent / "logs" / round_id
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "combined.log"
+        log_path.write_text(log_text, encoding="utf-8")
+        passed = bool(files) and all(item.get("status") == "passed" for item in files)
+        status = "passed" if passed else "failed"
+        from .sysconfig import public_runtime
+
+        env = {"recorded_at": utc_now(), "source": "agent-worktree", **public_runtime()}
+        inputs = {
+            "title": title,
+            "ref": ref,
+            "commit_sha": sha,
+            "runner": "python",
+            "files": [item["path"] for item in files],
+            "acceptance": bool(acceptance and passed),
+            "change_id": change_id,
+        }
+        self.store.execute(
+            """
+            INSERT INTO rounds
+                (id, title, ref, commit_sha, runner, status, created_at, started_at, finished_at,
+                 env_json, inputs_json, exit_code, log_sha256, log_path, change_id, acceptance, sealed)
+            VALUES (?, ?, ?, ?, 'python', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                round_id,
+                title,
+                ref,
+                sha,
+                status,
+                utc_now(),
+                utc_now(),
+                utc_now(),
+                json.dumps(env),
+                json.dumps(inputs),
+                0 if status == "passed" else 1,
+                digest,
+                str(log_path),
+                change_id,
+                1 if acceptance and passed else 0,
+            ),
+        )
+        for index, item in enumerate(files):
+            body = f"{item.get('stdout') or ''}\n{item.get('stderr') or ''}\n{item.get('trace') or ''}"
+            self.store.execute(
+                """
+                INSERT INTO round_files
+                    (round_id, ord, path, status, exit_code, stdout, stderr, trace, started_at, finished_at, log_sha256, log_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    round_id,
+                    index,
+                    item["path"],
+                    item.get("status") or status,
+                    0 if item.get("status") == "passed" else 1,
+                    item.get("stdout") or "",
+                    item.get("stderr") or "",
+                    item.get("trace") or "",
+                    utc_now(),
+                    utc_now(),
+                    sha256_text(body),
+                    str(log_path),
+                ),
+            )
+        self.store.event("round_observed", {"round_id": round_id, "change_id": change_id, "status": status, "sha256": digest})
+        return round_id
+
+    def system_config(self, *, refresh: bool = False) -> dict[str, Any]:
+        from .sysconfig import capture_system
+
+        if refresh or not self.store.meta_get("system"):
+            snapshot = capture_system(self.repo)
+            self.store.meta_set("system", snapshot)
+            self.store.event("system_config", {"env_count": snapshot.get("env_count", 0)})
+        return self.store.meta_get("system") or {}
+
     def attest_gate(self, change_id: str, gate_id: str, passed: bool) -> dict[str, Any]:
         row = self.store.query_one(
             "SELECT * FROM gates WHERE change_id=? AND gate_id=?",
@@ -354,6 +530,9 @@ class Workspace:
             "AVRONE_RUNNER": "local",
             "recorded_at": utc_now(),
         }
+        from .sysconfig import public_runtime
+
+        env.update(public_runtime())
         self.store.execute(
             """
             INSERT INTO rounds

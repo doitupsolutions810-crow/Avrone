@@ -19,11 +19,35 @@ Optional environment:
 | Variable | Role |
 |---|---|
 | `GITHUB_TOKEN` or `GH_TOKEN` | Load pull requests and GitHub check runs. Without it, the UI says the token is missing and still shows local git data. |
-| `OLLAMA_HOST` | Ollama API. Default `http://localhost:11434`. If nothing answers, rounds and the header say **Ollama unreachable**. |
-| `OLLAMA_MODEL` | Model name for an advisory round. Defaults to the first model returned by `/api/tags`. |
+| `OLLAMA_HOST` | Ollama HTTP API. Default `http://localhost:11434`. The server also looks for an `ollama` binary on `PATH`. If the API does not answer, the UI says **Ollama unreachable** and names whether the binary was found. |
+| `OLLAMA_MODEL` | Model name for an advisory round. Chat agents use the model saved on the agent, otherwise the first model from `/api/tags`. |
+| `CURSOR_API_KEY` | Optional Cursor cloud-agent backend (`POST /v1/agents`). Without it, that backend says the key is missing and does not call the API. |
+| `XAI_API_KEY` | Optional Grok backend (`POST https://api.x.ai/v1/chat/completions`). Without it, Grok says the key is missing. |
+| `XAI_MODEL` | Grok model id. Default `grok-4.7`. |
 | `CROW_REPO` | Checkout to ingest. Defaults to the parent of this directory when it contains `.git`. |
 | `CROW_PORT` | Listen port. Default `8765`. |
 | `CROW_HOST` | Listen address. Default `127.0.0.1`. |
+| `CROW_OPEN_BROWSER` | Set to `0` to skip opening a browser. Default opens `http://127.0.0.1:8765`. |
+
+On startup the server reads host toolchain versions, repo-local git config, `.env` / `pyproject.toml` when present, and Ollama's `/api/tags`. Token-like values are masked before they are stored or shown. Runs inherit the host process environment; the System tab shows the masked view.
+
+## Chat
+
+The Chat tab is the front door: agents and threads on the left, the transcript in the center, and tool activity plus a live log on the right. Coordination views (branches, pull requests, runs, gates, and the rest) stay available as tabs.
+
+A local Ollama agent gets a tool loop confined to a detached git worktree on a `crow-os/chat-…` branch. It can list, read, and write files, commit a patch, and run pytest with no harness timeout. The patch is registered as a change that stays **unmerged** and **unverified** until the same acceptance gates pass. Cancel stops the turn. Settings lists installed models, sets a default model per agent, and can pull a model through `POST /api/pull`.
+
+Cursor and xAI agents use the same chat. They are skipped, with the reason on screen, when their keys are absent.
+
+## Docker
+
+From the repository root:
+
+```bash
+docker compose -f crow-os-workspace/docker-compose.yml up --build
+```
+
+The published port is `127.0.0.1:8765`. Inside the container the server binds `0.0.0.0` so that mapping works. The repo is mounted at `/repo`. Host Ollama is expected at `host.docker.internal:11434`.
 
 Install the Python packages if they are not already present:
 
@@ -43,7 +67,8 @@ python -m pip install -r crow-os-workspace/requirements.txt
 ## What stays dark without extra services
 
 - **Pull requests and CI checks** need `GITHUB_TOKEN` or `GH_TOKEN`. The app will not read credentials out of the git remote URL.
-- **Ollama advice** needs a reachable `OLLAMA_HOST` with a model installed. Unreachable is a failed advisory round, not a guessed result.
+- **Ollama** needs a reachable `OLLAMA_HOST` (default `http://localhost:11434`) and a pulled model. A missing binary or a refused connection is shown as unreachable. Advisory text and chat replies are not invented.
+- **Cursor cloud agents** need `CURSOR_API_KEY`. **Grok** needs `XAI_API_KEY`.
 - Sibling services (CycleKernal, capability-authority, the fusion bridge, avrone-daemon) are outside this repository and are not shown as live status.
 
 ## Status rule

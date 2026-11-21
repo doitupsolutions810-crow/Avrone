@@ -36,11 +36,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
 import threading
 import time
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +53,13 @@ if TYPE_CHECKING:
     from .trinity import AgentContext
 
 SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]")
+log = logging.getLogger("avrone.evolve")
+
+
+def _log_anomaly(where: str) -> None:
+    """An unexpected failure, with a UTC ISO timestamp and the full traceback."""
+    log.error("anomaly %s at %s\n%s", where, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              traceback.format_exc())
 
 
 def _repo_root(ctx: "AgentContext") -> Path:
@@ -129,8 +139,11 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
     if r.exit_code != 0:
         # Fallback: plain copy if not a git repo
         shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(".git", "data", "*.egg-info", "__pycache__"))
+        # Host signing stays on. A throwaway test repo disables it in the test
+        # helper; this base commit is a real git object and should be signed
+        # when the host is configured to sign.
         await _sh(ctx, "git init -q && git add -A && git -c user.email=a@a -c user.name=avrone "
-                  "-c commit.gpgsign=false commit -qm base", wt)
+                  "commit -qm base", wt)
     await _sh(ctx, f"git checkout -q -b {branch}", wt)
     return wt, branch
 
@@ -208,7 +221,11 @@ async def _propose_once(ctx: "AgentContext", goal: str, edits: list, test_cmd: s
             res = again
     tail = "\n".join((res.stdout or res.stderr or "").splitlines()[-25:])
     if passed:
-        await _sh(ctx, "git add -A && git -c user.email=a@a -c user.name=avrone -c commit.gpgsign=false "
+        # Do not pass commit.gpgsign=false. Proposal commits follow the host
+        # signer (this machine can sign). Test repos opt out in their own
+        # helpers because those fixtures must exist even when no key is loaded.
+        # The autopilot still forces signing off for its children via GIT_CONFIG_COUNT.
+        await _sh(ctx, "git add -A && git -c user.email=a@a -c user.name=avrone "
                   f"commit -qm {json.dumps(goal)[:200]}", wt)
     duration = round(_now() - t0, 3)
     meta = {"pid": pid, "goal": goal, "branch": branch, "files": changed, "passed": passed,
@@ -501,11 +518,12 @@ def record_history(ctx: "AgentContext", loop_meta: dict[str, Any]) -> None:
     tmp = None
     try:
         _record_history_at(_history_path(ctx), loop_meta)
-    except Exception:  # noqa: BLE001 - history is best effort
-        pass
+    except Exception:  # noqa: BLE001 - history is best effort; the traceback is kept
+        _log_anomaly("evolve history")
 
 
 def _record_history_at(path: Path, loop_meta: dict[str, Any]) -> None:
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         row = _history_row(loop_meta)
@@ -516,7 +534,8 @@ def _record_history_at(path: Path, loop_meta: dict[str, Any]) -> None:
             tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
             os.replace(tmp, path)
             tmp = None
-    except Exception:  # noqa: BLE001 - history is best effort
+    except Exception:  # noqa: BLE001 - history is best effort; the traceback is kept
+        _log_anomaly("evolve history write")
         if tmp is not None:
             try:
                 tmp.unlink()

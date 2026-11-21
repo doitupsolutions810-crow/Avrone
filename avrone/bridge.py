@@ -27,6 +27,7 @@ reviewers read what the first wave concluded.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import contextlib
 import os
@@ -34,9 +35,18 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable
+
+log = logging.getLogger("avrone.bridge")
+
+
+def _log_anomaly(where: str) -> None:
+    """An unexpected failure, with a UTC ISO timestamp and the full traceback."""
+    log.error("anomaly %s at %s", where, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              exc_info=True)
 
 from .tools import Tool
 
@@ -92,7 +102,10 @@ def _utf8_text(value: Any) -> str:
     if value is None:
         value = ""
     elif not isinstance(value, str):
-        value = str(value)
+        try:
+            value = str(value)
+        except RecursionError:
+            return "\ufffd"
     return clean_text(value)
 
 
@@ -117,10 +130,17 @@ def _refs(refs: Any) -> list[str]:
 
 
 def _remote_ts(ts: Any) -> float:
-    """A relayed post's ts: finite, non-bool number, else now."""
+    """A relayed post's ts: finite, non-bool number, else now.
+
+    A JSON integer can be far past what ``float`` can hold (``OverflowError``,
+    or ``inf``). That is the same as a missing clock: stamp it now.
+    """
     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
         return time.time()
-    ts = float(ts)
+    try:
+        ts = float(ts)
+    except (OverflowError, ValueError):
+        return time.time()
     return ts if math.isfinite(ts) and ts > 0 else time.time()
 
 
@@ -163,13 +183,25 @@ class Bridge:
         """Rebuild the ring from file text (call with the lock held)."""
         self._posts.clear()
         self._lines = 0
-        for line in text.splitlines():
-            tomb = self._parse_tombstones(line)
+        for raw in text.splitlines():
+            line = raw.strip().lstrip("\ufeff")
+            if not line:
+                continue
+            # One poisoned line must not discard the rest of the file.
+            try:
+                tomb = self._parse_tombstones(line)
+            except (OverflowError, RecursionError, ValueError, TypeError):
+                _log_anomaly("bridge replay tombstone")
+                continue
             if tomb is not None:
                 for t in tomb:
                     self._tomb(t)
                 continue
-            rec = self._parse(line)
+            try:
+                rec = self._parse(line)
+            except (OverflowError, RecursionError, ValueError, TypeError):
+                _log_anomaly("bridge replay")
+                continue
             if rec is None:
                 continue
             self._lines += 1
@@ -181,11 +213,12 @@ class Bridge:
 
     @staticmethod
     def _parse_tombstones(line: str) -> list[str] | None:
+        line = line.strip().lstrip("\ufeff")
         if '"tombstones"' not in line:
             return None
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (json.JSONDecodeError, RecursionError, OverflowError):
             return None
         if not isinstance(rec, dict) or set(rec) != {"tombstones"} or not isinstance(rec["tombstones"], list):
             return None
@@ -200,12 +233,12 @@ class Bridge:
 
     @staticmethod
     def _parse(line: str) -> dict[str, Any] | None:
-        line = line.strip()
+        line = line.strip().lstrip("\ufeff")
         if not line:
             return None
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (json.JSONDecodeError, RecursionError, OverflowError):
             return None
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not _ID_RE.match(rec["id"]):
             return None
@@ -317,7 +350,7 @@ class Bridge:
             for p in posts if isinstance(posts, list) else []:
                 try:
                     rec = self._parse(json.dumps(p, default=str)) if isinstance(p, dict) else None
-                except (ValueError, TypeError, RecursionError):  # circular / absurdly nested
+                except (ValueError, TypeError, OverflowError, RecursionError):  # circular / absurd
                     rec = None
                 if rec is None:
                     stats["rejected"] += 1
@@ -367,36 +400,49 @@ class Bridge:
              query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         out = self.export(since)
         if kind:
-            out = [p for p in out if p["kind"] == str(kind).lower()]
+            want = str(kind).lower()
+            out = [p for p in out if p.get("kind") == want]
         if agent:
             a = str(agent).lower()
-            out = [p for p in out if a in p["agent"].lower() or a == p["role"].lower()]
+            out = [p for p in out if a in str(p.get("agent") or "").lower()
+                   or a == str(p.get("role") or "").lower()]
         if query:
             q = str(query).lower()
-            out = [p for p in out if q in p["text"].lower()]
-        limit = max(1, min(int(limit or 50), 200))
+            out = [p for p in out if q in str(p.get("text") or "").lower()]
+        try:
+            n = int(limit or 50)
+        except (TypeError, ValueError, OverflowError):
+            n = 50
+        limit = max(1, min(n, 200))
         return out[-limit:]
 
     def unresolved(self) -> list[dict[str, Any]]:
         """Questions and corrections no later answer/conclusion refers to."""
         posts = self.posts()
-        settled = {r for p in posts if p["kind"] in ("answer", "conclusion") for r in p["refs"]}
-        return [p for p in posts if p["kind"] in ("question", "correction") and p["id"] not in settled]
+        settled: set[Any] = set()
+        for p in posts:
+            if p.get("kind") not in ("answer", "conclusion"):
+                continue
+            refs = p.get("refs")
+            if isinstance(refs, (list, tuple)):
+                settled.update(refs)
+        return [p for p in posts if p.get("kind") in ("question", "correction") and p.get("id") not in settled]
 
     def digest(self, max_chars: int = 6000) -> str:
         """Compact text for a lead: what agents concluded together, then unresolved points."""
         posts = self.posts()
         if not posts:
             return ""
-        concl = [p for p in posts if p["kind"] == "conclusion"]
-        corr = [p for p in posts if p["kind"] == "correction"]
+        concl = [p for p in posts if p.get("kind") == "conclusion"]
+        corr = [p for p in posts if p.get("kind") == "correction"]
         open_ = self.unresolved()
         parts: list[str] = []
 
         def block(title: str, items: list[dict[str, Any]]) -> None:
             if items:
                 parts.append(title + "\n" + "\n".join(
-                    f"- [{p['id']}] {p['agent']}: {p['text'][:600]}" for p in items))
+                    f"- [{p.get('id', '')}] {p.get('agent', '')}: {str(p.get('text') or '')[:600]}"
+                    for p in items))
         block("What agents concluded together:", concl)
         block("Corrections raised:", corr)
         block("Unresolved disagreements / open questions:", open_)
@@ -412,10 +458,11 @@ def compact(posts: list[dict[str, Any]], width: int = 300) -> str:
         return "(no posts)"
     lines = []
     for p in posts:
-        refs = f" re {','.join(p['refs'])}" if p.get("refs") else ""
+        refs = p.get("refs")
+        refs_s = f" re {','.join(str(r) for r in refs)}" if isinstance(refs, (list, tuple)) and refs else ""
         org = "" if p.get("origin_node") in (None, "", "local") else f" @{p['origin_node']}"
-        t = p["text"].replace("\n", " ")
-        lines.append(f"[{p['id']}] {p['kind']} {p['agent']}{org}{refs}: {t[:width]}"
+        t = str(p.get("text") or "").replace("\n", " ")
+        lines.append(f"[{p.get('id', '')}] {p.get('kind', '')} {p.get('agent', '')}{org}{refs_s}: {t[:width]}"
                      + ("..." if len(t) > width else ""))
     return "\n".join(lines)
 
@@ -595,10 +642,12 @@ def _id_state(core: Any, pid: str) -> str | None:
 
 def _ts_key(post: dict[str, Any]) -> tuple[float, str]:
     ts = post.get("ts")
-    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
-        number = 0.0
-    else:
-        number = float(ts)
+    number = 0.0
+    if not isinstance(ts, bool) and isinstance(ts, (int, float)):
+        try:
+            number = float(ts)
+        except (OverflowError, ValueError):
+            number = 0.0
         if not math.isfinite(number):
             number = 0.0
     return (number, str(post.get("id") or ""))
@@ -706,15 +755,32 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _json_safe(value: Any, seen: set[int] | None = None) -> Any:
-    """A JSON value that encodes as UTF-8. Lone surrogates and non-finite numbers cannot."""
+# Deep enough for a real post, shallow enough that a poisoned nest cannot
+# RecursionError inside the response walk (json.loads itself accepts it).
+_JSON_DEPTH = 32
+
+
+def _json_safe(value: Any, seen: set[int] | None = None, depth: int = 0) -> Any:
+    """A JSON value that encodes as UTF-8.
+
+    Lone surrogates and NULs are cleaned. Non-finite numbers, and integers too
+    big for a finite float, become 0.0. Cycles and nesting past ``_JSON_DEPTH``
+    become ``"..."``.
+    """
     if isinstance(value, str):
         return _utf8_text(value)
     if value is None or isinstance(value, bool):
         return value
-    if isinstance(value, (int, float)):
-        number = float(value)
+    if isinstance(value, int):
+        try:
+            number = float(value)
+        except (OverflowError, ValueError):
+            return 0.0
         return value if math.isfinite(number) else 0.0
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    if depth >= _JSON_DEPTH or not isinstance(value, (dict, list, tuple)):
+        return "..." if isinstance(value, (dict, list, tuple)) else _utf8_text(value)
     if seen is None:
         seen = set()
     mark = id(value)
@@ -723,19 +789,34 @@ def _json_safe(value: Any, seen: set[int] | None = None) -> Any:
     seen.add(mark)
     try:
         if isinstance(value, dict):
-            return {_utf8_text(k): _json_safe(v, seen) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [_json_safe(v, seen) for v in value]
-        return _utf8_text(value)
+            return {_utf8_text(k): _json_safe(v, seen, depth + 1) for k, v in value.items()}
+        return [_json_safe(v, seen, depth + 1) for v in value]
+    except RecursionError:
+        return "..."
     finally:
         seen.discard(mark)
 
 
 def public_post(post: dict[str, Any]) -> dict[str, Any]:
-    """A stored post safe to put in a JSON response. Does not rewrite the ring."""
+    """A stored post safe to put in a JSON response. Does not rewrite the ring.
+
+    The id is put back after the walk. Two keys that clean to the same string
+    (``id`` and ``id\\x00``) would otherwise drop the cursor.
+    """
     if not isinstance(post, dict):
         return {"text": _utf8_text(post)}
-    return _json_safe(post)
+    try:
+        safe = _json_safe(post)
+    except RecursionError:
+        safe = {}
+    if not isinstance(safe, dict):
+        safe = {"text": _utf8_text(safe)}
+    raw_id = post.get("id")
+    if isinstance(raw_id, str):
+        cleaned = _utf8_text(raw_id)
+        if cleaned:
+            safe["id"] = cleaned
+    return safe
 
 
 def safe_since(since: str | None) -> str | None:
@@ -811,7 +892,7 @@ async def t_bridge_read(ctx: Any, args: dict[str, Any]) -> str:
     b = for_core(ctx.core, ctx.run_id)
     try:
         limit = int(args.get("limit") or 30)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         limit = 30
     posts = b.read(kind=args.get("kind"), agent=args.get("agent"), since=args.get("since"),
                    query=args.get("query"), limit=limit)

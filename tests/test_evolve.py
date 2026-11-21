@@ -1,4 +1,8 @@
-import asyncio, json
+import asyncio
+import json
+import logging
+import re
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
@@ -56,6 +60,51 @@ def test_accept_passing(tmp_path, monkeypatch):
     pid = out.split()[1].rstrip(":")
     assert "twice" in run(evolve.t_evolve_diff(c, {"pid": pid}))
     assert evolve.list_accepted(c.core.settings)[0]["goal"] == "add helper"
+
+
+def test_proposal_commit_follows_the_host_signer(tmp_path, monkeypatch):
+    """Accepted proposals are not committed with commit.gpgsign=false.
+
+    Throwaway fixture repos still pass that flag (see repo()). A host that
+    signs can sign the proposal; this environment's signer does.
+    """
+    cmds = []
+
+    class Rec(Runner):
+        async def run(self, cmd, timeout=None):
+            cmds.append(cmd)
+            return await super().run(cmd, timeout)
+
+    monkeypatch.setenv("AVRONE_REPO_DIR", str(repo(tmp_path)))
+    c = mkctx(tmp_path, tmp_path / "repo")
+    c.core.runner = Rec(str(tmp_path / "repo"))
+    out = run(evolve.t_evolve_propose(c, {"goal": "add helper", "edits": [
+        {"path": "pkg/util.py", "content": "def twice(x):\n    return x * 2\n"}]}))
+    assert "ACCEPTED" in out
+    commits = [cmd for cmd in cmds if "commit -qm" in cmd and "git add -A" in cmd]
+    assert commits and all("gpgsign=false" not in cmd for cmd in commits)
+    pid = out.split()[1].rstrip(":")
+    meta = json.loads((tmp_path / "d" / "evolve" / f"{pid}.json").read_text())
+    raw = subprocess.run(["git", "cat-file", "-p", "HEAD"], cwd=meta["worktree"],
+                         check=True, capture_output=True).stdout
+    signing = subprocess.run(["git", "config", "--get", "commit.gpgsign"],
+                             capture_output=True, text=True).stdout.strip().lower()
+    if signing == "true":
+        assert b"BEGIN " in raw and b"SIGNATURE" in raw
+
+
+def test_history_write_anomaly_keeps_the_traceback(tmp_path, monkeypatch, caplog):
+    c = mkctx(tmp_path, tmp_path / "repo")
+
+    def boom(path, meta):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(evolve, "_record_history_at", boom)
+    with caplog.at_level(logging.ERROR, logger="avrone.evolve"):
+        evolve.record_history(c, {"loop_id": "L1", "goal": "g", "iterations": [], "status": "done"})
+    assert "RuntimeError: disk full" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+    assert re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", caplog.text)
 
 
 def test_path_escape_rejected(tmp_path, monkeypatch):

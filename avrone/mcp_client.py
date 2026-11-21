@@ -166,9 +166,11 @@ class StdioTransport(_Transport):
 
     async def close(self) -> None:
         p = self.proc
-        if p and p.returncode is None:
-            with contextlib.suppress(Exception):
-                p.stdin.close()  # type: ignore[union-attr]
+        if p and getattr(p, "returncode", None) is None:
+            stdin = getattr(p, "stdin", None)
+            if stdin is not None:
+                with contextlib.suppress(Exception):
+                    stdin.close()
             try:
                 await asyncio.wait_for(p.wait(), 2)
             except (asyncio.TimeoutError, Exception):
@@ -184,6 +186,9 @@ class StdioTransport(_Transport):
                 t.cancel()
                 with contextlib.suppress(BaseException):
                     await t
+        if p is not None:
+            from .sovereign import release_transport
+            await release_transport(p)
 
 
 class HTTPTransport(_Transport):

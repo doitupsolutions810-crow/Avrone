@@ -1,6 +1,8 @@
 """Learning bridge: run-scoped blackboard, tools, persistence, fleet relay hooks, API."""
 import asyncio
 import json
+import logging
+import re
 import threading
 
 import pytest
@@ -108,6 +110,57 @@ def test_persistence_and_corrupt_replay(tmp_path):
     assert again.get(p2["id"])["refs"] == [p1["id"]]
     p3 = again.post("c", "conclusion", "three", refs=[p2["id"]])
     assert [p["id"] for p in Bridge("run/../x", tmp_path).posts()][-1] == p3["id"]
+
+
+def test_replay_anomaly_keeps_the_rest_and_the_traceback(tmp_path, monkeypatch, caplog):
+    """A line that raises must not drop the posts around it, and the traceback is logged."""
+    b = Bridge("r1", tmp_path)
+    kept = b.post("a", "finding", "kept")
+    path = tmp_path / "bridge" / "r1.jsonl"
+    neighbor = {"id": "n1", "run_id": "r1", "agent": "b", "role": "", "kind": "finding",
+                "text": "neighbor", "refs": [], "ts": 3, "origin_node": "local"}
+    path.write_bytes(path.read_bytes() + b"BOOM-LINE\n" + (json.dumps(neighbor) + "\n").encode())
+    real = Bridge._parse.__func__ if isinstance(Bridge._parse, staticmethod) else Bridge._parse
+
+    def boom(line):
+        if "BOOM-LINE" in line:
+            raise OverflowError("ts too big")
+        return real(line)
+
+    monkeypatch.setattr(Bridge, "_parse", staticmethod(boom))
+    with caplog.at_level(logging.ERROR, logger="avrone.bridge"):
+        again = Bridge("r1", tmp_path)
+    assert [p["id"] for p in again.posts()] == [kept["id"], "n1"]
+    assert "Traceback (most recent call last)" in caplog.text
+    assert "OverflowError" in caplog.text
+    assert re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", caplog.text)
+
+
+def test_sparse_post_is_readable_by_the_squad_tool(tmp_path):
+    """A stored post with no agent/role/refs must not crash bridge_read, digest, or unresolved."""
+    core = _core(tmp_path)
+    folder = core.settings.data_dir / "bridge"
+    folder.mkdir(parents=True)
+    (folder / "run7.jsonl").write_text(json.dumps({
+        "id": "sparse1", "kind": "question", "text": "who", "ts": 10**400, "extra": 10**400,
+    }) + "\n", encoding="utf-8")
+    w = AgentContext(core, "run7", "W-1", 0)
+
+    async def go():
+        listed = await core.tools.call(w, "bridge_read", {})
+        missed = await core.tools.call(w, "bridge_read", {"agent": "nobody"})
+        queried = await core.tools.call(w, "bridge_read", {"query": "who"})
+        limited = await core.tools.call(w, "bridge_read", {"limit": float("inf")})
+        return listed, missed, queried, limited
+
+    listed, missed, queried, limited = asyncio.run(go())
+    assert "sparse1" in listed and "who" in listed
+    assert missed == "(no posts)"
+    assert "sparse1" in queried and "sparse1" in limited
+    b = for_core(core, "run7")
+    assert b.digest()
+    assert b.unresolved()[0]["id"] == "sparse1"
+    assert b.read(limit=0)  # 0 means the default page, not an empty page
 
 
 def test_memory_only_bridge_and_thread_safety():

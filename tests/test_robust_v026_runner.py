@@ -58,6 +58,28 @@ def test_cancel_kills_child(runner, tmp_path):
     assert not alive, "cancelled command's child survived"
 
 
+def test_subprocess_transport_is_closed_before_the_loop_dies():
+    """Killing a child must not leave its transport for GC after the loop closes.
+
+    BaseSubprocessTransport.__del__ calls close(), and close() schedules on the
+    loop that created the child. That is the 'Event loop is closed' warning.
+    """
+    import gc
+    import warnings
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(
+            "sleep", "30", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        proc.kill()
+        await sovereign.close_subprocess(proc)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(go())
+        gc.collect()
+    assert not any("Event loop is closed" in str(w.message) for w in caught)
+
+
 def test_reap_tolerates_exited_process():
     class P:
         returncode = None

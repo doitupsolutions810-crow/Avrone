@@ -24,7 +24,14 @@ def test_refs_capped():
 def test_load_oserror_leaves_empty(tmp_path, monkeypatch):
     b = bm.Bridge("r", tmp_path)
     b.post("a", "finding", "x")
-    monkeypatch.setattr(type(b.path), "read_text", lambda *a, **k: (_ for _ in ()).throw(OSError("eio")))
+    real_open = type(b.path).open
+
+    def fail(self, mode="r", *args, **kwargs):
+        if getattr(self, "name", "") == "r.jsonl" and "r" in str(mode):
+            raise OSError("eio")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(type(b.path), "open", fail)
     assert len(bm.Bridge("r", tmp_path)) == 0
 
 

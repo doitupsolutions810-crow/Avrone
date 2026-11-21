@@ -128,9 +128,10 @@ def test_retention_limit_clamps_and_tombstones_prevent_resurrection(tmp_path, mo
 
 
 def test_safe_run_id_cannot_escape_bridge_directory():
-    for value in ("../../etc/passwd", "/tmp/evil", "..", "a/../../b", "\\\\server\\share"):
+    for value in ("../../etc/passwd", "/tmp/evil", "..", "a/../../b", "\\\\server\\share",
+                  "a\x00/../../etc/passwd", "a\x00b"):
         safe = safe_run_id(value)
-        assert safe and "/" not in safe and "\\\\" not in safe and not safe.startswith(".")
+        assert safe and "/" not in safe and "\\" not in safe and "\x00" not in safe and not safe.startswith(".")
 
 
 def test_codex_failure_does_not_sink_post(tmp_path):
@@ -142,6 +143,101 @@ def test_codex_failure_does_not_sink_post(tmp_path):
     post = bridge.post("agent", "finding", "still persisted")
     assert bridge.get(post["id"])["text"] == "still persisted"
     assert Bridge("codex-failure", tmp_path).get(post["id"])["text"] == "still persisted"
+
+
+def test_symlink_bridge_dir_and_jsonl_are_not_followed(tmp_path, caplog):
+    import logging
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "run.jsonl").write_text('{"id":"stolen","kind":"finding","text":"x"}\n', encoding="utf-8")
+    (tmp_path / "bridge").symlink_to(outside, target_is_directory=True)
+    with caplog.at_level(logging.WARNING, logger="avrone.bridge"):
+        bridge = Bridge("run", tmp_path)
+    assert bridge.path is None
+    post = bridge.post("a", "finding", "stays in memory")
+    assert bridge.get(post["id"])["text"] == "stays in memory"
+    assert list(outside.glob("*.jsonl")) == [outside / "run.jsonl"]
+    assert "anomaly bridge symlink" in caplog.text
+    assert re_iso(caplog.text)
+
+    real = tmp_path / "real"
+    real.mkdir()
+    secret = tmp_path / "secret.jsonl"
+    secret.write_text("SECRET\n", encoding="utf-8")
+    folder = real / "bridge"
+    folder.mkdir()
+    (folder / "run.jsonl").symlink_to(secret)
+    one = Bridge("run", real)
+    assert one.path is None
+    assert secret.read_text(encoding="utf-8") == "SECRET\n"
+
+
+def re_iso(text: str) -> bool:
+    import re
+    return re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", text) is not None
+
+
+def test_unreadable_journal_stays_in_memory(tmp_path):
+    bridge = Bridge("locked", tmp_path)
+    post = bridge.post("a", "finding", "kept")
+    path = bridge.path
+    assert path is not None
+    path.chmod(0)
+    folder = path.parent
+    try:
+        reloaded = Bridge("locked", tmp_path)
+        assert reloaded.get(post["id"]) is None
+        again = reloaded.post("a", "finding", "memory")
+        assert reloaded.get(again["id"])["text"] == "memory"
+    finally:
+        path.chmod(0o644)
+        folder.chmod(0o755)
+
+
+def test_half_gigabyte_journal_is_streamed(tmp_path, monkeypatch):
+    """A journal over 500 MB is read a line at a time, not with read_text."""
+    folder = tmp_path / "bridge"
+    folder.mkdir()
+    path = folder / "wide.jsonl"
+    bad = b"{" + (b"a" * (64 * 1024)) + b"\n"
+    target = 500 * 1024 * 1024
+    written = 0
+    with path.open("wb") as handle:
+        while written < target:
+            handle.write(bad)
+            written += len(bad)
+        handle.write(
+            b'{"id":"tail","run_id":"wide","agent":"a","role":"","kind":"finding",'
+            b'"text":"end","refs":[],"ts":5,"origin_node":"local"}\n'
+        )
+    assert path.stat().st_size > target
+    real = Path.read_text
+
+    def guard(self, *args, **kwargs):
+        if getattr(self, "name", "") == "wide.jsonl":
+            raise AssertionError("loaded the whole journal with read_text")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guard)
+    again = Bridge("wide", tmp_path)
+    assert again.get("tail")["text"] == "end"
+    assert again.get("tail")["id"] == "tail"
+
+
+def test_clock_skew_does_not_hide_a_later_older_post(tmp_path):
+    """A post accepted after a far-future timestamp stays after that cursor, including on reload."""
+    bridge = Bridge("skew", tmp_path)
+    assert bridge.merge_remote([
+        _remote("future", ts=4_000_000_000, text="future"),
+        _remote("past", ts=10, text="past"),
+    ], "peer")["merged"] == 2
+    assert [p["id"] for p in bridge.export(since="future")] == ["past"]
+    assert bridge.get("future")["ts"] == 4_000_000_000
+    assert bridge.get("past")["ts"] == 10
+    reloaded = Bridge("skew", tmp_path)
+    assert [p["id"] for p in reloaded.export(since="future")] == ["past"]
+    assert reloaded.get("past")["ts"] == 10
+    assert reloaded.get("future")["ts"] == 4_000_000_000
 
 
 def test_write_failure_degrades_to_in_memory_operation(tmp_path, monkeypatch):

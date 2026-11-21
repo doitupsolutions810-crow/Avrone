@@ -7,6 +7,7 @@ dedup that reports duplicate:true and does not overwrite, and a positional
 """
 import asyncio
 import json
+import math
 import threading
 import time
 
@@ -331,6 +332,259 @@ def test_bom_nested_text_and_blank_cursors(client):
         assert r.status_code < 500, (query, r.status_code, r.text[:160])
         if r.status_code == 200:
             _encodes(r.json())
+
+
+def test_nested_surrogate_infinity_and_cycles_stay_encodable(client):
+    """A nested lone surrogate or a non-finite ts must not 500 either read."""
+    core = server.state["core"]
+    folder = core.settings.data_dir / "bridge"
+    folder.mkdir(parents=True, exist_ok=True)
+    # Written as text so ts stays a JSON number. json.dumps turns 1e309 into Infinity,
+    # which is not JSON and would be skipped on load.
+    (folder / "nested.jsonl").write_text(
+        '{"id":"nest-disk","run_id":"nested","agent":{"name":"a\\ud800"},'
+        '"role":["r\\udfff"],"kind":"finding","text":"plain",'
+        '"refs":[{"bad":"x\\ud800"},"ok-ref"],"ts":1e309,'
+        '"origin_node":"local","note":"tail\\ud800"}\n',
+        encoding="utf-8",
+    )
+    getattr(core, "_bridges", {}).pop("nested", None)
+    board = client.get("/api/blackboard", headers=AUTH)
+    assert board.status_code == 200, board.text
+    _encodes(board.json())
+    row = [p for p in board.json()["posts"] if p["id"] == "nest-disk"][0]
+    assert isinstance(row["agent"], str) and "\ud800" not in row["agent"]
+    assert isinstance(row["ts"], (int, float)) and row["ts"] > 0 and row["ts"] < 1e300
+    assert "\ud800" not in board.text and "Infinity" not in board.text
+    one = client.get("/api/runs/nested/bridge", headers=AUTH)
+    assert one.status_code == 200, one.text
+    _encodes(one.json())
+    for raw, pid in (
+        (b'{"id":"inf-ts","text":"clock","ts":1e309}', "inf-ts"),
+        (b'{"id":"nan-ts","text":"x","ts":NaN}', "nan-ts"),
+        (b'{"id":"neginf","text":"x","ts":-Infinity}', "neginf"),
+    ):
+        got = client.post("/api/blackboard", content=raw, headers=AUTH)
+        assert got.status_code == 200, (raw, got.text)
+        stored = [p for p in _ids(client)["posts"] if p["id"] == pid][0]
+        assert math.isfinite(stored["ts"]) and stored["ts"] > 0
+        assert "NaN" not in json.dumps(stored) and "Infinity" not in json.dumps(stored)
+    from avrone.bridge import for_core
+    live = for_core(core, "cycle-run")
+    loop = {"id": "cyc1", "run_id": "cycle-run", "agent": "a", "role": "", "kind": "finding",
+            "text": "loop\ud800", "refs": [], "ts": float("nan"), "origin_node": "local"}
+    loop["self"] = loop
+    with live._lock:
+        live._posts["cyc1"] = loop
+    cycled = client.get("/api/blackboard", headers=AUTH)
+    assert cycled.status_code == 200, cycled.text
+    _encodes(cycled.json())
+    seen = [p for p in cycled.json()["posts"] if p["id"] == "cyc1"][0]
+    assert seen["text"] == "loop\ufffd" and seen["self"] == "..."
+    assert seen["ts"] == 0.0
+
+
+def _list_depth(value) -> int:
+    depth = 0
+    while isinstance(value, list) and value:
+        depth += 1
+        value = value[0]
+    return depth
+
+
+def test_huge_ints_deep_nests_bom_and_bad_bytes_stay_readable(client):
+    """One poisoned line must not 500 the board or hide the next post.
+
+    A JSON integer past what float() can hold used to raise OverflowError while
+    the file was loading, and a list deeper than the recursion limit used to
+    raise while the reply was walked. json.loads accepts both. A leading BOM
+    on a tombstone used to be ignored, so the evicted id came back.
+    """
+    core = server.state["core"]
+    folder = core.settings.data_dir / "bridge"
+    folder.mkdir(parents=True, exist_ok=True)
+    digits = "9" * 400
+    nested = "[" * 1200 + "1" + "]" * 1200
+    parts = [
+        b'\xef\xbb\xbf{"tombstones":["gone1"]}\n',
+        b'\xff{"id":"nope","kind":"finding","text":"hidden"}\n',
+        (
+            '{"id":"gone1","run_id":"wide","agent":"a","role":"","kind":"finding",'
+            '"text":"resurrected","refs":[],"ts":4,"origin_node":"local"}\n'
+        ).encode(),
+        (
+            '{"id":"huge1","run_id":"wide","agent":"a","role":"","kind":"finding",'
+            '"text":"huge","refs":[],"ts":' + digits + ',"extra":' + digits + ','
+            '"flag":true,"empty":null,"origin_node":"local"}\n'
+        ).encode(),
+        (
+            '{"id":"deep1","run_id":"wide","agent":"a","role":"","kind":"finding",'
+            '"text":"deep","refs":[],"ts":6,"origin_node":"local","extra":' + nested + '}\n'
+        ).encode(),
+        (
+            b'\xef\xbb\xbf{"id":"bomline","run_id":"wide","agent":"a","role":"",'
+            b'"kind":"finding","text":"bom","refs":[],"ts":7,"origin_node":"local"}\n'
+        ),
+        (
+            b'{"id":"after-bin","run_id":"wide","agent":"a","role":"","kind":"finding",'
+            b'"text":"neighbor","refs":[],"ts":5,"origin_node":"local"}\n'
+        ),
+    ]
+    (folder / "wide.jsonl").write_bytes(b"".join(parts))
+    before = time.time()
+    board = client.get("/api/blackboard", headers=AUTH)
+    after = time.time()
+    assert board.status_code == 200, board.text
+    _encodes(board.json())
+    ids = [p["id"] for p in board.json()["posts"]]
+    assert "gone1" not in ids and "nope" not in ids
+    assert {"huge1", "deep1", "bomline", "after-bin"} <= set(ids)
+    huge = [p for p in board.json()["posts"] if p["id"] == "huge1"][0]
+    assert huge["extra"] == 0.0 and huge["flag"] is True and huge["empty"] is None
+    assert before <= huge["ts"] <= after + 1
+    assert digits not in board.text
+    deep = [p for p in board.json()["posts"] if p["id"] == "deep1"][0]
+    assert deep["text"] == "deep" and _list_depth(deep["extra"]) <= 32
+    assert "[" * 40 not in board.text
+    one = client.get("/api/runs/wide/bridge", headers=AUTH)
+    assert one.status_code == 200, one.text
+    _encodes(one.json())
+    assert {p["id"] for p in one.json()["posts"]} >= {"huge1", "deep1", "bomline", "after-bin"}
+    page = _ids(client, since="deep1")
+    assert [p["id"] for p in page["posts"]] == ["bomline", "huge1"]
+
+    before = time.time()
+    posted = (
+        (b'{"id":"big-post","text":"x","ts":' + digits.encode() + b'}', "big-post"),
+        (b'{"id":"neg-post","text":"x","ts":-' + digits.encode() + b'}', "neg-post"),
+        (b'{"id":"exp-post","text":"x","ts":1e1000000}', "exp-post"),
+        (b'{"id":"tiny-post","text":"x","ts":1e-10000}', "tiny-post"),
+        (b'{"id":"minus-post","text":"x","ts":-5}', "minus-post"),
+    )
+    for raw, pid in posted:
+        assert len(raw) <= 4096
+        got = client.post("/api/blackboard", content=raw, headers=AUTH)
+        assert got.status_code == 200, (pid, got.text)
+        again = client.post("/api/blackboard", content=raw, headers=AUTH)
+        assert again.status_code == 200 and again.json()["duplicate"] is True
+    after = time.time()
+    for pid in ("big-post", "neg-post", "exp-post", "tiny-post", "minus-post"):
+        row = [p for p in _ids(client)["posts"] if p["id"] == pid][0]
+        assert before <= row["ts"] <= after + 1
+        assert digits not in json.dumps(row)
+
+    refs = _post(client, {"id": "refs-big", "text": "r", "refs": [10**100, "kept-ref", True, None]})
+    assert refs.status_code == 200, refs.text
+    stored_refs = [p for p in _ids(client)["posts"] if p["id"] == "refs-big"][0]["refs"]
+    # None becomes an empty string and is dropped. True becomes the id "True".
+    # The 100-digit integer is not an id.
+    assert stored_refs == ["kept-ref", "True"]
+
+    mark = "e\u0301\ufffe\uffff"
+    assert _post(client, {"id": "uni1", "text": mark}).status_code == 200
+    assert [p for p in _ids(client)["posts"] if p["id"] == "uni1"][0]["text"] == mark
+
+    for query in ("since=%", "since=%ZZ", "since=%C0%80", "since=%80"):
+        got = client.get("/api/blackboard?" + query, headers=AUTH)
+        assert got.status_code < 500, (query, got.status_code, got.text[:160])
+        if got.status_code == 200:
+            _encodes(got.json())
+
+    class _Loop:
+        def __repr__(self):
+            return repr(self)
+
+    live = for_core(core, "mem-run")
+    live._posts["ab"] = {
+        "id": "ab",
+        "id\x00": "x\ud800",
+        "text": "kept",
+        "kind": "finding",
+        "refs": [],
+        "ts": 9,
+        "blob": _Loop(),
+        "run_id": "mem-run",
+        "agent": "a",
+        "role": "",
+        "origin_node": "local",
+    }
+    mem = client.get("/api/blackboard", headers=AUTH)
+    assert mem.status_code == 200, mem.text
+    _encodes(mem.json())
+    row = [p for p in mem.json()["posts"] if p["id"] == "ab"][0]
+    assert row["id"] == "ab" and row["text"] == "kept"
+    assert "\ud800" not in mem.text
+    assert row["blob"] == "\ufffd"
+
+
+def test_unicode_flood_rtl_and_surrogate_keys(client):
+    rtl = "start\u202eEND"
+    marks = "e" + ("\u0301" * 1500)
+    assert _post(client, {"id": "rtl1", "text": rtl + marks}).status_code == 200
+    row = [p for p in _ids(client)["posts"] if p["id"] == "rtl1"][0]
+    assert row["text"].startswith("start\u202eEND")
+    assert "\u0301" in row["text"] and len(row["text"]) <= 4000
+    _encodes(row)
+    from avrone.bridge import public_post
+    safe = public_post({"id": "k", "text": "t", "\ud800key": "v\udfff", "nested": {"\u202ek": "ok"}})
+    _encodes(safe)
+    assert "\ud800" not in json.dumps(safe)
+    assert any("\ufffd" in k for k in safe)
+
+
+def test_http_abuse_does_not_500(client):
+    """Huge headers, a bad Content-Length, a slow oversized body, and method spoofing."""
+    huge = client.post("/api/blackboard", content=b"{}", headers={"X-Admin-Token": "t" * 100_000})
+    assert huge.status_code < 500
+    bad_len = client.post(
+        "/api/blackboard", content=b"{}", headers={**AUTH, "content-length": "nope"})
+    assert bad_len.status_code < 500
+    neg = client.post(
+        "/api/blackboard", content=b"{}", headers={**AUTH, "content-length": "-1"})
+    assert neg.status_code < 500
+    spoof = client.put(
+        "/api/blackboard", content=b'{"text":"no"}',
+        headers={**AUTH, "X-HTTP-Method-Override": "POST"})
+    assert spoof.status_code in (404, 405)
+    assert _ids(client)["count"] == 0
+    trace = client.request("TRACE", "/api/blackboard", headers=AUTH)
+    assert trace.status_code < 500
+    assert _ids(client)["count"] == 0
+
+    import asyncio
+    from avrone.server import BodyLimit
+
+    async def slow():
+        seen = []
+
+        async def app(scope, receive, send):
+            while True:
+                msg = await receive()
+                if not msg.get("more_body", False):
+                    break
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        chunks = [b"x" * 1000] * 6
+
+        async def receive():
+            if not chunks:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            part = chunks.pop(0)
+            return {"type": "http.request", "body": part, "more_body": True}
+
+        async def send(msg):
+            seen.append(msg)
+
+        scope = {"type": "http", "method": "POST", "path": "/api/blackboard", "headers": [
+            (b"content-length", b"10"),
+            (b"content-length", b"10"),
+        ]}
+        await BodyLimit(app)(scope, receive, send)
+        assert seen and seen[0]["status"] == 413
+        assert b"4096" in seen[1]["body"]
+
+    asyncio.run(slow())
 
 
 def test_open_reads_stay_open_but_blackboard_does_not(client):

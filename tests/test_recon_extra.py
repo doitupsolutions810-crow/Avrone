@@ -41,11 +41,28 @@ def test_port_cap_authorized_gate(monkeypatch):
     assert "authorized" in out and "refused" in out
     out = run(recon.t_port_scan(ctx(), {"host": "example.com", "authorized": True, "ports": list(range(50))}))  # >32
     assert "at most 32" in out
-    async def mock_open(*args, **kwargs):
+    # This is an offline gate test: pin DNS as well as TCP so host/network
+    # availability cannot decide whether the connection branch is exercised.
+    monkeypatch.setattr(recon, "_resolve_ips", lambda host: ["93.184.215.14"])
+    calls = []
+    async def mock_open(host, port, *args, **kwargs):
+        calls.append((host, port))
         raise OSError("mock offline - no real network")
     monkeypatch.setattr(asyncio, "open_connection", mock_open)
     out = run(recon.t_port_scan(ctx(), {"host": "example.com", "authorized": True, "ports": [80, 443]}))
     assert "port_scan" in out and "open: none" in out
+    assert sorted(calls) == [("93.184.215.14", 80), ("93.184.215.14", 443)]
+
+@pytest.mark.parametrize("ips", [[], ["127.0.0.1"]])
+def test_port_scan_refuses_unresolved_or_private_dns_before_connect(monkeypatch, ips):
+    monkeypatch.setenv("AVRONE_RECON", "allow")
+    monkeypatch.setenv("AVRONE_RECON_ALLOWLIST", "*")
+    monkeypatch.setattr(recon, "_resolve_ips", lambda host: ips)
+    async def forbidden_connect(*args, **kwargs):
+        pytest.fail("unresolved or private DNS must not reach a socket")
+    monkeypatch.setattr(asyncio, "open_connection", forbidden_connect)
+    out = run(recon.t_port_scan(ctx(), {"host": "example.com", "authorized": True, "ports": [80]}))
+    assert "ERROR:" in out and "refused" in out
 
 def test_deny_switch_per_tool(monkeypatch):
     monkeypatch.setenv("AVRONE_RECON", "deny")

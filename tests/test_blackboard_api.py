@@ -517,6 +517,76 @@ def test_huge_ints_deep_nests_bom_and_bad_bytes_stay_readable(client):
     assert row["blob"] == "\ufffd"
 
 
+def test_unicode_flood_rtl_and_surrogate_keys(client):
+    rtl = "start\u202eEND"
+    marks = "e" + ("\u0301" * 1500)
+    assert _post(client, {"id": "rtl1", "text": rtl + marks}).status_code == 200
+    row = [p for p in _ids(client)["posts"] if p["id"] == "rtl1"][0]
+    assert row["text"].startswith("start\u202eEND")
+    assert "\u0301" in row["text"] and len(row["text"]) <= 4000
+    _encodes(row)
+    from avrone.bridge import public_post
+    safe = public_post({"id": "k", "text": "t", "\ud800key": "v\udfff", "nested": {"\u202ek": "ok"}})
+    _encodes(safe)
+    assert "\ud800" not in json.dumps(safe)
+    assert any("\ufffd" in k for k in safe)
+
+
+def test_http_abuse_does_not_500(client):
+    """Huge headers, a bad Content-Length, a slow oversized body, and method spoofing."""
+    huge = client.post("/api/blackboard", content=b"{}", headers={"X-Admin-Token": "t" * 100_000})
+    assert huge.status_code < 500
+    bad_len = client.post(
+        "/api/blackboard", content=b"{}", headers={**AUTH, "content-length": "nope"})
+    assert bad_len.status_code < 500
+    neg = client.post(
+        "/api/blackboard", content=b"{}", headers={**AUTH, "content-length": "-1"})
+    assert neg.status_code < 500
+    spoof = client.put(
+        "/api/blackboard", content=b'{"text":"no"}',
+        headers={**AUTH, "X-HTTP-Method-Override": "POST"})
+    assert spoof.status_code in (404, 405)
+    assert _ids(client)["count"] == 0
+    trace = client.request("TRACE", "/api/blackboard", headers=AUTH)
+    assert trace.status_code < 500
+    assert _ids(client)["count"] == 0
+
+    import asyncio
+    from avrone.server import BodyLimit
+
+    async def slow():
+        seen = []
+
+        async def app(scope, receive, send):
+            while True:
+                msg = await receive()
+                if not msg.get("more_body", False):
+                    break
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        chunks = [b"x" * 1000] * 6
+
+        async def receive():
+            if not chunks:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            part = chunks.pop(0)
+            return {"type": "http.request", "body": part, "more_body": True}
+
+        async def send(msg):
+            seen.append(msg)
+
+        scope = {"type": "http", "method": "POST", "path": "/api/blackboard", "headers": [
+            (b"content-length", b"10"),
+            (b"content-length", b"10"),
+        ]}
+        await BodyLimit(app)(scope, receive, send)
+        assert seen and seen[0]["status"] == 413
+        assert b"4096" in seen[1]["body"]
+
+    asyncio.run(slow())
+
+
 def test_open_reads_stay_open_but_blackboard_does_not(client):
     """AVRONE_PUBLIC_ACCESS=all lets /api/runs through. The blackboard still wants the token."""
     assert client.get("/api/status").status_code == 200

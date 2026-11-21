@@ -135,10 +135,16 @@ async def _ensure_worktree(ctx: "AgentContext", pid: str) -> tuple[Path, str]:
     if wt.exists():
         return wt, branch
     # Clone the local repo (cheap, isolated) rather than add a worktree to the live .git.
-    r = await _sh(ctx, f"git clone -q --no-hardlinks . {wt} 2>&1", repo)
+    try:
+        r = await _sh(ctx, f"git clone -q --no-hardlinks . {wt} 2>&1", repo)
+    except OSError as exc:
+        raise OSError(f"could not create evolve worktree: {exc}") from exc
     if r.exit_code != 0:
         # Fallback: plain copy if not a git repo
-        shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(".git", "data", "*.egg-info", "__pycache__"))
+        try:
+            shutil.copytree(repo, wt, ignore=shutil.ignore_patterns(".git", "data", "*.egg-info", "__pycache__"))
+        except OSError as exc:
+            raise OSError(f"could not create evolve worktree: {exc}") from exc
         # Host signing stays on. A throwaway test repo disables it in the test
         # helper; this base commit is a real git object and should be signed
         # when the host is configured to sign.
@@ -245,7 +251,11 @@ async def t_evolve_propose(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not goal or not isinstance(edits, list) or not edits:
         return ('ERROR: give {"goal": str, "edits": [{"path": str, "content": str}], "test_cmd"?: str}. '
                 "Each edit replaces that file's whole contents with content.")
-    r = await _propose_once(ctx, goal, edits, args.get("test_cmd"))
+    try:
+        r = await _propose_once(ctx, goal, edits, args.get("test_cmd"))
+    except OSError as exc:
+        _log_anomaly("evolve propose")
+        return f"ERROR: {type(exc).__name__}: {exc}"
     if r.get("error"):
         return f"ERROR: {r['error']}"
     pid, passed, flaky, branch, tail = r["pid"], r["passed"], r["flaky_retry"], f"evolve/{r['pid']}", r["test_tail"]
@@ -432,8 +442,13 @@ async def evolve_loop(ctx: "AgentContext", goal: str, candidates: list | None = 
         if not edits or not isinstance(edits, list):
             stopped = "exhausted"
             break
-        r = await _propose_once(ctx, goal, edits, test_cmd, timeout=int(max(1, min(900, remaining))),
-                                extra_meta={"loop_id": loop_id, "iteration": i})
+        try:
+            r = await _propose_once(ctx, goal, edits, test_cmd, timeout=int(max(1, min(900, remaining))),
+                                    extra_meta={"loop_id": loop_id, "iteration": i})
+        except OSError as exc:
+            _log_anomaly("evolve loop propose")
+            r = {"pid": _new_pid(ctx), "passed": False, "error": f"{type(exc).__name__}: {exc}",
+                 "branch": None, "files": [], "flaky_retry": False, "test_tail": "", "duration_s": 0.0}
         r["iteration"] = i
         attempts.append(r)
         row = _attempt_row(r)

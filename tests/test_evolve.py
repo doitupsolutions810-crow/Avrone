@@ -107,6 +107,31 @@ def test_history_write_anomaly_keeps_the_traceback(tmp_path, monkeypatch, caplog
     assert re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", caplog.text)
 
 
+def test_propose_on_readonly_or_full_disk_is_an_error(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("AVRONE_REPO_DIR", str(repo(tmp_path)))
+    c = mkctx(tmp_path, tmp_path / "repo")
+    data = tmp_path / "d"
+    data.mkdir()
+    data.chmod(0o555)
+    try:
+        with caplog.at_level(logging.ERROR, logger="avrone.evolve"):
+            out = run(evolve.t_evolve_propose(c, {"goal": "add helper", "edits": [
+                {"path": "pkg/util.py", "content": "def twice(x):\n    return x * 2\n"}]}))
+        assert out.startswith("ERROR:")
+        assert "Traceback (most recent call last)" in caplog.text
+        assert re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", caplog.text)
+    finally:
+        data.chmod(0o755)
+
+    def full(ctx):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(evolve, "_data", full)
+    out = run(evolve.t_evolve_propose(c, {"goal": "add helper", "edits": [
+        {"path": "pkg/util.py", "content": "x = 1\n"}]}))
+    assert out.startswith("ERROR:") and "No space left" in out
+
+
 def test_path_escape_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("AVRONE_REPO_DIR", str(repo(tmp_path)))
     c = mkctx(tmp_path, tmp_path / "repo")

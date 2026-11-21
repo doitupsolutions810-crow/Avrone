@@ -87,6 +87,30 @@ def bridge_run_id(run_id: Any) -> str:
     return rid
 
 
+def _bridge_file(data_dir: Path, run_id: str) -> Path | None:
+    """The jsonl for this run, or None when the path is a symlink or not writable.
+
+    A symlinked ``bridge`` directory or jsonl would write outside ``data_dir``.
+    Memory still accepts posts; persistence is skipped.
+    """
+    folder = data_dir / "bridge"
+    if folder.is_symlink():
+        log.warning("anomaly bridge symlink at %s path %s",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"), folder)
+        return None
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _log_anomaly("bridge mkdir")
+        return None
+    candidate = folder / f"{safe_run_id(run_id)}.jsonl"
+    if candidate.is_symlink():
+        log.warning("anomaly bridge symlink at %s path %s",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"), candidate)
+        return None
+    return candidate
+
+
 def safe_run_id(run_id: Any) -> str:
     rid = _RUN_RE.sub("", str(run_id or ""))[:80].lstrip(".")
     return rid or "run"
@@ -157,9 +181,7 @@ class Bridge:
         self.limit = int(limit) if limit else max_posts()
         self.path: Path | None = None
         if data_dir is not None:
-            d = Path(data_dir) / "bridge"
-            d.mkdir(parents=True, exist_ok=True)
-            self.path = d / f"{safe_run_id(self.run_id)}.jsonl"
+            self.path = _bridge_file(Path(data_dir), self.run_id)
         key = str(self.path.resolve()) if self.path else f"mem:{id(self)}"
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(key, threading.RLock())
@@ -174,16 +196,20 @@ class Bridge:
             return
         with self._lock:
             try:
-                text = self.path.read_text(encoding="utf-8", errors="replace")
+                # Stream. A multi-hundred-megabyte journal must not be one string.
+                with self.path.open("r", encoding="utf-8", errors="replace") as handle:
+                    self._replay(handle)
             except OSError:
+                _log_anomaly("bridge load")
                 return
-            self._replay(text)
 
-    def _replay(self, text: str) -> None:
-        """Rebuild the ring from file text (call with the lock held)."""
+    def _replay(self, lines: Any) -> None:
+        """Rebuild the ring from lines (call with the lock held). A str is split first."""
+        if isinstance(lines, str):
+            lines = lines.splitlines()
         self._posts.clear()
         self._lines = 0
-        for raw in text.splitlines():
+        for raw in lines:
             line = raw.strip().lstrip("\ufeff")
             if not line:
                 continue
@@ -291,7 +317,8 @@ class Bridge:
                     f.write(lead + "".join(json.dumps(r, default=str) + "\n" for r in recs).encode("utf-8"))
                 self._lines += len(recs)
                 if self._lines > 2 * self.limit:  # replay under process lock before atomic compaction
-                    self._replay(self.path.read_text(encoding="utf-8", errors="replace"))
+                    with self.path.open("r", encoding="utf-8", errors="replace") as handle:
+                        self._replay(handle)
                     tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
                     head = json.dumps({"tombstones": list(self._evicted)}) + "\n" if self._evicted else ""
                     with tmp.open("w", encoding="utf-8") as f:

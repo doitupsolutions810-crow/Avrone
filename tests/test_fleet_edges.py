@@ -527,3 +527,115 @@ def test_register_fleet_tools():
     fleet_mod.register_fleet_tools(r)
     assert {"fleet_nodes", "remote_spawn", "remote_broadcast", "agent_message",
             "queue_submit", "queue_status", "fleet_agents"} <= set(r.names())
+
+
+@pytest.mark.parametrize("nonce", ["", "has space", "slash/name", "café", "n" * 129])
+def test_verify_rejects_malformed_nonce_values(fm, nonce):
+    headers = sign("tok", "POST", "/p", b"", nonce="well-formed")
+    headers["x-avrone-nonce"] = nonce
+    with pytest.raises(PermissionError, match="bad nonce"):
+        fm.verify("POST", "/p", b"", headers)
+
+
+def test_verify_accepts_maximum_length_nonce(fm):
+    nonce = "A" * 128
+    headers = sign("tok", "POST", "/p", b"", nonce=nonce)
+    fm.verify("POST", "/p", b"", headers)
+    assert nonce in fm._nonces
+
+
+def test_verify_same_nonce_is_atomic_across_concurrent_threads(fm):
+    from concurrent.futures import ThreadPoolExecutor
+
+    headers = sign("tok", "POST", "/p", b"payload", nonce="parallel-replay")
+    def attempt(_):
+        try:
+            fm.verify("POST", "/p", b"payload", dict(headers))
+            return "accepted"
+        except PermissionError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(attempt, range(12)))
+    assert results.count("accepted") == 1
+    assert sum("replayed request" in value for value in results) == 11
+    assert list(fm._nonces) == ["parallel-replay"]
+
+
+def test_verify_refuses_new_requests_when_live_nonce_cache_is_full(fm, monkeypatch):
+    monkeypatch.setattr(fleet_mod, "NONCE_CACHE_MAX", 2)
+    expiry = time.time() + 2 * WINDOW_S
+    fm._nonces = {"live-a": expiry, "live-b": expiry}
+    with pytest.raises(PermissionError, match="replay cache full"):
+        fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", nonce="new-nonce"))
+    fm._nonces["live-b"] = time.time() - 1
+    fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", nonce="new-nonce"))
+    assert "new-nonce" in fm._nonces
+    assert "live-b" not in fm._nonces
+
+
+def test_nonce_cache_loader_discards_nonfinite_expired_and_unrepresentable_values(fm):
+    now = int(time.time())
+    huge = 10 ** 400
+    payload = (
+        '{"valid":' + str(now + 300)
+        + ',"expired":' + str(now - 10)
+        + ',"nan":NaN,"positive-infinity":Infinity,"negative-infinity":-Infinity'
+        + ',"too-large":' + str(huge)
+        + ',"boolean":true,"bad key":' + str(now + 300) + '}'
+    )
+    fm._nonce_path.write_text(payload)
+    loaded = fm._load_nonces()
+    assert list(loaded) == ["valid"]
+    assert loaded["valid"] == now + 300
+
+
+def test_captured_nonce_is_rejected_after_fleet_manager_restart(fm):
+    headers = sign("tok", "POST", "/api/fleet/run", b'{"prompt":"hello"}', nonce="restart-replay")
+    fm.verify("POST", "/api/fleet/run", b'{"prompt":"hello"}', headers)
+    restarted = FleetManager(fm.core, fm._nonce_path.parent)
+    with pytest.raises(PermissionError, match="replayed request"):
+        restarted.verify("POST", "/api/fleet/run", b'{"prompt":"hello"}', headers)
+
+
+def test_unreadable_nonce_cache_boot_guard_rejects_pre_restart_signatures(fm):
+    fm._nonce_path.write_text("{not valid JSON")
+    fm._boot_guard = None
+    fm._nonces = fm._load_nonces()
+    guard = fm._boot_guard
+    assert guard is not None
+    before = str(int(guard) - 1)
+    with pytest.raises(PermissionError, match="signed before this node restarted"):
+        fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", ts=before, nonce="preboot"))
+    after = str(int(guard) + 1)
+    fm.verify("POST", "/p", b"", sign("tok", "POST", "/p", b"", ts=after, nonce="postboot"))
+    assert "postboot" in fm._nonces
+
+
+def test_nonce_persistence_write_failure_does_not_reject_authenticated_request(fm, monkeypatch):
+    def fail_replace(source, destination):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(fleet_mod.os, "replace", fail_replace)
+    headers = sign("tok", "POST", "/p", b"", nonce="persist-write-failure")
+    fm.verify("POST", "/p", b"", headers)
+    assert "persist-write-failure" in fm._nonces
+    leftovers = list(fm._nonce_path.parent.glob(f"{fm._nonce_path.name}.*.tmp"))
+    assert leftovers == []
+
+
+def test_nonce_cache_loader_treats_deeply_nested_json_as_unreadable(fm):
+    fm._nonce_path.write_text("[" * 1200 + "0" + "]" * 1200)
+    fm._boot_guard = None
+    loaded = fm._load_nonces()
+    assert loaded == {}
+    assert fm._boot_guard is not None
+
+
+def test_nonce_cache_loader_caps_persisted_entries_without_evicting_runtime_entries(fm, monkeypatch):
+    monkeypatch.setattr(fleet_mod, "NONCE_CACHE_MAX", 2)
+    expiry = int(time.time()) + 300
+    fm._nonce_path.write_text(json.dumps({"first": expiry, "second": expiry, "third": expiry}))
+    loaded = fm._load_nonces()
+    assert list(loaded) == ["first", "second"]
+    assert len(loaded) == 2

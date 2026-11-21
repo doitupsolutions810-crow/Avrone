@@ -114,6 +114,14 @@ def _rel(root: Path, p: Path) -> str:
     return str(p.relative_to(root)) or "."
 
 
+def _bool_arg(args: dict[str, Any], name: str, default: bool = False) -> bool:
+    """Read a JSON boolean without Python truthiness coercing strings or integers."""
+    value = args.get(name, default)
+    if type(value) is not bool:
+        raise ValueError(f"'{name}' must be a JSON boolean")
+    return value
+
+
 def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: bool = False,
                 tool: str = "fs_write") -> tuple[int, int, int]:
     """Write `data` to `p` inside agent dir `root`, enforcing the per-file cap and dir quota.
@@ -179,7 +187,8 @@ def quota_write(ctx: "AgentContext", root: Path, p: Path, data: bytes, append: b
 async def t_fs_write(ctx: "AgentContext", args: dict[str, Any]) -> str:
     root, p = _resolve(ctx, "fs_write", args.get("path", ""))
     data = str(args.get("content", "")).encode("utf-8")
-    new_size, projected, quota = quota_write(ctx, root, p, data, bool(args.get("append", False)))
+    append = _bool_arg(args, "append")
+    new_size, projected, quota = quota_write(ctx, root, p, data, append)
     return f"wrote {_rel(root, p)} ({new_size} bytes; dir {projected}/{quota} bytes)"
 
 
@@ -190,8 +199,11 @@ async def t_fs_read(ctx: "AgentContext", args: dict[str, Any]) -> str:
     if not p.is_file():
         return f"ERROR: {_rel(root, p)} is a directory; use fs_list"
     try:
-        limit = int(args.get("max_chars", READ_DEFAULT_CHARS))
-    except (TypeError, ValueError):
+        raw_limit = args.get("max_chars", READ_DEFAULT_CHARS)
+        if isinstance(raw_limit, bool):
+            raise ValueError("boolean is not an integer limit")
+        limit = int(raw_limit)
+    except (TypeError, ValueError, OverflowError):
         limit = READ_DEFAULT_CHARS
     limit = max(1, min(limit, READ_MAX_CHARS))
     with p.open("rb") as f:
@@ -210,7 +222,7 @@ async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
         return f"ERROR: {_rel(root, p)} not found"
     if p.is_file():
         return f"{_rel(root, p)}  {p.stat().st_size} bytes"
-    recursive = bool(args.get("recursive", False))
+    recursive = _bool_arg(args, "recursive")
     items = sorted(p.rglob("*") if recursive else p.iterdir())
     lines = []
     for q in items[:LIST_MAX_ENTRIES]:
@@ -227,6 +239,7 @@ async def t_fs_list(ctx: "AgentContext", args: dict[str, Any]) -> str:
 
 
 async def t_fs_delete(ctx: "AgentContext", args: dict[str, Any]) -> str:
+    recursive = _bool_arg(args, "recursive")
     root = _agent_root(ctx)
     raw = str(args.get("path", "")).strip().rstrip("/\\")
     # Confine the PARENT (resolved), then act on the leaf un-resolved, so a symlink is
@@ -250,7 +263,7 @@ async def t_fs_delete(ctx: "AgentContext", args: dict[str, Any]) -> str:
             freed = target.lstat().st_size
             target.unlink()
         elif target.is_dir():
-            if not bool(args.get("recursive", False)) and any(target.iterdir()):
+            if not recursive and any(target.iterdir()):
                 return f"ERROR: {rel} is a non-empty directory; pass recursive: true"
             freed = dir_usage(target)
             shutil.rmtree(target)

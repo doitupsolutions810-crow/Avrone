@@ -708,10 +708,22 @@ class FleetManager:
             raw = json.loads(p.read_text())
             if not isinstance(raw, dict):
                 raise ValueError("not an object")
-            out = {k: float(v) for k, v in raw.items()
-                   if isinstance(k, str) and NONCE_RE.fullmatch(k) and isinstance(v, (int, float))
-                   and not isinstance(v, bool) and float(v) >= now}
-            return dict(list(out.items())[:NONCE_CACHE_MAX])
+            out: dict[str, float] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or not NONCE_RE.fullmatch(key):
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                try:
+                    expires = float(value)
+                except (OverflowError, TypeError, ValueError):
+                    continue
+                if not math.isfinite(expires) or expires < now:
+                    continue
+                out[key] = expires
+                if len(out) >= NONCE_CACHE_MAX:
+                    break
+            return out
         except (OSError, ValueError, TypeError, RecursionError):
             self._boot_guard = now
             log.warning("fleet_nonces.json unreadable; refusing requests signed before this boot")

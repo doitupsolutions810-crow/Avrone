@@ -1,0 +1,80 @@
+services:
+  avrone:
+    build: .
+    image: avrone:emergent
+    container_name: avrone-core
+    restart: unless-stopped
+    environment:
+      - AVRONE_ENV=emergent
+      - CONTROL12_ENDPOINT=http://control12-fabric:8080
+      - GREAT_SCALE_URL=http://great-scale:3000
+      - CODEX_BUS=redis://redis:6379/0
+    ports:
+      - "8787:8787"
+    depends_on:
+      - control12-fabric
+      - great-scale
+      - redis
+    volumes:
+      - avrone-data:/var/lib/avrone
+      - ./avrone/static:/app/avrone/static:ro
+
+  control12-fabric:
+    image: control12-fabric:v5
+    build:
+      context: ../control12-lattice-ops/fabric
+    container_name: control12-fabric
+    restart: unless-stopped
+    environment:
+      - CONTROL12_VERSION=v5
+      - LEDGER_PATH=/var/lib/control12/ledger
+      - ATTESTATION_KEY_PATH=/run/secrets/attest_key
+    ports:
+      - "8080:8080"
+    volumes:
+      - control12-ledger:/var/lib/control12
+    secrets:
+      - attest_key
+
+  great-scale:
+    image: great-scale:latest
+    build:
+      context: ../great-scale
+    container_name: great-scale
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GS_SOURCE_OF_TRUTH=public/residual.cjs
+      - GS_GOLDEN_VECTORS=/app/tests/fixtures/golden_vectors.json
+
+  redis:
+    image: redis:7-alpine
+    container_name: emergent-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  harmonic-dash:
+    build:
+      context: .
+      dockerfile: Dockerfile.harmonic
+    container_name: harmonic-dashboard
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    depends_on:
+      - avrone
+      - control12-fabric
+      - redis
+
+volumes:
+  avrone-data:
+  control12-ledger:
+  redis-data:
+
+secrets:
+  attest_key:
+    file: ./secrets/attest_key

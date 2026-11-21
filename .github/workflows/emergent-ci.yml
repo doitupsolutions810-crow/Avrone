@@ -1,0 +1,22 @@
+name: emergent-compile CI
+on:
+  push:
+    branches: [main, emergent-compile]
+  pull_request:
+    branches: [main]
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Install Avrone
+        run: pip install -e .
+      - name: Golden-vector parity (Python + JS)
+        run: pytest tests/test_golden_parity.py -v
+      - name: CONTROL12 adapter smoke
+        run: python -c "from avrone.control12_adapter import build_intent, validate_intent, intent_to_plan; i=build_intent(action='deploy',target_env='staging',actor='ci',rationale='ci',evidence={'failures':0,'runs':50}); validate_intent(i); p=intent_to_plan(i); assert p['residual']['S']==0.0; print('adapter ok', p['schema'])"

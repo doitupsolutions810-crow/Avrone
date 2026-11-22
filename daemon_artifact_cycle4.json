@@ -1,0 +1,11 @@
+{
+  "cycle": 4,
+  "gate": "FIRE",
+  "system_S_max": 0.16,
+  "lineage_digest": "211641d904ae07ec",
+  "trust_draws": 6,
+  "above_cone": 0,
+  "admit_paths": {"READY_CONE": 1, "HOLD_UNCAPABLE": 1, "HOLD_UNLINEAGED": 1, "HOLD_UNMEASURED": 1, "HOLD_HOT": 1, "HOLD_MIXED": 1, "HOLD_POISONED": 1, "REJECT_EXPIRED": 1, "REJECT_BAD_SIG": 1},
+  "timestamp": "2026-10-29T22:30:00Z",
+  "source": "evolve-daemon"
+}

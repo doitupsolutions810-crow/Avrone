@@ -41,6 +41,9 @@ def test_port_cap_authorized_gate(monkeypatch):
     assert "authorized" in out and "refused" in out
     out = run(recon.t_port_scan(ctx(), {"host": "example.com", "authorized": True, "ports": list(range(50))}))  # >32
     assert "at most 32" in out
+    # Keep this unit test hermetic: the resolver is part of the allowlist guard,
+    # not the behavior under test. Some isolated runners intentionally block DNS.
+    monkeypatch.setattr(recon, "_resolve_ips", lambda _host: ["93.184.216.34"])
     async def mock_open(*args, **kwargs):
         raise OSError("mock offline - no real network")
     monkeypatch.setattr(asyncio, "open_connection", mock_open)

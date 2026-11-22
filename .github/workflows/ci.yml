@@ -1,5 +1,16 @@
 name: CI
 on: [push, pull_request]
+
+# New pushes supersede previous CI runs for the same branch/PR.
+# This retains both Python legs (fail-fast: false) on the newest commit,
+# without a backlog of obsolete historical autopilot test matrices.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-24.04    # pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19 (actions/runner-images#14748)
@@ -8,6 +19,10 @@ jobs:
       matrix: { python: ["3.11", "3.12"] }
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Autopilot integration fixtures require the historical base.
+      - name: Verify autopilot test history
+        run: git cat-file -e '1121d26f02a6249f6e76f1dbe6230650183b316f^{commit}'
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python }}" }
       - name: Install avrone (dev)

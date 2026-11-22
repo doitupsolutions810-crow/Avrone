@@ -29,12 +29,17 @@ from __future__ import annotations
 import json
 import math
 import contextlib
+import hashlib
+import itertools
 import os
 import re
+import stat
 import threading
 import time
 import uuid
+import weakref
 from collections import OrderedDict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -43,12 +48,17 @@ from .tools import Tool
 KINDS = ("finding", "question", "answer", "correction", "conclusion")
 MAX_TEXT = 4000
 MAX_REFS = 20
+MAX_REF_SCAN = 256
+MAX_REMOTE_BATCH = 5000
+MAX_JOURNAL_LINE_CHARS = 128 * 1024  # bound JSONL replay memory per record
+MAX_ORDER_BYTES = 16 * 1024 * 1024  # bound global blackboard cursor state
+MAX_RUN_ID_CHARS = 1024  # keep persisted identifiers below the replay line cap
 DEFAULT_MAX_POSTS, HARD_MAX_POSTS = 500, 5000
 DEFAULT_ROUNDS, HARD_MAX_ROUNDS = 1, 3
 _RUN_RE = re.compile(r"[^A-Za-z0-9_.-]")
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 
-_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 _LOCKS_GUARD = threading.Lock()
 
 
@@ -71,15 +81,56 @@ def bridge_rounds() -> int:
 
 def bridge_run_id(run_id: Any) -> str:
     """The bridge a run posts to: deep's '<id>-wave1' first wave shares '<id>'."""
-    rid = str(run_id or "run")
-    if rid.endswith("-wave1") and len(rid) > len("-wave1"):
-        rid = rid[: -len("-wave1")]
+    # Never invoke an untrusted object's __bool__ or overridden __str__.
+    # Preserve raw str bytes for the later collision-avoidance digest.
+    if run_id is None or (type(run_id) in (bool, int, float) and not run_id):
+        raw = "run"
+    elif isinstance(run_id, str):
+        raw = str.__str__(run_id) or "run"
+    else:
+        # Keep the original unsanitized spelling until the digest is formed.
+        # Pre-cleaning a non-string object can collapse distinct surrogate IDs.
+        try:
+            raw = str.__str__(str(run_id)) or "run"
+        except Exception:
+            raw = "..."
+    if raw.endswith("-wave1") and len(raw) > len("-wave1"):
+        raw = raw[: -len("-wave1")]
+    rid = _utf8_text(raw)
+    if rid != raw:
+        # Normalization can collapse two distinct raw identifiers. Preserve
+        # their distinction across disk names and exported JSON records.
+        suffix = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
+        rid = f"{rid[:80]}-{suffix}"
+    if len(rid) > MAX_RUN_ID_CHARS:
+        # Preserve identity without writing a many-megabyte run id into every
+        # post. Distinct long ids must not alias after truncation.
+        digest = hashlib.sha256(rid.encode("utf-8", errors="surrogatepass")).hexdigest()[:40]
+        return rid[:80] + "-" + digest
     return rid
 
 
 def safe_run_id(run_id: Any) -> str:
-    rid = _RUN_RE.sub("", str(run_id or ""))[:80].lstrip(".")
-    return rid or "run"
+    """Journal name that cannot collide with an unsafe/sanitized run id.
+
+    Keep already-safe legacy names unchanged. For every changed or truncated
+    name, bind a deterministic digest of the original value to the safe stem,
+    so "a/b" cannot read the journal belonging to the real run "ab".
+    """
+    if run_id is None or (type(run_id) in (bool, int, float) and not run_id):
+        raw = ""
+    elif isinstance(run_id, str):
+        raw = str.__str__(run_id)
+    else:
+        try:
+            raw = str.__str__(str(run_id))
+        except Exception:
+            raw = "..."
+    stem = _RUN_RE.sub("", raw)[:80].lstrip(".") or "run"
+    if raw == stem:
+        return stem
+    suffix = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
+    return f"{stem[:59].rstrip('.') or 'run'}-{suffix}"
 
 
 def _utf8_text(value: Any) -> str:
@@ -91,8 +142,16 @@ def _utf8_text(value: Any) -> str:
     from .gateway import clean_text
     if value is None:
         value = ""
-    elif not isinstance(value, str):
-        value = str(value)
+    elif isinstance(value, str):
+        # Base str strips hostile subclass truthiness/string method overrides.
+        value = str.__str__(value)
+    else:
+        try:
+            value = str(value)
+        except Exception:
+            # Untrusted in-process objects may raise TypeError/RuntimeError or
+            # return a non-string from __str__. Do not crash the Bridge.
+            value = "..."
     return clean_text(value)
 
 
@@ -107,9 +166,10 @@ def _refs(refs: Any) -> list[str]:
     if not isinstance(refs, (list, tuple)):
         return []
     out: list[str] = []
-    for r in refs:
+    # Never inspect an unbounded list of malformed references from a peer.
+    for r in refs[:MAX_REF_SCAN]:
         r = _utf8_text(r).strip()
-        if r and _ID_RE.match(r) and r not in out:
+        if r and _ID_RE.fullmatch(r) and r not in out:
             out.append(r)
         if len(out) >= MAX_REFS:
             break
@@ -120,8 +180,48 @@ def _remote_ts(ts: Any) -> float:
     """A relayed post's ts: finite, non-bool number, else now."""
     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
         return time.time()
-    ts = float(ts)
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError, OverflowError):
+        return time.time()
     return ts if math.isfinite(ts) and ts > 0 else time.time()
+
+
+def _regular_fd(path: Path, flags: int) -> int:
+    """Open only a regular, single-link bridge file, never a symlink or FIFO.
+
+    NONBLOCK avoids hanging if a hostile writer replaces a journal with a pipe
+    between the path check and open; NOFOLLOW closes the final-component race.
+    """
+    if path.is_symlink() or path.parent.is_symlink():
+        raise OSError("unsafe bridge file path")
+    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_NONBLOCK", 0), 0o600)
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
+            raise OSError("unsafe bridge file type")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _journal_lines(stream, max_chars: int = MAX_JOURNAL_LINE_CHARS):
+    """Stream bounded journal records; skip oversized lines without buffering them.
+
+    A malformed/hostile record must not allocate memory proportional to the
+    total size of a persisted journal, including during compaction.
+    """
+    while True:
+        line = stream.readline(max_chars + 1)
+        if not line:
+            return
+        if len(line) > max_chars:
+            while line and not line.endswith("\n"):
+                line = stream.readline(max_chars + 1)
+            continue
+        yield line
 
 
 class BridgeError(ValueError):
@@ -133,50 +233,172 @@ class Bridge:
                  node_id: str = "local", limit: int | None = None):
         self.run_id = bridge_run_id(run_id)
         self.codex = codex
-        self.node_id = str(node_id or "local")
-        self.limit = int(limit) if limit else max_posts()
+        self.node_id = _utf8_text(node_id)[:80] or "local"
+        try:
+            requested_limit = int(limit) if limit else max_posts()
+        except (TypeError, ValueError, OverflowError):
+            requested_limit = max_posts()
+        self.limit = max(1, min(HARD_MAX_POSTS, requested_limit))
         self.path: Path | None = None
         if data_dir is not None:
             d = Path(data_dir) / "bridge"
-            d.mkdir(parents=True, exist_ok=True)
-            self.path = d / f"{safe_run_id(self.run_id)}.jsonl"
-        key = str(self.path.resolve()) if self.path else f"mem:{id(self)}"
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass  # disk may be missing or unavailable; the bridge still runs in memory
+            if d.is_dir() and not d.is_symlink():
+                self.path = d / f"{safe_run_id(self.run_id)}.jsonl"
+        # Resolving the *file* itself can raise on a symlink loop before _load
+        # has a chance to reject it. An absolute path is a stable lock key.
+        key = str(self.path.absolute()) if self.path else f"mem:{id(self)}"
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(key, threading.RLock())
         self._posts: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
         self._evicted: "OrderedDict[str, None]" = OrderedDict()  # tombstones: ids the ring dropped
         self._lines = 0
+        self._journal_version = None
+        self._volatile_dirty = False
         self._load()
 
     # ------------------------------------------------------------ io
+    def _journal_state(self):
+        """Identity/version of the journal for detecting another writer's append."""
+        if self.path is None:
+            return None
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    @contextlib.contextmanager
+    def _write_transaction(self):
+        """Lock and rebase the duplicate decision on the latest durable state.
+
+        The lock must span both ID validation/allocation and append. A per-file
+        flock taken by _write alone is too late when another Bridge instance
+        already holds a stale snapshot.
+        """
+        if self.path is None:
+            yield False
+            return
+        with contextlib.ExitStack() as stack:
+            locked = False
+            try:
+                stack.enter_context(self._file_lock())
+                locked = True
+            except OSError:
+                pass  # keep the original best-effort in-memory behavior
+            if locked:
+                if self._volatile_dirty:
+                    # Earlier best-effort writes were never confirmed on disk.
+                    # Do not let later durable posts reference or compact them.
+                    self._posts.clear()
+                    self._evicted.clear()
+                    self._lines = 0
+                    self._journal_version = None
+                    self._volatile_dirty = False
+                if self._journal_state() != self._journal_version:
+                    self._load()
+            yield locked
+
+    def _refresh_read(self) -> None:
+        """Refresh a stale reader without reloading an unchanged journal.
+
+        Caller holds self._lock. Readers take the same sidecar lock as writers
+        only after a changed inode/size/time signature is observed.
+        """
+        if self.path is None or self._journal_state() == self._journal_version:
+            return
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(self._file_lock())
+            except OSError:
+                return  # disk unavailable; preserve the in-memory snapshot
+            if self._journal_state() != self._journal_version:
+                self._load()
+
     def _load(self) -> None:
-        if self.path is None or not self.path.exists():
+        if self.path is None:
             return
         with self._lock:
             try:
-                text = self.path.read_text(encoding="utf-8", errors="replace")
+                with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
+                               encoding="utf-8", errors="replace") as stream:
+                    self._replay(_journal_lines(stream))
+                    self._journal_version = self._journal_state()
+                    self._volatile_dirty = False
+            except FileNotFoundError:
+                # An actually removed journal is authoritative after the
+                # sidecar lock is acquired. An old cached snapshot must not
+                # continue serving deleted posts or tombstones. Do not drop
+                # volatile-only memory state when there is no durable version.
+                if self._journal_version is not None and not self._volatile_dirty:
+                    self._posts.clear()
+                    self._evicted.clear()
+                    self._lines = 0
+                    self._journal_version = None
             except OSError:
-                return
-            self._replay(text)
+                return  # inaccessible disk: preserve the last known snapshot
 
-    def _replay(self, text: str) -> None:
-        """Rebuild the ring from file text (call with the lock held)."""
+    def _replay(self, text: str | Iterable[str]) -> None:
+        """Rebuild a bounded ring without resurrecting old duplicate identifiers."""
         self._posts.clear()
+        self._evicted.clear()  # rebuilding from disk, not an older memory snapshot
         self._lines = 0
-        for line in text.splitlines():
+
+        # A fixed 4-MiB Bloom filter remembers identities even after the
+        # bounded post/tombstone rings expire. For malformed, enormous logs
+        # it fails closed on rare false positives (drops a post), rather than
+        # accepting a forged repeat of an ancient/tombstoned identity.
+        seen_bits = bytearray(4 * 1024 * 1024)
+        mask = len(seen_bits) * 8 - 1
+        def seen_or_mark(post_id: str) -> bool:
+            digest = hashlib.sha256(post_id.encode("utf-8", errors="surrogatepass")).digest()
+            first = int.from_bytes(digest[:8], "little")
+            step = int.from_bytes(digest[8:16], "little") | 1
+            already = True
+            for i in range(5):
+                position = (first + i * step) & mask
+                byte_index, bit = position >> 3, 1 << (position & 7)
+                if not (seen_bits[byte_index] & bit):
+                    already = False
+                seen_bits[byte_index] |= bit
+            return already
+
+        for line in text.splitlines() if isinstance(text, str) else text:
             tomb = self._parse_tombstones(line)
             if tomb is not None:
                 for t in tomb:
+                    # Tombstones remain authoritative even if a journal is
+                    # partially rewritten or a peer appends one after a post.
+                    self._posts.pop(t, None)
                     self._tomb(t)
+                    seen_or_mark(t)
                 continue
             rec = self._parse(line)
             if rec is None:
                 continue
+            # A journal belongs to one safe filename, but that filename
+            # may be a hash-suffixed encoding of its logical run ID.
+            # The global blackboard reopens evicted journals by path.stem;
+            # accept a row only when its logical ID maps to that exact file.
+            # Preserve legacy rows without a run_id.
+            record_run = rec.get("run_id")
+            if record_run not in (None, "", self.run_id):
+                if safe_run_id(record_run) != safe_run_id(self.run_id):
+                    continue
             self._lines += 1
-            if rec["id"] in self._evicted:
+            was_seen = seen_or_mark(rec["id"])
+            if was_seen or rec["id"] in self._evicted or rec["id"] in self._posts:
+                # A poisoned or duplicate journal line must not revise the
+                # first accepted record on restart. Tombstones stay final.
                 continue
-            self._posts.pop(rec["id"], None)
             self._posts[rec["id"]] = rec
+            # Bound memory *during* replay, not only at EOF: a crafted journal
+            # with millions of individually valid records must not keep all
+            # parsed post dictionaries resident before the final trim.
+            self._trim()
         self._trim()
 
     @staticmethod
@@ -185,11 +407,11 @@ class Bridge:
             return None
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             return None
         if not isinstance(rec, dict) or set(rec) != {"tombstones"} or not isinstance(rec["tombstones"], list):
             return None
-        return [t for t in rec["tombstones"] if isinstance(t, str) and _ID_RE.match(t)]
+        return [t for t in rec["tombstones"] if isinstance(t, str) and _ID_RE.fullmatch(t)]
 
     def _tomb(self, post_id: str) -> None:
         self._evicted.pop(post_id, None)
@@ -205,17 +427,18 @@ class Bridge:
             return None
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             return None
-        if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not _ID_RE.match(rec["id"]):
+        if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not _ID_RE.fullmatch(rec["id"]):
             return None
         if rec.get("kind") not in KINDS or not isinstance(rec.get("text"), str):
             return None
         rec["refs"] = _refs(rec.get("refs"))
         rec["text"] = _clip(rec["text"])
         for key in ("agent", "role", "run_id", "origin_node"):
-            if isinstance(rec.get(key), str):
+            if key in rec and rec[key] is not None:
                 rec[key] = _utf8_text(rec[key])
+        rec["ts"] = _remote_ts(rec.get("ts"))
         return rec
 
     @contextlib.contextmanager
@@ -229,7 +452,7 @@ class Bridge:
             yield
             return
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        with lock_path.open("a+b") as lock_file:
+        with os.fdopen(_regular_fd(lock_path, os.O_RDWR | os.O_CREAT), "a+b") as lock_file:
             try:
                 import fcntl  # POSIX: Linux and macOS
             except ImportError:  # pragma: no cover - non-POSIX fallback
@@ -241,12 +464,12 @@ class Bridge:
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    def _write(self, recs: list[dict[str, Any]]) -> None:
+    def _write(self, recs: list[dict[str, Any]], *, file_lock_held: bool = False) -> bool:
         if self.path is None or not recs:
-            return
+            return False
         try:
-            with self._file_lock():
-                with self.path.open("a+b") as f:
+            with (contextlib.nullcontext() if file_lock_held else self._file_lock()):
+                with os.fdopen(_regular_fd(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND), "r+b") as f:
                     f.seek(0, os.SEEK_END)
                     lead = b""
                     if f.tell() > 0:  # a torn last line (crash mid-write) must not swallow this post
@@ -257,15 +480,24 @@ class Bridge:
                     f.write(lead + "".join(json.dumps(r, default=str) + "\n" for r in recs).encode("utf-8"))
                 self._lines += len(recs)
                 if self._lines > 2 * self.limit:  # replay under process lock before atomic compaction
-                    self._replay(self.path.read_text(encoding="utf-8", errors="replace"))
+                    with os.fdopen(_regular_fd(self.path, os.O_RDONLY), "r",
+                                   encoding="utf-8", errors="replace") as stream:
+                        self._replay(_journal_lines(stream))
                     tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
                     head = json.dumps({"tombstones": list(self._evicted)}) + "\n" if self._evicted else ""
-                    with tmp.open("w", encoding="utf-8") as f:
-                        f.write(head + "".join(json.dumps(r, default=str) + "\n" for r in self._posts.values()))
-                    os.replace(tmp, self.path)
+                    try:
+                        with os.fdopen(_regular_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+                                       "w", encoding="utf-8") as f:
+                            f.write(head + "".join(json.dumps(r, default=str) + "\n" for r in self._posts.values()))
+                        os.replace(tmp, self.path)
+                    finally:
+                        with contextlib.suppress(OSError):
+                            tmp.unlink()
                     self._lines = len(self._posts)
+                self._journal_version = self._journal_state()
+                return True
         except OSError:
-            pass  # the in-memory bridge still works; persistence is best effort
+            return False  # best-effort memory state requires a future rebase
 
     def _trim(self) -> None:
         while len(self._posts) > self.limit:
@@ -275,25 +507,47 @@ class Bridge:
     # ------------------------------------------------------------ writes
     def post(self, agent: str, kind: str, text: str, refs: Iterable[str] | None = None,
              role: str = "", require_refs: bool = False) -> dict[str, Any]:
-        kind = str(kind or "finding").strip().lower()
+        kind = (_utf8_text(kind) or "finding").strip().lower()
         if kind not in KINDS:
             raise BridgeError(f"kind must be one of {', '.join(KINDS)}")
         body = _clip(text)
         if not body:
             raise BridgeError("text is required")
-        refs_l = _refs(list(refs) if refs is not None and not isinstance(refs, str) else refs)
-        with self._lock:
+        try:
+            # A generated/infinite iterable must not be consumed with list(refs).
+            if isinstance(refs, Mapping):
+                bounded_refs = None
+            elif isinstance(refs, (str, list, tuple)) or refs is None:
+                bounded_refs = refs
+            else:
+                bounded_refs = list(itertools.islice(iter(refs), MAX_REF_SCAN))
+        except Exception:
+            bounded_refs = None
+        refs_l = _refs(bounded_refs)
+        with self._lock, self._write_transaction() as file_lock_held:
             unknown = [r for r in refs_l if r not in self._posts]
             if unknown:
                 raise BridgeError(f"unknown post id(s): {', '.join(unknown[:5])}")
             if require_refs and not refs_l:
                 raise BridgeError("refs is required: the id(s) of the post(s) you reply to")
-            rec = {"id": uuid.uuid4().hex[:12], "run_id": self.run_id, "agent": str(agent or "agent")[:80],
-                   "role": str(role or "")[:60], "kind": kind, "text": body, "refs": refs_l,
+            post_id = None
+            for _attempt in range(16):
+                candidate = uuid.uuid4().hex[:12]
+                if (_ID_RE.fullmatch(candidate) and candidate not in self._posts
+                        and candidate not in self._evicted):
+                    post_id = candidate
+                    break
+            if post_id is None:
+                raise BridgeError("could not allocate a unique post id")
+            rec = {"id": post_id, "run_id": self.run_id, "agent": _utf8_text(agent)[:80] or "agent",
+                   "role": _utf8_text(role)[:60], "kind": kind, "text": body, "refs": refs_l,
                    "ts": time.time(), "origin_node": self.node_id}
             self._posts[rec["id"]] = rec
             self._trim()
-            self._write([rec])
+            if not file_lock_held or not self._write([rec], file_lock_held=True):
+                # A successful file lock is not proof that the journal write
+                # succeeded. Remember both lock and I/O failures.
+                self._volatile_dirty = True
         if self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.post", rec["agent"], post_id=rec["id"], post_kind=kind,
@@ -310,13 +564,18 @@ class Bridge:
         """Take posts relayed from another node. Dedupe by id; a local post is never overwritten;
         a post's own origin_node is kept (else `origin_node`). Refs may point at posts we lack."""
         stats = {"merged": 0, "skipped": 0, "rejected": 0}
-        origin = str(origin_node or "remote")[:80]
+        origin = _utf8_text(origin_node)[:80] or "remote"
         fresh: list[dict[str, Any]] = []
-        with self._lock:
-            for p in posts if isinstance(posts, list) else []:
+        with self._lock, self._write_transaction() as file_lock_held:
+            # Bound both parsing work and the write-ahead batch on direct API
+            # calls; HTTP body limits alone do not protect in-process callers.
+            rows = posts[:MAX_REMOTE_BATCH] if isinstance(posts, list) else []
+            if isinstance(posts, list):
+                stats["rejected"] += max(0, len(posts) - len(rows))
+            for p in rows:
                 try:
                     rec = self._parse(json.dumps(p, default=str)) if isinstance(p, dict) else None
-                except (ValueError, TypeError, RecursionError):  # circular / absurdly nested
+                except Exception:  # hostile in-process mapping/stringifier must not abort the batch
                     rec = None
                 if rec is None:
                     stats["rejected"] += 1
@@ -332,7 +591,9 @@ class Bridge:
                 fresh.append(rec)
                 stats["merged"] += 1
             self._trim()
-            self._write(fresh)
+            if fresh and (not file_lock_held or
+                          not self._write(fresh, file_lock_held=True)):
+                self._volatile_dirty = True
         if fresh and self.codex is not None:
             try:
                 self.codex.emit(self.run_id, "bridge.merge", "Bridge", origin=origin, merged=len(fresh))
@@ -343,15 +604,19 @@ class Bridge:
     # ------------------------------------------------------------ reads
     def posts(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._refresh_read()
             return [public_post(p) for p in self._posts.values()]
 
     def get(self, post_id: str) -> dict[str, Any] | None:
         with self._lock:
+            self._refresh_read()
             p = self._posts.get(post_id)
             return dict(p) if p else None
 
     def __len__(self) -> int:
-        return len(self._posts)
+        with self._lock:
+            self._refresh_read()
+            return len(self._posts)
 
     def export(self, since: str | None = None) -> list[dict[str, Any]]:
         """Posts after `since` (a post id), oldest first; all when since is None or unknown."""
@@ -369,11 +634,18 @@ class Bridge:
             out = [p for p in out if p["kind"] == str(kind).lower()]
         if agent:
             a = str(agent).lower()
-            out = [p for p in out if a in p["agent"].lower() or a == p["role"].lower()]
+            # Older journals may omit agent/role even when other fields are
+            # valid. Treat absent metadata as nonmatching, not a KeyError.
+            out = [p for p in out if a in (p.get("agent") or "").lower()
+                   or a == (p.get("role") or "").lower()]
         if query:
             q = str(query).lower()
             out = [p for p in out if q in p["text"].lower()]
-        limit = max(1, min(int(limit or 50), 200))
+        try:
+            requested = int(limit or 50)
+        except (TypeError, ValueError, OverflowError):
+            requested = 50
+        limit = max(1, min(requested, 200))
         return out[-limit:]
 
     def unresolved(self) -> list[dict[str, Any]]:
@@ -395,26 +667,38 @@ class Bridge:
         def block(title: str, items: list[dict[str, Any]]) -> None:
             if items:
                 parts.append(title + "\n" + "\n".join(
-                    f"- [{p['id']}] {p['agent']}: {p['text'][:600]}" for p in items))
+                    f"- [{p['id']}] {p.get('agent') or 'agent'}: {p['text'][:600]}" for p in items))
         block("What agents concluded together:", concl)
         block("Corrections raised:", corr)
         block("Unresolved disagreements / open questions:", open_)
         if not parts:
             parts.append(f"{len(posts)} finding(s) posted; no conclusions or corrections.")
         text = "\n\n".join(parts)
-        return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+        try:
+            budget = max(0, int(max_chars))
+        except (TypeError, ValueError, OverflowError):
+            budget = 6000
+        if len(text) <= budget:
+            return text
+        if budget <= 3:
+            return text[:budget]
+        return text[:budget - 3] + "..."
 
 
 def compact(posts: list[dict[str, Any]], width: int = 300) -> str:
     """One line per post for agents: [id] kind agent (refs): text."""
     if not posts:
         return "(no posts)"
+    try:
+        width = max(0, min(MAX_TEXT, int(width)))
+    except (TypeError, ValueError, OverflowError):
+        width = 300
     lines = []
     for p in posts:
         refs = f" re {','.join(p['refs'])}" if p.get("refs") else ""
         org = "" if p.get("origin_node") in (None, "", "local") else f" @{p['origin_node']}"
         t = p["text"].replace("\n", " ")
-        lines.append(f"[{p['id']}] {p['kind']} {p['agent']}{org}{refs}: {t[:width]}"
+        lines.append(f"[{p['id']}] {p['kind']} {p.get('agent') or 'agent'}{org}{refs}: {t[:width]}"
                      + ("..." if len(t) > width else ""))
     return "\n".join(lines)
 
@@ -464,7 +748,10 @@ def load_posts(data_dir: Path | str, run_id: str) -> list[dict[str, Any]] | None
     p = Path(data_dir) / "bridge" / f"{rid}.jsonl"
     if not p.exists():
         return None
-    return Bridge(rid, data_dir).posts()
+    # The safe filename is not necessarily the original normalized run ID:
+    # opening with the stem would misclassify valid unsafe-name records as
+    # foreign after journal isolation checks.
+    return Bridge(bridge_run_id(run_id), data_dir).posts()
 
 
 # --------------------------------------------------------------------------- fleet blackboard
@@ -486,30 +773,33 @@ def normalize_blackboard_post(data: Any) -> tuple[dict[str, Any] | None, str | N
     """
     if not isinstance(data, dict):
         return None, "body must be JSON"
-    kind = _utf8_text(data.get("kind") or "finding").strip().lower()
+    kind = (_utf8_text(data.get("kind")) or "finding").strip().lower()
     if kind not in KINDS:
         return None, f"kind must be one of {', '.join(KINDS)}"
     text = _clip(data.get("text"))
     if not text:
         return None, "text is required"
     raw_id = data.get("id")
-    if raw_id not in (None, ""):
-        pid = str(raw_id)
-        if not _ID_RE.match(pid):
-            return None, "bad post id"
-    else:
+    # Reject non-string IDs before doing equality comparisons: a hostile
+    # in-process object may implement __eq__ with side effects or exceptions.
+    # For str subclasses, str.__len__ bypasses an overridden __len__ method.
+    if raw_id is None or (isinstance(raw_id, str) and str.__len__(raw_id) == 0):
         pid = uuid.uuid4().hex[:12]
+    elif isinstance(raw_id, str) and _ID_RE.fullmatch(raw_id):
+        pid = raw_id
+    else:
+        return None, "bad post id"
     try:
         sealed = seal_blackboard_post({
             "id": pid,
-            "run_id": str(data.get("run_id") or "run")[:80],
-            "agent": str(data.get("agent") or "agent")[:80],
-            "role": str(data.get("role") or "")[:60],
+            "run_id": data.get("run_id"),
+            "agent": _utf8_text(data.get("agent"))[:80] or "agent",
+            "role": _utf8_text(data.get("role"))[:60],
             "kind": kind,
             "text": text,
             "refs": _refs(data.get("refs")),
             "ts": _remote_ts(data.get("ts")),
-            "origin_node": str(data.get("origin_node") or "local")[:80],
+            "origin_node": _utf8_text(data.get("origin_node"))[:80] or "local",
         })
     except BridgeError as exc:
         return None, str(exc)
@@ -537,6 +827,42 @@ def _blackboard_lock(core: Any) -> threading.RLock:
         return guard
 
 
+@contextlib.contextmanager
+def _blackboard_file_lock(core: Any):
+    """Yield True only when global admission is safe across processes.
+
+    An unavailable lock must not silently permit disk-backed admission. Pure
+    in-memory cores need no filesystem lock and remain fully operational.
+    Readers may fall back to a snapshot but must not persist cursor updates.
+    """
+    order_path = _order_path(core)
+    if order_path is None:
+        yield _data_dir(core) is None
+        return
+    lock_path = order_path.with_suffix(order_path.suffix + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = _regular_fd(lock_path, os.O_RDWR | os.O_CREAT)
+    except OSError:
+        yield False
+        return
+    with os.fdopen(fd, "a+b") as stream:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - platforms without flock
+            yield False
+            return
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 def _iter_bridges(core: Any) -> list[Bridge]:
     """Open run bridges, then persisted ones the cache has dropped."""
     guard = getattr(core, "_bridge_guard", None)
@@ -552,20 +878,23 @@ def _iter_bridges(core: Any) -> list[Bridge]:
         if bridge.path is not None:
             try:
                 seen.add(str(bridge.path.resolve()))
-            except OSError:
+            except (OSError, RuntimeError):
                 pass
     data_dir = _data_dir(core)
     if data_dir is None:
         return out
     folder = data_dir / "bridge"
-    if not folder.is_dir():
+    if not folder.is_dir() or folder.is_symlink():
         return out
     for path in sorted(folder.glob("*.jsonl")):
+        # Check the entry *before* resolve: symlink loops may raise RuntimeError.
+        if path.is_symlink() or not path.is_file():
+            continue
         try:
             resolved = str(path.resolve())
-        except OSError:
+        except (OSError, RuntimeError):
             continue
-        if resolved in seen or not path.is_file():
+        if resolved in seen:
             continue
         out.append(Bridge(path.stem, data_dir))
         seen.add(resolved)
@@ -585,6 +914,10 @@ def _id_state(core: Any, pid: str) -> str | None:
     evicted = False
     for bridge in _iter_bridges(core):
         with bridge._lock:
+            # A cached run may have been populated, compacted, or tombstoned
+            # by another Core/process after it was first opened. Refresh
+            # under the global admission lock before checking uniqueness.
+            bridge._refresh_read()
             if pid in bridge._posts:
                 return "stored"
             if pid in bridge._evicted:
@@ -597,7 +930,10 @@ def _ts_key(post: dict[str, Any]) -> tuple[float, str]:
     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
         number = 0.0
     else:
-        number = float(ts)
+        try:
+            number = float(ts)
+        except (TypeError, ValueError, OverflowError):
+            number = 0.0
         if not math.isfinite(number):
             number = 0.0
     return (number, str(post.get("id") or ""))
@@ -607,50 +943,110 @@ def _order_path(core: Any) -> Path | None:
     data_dir = _data_dir(core)
     if data_dir is None:
         return None
-    return data_dir / "bridge" / _ORDER_NAME
+    folder = data_dir / "bridge"
+    return None if folder.is_symlink() else folder / _ORDER_NAME
+
+
+def _order_signature(path: Path | None) -> tuple:
+    """Detect cross-Core changes, including replacement and removal.
+
+    The cursor file is atomically replaced; inode identity is necessary even
+    when two serialized JSON objects happen to have identical byte lengths.
+    """
+    if path is None:
+        return (None, None)
+    try:
+        info = path.lstat()
+        return (str(path), info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        return (str(path), None)
 
 
 def _load_order(core: Any) -> "OrderedDict[str, None]":
+    path = _order_path(core)
+    revision = _order_signature(path)
     cached = getattr(core, "_blackboard_order", None)
-    if isinstance(cached, OrderedDict):
+    if (isinstance(cached, OrderedDict)
+            and getattr(core, "_blackboard_order_revision", object()) == revision):
         return cached
     order: "OrderedDict[str, None]" = OrderedDict()
-    path = _order_path(core)
-    if path is not None and path.is_file():
+    if path is not None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            # Validate the opened inode rather than a potentially stale
+            # path.is_file() result. Symlink/hardlink/FIFO tricks must not make
+            # the global cursor registry read an outside file or hang.
+            with os.fdopen(_regular_fd(path, os.O_RDONLY), "rb") as stream:
+                # Even an ordinary regular file can be adversarially huge.
+                # Never ask json.load() to consume it without a hard bound.
+                payload = stream.read(MAX_ORDER_BYTES + 1)
+            if len(payload) > MAX_ORDER_BYTES:
+                raise ValueError("oversized fan-in cursor registry")
+            data = json.loads(payload)
         except (OSError, json.JSONDecodeError, RecursionError, TypeError, ValueError):
             data = None
         ids = data.get("ids") if isinstance(data, dict) else None
         if isinstance(ids, list):
             for item in ids:
-                if isinstance(item, str) and _ID_RE.match(item) and item not in order:
+                if isinstance(item, str) and _ID_RE.fullmatch(item) and item not in order:
                     order[item] = None
     try:
         core._blackboard_order = order
+        core._blackboard_order_revision = revision
     except AttributeError:  # pragma: no cover - slotted core
         pass
     return order
 
 
-def _save_order(core: Any, order: "OrderedDict[str, None]") -> None:
+def _save_order(core: Any, order: "OrderedDict[str, None]") -> bool:
     path = _order_path(core)
     if path is None:
-        return
+        return True  # explicitly memory-only: no durable cursor is required
     tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps({"ids": list(order)}), encoding="utf-8")
+        with os.fdopen(_regular_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+                       "w", encoding="utf-8") as stream:
+            # Keep the on-disk format identical to json.dumps({"ids": ...}),
+            # but never construct/write a registry larger than the reader's
+            # MAX_ORDER_BYTES cap. JSON is ASCII with ensure_ascii=True.
+            prefix, suffix = '{"ids": [', ']}'
+            used = len(prefix) + len(suffix)
+            if used > MAX_ORDER_BYTES:
+                raise OSError("oversized fan-in cursor registry")
+            stream.write(prefix)
+            for index, pid in enumerate(order):
+                value = json.dumps(pid)
+                cost = len(value) + (2 if index else 0)
+                if used + cost > MAX_ORDER_BYTES:
+                    raise OSError("oversized fan-in cursor registry")
+                stream.write((", " if index else "") + value)
+                used += cost
+            stream.write(suffix)
         os.replace(tmp, path)
         tmp = None
+        try:
+            core._blackboard_order_revision = _order_signature(path)
+        except AttributeError:  # pragma: no cover - slotted core
+            pass
+        return True
     except OSError:
+        # A failed atomic replacement must invalidate the caller's mutated
+        # in-memory order. Otherwise a later read sees the same cached IDs,
+        # skips the retry, and silently serves an unpersisted cursor.
+        try:
+            core._blackboard_order_revision = None
+        except AttributeError:  # pragma: no cover - slotted core
+            pass
         if tmp is not None:
             with contextlib.suppress(OSError):
                 tmp.unlink()
+        return False
 
 
-def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str, None]":
+def _sync_order(core: Any, by_id: dict[str, dict[str, Any]], *,
+                persist: bool = True) -> "OrderedDict[str, None]":
     """Drop gone ids. First snapshot is oldest-ts-first; later ids append.
 
     Appending keeps ``since`` safe: a post accepted after the cursor is returned
@@ -658,6 +1054,8 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str
     place it before the cursor and the relay would never see it.
     """
     order = _load_order(core)
+    if not persist:
+        order = OrderedDict(order)  # never mutate the cached persisted order
     changed = False
     for pid in list(order):
         if pid not in by_id:
@@ -672,9 +1070,31 @@ def _sync_order(core: Any, by_id: dict[str, dict[str, Any]]) -> "OrderedDict[str
         for pid in fresh:
             order[pid] = None
         changed = True
-    if changed:
-        _save_order(core, order)
+    if changed and persist and not _save_order(core, order):
+        # A client must not checkpoint an order we failed to persist.
+        # Read-only fallback when the global lock is unavailable uses
+        # persist=False and remains available.
+        raise BridgeError("global cursor not persisted")
     return order
+
+
+def _blackboard_run_id(value: Any) -> str:
+    """Stable <=80-character run identity for public blackboard ingestion.
+
+    Plain truncation aliases distinct long runs sharing an 80-character prefix.
+    First apply the Bridge's own Unicode and wave alias normalization, then
+    digest any remaining excess length without losing the original identity.
+    """
+    if value is None or (type(value) in (bool, int, float) and not value):
+        return "run"
+    clean = _utf8_text(value)
+    if not clean.strip():
+        return "run"
+    logical = bridge_run_id(value)
+    if len(logical) > 80:
+        digest = hashlib.sha256(logical.encode("utf-8", errors="surrogatepass")).hexdigest()[:20]
+        return f"{logical[:59]}-{digest}"
+    return logical
 
 
 def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
@@ -683,56 +1103,108 @@ def seal_blackboard_post(post: dict[str, Any]) -> dict[str, Any]:
     Empty text after that (a body that was only NULs) is refused.
     """
     out = dict(post)
-    for key in ("run_id", "agent", "role", "text", "origin_node"):
+    out["run_id"] = _blackboard_run_id(out.get("run_id"))
+    for key in ("agent", "role", "text", "origin_node"):
         if key in out:
             out[key] = _utf8_text(out[key])
-    if not str(out.get("run_id") or "").strip():
-        out["run_id"] = "run"
     if not str(out.get("agent") or "").strip():
         out["agent"] = "agent"
     if not str(out.get("origin_node") or "").strip():
         out["origin_node"] = "local"
-    out["run_id"] = str(out["run_id"])[:80]
     out["agent"] = str(out["agent"])[:80]
     out["role"] = str(out.get("role") or "")[:60]
     out["origin_node"] = str(out["origin_node"])[:80]
     out["text"] = _clip(out.get("text"))
     if not out["text"]:
         raise BridgeError("text is required")
-    refs = out.get("refs")
-    if isinstance(refs, list):
-        out["refs"] = _refs([_utf8_text(r) for r in refs])
+    if "refs" in out:
+        # _refs already validates and only scans the first MAX_REF_SCAN
+        # entries. Do not materialize/sanitize an entire untrusted list first.
+        out["refs"] = _refs(out["refs"])
     return out
+
+
+def _json_safe(value: Any, seen: set[int] | None = None, *,
+               depth: int = 0, budget: list[int] | None = None) -> Any:
+    """Bounded JSON projection for historical or poisoned bridge records.
+
+    Preserve normal integers without a lossy float conversion. Only floats may
+    be non-finite; integers beyond Python's JSON digit limit become zero. The
+    depth/node bounds also cover cycles and hand-edited, deeply nested state.
+    """
+    if budget is None:
+        budget = [2_000]
+    if depth >= 32 or budget[0] <= 0:
+        return "..."
+    budget[0] -= 1
+    if isinstance(value, str):
+        return _utf8_text(value)
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        try:
+            str(value)
+        except Exception:  # hostile integer subclass stringifier
+            return 0
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    if seen is None:
+        seen = set()
+    mark = id(value)
+    if mark in seen:
+        return "..."
+    seen.add(mark)
+    try:
+        if isinstance(value, dict):
+            out = {}
+            for key, item in value.items():
+                if budget[0] <= 0:
+                    break
+                out[_utf8_text(key)] = _json_safe(item, seen, depth=depth + 1, budget=budget)
+            return out
+        if isinstance(value, (list, tuple)):
+            out = []
+            for item in value:
+                if budget[0] <= 0:
+                    break
+                out.append(_json_safe(item, seen, depth=depth + 1, budget=budget))
+            return out
+        return _utf8_text(value)
+    finally:
+        seen.discard(mark)
 
 
 def public_post(post: dict[str, Any]) -> dict[str, Any]:
     """A stored post safe to put in a JSON response. Does not rewrite the ring."""
-    out = dict(post)
-    for key in ("id", "run_id", "agent", "role", "kind", "text", "origin_node"):
-        if isinstance(out.get(key), str):
-            out[key] = _utf8_text(out[key])
-    refs = out.get("refs")
-    if isinstance(refs, list):
-        out["refs"] = [_utf8_text(r) for r in refs if isinstance(r, str)]
-    return out
+    if not isinstance(post, dict):
+        return {"text": _utf8_text(post)}
+    # Mandatory fields must survive even if historical extra fields exhaust
+    # the projection budget before the id in the original insertion order.
+    ordered = {key: post[key] for key in
+               ("id", "run_id", "agent", "role", "kind", "text", "ts", "origin_node", "refs")
+               if key in post}
+    ordered.update(post)
+    return _json_safe(ordered)
 
 
 def safe_since(since: str | None) -> str | None:
-    """A cursor that cannot carry a surrogate or NUL into the read path."""
-    if since is None:
+    """Accept only exact bounded post IDs as cursors, without coercion.
+
+    Removing NULs or replacing invalid Unicode could turn an attacker-supplied
+    cursor into a different real post ID, accidentally skipping events.
+    """
+    if not isinstance(since, str) or len(since) > 80:
         return None
-    if not isinstance(since, str):
-        since = str(since)
-    since = _utf8_text(since)
-    return since or None
+    return since if _ID_RE.fullmatch(since) else None
 
 
 def blackboard_posts(core: Any, since: str | None = None) -> list[dict[str, Any]]:
     """Fan-in of every run bridge, oldest first. ``since`` matches ``Bridge.export``."""
     since = safe_since(since)
-    with _blackboard_lock(core):
+    with _blackboard_lock(core), _blackboard_file_lock(core) as locked:
         by_id = _posts_by_id(core)
-        order = _sync_order(core, by_id)
+        order = _sync_order(core, by_id, persist=locked)
         posts = [public_post(by_id[pid]) for pid in order if pid in by_id]
         if since:
             ids = [post["id"] for post in posts]
@@ -748,15 +1220,39 @@ def blackboard_accept(core: Any, post: dict[str, Any]) -> tuple[bool, str]:
     when the bridge refuses the record. Strings are sealed before they are written.
     """
     post = seal_blackboard_post(post)
-    pid = str(post.get("id") or "")
-    if not _ID_RE.match(pid):
+    pid = post.get("id")
+    if not isinstance(pid, str) or not _ID_RE.fullmatch(pid):
         raise BridgeError("bad post id")
-    with _blackboard_lock(core):
-        if _id_state(core, pid) is not None:
+    with _blackboard_lock(core), _blackboard_file_lock(core) as locked:
+        if not locked:
+            raise BridgeError("global blackboard lock unavailable")
+        existing = _id_state(core, pid)
+        if existing is not None:
+            if existing == "stored":
+                # A previous attempt can durably append the journal record
+                # then fail to save the global cursor. A retry must repair
+                # that cursor (or fail again), not silently acknowledge an
+                # untracked event merely because its post ID is familiar.
+                _sync_order(core, _posts_by_id(core))
             return True, pid
         dest = for_core(core, str(post.get("run_id") or "run"))
         stats = dest.merge_remote([post], str(post.get("origin_node") or "local"))
         if stats.get("merged") == 1:
+            if dest.path is not None and dest._volatile_dirty:
+                # Disk-backed global admission must not acknowledge a post
+                # which could not be persisted. The per-run API can offer
+                # best-effort memory writes; the global cursor cannot, or
+                # clients may checkpoint an event lost on process restart.
+                # Restore the last durable state before rejecting admission,
+                # so this failed event is neither visible nor deduplicated.
+                with dest._lock:
+                    dest._posts.clear()
+                    dest._evicted.clear()
+                    dest._lines = 0
+                    dest._journal_version = None
+                    dest._volatile_dirty = False
+                    dest._load()
+                raise BridgeError("global post not persisted")
             _sync_order(core, _posts_by_id(core))
             return False, pid
         if stats.get("skipped"):
@@ -790,7 +1286,7 @@ async def t_bridge_read(ctx: Any, args: dict[str, Any]) -> str:
     b = for_core(ctx.core, ctx.run_id)
     try:
         limit = int(args.get("limit") or 30)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         limit = 30
     posts = b.read(kind=args.get("kind"), agent=args.get("agent"), since=args.get("since"),
                    query=args.get("query"), limit=limit)
@@ -889,6 +1385,8 @@ def _store(data_dir: Path | str):
 def distill_lessons(data_dir: Path | str, bridge: "Bridge", task: str = "", k: int | None = None) -> list[str]:
     """Save up to k of the bridge's conclusions (then corrections) as lessons; returns new keys."""
     k = lessons_k() if k is None else max(0, int(k))
+    if k == 0:
+        return []
     posts = bridge.posts()
     picks: list[str] = []
     seen: set[str] = set()

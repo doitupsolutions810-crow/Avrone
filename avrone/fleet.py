@@ -131,6 +131,10 @@ NONCE_CACHE_MAX = 100_000
 # rewriting fleet.json (quadratic), with megabytes of capabilities/presence per record.
 DEFAULT_MAX_NODES, HARD_MAX_NODES = 256, 4096
 MAX_NODE_RECORD_BYTES = 64 * 1024
+# A peer can stream its reply indefinitely; bound bytes before JSON is
+# materialized. Only identity-coded replies are accepted so decompression
+# cannot allocate an oversized chunk ahead of the check.
+MAX_PEER_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 def max_nodes() -> int:
@@ -289,21 +293,86 @@ def net_max_remote_agents() -> int:
     return _env_int("AVRONE_NET_MAX_REMOTE_AGENTS", 32, 1, 1024)
 
 
+def _relay_post_size(post: dict[str, Any]) -> int | None:
+    """Bound each peer post before JSON encoding; return its exact ASCII wire size.
+
+    Limit traversal depth and node count, reject cycles and excessive strings,
+    then use an incremental strict JSON encoder instead of constructing a
+    potentially enormous serialized post. Shared non-cyclic objects are allowed.
+    """
+    remaining = 8192
+    active: set[int] = set()
+    stack: list[tuple[Any, int, bool]] = [(post, 0, False)]
+    try:
+        while stack:
+            value, depth, leave = stack.pop()
+            if leave:
+                active.discard(id(value))
+                continue
+            remaining -= 1
+            if remaining < 0 or depth > 32:
+                return None
+            if isinstance(value, str):
+                if len(value) > BRIDGE_MAX_BYTES:
+                    return None
+                value.encode("utf-8")
+            elif value is None or isinstance(value, bool):
+                continue
+            elif isinstance(value, int):
+                if value.bit_length() > BRIDGE_MAX_BYTES * 8:
+                    return None
+            elif isinstance(value, float):
+                if not math.isfinite(value):
+                    return None
+            elif isinstance(value, (dict, list, tuple)):
+                if id(value) in active or len(value) > 8192:
+                    return None
+                active.add(id(value))
+                stack.append((value, depth, True))
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        stack.append((item, depth + 1, False))
+                        stack.append((key, depth + 1, False))
+                else:
+                    for item in value:
+                        stack.append((item, depth + 1, False))
+            else:
+                return None
+        total = 0
+        for chunk in json.JSONEncoder(allow_nan=False).iterencode(post):
+            total += len(chunk)  # ASCII escape mode: characters == UTF-8 bytes
+            if total > BRIDGE_MAX_BYTES:
+                return None
+        return total
+    except Exception:  # hostile in-process values must fail closed per record
+        return None
+
+
 def cap_bridge_posts(posts: Any) -> list[dict[str, Any]]:
-    """Newest-last list of JSON-able dict posts, at most BRIDGE_MAX_POSTS and BRIDGE_MAX_BYTES."""
+    """Newest-last strict JSON posts, capped by count and aggregate wire bytes."""
     if not isinstance(posts, (list, tuple)):
         return []
-    out = []
-    for p in list(posts)[-BRIDGE_MAX_POSTS:]:
+    try:
+        tail = posts[-BRIDGE_MAX_POSTS:]  # do not copy the full peer collection
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    sizes: list[int] = []
+    total = 2  # enclosing JSON array brackets
+    for p in tail:
         if not isinstance(p, dict):
             continue
-        try:
-            json.dumps(p)
-        except (TypeError, ValueError):
+        size = _relay_post_size(p)
+        if size is None:
             continue
         out.append(p)
-    while out and len(json.dumps(out).encode()) > BRIDGE_MAX_BYTES:
-        out.pop(0)  # drop the oldest first
+        sizes.append(size)
+        total += size + (2 if len(out) > 1 else 0)  # default comma-space
+    while out and total > BRIDGE_MAX_BYTES:
+        total -= sizes.pop(0)
+        out.pop(0)
+        if out:
+            total -= 2
     return out
 
 
@@ -343,8 +412,15 @@ def bridge_merge(core: Any, posts: Any, origin: str, run_id: Any = None) -> int:
     if b is None or not posts:
         return 0
     try:
-        b.merge_remote(posts, origin)
-        return len(posts)
+        stats = b.merge_remote(posts, origin)
+        # The old implementation returned len(posts), claiming that skipped,
+        # duplicate and rejected peer events had been merged successfully.
+        # Trust only the merger's actual admission count, bounded by the
+        # strict relay's own maximum; malformed plugin returns fail closed.
+        merged = stats.get("merged") if isinstance(stats, dict) else None
+        if not isinstance(merged, int) or isinstance(merged, bool):
+            return 0
+        return max(0, min(len(posts), int.__int__(merged)))
     except Exception as e:  # noqa: BLE001
         log.debug("bridge merge from %s failed: %s", origin, e)
         return 0
@@ -382,15 +458,28 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
     out: dict[str, Any] = {}
     for k, (lo, hi) in _HEALTH_NUM.items():
         v = raw.get(k)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
             continue
-        out[k] = max(lo, min(hi, float(v)))
+        try:
+            number = float(v)
+        except Exception:  # huge ints and hostile numeric subclasses
+            continue
+        if not math.isfinite(number):
+            continue
+        out[k] = max(lo, min(hi, number))
     st = raw.get("state")
-    if st in HEALTH_STATES:
+    if isinstance(st, str) and st in HEALTH_STATES:
         out["state"] = st
     aa = raw.get("active_agents")
     if isinstance(aa, int) and not isinstance(aa, bool):
-        out["active_agents"] = max(0, min(aa, 10_000))
+        # int subclasses may override comparison / __int__ to execute code or
+        # raise. Extract the built-in integer directly before clamping.
+        try:
+            count = int.__int__(aa)
+        except Exception:
+            pass
+        else:
+            out["active_agents"] = max(0, min(count, 10_000))
     return out or None
 
 
@@ -1159,7 +1248,7 @@ class FleetManager:
 
     # ------------------------------------------------------------ client side
     def _client(self, timeout: float) -> httpx.AsyncClient:
-        kw: dict[str, Any] = {"timeout": timeout}
+        kw: dict[str, Any] = {"timeout": timeout, "trust_env": False, "follow_redirects": False}
         if HTTP_TRANSPORT is not None:
             kw["transport"] = HTTP_TRANSPORT
         return httpx.AsyncClient(**kw)
@@ -1169,13 +1258,50 @@ class FleetManager:
             check_node_url(base)
         except ValueError as e:
             raise RuntimeError(f"refusing to call peer url: {e}") from None
-        body = json.dumps(payload).encode()
-        headers = {"content-type": "application/json", **sign(self.token, "POST", path, body)}
-        async with self._client(timeout) as c:
-            r = await c.post(base + path, content=body, headers=headers)
-        if r.status_code >= 400:
-            raise RuntimeError(f"{base}{path} -> {r.status_code}: {r.text[:300]}")
-        return r.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("peer request must be a JSON object")
+        try:
+            # JSON must be strict *before* signing and opening a connection:
+            # Python's defaults allow NaN/Infinity and escaped lone surrogates.
+            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, RecursionError, UnicodeError):
+            raise RuntimeError("peer request must be strict UTF-8 JSON with finite numbers") from None
+        headers = {"content-type": "application/json", "accept-encoding": "identity",
+                   **sign(self.token, "POST", path, body)}
+        async with self._client(timeout) as c, asyncio.timeout(timeout):
+            async with c.stream("POST", base + path, content=body, headers=headers) as r:
+                if r.headers.get("content-encoding", "").strip().lower() not in ("", "identity"):
+                    raise RuntimeError("peer response must use identity content encoding")
+                length = r.headers.get("content-length")
+                if length is not None:
+                    if (not length.isascii() or not length.isdigit()
+                            or len(length) > 20 or int(length) > MAX_PEER_RESPONSE_BYTES):
+                        raise RuntimeError("peer response exceeds the byte limit or has an invalid length")
+                raw = bytearray()
+                async for chunk in r.aiter_bytes():
+                    if len(raw) + len(chunk) > MAX_PEER_RESPONSE_BYTES:
+                        raise RuntimeError("peer response exceeds the byte limit")
+                    raw.extend(chunk)
+                if not 200 <= r.status_code < 300:
+                    preview = bytes(raw).decode("utf-8", errors="replace")[:300]
+                    raise RuntimeError(f"{base}{path} -> {r.status_code}: {preview}")
+        try:
+            def reject_constant(value: str) -> None:
+                raise ValueError("non-finite JSON number")
+
+            def finite_float(value: str) -> float:
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError("non-finite JSON number")
+                return number
+
+            result = json.loads(bytes(raw).decode("utf-8"), parse_constant=reject_constant,
+                                parse_float=finite_float)
+        except (ValueError, RecursionError):
+            raise RuntimeError("peer response must be a UTF-8 JSON object with finite numbers") from None
+        if not isinstance(result, dict):
+            raise RuntimeError("peer response must be a JSON object")
+        return result
 
     # ------------------------------------------------------------ memory sync
     async def push_memory(self, entries: list[dict[str, Any]], origin: str) -> dict[str, Any]:

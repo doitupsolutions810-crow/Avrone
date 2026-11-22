@@ -110,6 +110,77 @@ def test_plan_caps_oversized_subtask_list(tmp_path):
     assert len(asyncio.run(core.plan("r6", "task", 4))) == 4
 
 
+def test_stub_lane_exercises_bridge_edges_and_records_them(tmp_path):
+    """Deterministic stand-in for a squad lane when no local model is installed.
+
+    The worker is the real agent loop. Its scripted replies call bridge_post and
+    bridge_read with an RTL mark and a combining-character flood, then the run
+    writes what that lane produced under the artifacts directory.
+    """
+    import logging
+    from datetime import datetime, timezone
+    from avrone.bridge import register_bridge_tools
+    from avrone.codex import Codex
+    from avrone.config import Settings
+    from avrone.sovereign import LocalRunner
+    from avrone.tools import ToolRegistry
+    from avrone.trinity import TrinityCore
+
+    class LaneLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, messages, **kw):
+            system = messages[0]["content"]
+            self.calls.append(system[:40])
+            if "You are the PLANNER" in system:
+                return json.dumps({"subtasks": [{"role": "Edge", "focus": "blackboard edges"}]})
+            if "You are the LEAD" in system:
+                return "LEAD OK " + messages[-1]["content"][-80:]
+            n = sum(1 for m in messages if m["role"] == "assistant")
+            if n == 0:
+                return json.dumps({"tool": "bridge_post", "args": {
+                    "text": "rtl \u202e end " + ("e\u0301" * 40), "kind": "finding"}})
+            if n == 1:
+                return json.dumps({"tool": "bridge_read", "args": {}})
+            return json.dumps({"final": "edge lane done"})
+
+    s = Settings()
+    s.data_dir = tmp_path / "d"
+    s.workspace = tmp_path / "ws"
+    s.max_steps = 4
+    s.agent_timeout = 0
+    reg = ToolRegistry()
+    register_bridge_tools(reg)
+    llm = LaneLLM()
+    core = TrinityCore(s, llm, LocalRunner(s), Codex(s.data_dir), tools=reg)
+    out = asyncio.run(core.squad("probe blackboard edges", n=1, run_id="lane1"))
+    assert "edge lane done" in out["answer"] or "LEAD OK" in out["answer"]
+    from avrone.bridge import for_core
+    stored = for_core(core, "lane1").posts()
+    assert stored and "\u202e" in stored[0]["text"] and "\u0301" in stored[0]["text"]
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    record = {
+        "at": stamp,
+        "lane": "stub",
+        "reason": "ollama binary is not installed on this VM",
+        "run_id": out.get("run_id"),
+        "answer": out.get("answer", "")[:500],
+        "tests_produced": [
+            "stub lane bridge_post RTL + combining flood",
+            "stub lane bridge_read of that post",
+        ],
+        "post_id": stored[0]["id"],
+    }
+    folder = __import__("pathlib").Path("/opt/cursor/artifacts/edge-round")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "stub-lane.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger("avrone.bridge").warning("artifact write failed at %s: %s", stamp, exc)
+    assert "\u202e" in stored[0]["text"]
+
+
 def test_lead_crash_returns_raw_reports(tmp_path):
     class LeadBoom(FakeLLM):
         async def chat(self, messages, **kw):

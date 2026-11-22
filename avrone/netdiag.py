@@ -116,7 +116,8 @@ async def t_traceroute(ctx: "AgentContext", args: dict[str, Any]) -> str:
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
             except asyncio.TimeoutError:
-                proc.kill()
+                from .sovereign import close_subprocess
+                await close_subprocess(proc)
                 return f"ERROR: {binary} timed out"
             return f"[{binary}]\n" + out.decode(errors="replace")[-8000:]
     return ("ERROR: no traceroute binary on this host. Install one (apt install traceroute | mtr-tiny, "

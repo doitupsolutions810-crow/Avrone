@@ -8,6 +8,7 @@ otherwise in a local subprocess confined to the workspace directory.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import uuid
@@ -18,17 +19,50 @@ from . import agentcontainer, agentfs
 from .config import Settings
 
 
+async def release_transport(proc) -> None:
+    """Close a subprocess transport on the loop that owns it.
+
+    Doing this later, from ``__del__`` after the loop is gone, raises
+    ``RuntimeError: Event loop is closed``.
+    """
+    if proc is None:
+        return
+    transport = getattr(proc, "_transport", None)
+    if transport is None or getattr(transport, "_closed", True):
+        return
+    loop = getattr(transport, "_loop", None)
+    if loop is None or loop.is_closed():
+        return
+    with contextlib.suppress(Exception):
+        transport.close()
+    await asyncio.sleep(0)
+
+
+async def close_subprocess(proc) -> None:
+    """Finish a child on this loop.
+
+    ``BaseSubprocessTransport.__del__`` calls ``close()``, which schedules work
+    on the loop that created it. If that loop is already gone, the garbage
+    collector raises ``RuntimeError: Event loop is closed``. Kill, wait, and
+    close the transport while this loop can still run the callback.
+    """
+    if proc is None:
+        return
+    if getattr(proc, "returncode", None) is None:
+        kill = getattr(proc, "kill", None)
+        if callable(kill):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                kill()
+        wait = getattr(proc, "wait", None)
+        if callable(wait):
+            with contextlib.suppress(Exception):
+                await wait()
+    await release_transport(proc)
+
+
 async def _reap(proc) -> None:
     """Kill a child that may already have exited, then wait for it (never raises ProcessLookupError)."""
-    if proc.returncode is None:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-    try:
-        await proc.wait()
-    except Exception:  # noqa: BLE001 - reaping is best effort
-        pass
+    await close_subprocess(proc)
 
 
 @dataclass
@@ -93,6 +127,8 @@ class Runner:
             # a cancelled run (evolve_cancel, client gone, squad shutdown) must not leave the child running
             await asyncio.shield(_reap(proc))
             raise
+        finally:
+            await close_subprocess(proc)
 
 
 class LocalRunner(Runner):

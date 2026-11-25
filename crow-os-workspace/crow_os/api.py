@@ -86,6 +86,11 @@ def create_app(
     def health():
         return {"ok": True, "repo": str(workspace.repo)}
 
+    @app.get("/api/supervisor")
+    def supervisor():
+        from .svcman_link import probe
+        return probe()
+
     @app.get("/api/overview")
     def overview():
         return workspace.overview()

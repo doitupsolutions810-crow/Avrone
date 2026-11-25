@@ -810,23 +810,24 @@ config.write_text(
 )
 sup = Supervisor(config, state, api_port=0, tick=0.05, handle_signals=True, subreaper=True, repo=root)
 import threading
-thread = threading.Thread(target=sup.run, daemon=True)
-thread.start()
-assert sup.wait_ready(10), "not ready"
-assert os.getpid() == 1
-deadline = time.monotonic() + 15
-saw = False
-while time.monotonic() < deadline:
-    events = sup.events.tail(500)
-    codes = [row.get("exit_code") for row in events if row.get("event") == "orphan_reaped"]
-    if sup.reaped_orphans >= 2 and 3 in codes:
-        saw = True
-        break
-    time.sleep(0.05)
+box = {"saw": False}
+def watch():
+    if not sup.wait_ready(10):
+        sup.request_shutdown(mark_stopped=True)
+        return
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        events = sup.events.tail(500)
+        codes = [row.get("exit_code") for row in events if row.get("event") == "orphan_reaped"]
+        if sup.reaped_orphans >= 2 and 3 in codes:
+            box["saw"] = True
+            break
+        time.sleep(0.05)
+    sup.request_shutdown(mark_stopped=True)
+threading.Thread(target=watch, daemon=True).start()
+sup.run()
 print(f"ORPHANS {sup.reaped_orphans}")
-print(f"SAW3 {1 if saw else 0}")
+print(f"SAW3 {1 if box['saw'] else 0}")
 print(f"PID {os.getpid()}")
-sup.request_shutdown(mark_stopped=True)
-thread.join(8)
-sys.exit(0 if saw else 1)
+sys.exit(0 if box["saw"] else 1)
 '''

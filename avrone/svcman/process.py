@@ -91,6 +91,7 @@ def spawn(command: list[str], cwd: str | None, env: dict[str, str], user: str | 
         stderr=subprocess.STDOUT,
         start_new_session=True,
         close_fds=True,
+        bufsize=0,
     )
     return Child(pid=popen.pid, popen=popen, argv=argv)
 

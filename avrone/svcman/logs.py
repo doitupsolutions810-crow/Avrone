@@ -27,10 +27,25 @@ class RotatingLog:
         if not data:
             return
         with self._lock:
-            if self.size > 0 and self.size + len(data) > self.max_bytes:
-                self._rotate()
-            self._fh.write(data)
-            self.size += len(data)
+            view = data
+            while view:
+                if self.size >= self.max_bytes:
+                    self._rotate()
+                room = self.max_bytes - self.size
+                if room <= 0:
+                    self._rotate()
+                    room = self.max_bytes
+                take = view[:room]
+                if len(view) > len(take):
+                    newline = take.rfind(b"\n")
+                    if newline >= 0:
+                        take = take[: newline + 1]
+                if not take:
+                    self._rotate()
+                    continue
+                self._fh.write(take)
+                self.size += len(take)
+                view = view[len(take):]
 
     def _rotate(self) -> None:
         self._fh.close()

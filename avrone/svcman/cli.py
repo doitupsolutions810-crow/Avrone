@@ -33,55 +33,56 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", type=Path, default=None, help="service file or directory (default: built-in bundle)")
+    common.add_argument("--state-dir", type=Path, default=None, help="durable state directory")
+    common.add_argument("--api-port", type=int, default=8799)
+    common.add_argument("--tick", type=float, default=0.2)
     parser = argparse.ArgumentParser(prog="avrone-svc", description="AVRONE service supervisor")
-    parser.add_argument("--config", type=Path, default=None, help="service file or directory (default: built-in bundle)")
-    parser.add_argument("--state-dir", type=Path, default=None, help="durable state directory")
-    parser.add_argument("--api-port", type=int, default=8799)
-    parser.add_argument("--tick", type=float, default=0.2)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    run = sub.add_parser("run", help="run the supervisor in the foreground (pid 1 safe)")
+    run = sub.add_parser("run", parents=[common], help="run the supervisor in the foreground (pid 1 safe)")
     run.set_defaults(func=_cmd_run)
 
-    start = sub.add_parser("start", help="ensure the supervisor is up and start services")
+    start = sub.add_parser("start", parents=[common], help="ensure the supervisor is up and start services")
     start.add_argument("names", nargs="*")
     start.set_defaults(func=_cmd_start)
 
-    stop = sub.add_parser("stop", help="stop services; with no names, stop the supervisor too")
+    stop = sub.add_parser("stop", parents=[common], help="stop services; with no names, stop the supervisor too")
     stop.add_argument("names", nargs="*")
     stop.set_defaults(func=_cmd_stop)
 
-    restart = sub.add_parser("restart", help="restart services")
+    restart = sub.add_parser("restart", parents=[common], help="restart services")
     restart.add_argument("names", nargs="*")
     restart.set_defaults(func=_cmd_restart)
 
-    status = sub.add_parser("status", help="show service status")
+    status = sub.add_parser("status", parents=[common], help="show service status")
     status.set_defaults(func=_cmd_status)
 
-    logs = sub.add_parser("logs", help="print a service log")
+    logs = sub.add_parser("logs", parents=[common], help="print a service log")
     logs.add_argument("name")
     logs.add_argument("-n", "--lines", type=int, default=200)
     logs.set_defaults(func=_cmd_logs)
 
-    tail = sub.add_parser("tail", help="follow a service log")
+    tail = sub.add_parser("tail", parents=[common], help="follow a service log")
     tail.add_argument("name")
     tail.set_defaults(func=_cmd_tail)
 
-    reload_p = sub.add_parser("reload", help="reload service definitions (also SIGHUP)")
+    reload_p = sub.add_parser("reload", parents=[common], help="reload service definitions (also SIGHUP)")
     reload_p.set_defaults(func=_cmd_reload)
 
-    enable = sub.add_parser("enable", help="enable and start a service")
+    enable = sub.add_parser("enable", parents=[common], help="enable and start a service")
     enable.add_argument("name")
     enable.set_defaults(func=_cmd_enable)
 
-    disable = sub.add_parser("disable", help="disable and stop a service")
+    disable = sub.add_parser("disable", parents=[common], help="disable and stop a service")
     disable.add_argument("name")
     disable.set_defaults(func=_cmd_disable)
 
-    check = sub.add_parser("check", help="validate definitions and report missing binaries")
+    check = sub.add_parser("check", parents=[common], help="validate definitions and report missing binaries")
     check.set_defaults(func=_cmd_check)
 
-    units = sub.add_parser("units", help="write optional systemd or launchd units")
+    units = sub.add_parser("units", parents=[common], help="write optional systemd or launchd units")
     units.add_argument("kind", choices=("systemd", "launchd"))
     units.add_argument("-o", "--out", type=Path, required=True)
     units.set_defaults(func=_cmd_units)

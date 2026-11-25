@@ -857,7 +857,8 @@ class Supervisor:
         def pump() -> None:
             try:
                 while True:
-                    chunk = stream.read(65536)
+                    read = getattr(stream, "read1", None) or stream.read
+                    chunk = read(65536)
                     if not chunk:
                         break
                     if runtime.log is not None:
@@ -866,6 +867,14 @@ class Supervisor:
                         runtime.tail.extend(chunk)
                         if len(runtime.tail) > 16384:
                             del runtime.tail[: len(runtime.tail) - 16384]
+            except Exception:
+                self.events.emit(
+                    "anomaly",
+                    service=runtime.spec.name,
+                    kind="log_reader",
+                    detail="log reader stopped",
+                    trace=traceback.format_exc(),
+                )
             finally:
                 try:
                     stream.close()

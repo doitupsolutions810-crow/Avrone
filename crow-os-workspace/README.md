@@ -69,7 +69,7 @@ python -m pip install -r crow-os-workspace/requirements.txt
 - **Pull requests and CI checks** need `GITHUB_TOKEN` or `GH_TOKEN`. The app will not read credentials out of the git remote URL.
 - **Ollama** needs a reachable `OLLAMA_HOST` (default `http://localhost:11434`) and a pulled model. A missing binary or a refused connection is shown as unreachable. Advisory text and chat replies are not invented.
 - **Cursor cloud agents** need `CURSOR_API_KEY`. **Grok** needs `XAI_API_KEY`.
-- Sibling services (CycleKernal, capability-authority, the fusion bridge, avrone-daemon) are outside this repository and are not shown as live status.
+- Sibling services (CycleKernal, capability-authority, the fusion bridge, avrone-daemon) live outside this repository. `GET /api/supervisor` reports the built-in supervisor when it is running on 127.0.0.1; a stopped supervisor is `unreachable` and does not invent their status.
 
 ## Status rule
 

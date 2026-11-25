@@ -1,0 +1,207 @@
+# Built-in AVRONE service bundle.
+# The supervisor starts these processes itself. systemd and launchd are not required.
+# Optional services whose command is not installed are marked unavailable and skipped.
+
+[services.ollama]
+description = "Ollama model server"
+command = ["ollama", "serve"]
+optional = true
+enabled = true
+restart = "on-failure"
+ports = [11434]
+stop_grace_seconds = 10
+start_timeout_seconds = 30
+backoff_initial_seconds = 1
+backoff_max_seconds = 30
+backoff_multiplier = 2
+jitter = 0.2
+max_restarts = 5
+restart_window_seconds = 120
+circuit_reset_seconds = 60
+
+[services.ollama.env]
+OLLAMA_HOST = "127.0.0.1:11434"
+
+[services.ollama.health]
+type = "http"
+url = "http://127.0.0.1:11434/api/version"
+expect_status = 200
+interval_seconds = 2
+timeout_seconds = 2
+unhealthy_threshold = 3
+healthy_threshold = 1
+
+[services.avrone]
+description = "AVRONE server"
+command = ["{python}", "-m", "avrone.server"]
+cwd = "{repo}"
+optional = false
+enabled = true
+restart = "always"
+ports = [8710]
+stop_grace_seconds = 15
+start_timeout_seconds = 30
+max_restarts = 8
+restart_window_seconds = 120
+
+[services.avrone.env]
+AVRONE_HOST = "127.0.0.1"
+AVRONE_PORT = "8710"
+AVRONE_PROVIDER = "ollama"
+AVRONE_LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+AVRONE_LLM_MODEL = "qwen2.5:3b"
+AVRONE_RUNNER = "local"
+AVRONE_PUBLIC_ACCESS = "loopback"
+
+[services.avrone.health]
+type = "http"
+url = "http://127.0.0.1:8710/api/status"
+expect_status = 200
+interval_seconds = 2
+timeout_seconds = 2
+unhealthy_threshold = 3
+healthy_threshold = 1
+
+# Lanes are oneshot chats. They stay disabled so a supervisor boot does not
+# launch four long model runs. `avrone-svc enable lane-deepcov` starts one.
+[services.lane-deepcov]
+description = "Squad lane: deep coverage"
+command = ["{python}", "-m", "avrone.cli", "chat", "You are the deepcov lane of the AVRONE self-improvement squad. Create NEW test files only, under tests/, for uncovered branches in avrone/trinity.py, avrone/evolve.py, and avrone/gateway.py. Submit each change with evolve_propose and finish after two ACCEPTED proposals.", "--json", "{state}/lanes/deepcov.json"]
+cwd = "{repo}"
+optional = true
+enabled = false
+restart = "never"
+oneshot = true
+depends_on = ["ollama"]
+runtime_limit_seconds = 7200
+stop_grace_seconds = 10
+
+[services.lane-newmods]
+description = "Squad lane: newest modules"
+command = ["{python}", "-m", "avrone.cli", "chat", "You are the newmods lane of the AVRONE self-improvement squad. Create NEW test files only for avrone/governor.py, greatscale.py, checkpoint.py, memstore.py, agentfs.py, fsunify.py, and bridge.py. Submit each change with evolve_propose and finish after two ACCEPTED proposals.", "--json", "{state}/lanes/newmods.json"]
+cwd = "{repo}"
+optional = true
+enabled = false
+restart = "never"
+oneshot = true
+depends_on = ["ollama"]
+runtime_limit_seconds = 7200
+stop_grace_seconds = 10
+
+[services.lane-tools]
+description = "Squad lane: new tools"
+command = ["{python}", "-m", "avrone.cli", "chat", "You are the tools lane of the AVRONE self-improvement squad. Read plugins/calculator.py, then add new plugin modules with their own focused tests. Submit each change with evolve_propose and finish after two ACCEPTED proposals.", "--json", "{state}/lanes/tools.json"]
+cwd = "{repo}"
+optional = true
+enabled = false
+restart = "never"
+oneshot = true
+depends_on = ["ollama"]
+runtime_limit_seconds = 7200
+stop_grace_seconds = 10
+
+[services.lane-robust]
+description = "Squad lane: robustness"
+command = ["{python}", "-m", "avrone.cli", "chat", "You are the robust lane of the AVRONE self-improvement squad. Add NEW offline tests for edge cases in avrone/recon.py, osint.py, fleet.py, and jobqueue.py. Submit each change with evolve_propose and finish after two ACCEPTED proposals.", "--json", "{state}/lanes/robust.json"]
+cwd = "{repo}"
+optional = true
+enabled = false
+restart = "never"
+oneshot = true
+depends_on = ["ollama"]
+runtime_limit_seconds = 7200
+stop_grace_seconds = 10
+
+[services.lane-deepcov.env]
+AVRONE_PROVIDER = "ollama"
+AVRONE_LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+AVRONE_LLM_MODEL = "qwen2.5:3b"
+AVRONE_RUNNER = "local"
+AVRONE_DATA_DIR = "{state}/lanes/deepcov-data"
+AVRONE_WORKSPACE = "{repo}"
+AVRONE_REPO_DIR = "{repo}"
+
+[services.lane-newmods.env]
+AVRONE_PROVIDER = "ollama"
+AVRONE_LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+AVRONE_LLM_MODEL = "qwen2.5:3b"
+AVRONE_RUNNER = "local"
+AVRONE_DATA_DIR = "{state}/lanes/newmods-data"
+AVRONE_WORKSPACE = "{repo}"
+AVRONE_REPO_DIR = "{repo}"
+
+[services.lane-tools.env]
+AVRONE_PROVIDER = "ollama"
+AVRONE_LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+AVRONE_LLM_MODEL = "qwen2.5:3b"
+AVRONE_RUNNER = "local"
+AVRONE_DATA_DIR = "{state}/lanes/tools-data"
+AVRONE_WORKSPACE = "{repo}"
+AVRONE_REPO_DIR = "{repo}"
+
+[services.lane-robust.env]
+AVRONE_PROVIDER = "ollama"
+AVRONE_LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+AVRONE_LLM_MODEL = "qwen2.5:3b"
+AVRONE_RUNNER = "local"
+AVRONE_DATA_DIR = "{state}/lanes/robust-data"
+AVRONE_WORKSPACE = "{repo}"
+AVRONE_REPO_DIR = "{repo}"
+
+# Sibling programs are not in this repository. A missing binary degrades the
+# service instead of taking the supervisor down.
+[services.cyclekernel]
+description = "CycleKernal simulation service"
+command = ["cyclekernel"]
+command_env = "CYCLEKERNAL_BIN"
+optional = true
+enabled = true
+restart = "on-failure"
+ports = [8090]
+stop_grace_seconds = 10
+
+[services.cyclekernel.health]
+type = "http"
+url = "http://127.0.0.1:8090/health"
+expect_status = 200
+interval_seconds = 5
+timeout_seconds = 2
+unhealthy_threshold = 3
+healthy_threshold = 1
+
+[services.capability-authority]
+description = "capability-authority executor"
+command = ["capability-authority"]
+command_env = "CAPABILITY_AUTHORITY_BIN"
+optional = true
+enabled = true
+restart = "on-failure"
+ports = [8095]
+stop_grace_seconds = 10
+
+[services.capability-authority.health]
+type = "tcp"
+host = "127.0.0.1"
+port = 8095
+interval_seconds = 5
+timeout_seconds = 2
+unhealthy_threshold = 3
+healthy_threshold = 1
+
+[services.fusion-bridge]
+description = "Fusion bridge relay"
+command = ["fusion-bridge"]
+command_env = "FUSION_BRIDGE_BIN"
+optional = true
+enabled = true
+restart = "on-failure"
+stop_grace_seconds = 10
+
+[services.avrone-daemon]
+description = "avrone-daemon"
+command = ["avrone-daemon"]
+command_env = "AVRONE_DAEMON_BIN"
+optional = true
+enabled = true
+restart = "on-failure"
+stop_grace_seconds = 10

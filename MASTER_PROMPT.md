@@ -12,7 +12,7 @@ from a command you ran.
 ```bash
 git clone https://github.com/doitupsolutions810-crow/Avrone.git avrone && cd avrone
 python -m pip install -e ".[dev]" pytest-cov websockets
-python -m pytest -q                       # full gate: expect ~2908 passed, 1 skipped
+python -m pytest -q                       # full gate: expect ~all passed, 1 skipped
 cd /tmp && python -m pytest -q "$OLDPWD/tests" -m integration   # real-uvicorn tests: 5 passed
 cd - && python -m pytest -q --cov=avrone  # coverage: expect 99%
 python tools/make_master_prompt.py        # regenerates this file from the code
@@ -97,7 +97,7 @@ Avrone/
 │   ├── tools_statehealth.py     state_health + registry_audit: what an agent (or the self-evolve loop) can see about its own
 │   ├── trinity.py               Trinity Core: the daemon kernel that orchestrates agents.
 ├── skills/                 # 33 agent skills, one SKILL.md each
-├── tests/                  # 191 test files, offline by default
+├── tests/                  # 192 test files, offline by default
 ├── tools/
 │   ├── make_master_prompt.py
 │   ├── model_bench.py
@@ -310,36 +310,7 @@ landed and the suite is green. End with what is still open.
 `AVRONE_ADMIN_TOKEN`, `AVRONE_ADMIN_TOKEN_PREVIOUS`, `AVRONE_AGENTS_CAN_SHELL`, `AVRONE_AGENT_CONTAINER`, `AVRONE_AGENT_CPUS`, `AVRONE_AGENT_DIR`, `AVRONE_AGENT_DOCKER_ISOLATE`, `AVRONE_AGENT_FS`, `AVRONE_AGENT_FS_MAX_FILE_MB`, `AVRONE_AGENT_FS_QUOTA_MB`, `AVRONE_AGENT_IDLE_SECS`, `AVRONE_AGENT_MEM_MB`, `AVRONE_AGENT_MIGRATE`, `AVRONE_AGENT_MIGRATE_INTERVAL`, `AVRONE_AGENT_TIMEOUT`, `AVRONE_ALLOW_ABS_READ`, `AVRONE_ALLOW_NETWORK`, `AVRONE_BREAKER_COOLDOWN`, `AVRONE_BREAKER_THRESHOLD`, `AVRONE_BRIDGE_MAX_POSTS`, `AVRONE_BRIDGE_ROUNDS`, `AVRONE_CODEX_REDACT`, `AVRONE_COMMAND_TIMEOUT`, `AVRONE_CONTEXT_CHARS`, `AVRONE_DATA_DIR`, `AVRONE_DEEP_ROUNDS`, `AVRONE_DEEP_SQUAD_SIZE`, `AVRONE_DOCKER_IMAGE`, `AVRONE_DOH_URL`, `AVRONE_ENV_FILE`, `AVRONE_EVOLVE_HISTORY`, `AVRONE_EVOLVE_LONG`, `AVRONE_EVOLVE_MAX_BG`, `AVRONE_EVOLVE_MAX_ITERS`, `AVRONE_EVOLVE_SKILL_MAX_BYTES`, `AVRONE_EVOLVE_TEST_CMD`, `AVRONE_EVOLVE_TIME_BUDGET`, `AVRONE_FLEET_ALLOW`, `AVRONE_FLEET_HEARTBEAT`, `AVRONE_FLEET_MAX_HOPS`, `AVRONE_FLEET_MAX_NODES`, `AVRONE_FLEET_OFFLOAD`, `AVRONE_FLEET_OFFLOAD_TIMEOUT`, `AVRONE_FLEET_PARENT`, `AVRONE_FLEET_PRIVILEGED`, `AVRONE_FLEET_PRIVILEGED_MAX_HOPS`, `AVRONE_FLEET_REQUIRE_ALLOW`, `AVRONE_FLEET_TOKEN`, `AVRONE_GEOIP_URL`, `AVRONE_GOVERNOR`, `AVRONE_HOST`, `AVRONE_LEAD_MODEL`, `AVRONE_LESSONS`, `AVRONE_LESSONS_K`, `AVRONE_LESSONS_MAX`, `AVRONE_LLM`, `AVRONE_LLM_API_KEY`, `AVRONE_LLM_BACKOFF`, `AVRONE_LLM_BASE_URL`, `AVRONE_LLM_FALLBACKS`, `AVRONE_LLM_MODE`, `AVRONE_LLM_MODEL`, `AVRONE_LLM_RETRIES`, `AVRONE_LLM_TIMEOUT`, `AVRONE_LOG_LEVEL`, `AVRONE_MAX_AGENTS_PER_RUN`, `AVRONE_MAX_BACKGROUND_RUNS`, `AVRONE_MAX_BODY_BYTES`, `AVRONE_MAX_CALLS_PER_TURN`, `AVRONE_MAX_MESSAGE_CHARS`, `AVRONE_MAX_PARALLEL`, `AVRONE_MAX_SPAWN_DEPTH`, `AVRONE_MAX_STEPS`, `AVRONE_MAX_WS_SUBSCRIBERS`, `AVRONE_MCP_CONFIG`, `AVRONE_MCP_MAX_INFLIGHT`, `AVRONE_MCP_SERVER_CHILD`, `AVRONE_MCP_TIMEOUT`, `AVRONE_MEMORY_MAX_ENTRIES`, `AVRONE_MEMORY_MAX_NAMESPACES`, `AVRONE_MEMORY_MAX_VALUE`, `AVRONE_MIN_PARALLEL`, `AVRONE_NET_MAX_NODES`, `AVRONE_NET_MAX_REMOTE_AGENTS`, `AVRONE_NET_SUBSQUAD`, `AVRONE_NET_WORKER_MODE`, `AVRONE_NODE_ID`, `AVRONE_PLUGINS_DIR`, `AVRONE_PORT`, `AVRONE_PRIVILEGED_NODES`, `AVRONE_PRIV_SHELL_ALLOW`, `AVRONE_PRIV_SHELL_TIMEOUT`, `AVRONE_PROC_LONG_S`, `AVRONE_PROVIDER`, `AVRONE_PUBLIC_ACCESS`, `AVRONE_PUBLIC_URL`, `AVRONE_RECON`, `AVRONE_RECON_ALLOWLIST`, `AVRONE_REPLAY_MAX_EVENTS`, `AVRONE_REPO_DIR`, `AVRONE_RUNNER`, `AVRONE_SEARCH_PROVIDER`, `AVRONE_SELF_CHANGES`, `AVRONE_SELF_EVOLVE`, `AVRONE_SHARED_WORKSPACE`, `AVRONE_SKILLS_DIR`, `AVRONE_SPAWN_CONTEXT_CHARS`, `AVRONE_SQUAD_DISPATCH`, `AVRONE_SQUAD_SIZE`, `AVRONE_THERMAL_MAX_C`, `AVRONE_TOOLS_ONLY`, `AVRONE_TOOL_OUTPUT_MAX`, `AVRONE_VERSION`, `AVRONE_WORKSPACE`
 
 ## 8. Latest releases (from README)
-## v0.34: Squad round 20: run-log reads streamed and bounded. 2908 tests, coverage 99%
 
-| Lane | Finding (heat) | Mapping | Verification |
-|---|---|---|---|
-| robust | **one run view could take the node down**: `Codex.replay` read and parsed the whole log on the event loop and returned every event | streamed replay keeping the newest `AVRONE_REPLAY_MAX_EVENTS` (2000, hard 50k); lines over 4 MB skipped unread (`iter_lines`); `/api/runs/{id}` runs off the loop and sets `X-Avrone-Truncated` | `test_robust_v034_replay.py`; live 200 MB log: **7.6 s, every other request stalled 7.1 s, 212 MB body, 1.37 GB RSS** before; **1.2 s, 0.01 s, 1 MB, 46 MB** now |
-| robust | `codex_search` loaded newline-less logs whole and let a deeply nested line raise | line-bounded reads, RecursionError skipped | `test_robust_v034_search.py`; 60 MB newline-less log: **120 MB -> 16 MB** peak |
-| tools | caps and log damage invisible | `log_health` (corrupt / over-long / torn lines, logs bigger than a view, 256 MB read budget, no content); `limits_status` adds the replay cap; priv_admin `codex_tail` streams only the tail | `test_tool_loghealth.py`, `test_tool_limits.py` |
-| skills | (none) | `log-integrity`; `log-retention` starts with `log_health` | `test_skill_r20.py` |
-| coverage | (none) | `cov20_a`, `cov20_b` | 6 statements missed of 11,388 |
-
-## v0.33: Squad round 19: thread-side events wake the stream, capped stream subscribers. 2887 tests, coverage 99%
-
-| Lane | Finding (heat) | Mapping | Verification |
-|---|---|---|---|
-| robust | **events emitted from worker threads stalled the live stream**: `Codex.emit` called `asyncio.Queue.put_nowait` from runner/fleet threads; the queue is not thread-safe and the put never woke the loop | each subscriber queue remembers its loop; off-loop emits go through `call_soon_threadsafe`; subscribers of a closed loop are dropped | `test_robust_v033_threademit.py`; thread emit at 0.1 s: arrived **3.0 s** (only when a timer fired) before, **0.10 s** now |
-| robust | **unbounded `/ws/events` subscribers**, each a 1000-event queue every emit fans out to | `AVRONE_MAX_WS_SUBSCRIBERS` (64, hard 1024): past it the socket closes 1013; slot released if accept fails | `test_robust_v033_wscap.py`; live 200 connects: **200 held** before, **64** now |
-| tools | caps invisible | `stream_status` shows cap + connections refused; `limits_status` shows the cap + live subscribers; `load-limits` maps the 1013 | `test_tool_gatewayview.py`, `test_tool_limits.py` |
-| skills | (none) | `release-verification` (probe old vs new on a real server); `event-stream-health` covers the cap and thread-side events | `test_skill_r19.py` |
-| coverage | (none) | `cov19_a`, `cov19_b` | 9 statements missed of 11,258 |
-
-## v0.32: Squad round 18: bodies capped before buffering, bounded fleet registry. 2866 tests, coverage 99%
-
-| Lane | Finding (heat) | Mapping | Verification |
-|---|---|---|---|
-| robust | **an unauthenticated caller could make the server hold any amount of RAM**: every route read the whole body before auth (fleet HMAC needs it, `/api/chat` parses it) | `BodyLimit` ASGI guard: 413 on a declared Content-Length over the cap, chunked bodies counted and cut off; `AVRONE_MAX_BODY_BYTES` (16 MB, hard 512 MB), never below what the message cap needs, agent-pack route fits a quota-sized bundle | `test_robust_v032_body.py`; live 400 MB chunked unauth POST: v0.31 **401 after RSS 48 -> 415 MB**, v0.32 **413, RSS flat** |
-| robust | **fleet registry unbounded**: any allowed id (allow-all by default) could register, each join rewrote fleet.json, megabytes per record | `AVRONE_FLEET_MAX_NODES` (256, hard 4096): offline peers evicted oldest-first, live never, then "registry full"; node record <= 64 KB | `test_robust_v032_registry.py` |
-| tools | no way to remove a peer | `fleet_forget` (acting, audited): refuses an online still-allowed peer (it would rejoin), final once revoked | `test_tool_packpeer.py` |
-| tools | new caps invisible | `limits_status` adds body cap, agent-pack body cap, peers vs registry cap; `load-limits` skill maps both new refusals | `test_tool_limits.py`, `test_skill_r15.py` |
-| skills | (none) | `fleet-offboarding`, `flood-response` (every refusal message it cites is asserted to exist in code) | `test_skill_r18.py` |
-| coverage | (none) | `cov18_a`, `cov18_b` | 14 statements missed of 11,201 |
 
 ## 9. Open threads (pick up here)
 - Deploy target undecided: own VPS (preferred for Ollama/GPU), fly.io, or Railway. `data_dir` must be
@@ -352,4 +323,4 @@ landed and the suite is green. End with what is still open.
 
 ## 10. First message to send the owner
 Run section 0, then reply in one line: the version, test count, coverage, and the next round's
-target. Example: "AVRONE v0.34.0 checked out: 2908 passed, 99% coverage. Next: round <N+1> on <angle>."
+target. Example: "AVRONE v0.34.0 checked out: all passed, 99% coverage. Next: round <N+1> on <angle>."

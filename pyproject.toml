@@ -13,6 +13,7 @@ vision = ["pillow>=10", "zxing-cpp>=2.3"]
 avrone = "avrone.server:main"
 avrone-cli = "avrone.cli:main"
 avrone-mcp = "avrone.mcp_server:main"
+avrone-svc = "avrone.svcman.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -22,7 +23,7 @@ build-backend = "setuptools.build_meta"
 include = ["avrone*"]
 
 [tool.setuptools.package-data]
-avrone = ["static/*"]
+avrone = ["static/*", "svcman/bundle/*.toml"]
 
 [tool.pytest.ini_options]
 markers = ["integration: real-network/uvicorn tests, excluded from the self-evolve gate"]

@@ -655,7 +655,7 @@ class Supervisor:
                 self._tracked.discard(pid)
                 runtime.pid = None
                 runtime.adopted = False
-                self._finish_exit(runtime, None)
+                self._finish_exit(runtime, None, pid=pid)
 
     def _note_wait(self, pid: int, status: int) -> None:
         code = process.decode_status(status)
@@ -675,9 +675,13 @@ class Supervisor:
         if reader is not None:
             reader.join(timeout=1.0)
         with self._lock:
-            self._finish_exit(runtime, code)
+            self._finish_exit(runtime, code, pid=pid)
 
-    def _finish_exit(self, runtime: Runtime, code: int | None) -> None:
+    def _finish_exit(self, runtime: Runtime, code: int | None, pid: int | None = None) -> None:
+        # The leader is gone. Kill anything left in its group so a forked child
+        # cannot keep the listen socket and block the restart.
+        if pid:
+            process.signal_group(pid, signal.SIGKILL)
         trace = runtime.trace_text()
         disappeared = code is None
         runtime.exit_code = code

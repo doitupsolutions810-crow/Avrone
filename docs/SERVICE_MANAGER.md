@@ -88,8 +88,12 @@ managers. Nothing in the supervisor executes them.
 - The YAML loader is a subset: no anchors, tags, or merge keys.
 - Switching `user` requires root. cgroup limits require a delegated v2
   controller; otherwise they are skipped.
-- Port checks bind and release the port, so a foreign process can still win
-  the race. The child then exits and the restart policy applies.
+- Port checks look for a listener. On Linux that is `/proc/net/tcp` state
+  LISTEN, so TIME_WAIT from an old connection does not block a restart. A
+  foreign process can still bind in the gap after the check; the child then
+  exits and the restart policy applies. When the main process dies, the
+  supervisor signals the rest of its process group so a forked child does not
+  keep the port.
 - Squad lanes are disabled by default. Enabling them runs real `avrone-cli chat`
   jobs against Ollama.
 - CycleKernal, capability-authority, the fusion bridge, and avrone-daemon are
